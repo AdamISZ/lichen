@@ -12,7 +12,7 @@ use anyhow::{bail, ensure, Context, Result};
 use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{fresh_rho, note, sign, xonly, Hash, Note, Spend, Transfer, Tx, WithdrawInput, HUB_KEY};
 use lichen_chain::Chain;
-use lichen_proto::{all_moves, check_funding, contributions, terms, Accept, Info, OpenOffer, OpenRequest, Opened, Record, Statement, FEE_SHARE};
+use lichen_proto::{all_moves, check_funding, contributions, terms, Accept, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, FEE_SHARE, FOLD_FEE};
 use lichen_sequencer::{Client, State};
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
@@ -38,6 +38,9 @@ struct Stored {
 pub struct Held {
     pub nonce: String,
     pub record: Record,
+    /// The fold's txid, once withdrawn cooperatively.
+    #[serde(default)]
+    pub closed: Option<bitcoin::Txid>,
 }
 
 pub struct Wallet {
@@ -226,9 +229,35 @@ impl Wallet {
         let funding = chain.sign_mine(&offer.funding, &prevouts)?;
         let accept = Accept { cid: offer.cid, alice_sigs: record.alice_sigs.clone(), funding };
         let _: Opened = hub_call(&format!("{hub}/accept"), Some(serde_json::to_string(&accept)?))?;
-        let held = Held { nonce, record };
+        let held = Held { nonce, record, closed: None };
         self.contracts.push(held.clone());
         self.save()?;
         Ok(held)
+    }
+
+    /// Withdraw `b` sats from contract `cid` cooperatively: return `b` to
+    /// the hub on the L2 with the contract's memo, wait until a sealed
+    /// height includes it, then sign the fold (Alice `b + r_A`, the hub the
+    /// rest) and ask the hub to close. Returns the fold's txid.
+    pub fn withdraw(&mut self, hub: &str, statement: &Statement, dir: &Path, cid: u32, b: u64) -> Result<bitcoin::Txid> {
+        let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
+        let held = self.contracts[k].clone();
+        ensure!(held.closed.is_none(), "contract {cid} is closed");
+        ensure!(bitcoin::Amount::from_sat(b) <= held.record.terms.v_max(), "{b} sats is above the cap");
+        let index = self.return_to_hub(b, cid)?;
+        let start = std::time::Instant::now();
+        while self.sequencer.state()?.withdraw_input(index).is_err() {
+            ensure!(start.elapsed() < std::time::Duration::from_secs(120), "the return was never sealed");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let program = statement.program(dir)?;
+        let c = held.record.contract(statement, &program)?;
+        let fold = c.fold(held.record.funding, bitcoin::Amount::from_sat(b), FOLD_FEE)?;
+        let alice_sig = fold.sign(&self.contract_keys(&held.nonce).payment)?;
+        let req = FoldRequest { cid, index, b, alice_sig };
+        let done: Folded = hub_call(&format!("{hub}/fold"), Some(serde_json::to_string(&req)?))?;
+        self.contracts[k].closed = Some(done.txid);
+        self.save()?;
+        Ok(done.txid)
     }
 }

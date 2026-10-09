@@ -54,7 +54,8 @@ fn open_a_contract_and_receive_the_deposit() {
     // both sides hold the same contract, every signature checked
     let theirs = hub.contracts();
     assert_eq!(theirs.len(), 1);
-    assert_eq!((theirs[0].funding, &theirs[0].alice_sigs, &theirs[0].hub_sigs), (r.funding, &r.alice_sigs, &r.hub_sigs));
+    let theirs = &theirs[0].0;
+    assert_eq!((theirs.funding, &theirs.alice_sigs, &theirs.hub_sigs), (r.funding, &r.alice_sigs, &r.hub_sigs));
     let program = Statement::Mock.program(&dir.join("alice")).unwrap();
     let set = r.presigned(&r.contract(&Statement::Mock, &program).unwrap()).unwrap();
     println!("LICHEN both parties hold {} pre-signed transactions, each signature checked", set.len());

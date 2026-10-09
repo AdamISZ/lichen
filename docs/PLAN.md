@@ -47,11 +47,20 @@ transfers; sealed, signed heights; the statement's input for a return),
   about 6 s (debug): 47 pre-signed transactions, every signature checked
   by both; the hub mints the deposit on confirmation.
 
-## M3: the cooperative withdrawal
+## M3: the cooperative withdrawal (done)
 
-Alice returns `b` with memo `c`; the hub sees it in a sealed height and
-folds: Alice `b + r_A`, the hub `V_max - b + r_H`. Also: the default at
-`T_close`.
+- The contract output gains `fold` (2-of-2, signed when it happens; TODO
+  MuSig2 key path). `lichen withdraw <contract> <amount>`: Alice returns
+  `b` with memo `c`, waits until a sealed height includes it, signs the
+  fold (Alice `b + r_A`, the hub the rest less a 1,000-sat fee) and asks
+  the hub (`POST /fold`), which checks the return (sealed, the hub's,
+  memo `c`, amount `b`, within the cap), signs and broadcasts.
+- The default: after `T_close` the hub broadcasts the pre-signed default
+  of every contract still open (Alice's reserve back), adding a fee coin.
+- Test (`crates/hub/tests/fold.rs`): Alice withdraws 450,000 sats after
+  receiving 50,000 from Bob on the L2 (more than her deposit): 470,000 on
+  chain (with her reserve), the fold 205 vB, under a second. Bob and Carol
+  do nothing; after `T_close` their defaults return their reserves.
 
 ## M4: disputes
 

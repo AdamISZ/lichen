@@ -34,7 +34,9 @@ each other and return to the hub with a contract's memo; the wallet
 builds the withdrawal statement's input for a return, checked against the
 statement. Milestone 2, contracts: a wallet opens a contract with the
 hub, both pre-sign every transaction a dispute could need, and the hub
-mints the deposit once the funding confirms. See
+mints the deposit once the funding confirms. Milestone 3, the cooperative
+withdrawal: return tokens on the L2, and the hub folds the contract (the
+default after `T_close` otherwise). See
 [docs/PLAN.md](docs/PLAN.md).
 
 ## Try it (regtest keys)

@@ -58,6 +58,8 @@ enum Cmd {
     },
     /// The contracts this wallet holds.
     Contracts,
+    /// Withdraw `amount` sats from a contract cooperatively.
+    Withdraw { contract: u32, amount: u64 },
 }
 
 fn main() -> Result<()> {
@@ -89,8 +91,13 @@ fn main() -> Result<()> {
         Cmd::Contracts => {
             for h in &w.contracts {
                 let t = &h.record.terms;
-                println!("{}: deposit {} sats, cap {} sats, T_close {}, funding {}", h.record.cid(), t.deposit, t.v_max().to_sat(), t.t_close, h.record.funding.txid);
+                let state = h.closed.map_or("open".to_string(), |x| format!("folded in {x}"));
+                println!("{}: deposit {} sats, cap {} sats, T_close {}, funding {}; {state}", h.record.cid(), t.deposit, t.v_max().to_sat(), t.t_close, h.record.funding.txid);
             }
+        }
+        Cmd::Withdraw { contract, amount } => {
+            let txid = w.withdraw(&a.hub, &a.statement, &a.wallet.with_extension("d"), contract, amount)?;
+            println!("withdrew {amount} sats from contract {contract}: the fold is {txid}");
         }
     }
     Ok(())

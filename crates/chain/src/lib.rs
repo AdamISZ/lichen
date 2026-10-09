@@ -64,6 +64,15 @@ impl Chain {
         let r = self.rpc.sign_raw_transaction_with_wallet(tx, Some(&utxos), None)?;
         Ok(r.transaction()?)
     }
+    /// A coin of exactly `amount` (sent to ourselves, unconfirmed), to add
+    /// to a transaction whose outputs are fixed: all of it is fee.
+    pub fn fee_coin(&self, amount: Amount) -> Result<(OutPoint, TxOut)> {
+        let addr = self.rpc.get_new_address(None, Some(AddressType::Bech32m))?.require_network(Network::Regtest)?;
+        let txid = self.rpc.send_to_address(&addr, amount, None, None, None, None, None, None)?;
+        let tx = self.rpc.get_raw_transaction(&txid, None)?;
+        let vout = tx.output.iter().position(|o| o.script_pubkey == addr.script_pubkey()).context("the fee coin")?;
+        Ok((OutPoint { txid, vout: vout as u32 }, tx.output[vout].clone()))
+    }
     pub fn broadcast(&self, tx: &Transaction) -> Result<Txid> {
         Ok(self.rpc.send_raw_transaction(tx)?)
     }

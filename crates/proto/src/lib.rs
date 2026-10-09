@@ -156,6 +156,27 @@ pub struct Opened {
     pub txid: Txid,
 }
 
+/// The cooperative close's fee, from the hub's share.
+pub const FOLD_FEE: Amount = Amount::from_sat(1_000);
+/// The default's fee coin, the hub's.
+pub const DEFAULT_FEE: Amount = Amount::from_sat(2_000);
+
+/// Alice asks the hub to fold contract `cid` for her return at `index`
+/// (a sealed note of `b` sats to the hub with memo `cid`), with her
+/// signature on the fold.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FoldRequest {
+    pub cid: u32,
+    pub index: u32,
+    pub b: u64,
+    pub alice_sig: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Folded {
+    pub txid: Txid,
+}
+
 /// Interleave both sides' move keys by depth (Alice moves at odd depths).
 pub fn all_moves(alice: &[WotsPublic], hub: &[WotsPublic]) -> Vec<WotsPublic> {
     let m = alice.len() + hub.len();

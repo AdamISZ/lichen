@@ -2,8 +2,11 @@
 //! the L2, and (later) pays withdrawals and answers disputes.
 //!
 //! HTTP (JSON): `GET /info`, `POST /open` ([`OpenRequest`] to
-//! [`OpenOffer`]), `POST /accept` ([`Accept`] to [`Opened`]). A watcher
-//! mints each contract's deposit once its funding transaction confirms.
+//! [`OpenOffer`]), `POST /accept` ([`Accept`] to [`Opened`]), `POST /fold`
+//! ([`FoldRequest`] to [`Folded`]: the cooperative withdrawal, once the
+//! hub has seen Alice's return sealed on the L2). A watcher mints each
+//! contract's deposit once its funding confirms, and after `T_close`
+//! broadcasts the default of any contract still open.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -14,7 +17,7 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, TxOut};
 use lichen_chain::Chain;
 use lichen_ledger::{note, regtest_hub, Mint, Tx};
-use lichen_proto::{all_moves, check_funding, contributions, terms, Accept, Info, OpenOffer, OpenRequest, Opened, Record, Statement, FEE_SHARE};
+use lichen_proto::{all_moves, check_funding, contributions, terms, Accept, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, FEE_SHARE, FOLD_FEE};
 use lichen_sequencer::Client;
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
@@ -60,6 +63,9 @@ struct Pending {
 struct Open {
     record: Record,
     minted: bool,
+    /// How it ended: the fold's or the default's txid.
+    #[serde(default)]
+    closed: Option<bitcoin::Txid>,
 }
 
 struct Inner {
@@ -115,14 +121,17 @@ impl Hub {
                 if let Err(e) = i2.mint_confirmed() {
                     eprintln!("hub: {e:#}");
                 }
+                if let Err(e) = i2.default_expired() {
+                    eprintln!("hub: {e:#}");
+                }
                 std::thread::sleep(std::time::Duration::from_millis(300));
             }
         });
         Ok(Hub { url: format!("http://127.0.0.1:{port}"), inner, server, stop, threads: vec![http, watcher] })
     }
-    /// The contracts open so far.
-    pub fn contracts(&self) -> Vec<Record> {
-        self.inner.open.lock().unwrap().values().map(|o| o.record.clone()).collect()
+    /// The contracts so far, and how each ended if it has.
+    pub fn contracts(&self) -> Vec<(Record, Option<bitcoin::Txid>)> {
+        self.inner.open.lock().unwrap().values().map(|o| (o.record.clone(), o.closed)).collect()
     }
 }
 
@@ -141,6 +150,7 @@ fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String
         (Method::Get, "/info") => serde_json::to_string(&inner.info())?,
         (Method::Post, "/open") => serde_json::to_string(&inner.open(serde_json::from_str(body)?)?)?,
         (Method::Post, "/accept") => serde_json::to_string(&inner.accept(serde_json::from_str(body)?)?)?,
+        (Method::Post, "/fold") => serde_json::to_string(&inner.fold(serde_json::from_str(body)?)?)?,
         _ => bail!("no {method} {url}"),
     })
 }
@@ -208,7 +218,7 @@ impl Inner {
         let prevouts: Vec<(OutPoint, TxOut)> = p.req.coins.iter().chain(&p.offer.hub_coins).cloned().collect();
         let signed = self.chain.sign_mine(&a.funding, &prevouts)?;
         let txid = self.chain.broadcast(&signed).context("broadcasting the funding")?;
-        let o = Open { record, minted: false };
+        let o = Open { record, minted: false, closed: None };
         self.save(&o)?;
         self.open.lock().unwrap().insert(a.cid, o);
         Ok(Opened { txid })
@@ -216,6 +226,53 @@ impl Inner {
 
     fn save(&self, o: &Open) -> Result<()> {
         std::fs::write(self.cfg.dir.join("contracts").join(format!("{}.json", o.record.cid())), serde_json::to_vec_pretty(o)?)?;
+        Ok(())
+    }
+
+    /// The cooperative withdrawal: Alice's return must be sealed on the
+    /// L2, owned by the hub, carry this contract's memo and the amount she
+    /// asks for, within the cap; then the hub signs her fold and
+    /// broadcasts it.
+    fn fold(&self, f: FoldRequest) -> Result<Folded> {
+        let o = self.open.lock().unwrap().get(&f.cid).cloned().context("no such contract")?;
+        ensure!(o.closed.is_none(), "contract {} is closed", f.cid);
+        let input = self.seq.state()?.withdraw_input(f.index)?;
+        ensure!(input.note.memo == f.cid && input.note.value == f.b, "note {} is not a return of {} with memo {}", f.index, f.b, f.cid);
+        let c = o.record.contract(&self.cfg.statement, &self.program)?;
+        let p = c.fold(o.record.funding, Amount::from_sat(f.b), FOLD_FEE)?;
+        p.verify(&o.record.pubs[0].payment, &f.alice_sig).context("Alice's signature on the fold")?;
+        let mine = p.sign(&contract_keys(&self.cfg.seed, f.cid).payment)?;
+        let txid = self.chain.broadcast(&p.finish(vec![], &mine, &f.alice_sig)).context("broadcasting the fold")?;
+        self.close(f.cid, txid)?;
+        Ok(Folded { txid })
+    }
+
+    fn close(&self, cid: u32, txid: bitcoin::Txid) -> Result<()> {
+        let mut open = self.open.lock().unwrap();
+        let o = open.get_mut(&cid).context("no such contract")?;
+        o.closed = Some(txid);
+        let o = o.clone();
+        drop(open);
+        self.save(&o)
+    }
+
+    /// After `T_close`, the default of every contract still open: the
+    /// pre-signed transaction, both signatures in hand, plus a fee coin of
+    /// the hub's.
+    fn default_expired(&self) -> Result<()> {
+        let height = self.chain.height()?;
+        let due: Vec<Open> = self.open.lock().unwrap().values().filter(|o| o.closed.is_none() && height >= o.record.terms.t_close).cloned().collect();
+        for o in due {
+            let c = o.record.contract(&self.cfg.statement, &self.program)?;
+            let set = o.record.presigned(&c)?;
+            let p = set.iter().find(|p| p.name == "default").context("no default")?;
+            let mut tx = p.finish(vec![], &o.record.hub_sigs["default"], &o.record.alice_sigs["default"]);
+            let (op, coin) = self.chain.fee_coin(DEFAULT_FEE)?;
+            tx.input.push(bitcoin::TxIn { previous_output: op, sequence: Sequence::ENABLE_RBF_NO_LOCKTIME, ..Default::default() });
+            let tx = self.chain.sign_mine(&tx, &[(o.record.funding, p.prevout.clone()), (op, coin)])?;
+            let txid = self.chain.broadcast(&tx).context("broadcasting the default")?;
+            self.close(o.record.cid(), txid)?;
+        }
         Ok(())
     }
 
