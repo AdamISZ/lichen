@@ -1,0 +1,15 @@
+[package]
+name = "lichen-ledger"
+description = "The L2 ledger: transparent notes, transfers, mints, signed roots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+k256.workspace = true
+serde.workspace = true
+sha2.workspace = true
+lngap-r0-core.workspace = true
