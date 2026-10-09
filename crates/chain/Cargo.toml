@@ -1,0 +1,11 @@
+[package]
+name = "lichen-chain"
+description = "A party's view of Bitcoin: its own bitcoind wallet over RPC"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bitcoin.workspace = true
+bitcoincore-rpc.workspace = true

@@ -12,14 +12,23 @@ transfers; sealed, signed heights; the statement's input for a return),
 `sequencer` (HTTP: `/tx`, `/seal`, `/state`; persistence; the client),
 `wallet` (`lichen`: init, address, balance, send, return, withdraw-input).
 
-## M2: contracts with the hub
+## M2: contracts with the hub (done)
 
-- `lichen-hub` daemon: bitcoind RPC (regtest); HTTP for the wallet.
-- Opening: Alice and the hub fund one output (Alice `D + r_A`, the hub
-  `V_max - D + r_H`); the pre-signing ceremony (default, escalate, the
-  ladder with lean moves, the final proofs, the payouts), all signed
-  `ALL|ANYONECANPAY` at zero fee; then the funding transaction. On
-  confirmation the hub mints `D` to Alice.
+- `chain`: a party's own bitcoind wallet over RPC: it supplies coins and
+  signs only its own inputs of a jointly built transaction.
+- `proto`: the statement (`groth16:<pdf>` for the real verifier, `mock`
+  for fast tests) and its input layout (`b`'s word, the checks for memo
+  `c`); the opening messages; the contract record both sides keep.
+- `hub` (`lichen-hub`): `/info`, `/open`, `/accept`; mints each deposit
+  once its funding confirms. The wallet's `lichen open`, `lichen contracts`.
+- Opening: Alice sends her keys (move keys for the odd depths, input-word
+  keys), `D`, cap and reserve, coins and change; the hub answers with the
+  contract's number (memo `c`), `T_close`, its reserve and keys, the
+  funding transaction and its signatures on the whole pre-signed set
+  (ln-gap's `lngap_sessions::contract`: the default, the chain of links,
+  the timeouts, the proofs). Alice checks the funding and every signature,
+  signs the set and her inputs; the hub checks hers, signs its inputs,
+  broadcasts. Neither signs the funding before holding the other's set.
 - Units: plain sats, everywhere (decided 2026-10-09). What the ledger
   carries is bitcoin, not a separate asset: within each user's cap it is
   bitcoin she can take out without trusting anyone. Display may use ksats.
@@ -28,11 +37,15 @@ transfers; sealed, signed heights; the statement's input for a return),
   granularity: its payout's bit outputs start at the first bit worth at
   least the dust limit (512 sats), so `b` is rounded down there by less
   than 512 sats; the cooperative fold pays exact sats.
-- Cooperative close: a 2-of-2 fold leaf for now. TODO: MuSig2, here and
-  wherever else it is feasible (key paths for every 2-of-2 spend that
-  both parties sign together).
-- Uses ln-gap's `lngap-sessions`, `lngap-v25`, `lngap-zk` (path
-  dependencies for now).
+- Fees: no pre-signed transaction pays its own; the chain's links are
+  TRUC with a zero-value anchor (the poster's child pays), the terminal
+  ones ALL|ANYONECANPAY (the broadcaster adds a coin). The contract output
+  holds exactly `V_max` and both reserves.
+- TODO: MuSig2 for every 2-of-2 spend both parties sign together (the
+  cooperative close first); for now a 2-of-2 fold leaf (M3).
+- Test (`crates/hub/tests/open.rs`): opening on the mock statement in
+  about 6 s (debug): 47 pre-signed transactions, every signature checked
+  by both; the hub mints the deposit on confirmation.
 
 ## M3: the cooperative withdrawal
 

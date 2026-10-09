@@ -23,14 +23,19 @@ a separate asset.
 | `ledger` | | everyone: notes, transfers, mints, signed roots (the withdrawal statement's own data structures) |
 | `sequencer` | `lichen-sequencer` | the L2's sequencer: orders transactions, seals and signs heights |
 | `wallet` | `lichen` | the user |
-| (`hub`, next) | `lichen-hub` | the hub: issues tokens, holds the contracts, pays withdrawals |
+| `chain` | | each party: its own bitcoind wallet over RPC |
+| `proto` | | wallet and hub: the opening messages, the contract record |
+| `hub` | `lichen-hub` | the hub: opens contracts, issues tokens, (next) pays withdrawals |
 
 ## Status
 
 Milestone 1, the ledger: a single sequencer; the hub mints; wallets pay
 each other and return to the hub with a contract's memo; the wallet
 builds the withdrawal statement's input for a return, checked against the
-statement. See [docs/PLAN.md](docs/PLAN.md).
+statement. Milestone 2, contracts: a wallet opens a contract with the
+hub, both pre-sign every transaction a dispute could need, and the hub
+mints the deposit once the funding confirms. See
+[docs/PLAN.md](docs/PLAN.md).
 
 ## Try it (regtest keys)
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ledger", "crates/sequencer", "crates/wallet"]
+members = ["crates/ledger", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +9,8 @@ license = "MIT"
 
 [workspace.dependencies]
 anyhow = "1"
+bitcoin = { version = "0.32", features = ["serde"] }
+bitcoincore-rpc = "0.19"
 clap = { version = "4", features = ["derive"] }
 getrandom = "0.2"
 hex = "0.4"
@@ -22,4 +24,13 @@ ureq = { version = "2", features = ["json"] }
 # roots are exactly what the proof checks (ln-gap, path for now)
 lngap-r0-core = { path = "../ln-gap/crates/apps/sessions/r0/core" }
 lichen-ledger = { path = "crates/ledger" }
+lichen-chain = { path = "crates/chain" }
+lichen-proto = { path = "crates/proto" }
+lichen-hub = { path = "crates/hub" }
+# the contract and the dispute (ln-gap)
+lngap-sessions = { path = "../ln-gap/crates/apps/sessions" }
+lngap-zk = { path = "../ln-gap/crates/apps/zk" }
+lngap-channel = { path = "../ln-gap/crates/channel" }
+lngap-btc = { path = "../ln-gap/crates/btc" }
+lngap-lamport = { path = "../ln-gap/crates/lamport" }
 lichen-sequencer = { path = "crates/sequencer" }

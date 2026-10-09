@@ -1,5 +1,6 @@
-//! The user's wallet: a key, the notes it owns on the L2, transfers, and
-//! returns to the hub (the first step of a withdrawal).
+//! The user's wallet: a key, the notes it owns on the L2, transfers,
+//! returns to the hub (the first step of a withdrawal), and its contracts
+//! with the hub (opening: [`Wallet::open_contract`]).
 //!
 //! The ledger is transparent, so the wallet finds its notes by reading the
 //! sequencer's state; it checks every sealed root's signature, and builds a
@@ -7,10 +8,16 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{fresh_rho, note, sign, xonly, Hash, Note, Spend, Transfer, Tx, WithdrawInput, HUB_KEY};
+use lichen_chain::Chain;
+use lichen_proto::{all_moves, check_funding, contributions, terms, Accept, Info, OpenOffer, OpenRequest, Opened, Record, Statement, FEE_SHARE};
 use lichen_sequencer::{Client, State};
+use lngap_btc::keys::Seed;
+use lngap_channel::{PartyKeys, Role};
+use lngap_lamport::winternitz::{WotsParams, WotsSecret};
+use lngap_sessions::contract::sign_all;
 use serde::{Deserialize, Serialize};
 
 /// What the wallet keeps on disk.
@@ -20,12 +27,24 @@ struct Stored {
     secret: String,
     /// This wallet's returns to the hub: (memo, note index).
     returns: Vec<(u32, u32)>,
+    /// Its contracts: each one's nonce (from which its keys derive) and
+    /// record.
+    #[serde(default)]
+    contracts: Vec<Held>,
+}
+
+/// A contract the wallet holds.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Held {
+    pub nonce: String,
+    pub record: Record,
 }
 
 pub struct Wallet {
     key: SigningKey,
     path: PathBuf,
     returns: Vec<(u32, u32)>,
+    pub contracts: Vec<Held>,
     pub sequencer: Client,
 }
 
@@ -43,17 +62,17 @@ impl Wallet {
             bail!("{} already exists", path.display());
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
-        let w = Wallet { key, path: path.to_path_buf(), returns: vec![], sequencer: Client::new(sequencer) };
+        let w = Wallet { key, path: path.to_path_buf(), returns: vec![], contracts: vec![], sequencer: Client::new(sequencer) };
         w.save()?;
         Ok(w)
     }
     pub fn open(path: &Path, sequencer: &str) -> Result<Wallet> {
         let s: Stored = serde_json::from_slice(&std::fs::read(path).with_context(|| format!("no wallet at {}", path.display()))?)?;
         let key = SigningKey::from_bytes(&hex::decode(&s.secret)?).context("the wallet's key")?;
-        Ok(Wallet { key, path: path.to_path_buf(), returns: s.returns, sequencer: Client::new(sequencer) })
+        Ok(Wallet { key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, sequencer: Client::new(sequencer) })
     }
     fn save(&self) -> Result<()> {
-        let s = Stored { secret: hex::encode(self.key.to_bytes()), returns: self.returns.clone() };
+        let s = Stored { secret: hex::encode(self.key.to_bytes()), returns: self.returns.clone(), contracts: self.contracts.clone() };
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -111,5 +130,105 @@ impl Wallet {
     pub fn withdraw_input(&self, c: u32) -> Result<WithdrawInput> {
         let &(_, idx) = self.returns.iter().find(|r| r.0 == c).with_context(|| format!("no return with memo {c}"))?;
         self.sequencer.state()?.withdraw_input(idx)
+    }
+}
+
+/// What Alice asks for in a contract: her deposit `D`, a cap of
+/// `2^bits - 1` sats, her reserve `r_A`.
+#[derive(Clone, Copy, Debug)]
+pub struct Ask {
+    pub deposit: u64,
+    pub bits: u32,
+    pub reserve: u64,
+}
+
+/// A request to the hub, its error passed through.
+fn hub_call<T: for<'de> Deserialize<'de>>(url: &str, body: Option<String>) -> Result<T> {
+    let r = match body {
+        Some(b) => ureq::post(url).set("Content-Type", "application/json").send_string(&b),
+        None => ureq::get(url).call(),
+    };
+    match r {
+        Ok(r) => Ok(r.into_json()?),
+        Err(ureq::Error::Status(_, r)) => {
+            let v: serde_json::Value = r.into_json().unwrap_or_default();
+            bail!("the hub refused: {}", v.get("error").and_then(|e| e.as_str()).unwrap_or("?"))
+        }
+        Err(e) => bail!("{url}: {e}"),
+    }
+}
+
+impl Wallet {
+    /// The seed of the contract with `nonce`.
+    fn contract_seed(&self, nonce: &str) -> String {
+        format!("{}/contract/{nonce}", hex::encode(self.key.to_bytes()))
+    }
+    /// Alice's keys for a contract.
+    pub fn contract_keys(&self, nonce: &str) -> PartyKeys {
+        PartyKeys::from_seed(Role::User, Seed::from_label(&self.contract_seed(nonce)))
+    }
+    /// Alice's move key for depth `d` of a contract.
+    pub fn move_secret(&self, nonce: &str, d: u32) -> WotsSecret {
+        WotsSecret::from_entropy(WotsParams::for_bytes(48), Seed::from_label(&format!("{}/move/{d}", self.contract_seed(nonce))).derive_bytes("wots"))
+    }
+    /// Alice's key for input word `j` of a contract.
+    pub fn input_secret(&self, nonce: &str, j: usize) -> WotsSecret {
+        WotsSecret::from_entropy(lngap_zk::final_d60::input_key_params(), Seed::from_label(&format!("{}/input/{j}", self.contract_seed(nonce))).derive_bytes("wots"))
+    }
+
+    /// Open a contract with the hub at `hub` on the terms `ask`. Funds from
+    /// `chain`; runs
+    /// `statement` (programs built under `dir`). Checks the hub's offer and
+    /// every signature in it before signing anything; returns once the
+    /// funding is broadcast. The hub mints the deposit when it confirms.
+    pub fn open_contract(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, ask: Ask) -> Result<Held> {
+        let Ask { deposit, bits, reserve } = ask;
+        let info: Info = hub_call(&format!("{hub}/info"), None)?;
+        ensure!(info.statement == statement.id(), "the hub runs {}, this wallet {}", info.statement, statement.id());
+        let program = statement.program(dir)?;
+        let m = program.depths();
+        ensure!(info.depths == m, "the hub's statement has {} depths, ours {m}", info.depths);
+        let nonce = hex::encode(fresh_rho());
+        let keys = self.contract_keys(&nonce);
+        let mut alice = keys.public();
+        alice.payout_spk = chain.new_spk()?;
+        let moves: Vec<_> = (1..=m).filter(|d| d % 2 == 1).map(|d| self.move_secret(&nonce, d).public()).collect();
+        let inputs: Vec<_> = (0..program.info.input_words).map(|j| self.input_secret(&nonce, j).public()).collect();
+        let need = bitcoin::Amount::from_sat(deposit + reserve);
+        let coins = chain.select(need + FEE_SHARE + bitcoin::Amount::from_sat(10_000))?;
+        let spent: bitcoin::Amount = coins.iter().map(|c| c.1.value).sum();
+        let change = bitcoin::TxOut { value: spent - need - FEE_SHARE, script_pubkey: chain.new_spk()? };
+        let req = OpenRequest { alice, l2_address: self.address(), deposit, bits, reserve, moves: moves.clone(), inputs: inputs.clone(), coins: coins.clone(), change: change.clone() };
+        let offer: OpenOffer = hub_call(&format!("{hub}/open"), Some(serde_json::to_string(&req)?))?;
+        // the contract as the offer makes it, checked before signing
+        let t = terms(offer.cid, &req, offer.t_close, offer.reserve_hub)?;
+        ensure!(offer.t_close > chain.height()?, "T_close is past");
+        let mut record = Record {
+            statement: statement.id().to_string(),
+            terms: t,
+            pubs: [req.alice.clone(), offer.hub.clone()],
+            moves: all_moves(&moves, &offer.moves),
+            inputs,
+            l2_address: self.address(),
+            funding: bitcoin::OutPoint { txid: offer.funding.compute_txid(), vout: 0 },
+            hub_sigs: offer.hub_sigs.clone(),
+            alice_sigs: Default::default(),
+        };
+        let c = record.contract(statement, &program)?;
+        check_funding(&offer.funding, &c, &coins, &change, contributions(&t).0)?;
+        let set = c.presign(record.funding)?;
+        for p in &set {
+            let s = record.hub_sigs.get(&p.name).with_context(|| format!("the hub didn't sign {}", p.name))?;
+            p.verify(&record.pubs[1].payment, s)?;
+        }
+        record.alice_sigs = sign_all(&set, &keys.payment)?;
+        let prevouts: Vec<_> = coins.iter().chain(&offer.hub_coins).cloned().collect();
+        let funding = chain.sign_mine(&offer.funding, &prevouts)?;
+        let accept = Accept { cid: offer.cid, alice_sigs: record.alice_sigs.clone(), funding };
+        let _: Opened = hub_call(&format!("{hub}/accept"), Some(serde_json::to_string(&accept)?))?;
+        let held = Held { nonce, record };
+        self.contracts.push(held.clone());
+        self.save()?;
+        Ok(held)
     }
 }

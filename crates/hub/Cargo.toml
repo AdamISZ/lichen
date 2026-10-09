@@ -1,0 +1,26 @@
+[package]
+name = "lichen-hub"
+description = "The hub: opens contracts with users, issues tokens, pays withdrawals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bitcoin.workspace = true
+clap.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true
+lichen-ledger.workspace = true
+lichen-sequencer.workspace = true
+lichen-chain.workspace = true
+lichen-proto.workspace = true
+lngap-sessions.workspace = true
+lngap-channel.workspace = true
+lngap-btc.workspace = true
+lngap-lamport.workspace = true
+
+[dev-dependencies]
+lichen-wallet = { path = "../wallet" }
