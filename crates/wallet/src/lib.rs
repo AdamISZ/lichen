@@ -6,6 +6,8 @@
 //! sequencer's state; it checks every sealed root's signature, and builds a
 //! withdrawal's input itself, checked against the statement.
 
+pub mod dispute;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
@@ -17,7 +19,7 @@ use lichen_sequencer::{Client, State};
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
 use lngap_lamport::winternitz::{WotsParams, WotsSecret};
-use lngap_sessions::contract::sign_all;
+use lngap_sessions::contract::{move_bytes, sign_all};
 use serde::{Deserialize, Serialize};
 
 /// What the wallet keeps on disk.
@@ -74,7 +76,7 @@ impl Wallet {
         let key = SigningKey::from_bytes(&hex::decode(&s.secret)?).context("the wallet's key")?;
         Ok(Wallet { key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, sequencer: Client::new(sequencer) })
     }
-    fn save(&self) -> Result<()> {
+    pub(crate) fn save(&self) -> Result<()> {
         let s = Stored { secret: hex::encode(self.key.to_bytes()), returns: self.returns.clone(), contracts: self.contracts.clone() };
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
@@ -170,9 +172,9 @@ impl Wallet {
     pub fn contract_keys(&self, nonce: &str) -> PartyKeys {
         PartyKeys::from_seed(Role::User, Seed::from_label(&self.contract_seed(nonce)))
     }
-    /// Alice's move key for depth `d` of a contract.
-    pub fn move_secret(&self, nonce: &str, d: u32) -> WotsSecret {
-        WotsSecret::from_entropy(WotsParams::for_bytes(48), Seed::from_label(&format!("{}/move/{d}", self.contract_seed(nonce))).derive_bytes("wots"))
+    /// Alice's move key for depth `d` (of `m`) of a contract.
+    pub fn move_secret(&self, nonce: &str, d: u32, m: u32) -> WotsSecret {
+        WotsSecret::from_entropy(WotsParams::for_bytes(move_bytes(d, m)), Seed::from_label(&format!("{}/move/{d}", self.contract_seed(nonce))).derive_bytes("wots"))
     }
     /// Alice's key for input word `j` of a contract.
     pub fn input_secret(&self, nonce: &str, j: usize) -> WotsSecret {
@@ -195,7 +197,7 @@ impl Wallet {
         let keys = self.contract_keys(&nonce);
         let mut alice = keys.public();
         alice.payout_spk = chain.new_spk()?;
-        let moves: Vec<_> = (1..=m).filter(|d| d % 2 == 1).map(|d| self.move_secret(&nonce, d).public()).collect();
+        let moves: Vec<_> = (1..=m).filter(|d| d % 2 == 1).map(|d| self.move_secret(&nonce, d, m).public()).collect();
         let inputs: Vec<_> = (0..program.info.input_words).map(|j| self.input_secret(&nonce, j).public()).collect();
         let need = bitcoin::Amount::from_sat(deposit + reserve);
         let coins = chain.select(need + FEE_SHARE + bitcoin::Amount::from_sat(10_000))?;

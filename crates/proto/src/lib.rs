@@ -42,12 +42,14 @@ pub fn params() -> ChannelParams {
 
 /// The statement the disputes run: `groth16`, BitVMX's Groth16 verifier
 /// over a proof of the withdrawal guest (the real thing, 59 depths), or
-/// `mock`, ln-gap's small stand-in (17 depths; for fast tests).
+/// `mock`, ln-gap's small stand-in (17 depths; for fast tests): a program
+/// that accepts exactly the returns `(b, c)` in its table, for one memo
+/// `session`. Both sides must build the same one.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Statement {
     /// The program definition (yaml) of BitVMX's Groth16 verifier.
     Groth16 { pdf: PathBuf },
-    Mock,
+    Mock { session: u32, returns: Vec<(u32, u32)> },
 }
 
 impl std::str::FromStr for Statement {
@@ -55,7 +57,7 @@ impl std::str::FromStr for Statement {
     /// `mock`, or `groth16:<path to the verifier's program definition>`.
     fn from_str(s: &str) -> Result<Statement> {
         match s.split_once(':') {
-            None if s == "mock" => Ok(Statement::Mock),
+            None if s == "mock" => Ok(Statement::Mock { session: 0, returns: vec![] }),
             Some(("groth16", pdf)) => Ok(Statement::Groth16 { pdf: PathBuf::from(pdf) }),
             _ => bail!("a statement is `mock` or `groth16:<pdf>`"),
         }
@@ -66,14 +68,14 @@ impl Statement {
     pub fn id(&self) -> &'static str {
         match self {
             Statement::Groth16 { .. } => "groth16",
-            Statement::Mock => "mock",
+            Statement::Mock { .. } => "mock",
         }
     }
     /// The program, built under `dir` if it must be.
     pub fn program(&self, dir: &Path) -> Result<Program> {
         match self {
             Statement::Groth16 { pdf } => Program::load(&pdf.display().to_string()),
-            Statement::Mock => Program::load(&lngap_sessions::statement::write_program(&dir.join("mock-statement"), 0, &[])?),
+            Statement::Mock { session, returns } => Program::load(&lngap_sessions::statement::write_program(&dir.join(format!("mock-statement-{session}")), *session, returns)?),
         }
     }
     /// Where `b` is in the input, and the checks for memo `c`.
@@ -86,7 +88,16 @@ impl Statement {
                 checks.extend((1..9).map(|j| check(&format!("image_{j}"), j, id[j - 1])));
                 (41, checks)
             }
-            Statement::Mock => (0, vec![check("memo", 1, c)]),
+            Statement::Mock { .. } => (0, vec![check("memo", 1, c)]),
+        }
+    }
+    /// The input a claim of `b` with memo `c` runs the program on: for the
+    /// mock, `(b, c)`; for Groth16 it is the verifier's input for a proof
+    /// (made elsewhere).
+    pub fn mock_input(&self, b: u32, c: u32) -> Option<Vec<u8>> {
+        match self {
+            Statement::Mock { .. } => Some(lngap_sessions::statement::input(b, c)),
+            Statement::Groth16 { .. } => None,
         }
     }
 }
@@ -261,4 +272,55 @@ pub fn check_funding(tx: &Transaction, c: &Contract, mine: &[(OutPoint, TxOut)],
         bail!("I would put in {}, not {}", spent - change.value, want + FEE_SHARE);
     }
     Ok(())
+}
+
+// ----- disputes: what both sides' engines share -----
+
+/// The feerate the parties pay on the dispute's transactions, sat/vB.
+pub const FEERATE: u64 = 2;
+
+/// The link that carries move `j` (`escalate` for move 1).
+pub fn link_name(j: u32) -> String {
+    if j == 1 { "escalate".into() } else { format!("move_{j}") }
+}
+
+/// The input bytes from its words (BitVMX reads them little-endian).
+pub fn input_from_words(words: &[u32]) -> Vec<u8> {
+    words.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+/// A contract as a dispute needs it: the contract and its pre-signed set
+/// (both signatures checked), by name.
+pub struct Disputed {
+    pub record: Record,
+    pub program: Program,
+    pub contract: Contract,
+    pub set: HashMap<String, Presign>,
+}
+
+impl Disputed {
+    pub fn new(record: &Record, statement: &Statement, dir: &Path) -> Result<Disputed> {
+        let program = statement.program(dir)?;
+        let contract = record.contract(statement, &program)?;
+        let set = record.presigned(&contract)?.into_iter().map(|p| (p.name.clone(), p)).collect();
+        Ok(Disputed { record: record.clone(), program, contract, set })
+    }
+    /// A pre-signed transaction with both signatures, `wire` below them.
+    pub fn finish(&self, name: &str, wire: Vec<Vec<u8>>) -> Result<Transaction> {
+        let p = self.set.get(name).with_context(|| format!("no pre-signed {name}"))?;
+        Ok(p.finish(wire, &self.record.hub_sigs[name], &self.record.alice_sigs[name]))
+    }
+    /// The txid the set fixed for `name`.
+    pub fn txid(&self, name: &str) -> Txid {
+        self.set[name].tx.compute_txid()
+    }
+    /// The move key of depth `d`.
+    pub fn key(&self, d: u32) -> &WotsPublic {
+        &self.contract.spec.moves[(d - 1) as usize]
+    }
+    /// The disproves at the final depth (leaf names without `disprove_`).
+    pub fn final_disproves(&self) -> Result<Vec<String>> {
+        let t = self.contract.ladder(self.contract.m())?;
+        Ok(t.leaves().iter().filter_map(|l| l.name.strip_prefix("disprove_zk_").map(|n| format!("zk_{n}"))).collect())
+    }
 }

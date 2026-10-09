@@ -16,6 +16,11 @@ use lichen_sequencer::Sequencer;
 use lichen_wallet::{Ask, Wallet};
 use lngap_btc::regtest::Regtest;
 
+/// The mock statement with an empty table (these tests never dispute).
+fn mock() -> Statement {
+    Statement::Mock { session: 0, returns: vec![] }
+}
+
 #[test]
 fn open_a_contract_and_receive_the_deposit() {
     let rt = Regtest::start().unwrap();
@@ -31,19 +36,21 @@ fn open_a_contract_and_receive_the_deposit() {
         rpc_url: rt.rpc_url().to_string(),
         cookie: rt.cookie().clone(),
         wallet: "hub".into(),
-        statement: Statement::Mock,
+        statement: mock(),
         dir: dir.join("hub"),
         seed: "test-hub".into(),
         reserve_ppm: 20_000,
         max_bits: 24,
         duration: 500,
+        refuse_folds: false,
+        dispute_true_claims: false,
     })
     .unwrap();
 
     let mut alice = Wallet::create(&dir.join("alice.json"), &seq.url).unwrap();
     let (deposit, bits, reserve) = (400_000u64, 21u32, 20_000u64);
     let t = Instant::now();
-    let held = alice.open_contract(&hub.url, &alice_chain, &Statement::Mock, &dir.join("alice"), Ask { deposit, bits, reserve }).unwrap();
+    let held = alice.open_contract(&hub.url, &alice_chain, &mock(), &dir.join("alice"), Ask { deposit, bits, reserve }).unwrap();
     let r = &held.record;
     println!("LICHEN opened contract {} in {:.1?}: cap {} sats, Alice's reserve {}, the hub's {}, T_close {}", r.cid(), t.elapsed(), r.terms.v_max().to_sat(), r.terms.reserve_alice, r.terms.reserve_hub, r.terms.t_close);
 
@@ -56,8 +63,8 @@ fn open_a_contract_and_receive_the_deposit() {
     assert_eq!(theirs.len(), 1);
     let theirs = &theirs[0].0;
     assert_eq!((theirs.funding, &theirs.alice_sigs, &theirs.hub_sigs), (r.funding, &r.alice_sigs, &r.hub_sigs));
-    let program = Statement::Mock.program(&dir.join("alice")).unwrap();
-    let set = r.presigned(&r.contract(&Statement::Mock, &program).unwrap()).unwrap();
+    let program = mock().program(&dir.join("alice")).unwrap();
+    let set = r.presigned(&r.contract(&mock(), &program).unwrap()).unwrap();
     println!("LICHEN both parties hold {} pre-signed transactions, each signature checked", set.len());
 
     // the hub mints the deposit once the funding confirms

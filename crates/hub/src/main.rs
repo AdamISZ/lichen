@@ -54,6 +54,8 @@ fn main() -> Result<()> {
         reserve_ppm: a.reserve_ppm,
         max_bits: a.max_bits,
         duration: a.duration,
+        refuse_folds: false,
+        dispute_true_claims: false,
     })?;
     println!("lichen hub at {}", hub.url);
     loop {

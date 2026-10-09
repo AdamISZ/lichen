@@ -1137,6 +1137,7 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "bitcoincore-rpc",
+ "serde_json",
 ]
 
 [[package]]
@@ -1145,7 +1146,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bitcoin",
+ "bitcoincore-rpc",
  "clap",
+ "emulator",
  "hex",
  "lichen-chain",
  "lichen-ledger",
@@ -1155,7 +1158,9 @@ dependencies = [
  "lngap-btc",
  "lngap-channel",
  "lngap-lamport",
+ "lngap-pos",
  "lngap-sessions",
+ "lngap-zk",
  "serde",
  "serde_json",
  "tiny_http",
@@ -1219,6 +1224,7 @@ dependencies = [
  "lngap-btc",
  "lngap-channel",
  "lngap-lamport",
+ "lngap-pos",
  "lngap-sessions",
  "lngap-zk",
  "serde",

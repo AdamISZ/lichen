@@ -62,12 +62,34 @@ transfers; sealed, signed heights; the statement's input for a return),
   chain (with her reserve), the fold 205 vB, under a second. Bob and Carol
   do nothing; after `T_close` their defaults return their reserves.
 
-## M4: disputes
+## M4: disputes (done, on the mock statement)
 
-The wallet proves its return (RISC Zero via `r0vm`; the Groth16 wrap on
-x86 Linux, or delegated), runs BitVMX's search over the verifier, escalates
-and plays the ladder, paying its own fees; the hub daemon answers
-automatically. Then the hub's side: input-word checks, disproves.
+- ln-gap gained what two separate parties need (found building this):
+  the `inputs` link (the rest of Alice's input after the escalation: the
+  hub executes the program on all of it), move 1 signing the claim block
+  and the last move the record (the hub's disproves need them), and
+  `lngap_sessions::play` (`Prover`, `Verifier`: each side's own emulator,
+  moves read back from the links' witnesses; the final rules' native
+  mirrors pick the disprove).
+- Wallet (`lichen dispute <contract> <amount>`): escalates, plays every
+  move from what it reads on chain, takes its timeout if the hub stops,
+  proves the last step if no disprove comes, sweeps its bits and the
+  reserves; notices its output taken by a check or a disprove.
+- Hub (watcher): reads the escalation; applies the input-word checks
+  (memo, image id); runs its verifier on the claim: a true claim it
+  concedes (an honest hub), a false one it plays and disproves; times out
+  an absent Alice. Test switches: `refuse_folds`, `dispute_true_claims`.
+- Fees: every link a TRUC transaction with a zero-value anchor, the
+  poster's child paying (the bitcoind wallet signs it); terminal
+  transactions with a fee coin.
+- Test (`crates/hub/tests/dispute.rs`, blocks every 150 ms): A, the
+  honest hub concedes a true claim (5 s); B, a hub disputing a true claim,
+  the whole search played and proved (10 s); C, a false claim disproved
+  (`zk_halt_exit`); M, another contract's memo taken by the check.
+- Not yet: the Groth16 statement in lichen (the claim's input is the
+  verifier's input for a proof: `--input`; proving is outside lichen),
+  restarts in the middle of a dispute (the engines keep state in memory),
+  watchtowers.
 
 ## Later
 

@@ -25,7 +25,7 @@ a separate asset.
 | `wallet` | `lichen` | the user |
 | `chain` | | each party: its own bitcoind wallet over RPC |
 | `proto` | | wallet and hub: the opening messages, the contract record |
-| `hub` | `lichen-hub` | the hub: opens contracts, issues tokens, (next) pays withdrawals |
+| `hub` | `lichen-hub` | the hub: opens contracts, issues tokens, folds withdrawals, answers disputes |
 
 ## Status
 
@@ -36,7 +36,9 @@ statement. Milestone 2, contracts: a wallet opens a contract with the
 hub, both pre-sign every transaction a dispute could need, and the hub
 mints the deposit once the funding confirms. Milestone 3, the cooperative
 withdrawal: return tokens on the L2, and the hub folds the contract (the
-default after `T_close` otherwise). See
+default after `T_close` otherwise). Milestone 4, disputes: when the hub
+won't fold, the wallet enforces the withdrawal on Bitcoin, the hub
+daemon answering from the chain. See
 [docs/PLAN.md](docs/PLAN.md).
 
 ## Try it (regtest keys)

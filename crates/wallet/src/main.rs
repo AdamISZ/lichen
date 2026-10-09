@@ -60,6 +60,17 @@ enum Cmd {
     Contracts,
     /// Withdraw `amount` sats from a contract cooperatively.
     Withdraw { contract: u32, amount: u64 },
+    /// Enforce a withdrawal (already returned on the L2) on Bitcoin, when
+    /// the hub won't fold it: escalate and play the dispute to its end.
+    Dispute {
+        contract: u32,
+        amount: u32,
+        /// The statement program's input for the claim, hex (for Groth16:
+        /// the verifier's 172-byte input for the proof). The mock's is
+        /// built here.
+        #[arg(long)]
+        input: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -94,6 +105,16 @@ fn main() -> Result<()> {
                 let state = h.closed.map_or("open".to_string(), |x| format!("folded in {x}"));
                 println!("{}: deposit {} sats, cap {} sats, T_close {}, funding {}; {state}", h.record.cid(), t.deposit, t.v_max().to_sat(), t.t_close, h.record.funding.txid);
             }
+        }
+        Cmd::Dispute { contract, amount, input } => {
+            let (url, cookie) = (a.rpc_url.context("--rpc-url")?, a.cookie.context("--cookie")?);
+            let chain = lichen_chain::Chain::connect(&url, &cookie, &a.chain_wallet)?;
+            let input = match input {
+                Some(p) => hex::decode(std::fs::read_to_string(p)?.trim())?,
+                None => a.statement.mock_input(amount, contract).context("--input: the claim's input (a proof's, for groth16)")?,
+            };
+            let (outcome, swept) = w.dispute(&chain, &a.statement, &a.wallet.with_extension("d"), contract, amount, &input)?;
+            println!("{outcome:?}; swept {swept:?}");
         }
         Cmd::Withdraw { contract, amount } => {
             let txid = w.withdraw(&a.hub, &a.statement, &a.wallet.with_extension("d"), contract, amount)?;

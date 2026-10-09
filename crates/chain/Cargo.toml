@@ -9,3 +9,4 @@ license.workspace = true
 anyhow.workspace = true
 bitcoin.workspace = true
 bitcoincore-rpc.workspace = true
+serde_json.workspace = true

@@ -8,6 +8,8 @@
 //! contract's deposit once its funding confirms, and after `T_close`
 //! broadcasts the default of any contract still open.
 
+mod dispute;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,16 +43,20 @@ pub struct Config {
     pub reserve_ppm: u64,
     pub max_bits: u32,
     pub duration: u32,
+    /// Misbehaviour, for tests: refuse every cooperative withdrawal, and
+    /// dispute claims that are true.
+    pub refuse_folds: bool,
+    pub dispute_true_claims: bool,
 }
 
 /// The hub's keys for contract `cid`.
-fn contract_keys(seed: &str, cid: u32) -> PartyKeys {
+pub(crate) fn contract_keys(seed: &str, cid: u32) -> PartyKeys {
     PartyKeys::from_seed(Role::Hub, Seed::from_label(&format!("{seed}/contract/{cid}")))
 }
 
-/// The hub's move key for depth `d` of contract `cid`.
-pub fn move_secret(seed: &str, cid: u32, d: u32) -> WotsSecret {
-    WotsSecret::from_entropy(WotsParams::for_bytes(48), Seed::from_label(&format!("{seed}/contract/{cid}/move/{d}")).derive_bytes("wots"))
+/// The hub's move key for depth `d` (of `m`) of contract `cid`.
+pub fn move_secret(seed: &str, cid: u32, d: u32, m: u32) -> WotsSecret {
+    WotsSecret::from_entropy(WotsParams::for_bytes(lngap_sessions::contract::move_bytes(d, m)), Seed::from_label(&format!("{seed}/contract/{cid}/move/{d}")).derive_bytes("wots"))
 }
 
 struct Pending {
@@ -60,15 +66,15 @@ struct Pending {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Open {
-    record: Record,
+pub(crate) struct Open {
+    pub(crate) record: Record,
     minted: bool,
     /// How it ended: the fold's or the default's txid.
     #[serde(default)]
-    closed: Option<bitcoin::Txid>,
+    pub(crate) closed: Option<bitcoin::Txid>,
 }
 
-struct Inner {
+pub(crate) struct Inner {
     cfg: Config,
     program: Program,
     chain: Chain,
@@ -76,6 +82,7 @@ struct Inner {
     pending: Mutex<HashMap<u32, Pending>>,
     open: Mutex<HashMap<u32, Open>>,
     next_cid: Mutex<u32>,
+    disputes: Mutex<HashMap<u32, dispute::State>>,
 }
 
 pub struct Hub {
@@ -100,7 +107,7 @@ impl Hub {
         let next = open.keys().max().map_or(1000, |m| m + 1);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), open: Mutex::new(open), next_cid: Mutex::new(next) });
+        let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()) });
         let stop = Arc::new(AtomicBool::new(false));
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
@@ -122,6 +129,9 @@ impl Hub {
                     eprintln!("hub: {e:#}");
                 }
                 if let Err(e) = i2.default_expired() {
+                    eprintln!("hub: {e:#}");
+                }
+                if let Err(e) = i2.disputes_tick() {
                     eprintln!("hub: {e:#}");
                 }
                 std::thread::sleep(std::time::Duration::from_millis(300));
@@ -183,7 +193,7 @@ impl Inner {
         let hub_coins = self.chain.select(hub_in + FEE_SHARE + margin)?;
         let hub_spent: Amount = hub_coins.iter().map(|c| c.1.value).sum();
         let hub_change = TxOut { value: hub_spent - hub_in - FEE_SHARE, script_pubkey: self.chain.new_spk()? };
-        let hub_moves: Vec<_> = (1..=m).filter(|d| d % 2 == 0).map(|d| move_secret(&self.cfg.seed, cid, d).public()).collect();
+        let hub_moves: Vec<_> = (1..=m).filter(|d| d % 2 == 0).map(|d| move_secret(&self.cfg.seed, cid, d, m).public()).collect();
         let mut record = Record {
             statement: self.cfg.statement.id().to_string(),
             terms: t,
@@ -234,6 +244,7 @@ impl Inner {
     /// asks for, within the cap; then the hub signs her fold and
     /// broadcasts it.
     fn fold(&self, f: FoldRequest) -> Result<Folded> {
+        ensure!(!self.cfg.refuse_folds, "this hub refuses cooperative withdrawals");
         let o = self.open.lock().unwrap().get(&f.cid).cloned().context("no such contract")?;
         ensure!(o.closed.is_none(), "contract {} is closed", f.cid);
         let input = self.seq.state()?.withdraw_input(f.index)?;
@@ -247,7 +258,7 @@ impl Inner {
         Ok(Folded { txid })
     }
 
-    fn close(&self, cid: u32, txid: bitcoin::Txid) -> Result<()> {
+    pub(crate) fn close(&self, cid: u32, txid: bitcoin::Txid) -> Result<()> {
         let mut open = self.open.lock().unwrap();
         let o = open.get_mut(&cid).context("no such contract")?;
         o.closed = Some(txid);

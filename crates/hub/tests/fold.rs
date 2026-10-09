@@ -28,6 +28,11 @@ fn wait(what: &str, mut ok: impl FnMut() -> bool) {
     }
 }
 
+/// The mock statement with an empty table (these tests never dispute).
+fn mock() -> Statement {
+    Statement::Mock { session: 0, returns: vec![] }
+}
+
 #[test]
 fn fold_and_default() {
     let rt = Regtest::start().unwrap();
@@ -52,12 +57,14 @@ fn fold_and_default() {
         rpc_url: rt.rpc_url().to_string(),
         cookie: rt.cookie().clone(),
         wallet: "hub".into(),
-        statement: Statement::Mock,
+        statement: mock(),
         dir: dir.join("hub"),
         seed: "test-hub".into(),
         reserve_ppm: 20_000,
         max_bits: 24,
         duration: 40,
+        refuse_folds: false,
+        dispute_true_claims: false,
     })
     .unwrap();
     let ask = |deposit| Ask { deposit, bits: 21, reserve: 20_000 };
@@ -66,7 +73,7 @@ fn fold_and_default() {
         let ch = chain(name);
         rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
         let mut w = Wallet::create(&dir.join(format!("{name}.json")), &seq.url).unwrap();
-        let held = w.open_contract(&hub.url, &ch, &Statement::Mock, &dir.join(name), ask(deposit)).unwrap();
+        let held = w.open_contract(&hub.url, &ch, &mock(), &dir.join(name), ask(deposit)).unwrap();
         println!("LICHEN {name} opened contract {} with a deposit of {deposit} sats", held.record.cid());
         users.push((w, ch, held));
     }
@@ -86,7 +93,7 @@ fn fold_and_default() {
         let (w, ch, h) = &mut users[0];
         let before = ch.balance().unwrap();
         let t = Instant::now();
-        let txid = w.withdraw(&hub.url, &Statement::Mock, &dir.join("alice"), h.record.cid(), 450_000).unwrap();
+        let txid = w.withdraw(&hub.url, &mock(), &dir.join("alice"), h.record.cid(), 450_000).unwrap();
         rt.mine(1).unwrap();
         let fold = rt.get_tx(&txid).unwrap();
         let gained = ch.balance().unwrap() - before;
