@@ -19,7 +19,7 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, TxOut};
 use lichen_chain::Chain;
 use lichen_ledger::{note, regtest_hub, Mint, Tx};
-use lichen_proto::{all_moves, check_funding, contributions, terms, Accept, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{all_moves, check_funding, tail_keys, contributions, terms, Accept, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, FEE_SHARE, FOLD_FEE};
 use lichen_sequencer::Client;
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
@@ -56,9 +56,20 @@ pub(crate) fn contract_keys(seed: &str, cid: u32) -> PartyKeys {
     PartyKeys::from_seed(Role::Hub, Seed::from_label(&format!("{seed}/contract/{cid}")))
 }
 
-/// The hub's move key for depth `d` (of `m`) of contract `cid`.
-pub fn move_secret(seed: &str, cid: u32, d: u32, m: u32) -> WotsSecret {
-    WotsSecret::from_entropy(WotsParams::for_bytes(lngap_sessions::contract::move_bytes(d, m)), Seed::from_label(&format!("{seed}/contract/{cid}/move/{d}")).derive_bytes("wots"))
+/// The hub's move keys for depth `d` of contract `cid`, one per field.
+pub fn move_secrets(seed: &str, cid: u32, program: &Program, d: u32) -> Vec<WotsSecret> {
+    let at = |f: usize, n: u32| WotsSecret::from_entropy(WotsParams::for_bytes(n), Seed::from_label(&format!("{seed}/contract/{cid}/move/{d}/{f}")).derive_bytes("wots"));
+    program.field_bytes(d).into_iter().enumerate().map(|(f, n)| at(f, n)).collect()
+}
+
+/// The hub's keys for its path under a jump list, by chunk and field
+/// (empty without one).
+pub fn path_secrets(seed: &str, cid: u32, program: &Program) -> Vec<Vec<WotsSecret>> {
+    if program.schedule.jump.is_none() {
+        return vec![];
+    }
+    let at = |c: usize, f: usize, n: usize| WotsSecret::from_entropy(WotsParams::for_bytes(n as u32), Seed::from_label(&format!("{seed}/contract/{cid}/path/{c}/{f}")).derive_bytes("wots"));
+    (0..lngap_ladder::tail::CHUNKS).map(|c| lngap_ladder::tail::chunk_fields(c).into_iter().enumerate().map(|(f, n)| at(c, f, n)).collect()).collect()
 }
 
 struct Pending {
@@ -89,7 +100,12 @@ pub(crate) struct Inner {
     /// what the hub did.
     refuse_folds: AtomicBool,
     dispute_true_claims: AtomicBool,
+    /// For tests: forge a hash in every path the hub posts.
+    forge_paths: AtomicBool,
     log: Mutex<Vec<String>>,
+    /// The most the links' floors and anchors take from the hub's reserve
+    /// on a dispute it loses (the statement's, found at the first opening).
+    floors: std::sync::OnceLock<u64>,
 }
 
 pub struct Hub {
@@ -115,7 +131,7 @@ impl Hub {
         let (cfg_refuse, cfg_dispute) = (cfg.refuse_folds, cfg.dispute_true_claims);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), log: Mutex::new(vec![]) });
+        let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), log: Mutex::new(vec![]), floors: std::sync::OnceLock::new() });
         let stop = Arc::new(AtomicBool::new(false));
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
@@ -164,6 +180,11 @@ impl Hub {
     pub fn set_refuse_folds(&self, on: bool) {
         self.inner.refuse_folds.store(on, Ordering::Relaxed);
     }
+    /// For tests: forge a hash in each path the hub posts (Alice should
+    /// challenge that hop, and the hub fail to reveal it).
+    pub fn set_forge_paths(&self, on: bool) {
+        self.inner.forge_paths.store(on, Ordering::Relaxed);
+    }
     pub fn set_dispute_true_claims(&self, on: bool) {
         self.inner.dispute_true_claims.store(on, Ordering::Relaxed);
     }
@@ -211,6 +232,7 @@ impl Inner {
         let m = self.program.depths();
         ensure!(req.bits <= self.cfg.max_bits, "a cap above 2^{} sats", self.cfg.max_bits);
         ensure!(req.moves.len() as u32 == m.div_ceil(2), "{} move keys for the odd depths of {m}", req.moves.len());
+        let program = &self.program;
         let cid = {
             let mut n = self.next_cid.lock().unwrap();
             *n += 1;
@@ -220,9 +242,41 @@ impl Inner {
         let mut hub = keys.public();
         hub.payout_spk = self.chain.new_spk()?;
         let v_max = (1u64 << req.bits) - 1;
-        let reserve_hub = v_max * self.cfg.reserve_ppm / 1_000_000;
         let t_close = self.chain.height()? + self.cfg.duration;
+        let pub_of = |ks: Vec<WotsSecret>| ks.iter().map(|k| k.public()).collect::<Vec<_>>();
+        let hub_moves: Vec<_> = (1..=m).filter(|d| d % 2 == 0).map(|d| pub_of(move_secrets(&self.cfg.seed, cid, program, d))).collect();
+        let path: Vec<_> = path_secrets(&self.cfg.seed, cid, program).into_iter().map(pub_of).collect();
+        let mut record = Record {
+            statement: self.cfg.statement.id().to_string(),
+            // a reserve to measure the floors under; the real one below
+            terms: terms(cid, &req, t_close, v_max)?,
+            pubs: [req.alice.clone(), hub.clone()],
+            moves: all_moves(&req.moves, &hub_moves),
+            inputs: req.inputs.clone(),
+            tail: tail_keys(program, &path, &req.hops)?,
+            l2_address: req.l2_address,
+            funding: OutPoint::null(),
+            hub_sigs: HashMap::new(),
+            alice_sigs: HashMap::new(),
+        };
+        // the hub's reserve: its share of the cap, and at least what the
+        // floors of a dispute it loses take from it
+        let floors = match self.floors.get() {
+            Some(f) => *f,
+            None => {
+                // the deepest output any dispute reaches, against the
+                // contract's value (the same for every contract of the
+                // statement: the links' sizes don't depend on the amounts)
+                let c = record.contract(&self.cfg.statement, &self.program)?;
+                let set = c.presign(OutPoint::null())?;
+                let f = set.iter().map(|p| (c.value() - p.prevout.value).to_sat()).max().unwrap_or(0);
+                self.note(format!("a dispute's floors take up to {f} sats from the reserve of the side that loses"));
+                *self.floors.get_or_init(|| f)
+            }
+        };
+        let reserve_hub = (v_max * self.cfg.reserve_ppm / 1_000_000).max(floors);
         let t = terms(cid, &req, t_close, reserve_hub)?;
+        record.terms = t;
         let (alice_in, hub_in) = contributions(&t);
         let alice_spent: Amount = req.coins.iter().map(|c| c.1.value).sum();
         ensure!(alice_spent == alice_in + FEE_SHARE + req.change.value, "your coins less your change should be {}", alice_in + FEE_SHARE);
@@ -230,18 +284,6 @@ impl Inner {
         let hub_coins = self.chain.select(hub_in + FEE_SHARE + margin)?;
         let hub_spent: Amount = hub_coins.iter().map(|c| c.1.value).sum();
         let hub_change = TxOut { value: hub_spent - hub_in - FEE_SHARE, script_pubkey: self.chain.new_spk()? };
-        let hub_moves: Vec<_> = (1..=m).filter(|d| d % 2 == 0).map(|d| move_secret(&self.cfg.seed, cid, d, m).public()).collect();
-        let mut record = Record {
-            statement: self.cfg.statement.id().to_string(),
-            terms: t,
-            pubs: [req.alice.clone(), hub.clone()],
-            moves: all_moves(&req.moves, &hub_moves),
-            inputs: req.inputs.clone(),
-            l2_address: req.l2_address,
-            funding: OutPoint::null(),
-            hub_sigs: HashMap::new(),
-            alice_sigs: HashMap::new(),
-        };
         let c = record.contract(&self.cfg.statement, &self.program)?;
         let ins: Vec<(OutPoint, Sequence)> = req.coins.iter().chain(&hub_coins).map(|c| (c.0, Sequence::ENABLE_RBF_NO_LOCKTIME)).collect();
         let outs = vec![TxOut { value: c.value(), script_pubkey: c.tree()?.script_pubkey() }, req.change.clone(), hub_change.clone()];
@@ -250,7 +292,7 @@ impl Inner {
         record.funding = OutPoint { txid: funding.compute_txid(), vout: 0 };
         let set = c.presign(record.funding)?;
         record.hub_sigs = sign_all(&set, &keys.payment)?;
-        let offer = OpenOffer { cid, t_close, reserve_hub, hub, moves: hub_moves, funding, hub_coins, hub_sigs: record.hub_sigs.clone() };
+        let offer = OpenOffer { cid, t_close, reserve_hub, hub, moves: hub_moves, path, funding, hub_coins, hub_sigs: record.hub_sigs.clone() };
         self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record });
         Ok(offer)
     }

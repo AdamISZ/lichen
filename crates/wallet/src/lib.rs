@@ -14,12 +14,12 @@ use anyhow::{bail, ensure, Context, Result};
 use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{fresh_rho, note, sign, xonly, Hash, Note, Spend, Transfer, Tx, WithdrawInput, HUB_KEY};
 use lichen_chain::Chain;
-use lichen_proto::{all_moves, check_funding, contributions, terms, Accept, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{all_moves, check_funding, tail_keys, contributions, terms, Accept, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, FEE_SHARE, FOLD_FEE};
 use lichen_sequencer::{Client, State};
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
 use lngap_lamport::winternitz::{WotsParams, WotsSecret};
-use lngap_sessions::contract::{move_bytes, sign_all};
+use lngap_sessions::contract::{sign_all, Program};
 use serde::{Deserialize, Serialize};
 
 /// What the wallet keeps on disk.
@@ -59,6 +59,9 @@ pub struct Wallet {
     /// For tests: escalate a claim even if it breaks one of the contract's
     /// checks (as a careless or dishonest wallet would).
     pub unchecked_claims: bool,
+    /// For tests: lie in the dispute's execution (BitVMX's fault
+    /// injection: a read's value, a long jump's hash).
+    pub lie: Option<emulator::executor::utils::FailConfiguration>,
     /// Told each step of a dispute, in words (for a front end).
     pub progress: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
     key: SigningKey,
@@ -82,14 +85,14 @@ impl Wallet {
             bail!("{} already exists", path.display());
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
-        let w = Wallet { pause_after: None, unchecked_claims: false, progress: None, key, path: path.to_path_buf(), returns: vec![], contracts: vec![], sequencer: Client::new(sequencer) };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, key, path: path.to_path_buf(), returns: vec![], contracts: vec![], sequencer: Client::new(sequencer) };
         w.save()?;
         Ok(w)
     }
     pub fn open(path: &Path, sequencer: &str) -> Result<Wallet> {
         let s: Stored = serde_json::from_slice(&std::fs::read(path).with_context(|| format!("no wallet at {}", path.display()))?)?;
         let key = SigningKey::from_bytes(&hex::decode(&s.secret)?).context("the wallet's key")?;
-        Ok(Wallet { pause_after: None, unchecked_claims: false, progress: None, key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, sequencer: Client::new(sequencer) })
+        Ok(Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, sequencer: Client::new(sequencer) })
     }
     pub(crate) fn save(&self) -> Result<()> {
         let s = Stored { secret: hex::encode(self.key.to_bytes()), returns: self.returns.clone(), contracts: self.contracts.clone() };
@@ -187,9 +190,15 @@ impl Wallet {
     pub fn contract_keys(&self, nonce: &str) -> PartyKeys {
         PartyKeys::from_seed(Role::User, Seed::from_label(&self.contract_seed(nonce)))
     }
-    /// Alice's move key for depth `d` (of `m`) of a contract.
-    pub fn move_secret(&self, nonce: &str, d: u32, m: u32) -> WotsSecret {
-        WotsSecret::from_entropy(WotsParams::for_bytes(move_bytes(d, m)), Seed::from_label(&format!("{}/move/{d}", self.contract_seed(nonce))).derive_bytes("wots"))
+    /// Alice's move keys for depth `d` of a contract, one per field.
+    pub fn move_secrets(&self, nonce: &str, program: &Program, d: u32) -> Vec<WotsSecret> {
+        let at = |f: usize, n: u32| WotsSecret::from_entropy(WotsParams::for_bytes(n), Seed::from_label(&format!("{}/move/{d}/{f}", self.contract_seed(nonce))).derive_bytes("wots"));
+        program.field_bytes(d).into_iter().enumerate().map(|(f, n)| at(f, n)).collect()
+    }
+    /// Alice's key for her choice of hop against the hub's path of `k`
+    /// chunks (under a jump list).
+    pub fn hop_secret(&self, nonce: &str, k: usize) -> WotsSecret {
+        WotsSecret::from_entropy(WotsParams::for_bytes(1), Seed::from_label(&format!("{}/hop/{k}", self.contract_seed(nonce))).derive_bytes("wots"))
     }
     /// Alice's key for input word `j` of a contract.
     pub fn input_secret(&self, nonce: &str, j: usize) -> WotsSecret {
@@ -212,13 +221,15 @@ impl Wallet {
         let keys = self.contract_keys(&nonce);
         let mut alice = keys.public();
         alice.payout_spk = chain.new_spk()?;
-        let moves: Vec<_> = (1..=m).filter(|d| d % 2 == 1).map(|d| self.move_secret(&nonce, d, m).public()).collect();
+        let pub_of = |ks: Vec<WotsSecret>| ks.iter().map(|k| k.public()).collect::<Vec<_>>();
+        let moves: Vec<_> = (1..=m).filter(|d| d % 2 == 1).map(|d| pub_of(self.move_secrets(&nonce, &program, d))).collect();
+        let hops: Vec<_> = if program.schedule.jump.is_some() { (1..=lngap_ladder::tail::CHUNKS).map(|k| self.hop_secret(&nonce, k).public()).collect() } else { vec![] };
         let inputs: Vec<_> = (0..program.info.input_words).map(|j| self.input_secret(&nonce, j).public()).collect();
         let need = bitcoin::Amount::from_sat(deposit + reserve);
         let coins = chain.select(need + FEE_SHARE + bitcoin::Amount::from_sat(10_000))?;
         let spent: bitcoin::Amount = coins.iter().map(|c| c.1.value).sum();
         let change = bitcoin::TxOut { value: spent - need - FEE_SHARE, script_pubkey: chain.new_spk()? };
-        let req = OpenRequest { alice, l2_address: self.address(), deposit, bits, reserve, moves: moves.clone(), inputs: inputs.clone(), coins: coins.clone(), change: change.clone() };
+        let req = OpenRequest { alice, l2_address: self.address(), deposit, bits, reserve, moves: moves.clone(), inputs: inputs.clone(), hops: hops.clone(), coins: coins.clone(), change: change.clone() };
         let offer: OpenOffer = hub_call(&format!("{hub}/open"), Some(serde_json::to_string(&req)?))?;
         // the contract as the offer makes it, checked before signing
         let t = terms(offer.cid, &req, offer.t_close, offer.reserve_hub)?;
@@ -229,6 +240,7 @@ impl Wallet {
             pubs: [req.alice.clone(), offer.hub.clone()],
             moves: all_moves(&moves, &offer.moves),
             inputs,
+            tail: tail_keys(&program, &offer.path, &hops)?,
             l2_address: self.address(),
             funding: bitcoin::OutPoint { txid: offer.funding.compute_txid(), vout: 0 },
             hub_sigs: offer.hub_sigs.clone(),
@@ -238,8 +250,11 @@ impl Wallet {
         check_funding(&offer.funding, &c, &coins, &change, contributions(&t).0)?;
         let set = c.presign(record.funding)?;
         for p in &set {
-            let s = record.hub_sigs.get(&p.name).with_context(|| format!("the hub didn't sign {}", p.name))?;
-            p.verify(&record.pubs[1].payment, s)?;
+            for i in 0..p.inputs() {
+                let n = lngap_sessions::contract::sig_name(&p.name, i);
+                let s = record.hub_sigs.get(&n).with_context(|| format!("the hub didn't sign {n}"))?;
+                p.verify_input(&record.pubs[1].payment, i, s)?;
+            }
         }
         record.alice_sigs = sign_all(&set, &keys.payment)?;
         let prevouts: Vec<_> = coins.iter().chain(&offer.hub_coins).cloned().collect();

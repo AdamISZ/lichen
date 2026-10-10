@@ -49,7 +49,7 @@ fn background(stop: &Arc<AtomicBool>, every: Duration, f: impl Fn() + Send + 'st
 
 #[test]
 fn disputes_on_the_mock_statement() {
-    let rt = Regtest::start().unwrap();
+    let rt = Regtest::start_standard().unwrap();
     let dir = std::env::temp_dir().join(format!("lichen-dispute-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let seq = Sequencer::start("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY).unwrap();
@@ -123,8 +123,16 @@ fn disputes_on_the_mock_statement() {
             _ => assert_eq!(outcome, Outcome::Lost, "{label}: the hub takes everything"),
         }
         if let Some((sweep, swept)) = swept {
-            // b rounded down to 512 sats, and both reserves, less the sweep's fee
-            let paid = Amount::from_sat(u64::from(B / 512 * 512)) + t.reserves();
+            // b rounded down to 512 sats, and both reserves less the floors
+            // of the links played (the hub's, D-J2), less the sweep's fee
+            let payout = match &outcome {
+                Outcome::HubTimedOut(x) | Outcome::Proved(x) | Outcome::PathRefuted(x) => rt.get_tx(x).unwrap(),
+                _ => unreachable!(),
+            };
+            let op = payout.input[0].previous_output;
+            let floors = t.v_max() + t.reserves() - rt.get_tx(&op.txid).unwrap().output[op.vout as usize].value;
+            let paid = Amount::from_sat(u64::from(B / 512 * 512)) + t.reserves() - floors;
+            println!("LICHEN {label}: the floors of the links played: {floors}");
             assert!(swept <= paid && swept > paid - Amount::from_sat(20_000), "{label}: swept {swept} of {paid}");
             let start = Instant::now();
             while ch.confirmations(&sweep).unwrap() == 0 {

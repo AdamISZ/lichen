@@ -35,7 +35,7 @@ fn mock() -> Statement {
 
 #[test]
 fn fold_and_default() {
-    let rt = Regtest::start().unwrap();
+    let rt = Regtest::start_standard().unwrap();
     let dir = std::env::temp_dir().join(format!("lichen-fold-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let seq = Sequencer::start("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY).unwrap();

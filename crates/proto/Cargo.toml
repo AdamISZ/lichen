@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 lngap-sessions.workspace = true
 lngap-zk.workspace = true
+lngap-ladder.workspace = true
 lngap-channel.workspace = true
 lngap-btc.workspace = true
 lngap-lamport.workspace = true

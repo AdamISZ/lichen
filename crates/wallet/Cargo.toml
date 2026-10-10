@@ -25,5 +25,6 @@ lngap-sessions.workspace = true
 lngap-channel.workspace = true
 lngap-btc.workspace = true
 lngap-lamport.workspace = true
-lngap-pos.workspace = true
 lngap-zk.workspace = true
+emulator.workspace = true
+lngap-ladder.workspace = true

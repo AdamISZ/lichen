@@ -23,7 +23,7 @@ fn mock() -> Statement {
 
 #[test]
 fn open_a_contract_and_receive_the_deposit() {
-    let rt = Regtest::start().unwrap();
+    let rt = Regtest::start_standard().unwrap();
     let dir = std::env::temp_dir().join(format!("lichen-open-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let seq = Sequencer::start("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY).unwrap();

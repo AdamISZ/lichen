@@ -41,10 +41,11 @@ pub fn params() -> ChannelParams {
 }
 
 /// The statement the disputes run: `groth16`, BitVMX's Groth16 verifier
-/// over a proof of the withdrawal guest (the real thing, 59 depths), or
-/// `mock`, ln-gap's small stand-in (17 depths; for fast tests): a program
-/// that accepts exactly the returns `(b, c)` in its table, for one memo
-/// `session`. Both sides must build the same one.
+/// over a proof of the withdrawal guest (the real thing; its program
+/// definition should ask for an 8-ary search and a jump list: 21 depths),
+/// or `mock`, ln-gap's small stand-in (for fast tests; 8-ary, a jump list,
+/// 7 depths): a program that accepts exactly the returns `(b, c)` in its
+/// table, for one memo `session`. Both sides must build the same one.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Statement {
     /// The program definition (yaml) of BitVMX's Groth16 verifier.
@@ -75,7 +76,7 @@ impl Statement {
     pub fn program(&self, dir: &Path) -> Result<Program> {
         match self {
             Statement::Groth16 { pdf } => Program::load(&pdf.display().to_string()),
-            Statement::Mock { session, returns } => Program::load(&lngap_sessions::statement::write_program(&dir.join(format!("mock-statement-{session}")), *session, returns)?),
+            Statement::Mock { session, returns } => Program::load(&lngap_sessions::statement::write_program_with(&dir.join(format!("mock-statement-{session}")), *session, returns, 8, true)?),
         }
     }
     /// Where `b` is in the input, and the checks for memo `c`.
@@ -128,10 +129,14 @@ pub struct OpenRequest {
     pub bits: u32,
     /// Alice's reserve `r_A`.
     pub reserve: u64,
-    /// Alice's move keys, depths 1, 3, 5, ...
-    pub moves: Vec<WotsPublic>,
+    /// Alice's move keys, depths 1, 3, 5, ..., one per field of each move.
+    pub moves: Vec<Vec<WotsPublic>>,
     /// Alice's input-word keys.
     pub inputs: Vec<WotsPublic>,
+    /// Under a jump list: Alice's keys for her choice of hop, one per
+    /// combine of the hub's path.
+    #[serde(default)]
+    pub hops: Vec<WotsPublic>,
     /// The coins Alice funds with, and her change.
     pub coins: Vec<(OutPoint, TxOut)>,
     pub change: TxOut,
@@ -144,8 +149,11 @@ pub struct OpenOffer {
     pub t_close: u32,
     pub reserve_hub: u64,
     pub hub: PartyPubKeys,
-    /// The hub's move keys, depths 2, 4, 6, ...
-    pub moves: Vec<WotsPublic>,
+    /// The hub's move keys, depths 2, 4, 6, ..., one per field.
+    pub moves: Vec<Vec<WotsPublic>>,
+    /// Under a jump list: the hub's keys for its path, by chunk and field.
+    #[serde(default)]
+    pub path: Vec<Vec<WotsPublic>>,
     /// Inputs: Alice's coins, then the hub's. Outputs: the contract, then
     /// Alice's change, then the hub's.
     pub funding: Transaction,
@@ -189,9 +197,36 @@ pub struct Folded {
 }
 
 /// Interleave both sides' move keys by depth (Alice moves at odd depths).
-pub fn all_moves(alice: &[WotsPublic], hub: &[WotsPublic]) -> Vec<WotsPublic> {
+pub fn all_moves(alice: &[Vec<WotsPublic>], hub: &[Vec<WotsPublic>]) -> Vec<Vec<WotsPublic>> {
     let m = alice.len() + hub.len();
     (1..=m).map(|d| if d % 2 == 1 { alice[(d - 1) / 2].clone() } else { hub[d / 2 - 1].clone() }).collect()
+}
+
+/// The tail's keys (a jump list's read and jump challenges), if the
+/// statement has one: the hub's path keys and Alice's choices'.
+pub fn tail_keys(program: &Program, path: &[Vec<WotsPublic>], hops: &[WotsPublic]) -> Result<Option<lngap_ladder::tail::TailKeys>> {
+    if program.schedule.jump.is_none() {
+        ensure!(path.is_empty() && hops.is_empty(), "keys for a tail the statement doesn't have");
+        return Ok(None);
+    }
+    ensure!(path.len() == lngap_ladder::tail::CHUNKS && hops.len() == lngap_ladder::tail::CHUNKS, "the tail's keys: {} path chunks and {} choices", path.len(), hops.len());
+    Ok(Some(lngap_ladder::tail::TailKeys { path: path.to_vec(), hop: hops.to_vec() }))
+}
+
+/// A link's anchor: the output whose script is the poster's anchor for
+/// its payment key.
+pub fn anchor_vout(tx: &Transaction, payment: &bitcoin::XOnlyPublicKey) -> Result<u32> {
+    let spk = lngap_sessions::contract::anchor_tree_for(payment)?.script_pubkey();
+    tx.output.iter().position(|o| o.script_pubkey == spk).map(|v| v as u32).context("the link has no anchor of this party's")
+}
+
+/// The anchor's witness in a fee child (input 0 spends the anchor), signed
+/// with the poster's payment key.
+pub fn sign_anchor(kp: &bitcoin::key::Keypair, child: &Transaction, prevouts: &[TxOut]) -> Result<bitcoin::Witness> {
+    let tree = lngap_sessions::contract::anchor_tree_for(&kp.x_only_public_key().0)?;
+    let leaf = tree.leaf("fee")?;
+    let sig = lngap_btc::sighash::sign_tapscript(kp, child, 0, prevouts, &leaf.script)?;
+    Ok(lngap_btc::witness::tapscript_witness(&[sig.as_ref().to_vec()], &leaf.script, &tree.control_block("fee")?))
 }
 
 /// A contract as each side keeps it: enough to rebuild every transaction
@@ -201,8 +236,12 @@ pub struct Record {
     pub statement: String,
     pub terms: Terms,
     pub pubs: [PartyPubKeys; 2],
-    pub moves: Vec<WotsPublic>,
+    /// The move keys by depth, one per field.
+    pub moves: Vec<Vec<WotsPublic>>,
     pub inputs: Vec<WotsPublic>,
+    /// Under a jump list: the read and jump challenges' keys.
+    #[serde(default)]
+    pub tail: Option<lngap_ladder::tail::TailKeys>,
     pub l2_address: [u8; 32],
     pub funding: OutPoint,
     pub hub_sigs: HashMap<String, Vec<u8>>,
@@ -215,7 +254,7 @@ impl Record {
     }
     pub fn spec(&self, statement: &Statement) -> Spec {
         let (b_word, checks) = statement.layout(self.terms.id);
-        Spec { terms: self.terms, cid: self.terms.id, params: params(), pubs: self.pubs.clone(), b_word, checks, moves: self.moves.clone(), inputs: self.inputs.clone() }
+        Spec { terms: self.terms, cid: self.terms.id, params: params(), pubs: self.pubs.clone(), b_word, checks, moves: self.moves.clone(), inputs: self.inputs.clone(), tail: self.tail.clone() }
     }
     pub fn contract(&self, statement: &Statement, program: &Program) -> Result<Contract> {
         ensure!(statement.id() == self.statement, "the contract runs {}, not {}", self.statement, statement.id());
@@ -310,17 +349,91 @@ impl Disputed {
         let p = self.set.get(name).with_context(|| format!("no pre-signed {name}"))?;
         Ok(p.finish(wire, &self.record.hub_sigs[name], &self.record.alice_sigs[name]))
     }
+    /// A pre-signed transaction of several inputs (a path's combine), each
+    /// its wire and both signatures.
+    pub fn finish_multi(&self, name: &str, wires: Vec<Vec<Vec<u8>>>) -> Result<Transaction> {
+        let p = self.set.get(name).with_context(|| format!("no pre-signed {name}"))?;
+        let n = p.inputs();
+        let sigs = |m: &HashMap<String, Vec<u8>>| (0..n).map(|i| m[&lngap_sessions::contract::sig_name(name, i)].clone()).collect::<Vec<_>>();
+        Ok(p.finish_multi(wires, &sigs(&self.record.hub_sigs), &sigs(&self.record.alice_sigs)))
+    }
     /// The txid the set fixed for `name`.
     pub fn txid(&self, name: &str) -> Txid {
         self.set[name].tx.compute_txid()
     }
-    /// The move key of depth `d`.
-    pub fn key(&self, d: u32) -> &WotsPublic {
+    /// The move keys of depth `d`, one per field.
+    pub fn key(&self, d: u32) -> &[WotsPublic] {
         &self.contract.spec.moves[(d - 1) as usize]
     }
-    /// The disproves at the final depth (leaf names without `disprove_`).
-    pub fn final_disproves(&self) -> Result<Vec<String>> {
-        let t = self.contract.ladder(self.contract.m())?;
-        Ok(t.leaves().iter().filter_map(|l| l.name.strip_prefix("disprove_zk_").map(|n| format!("zk_{n}"))).collect())
+    /// The tail's keys (a jump list).
+    pub fn tail(&self) -> Result<&lngap_ladder::tail::TailKeys> {
+        self.contract.spec.tail.as_ref().context("the statement has no jump list")
     }
+    /// A rule's witness, built from the chain: its own bytes `wit`, then
+    /// each message's signatures as posted. `link` fetches a posted link
+    /// by name; `k` is the path's combine, for the tail's rules.
+    pub fn rule_wire(&self, rule: &lngap_ladder::rules::Rule, wit: &[u8], k: Option<usize>, link: &dyn Fn(&str) -> Result<Transaction>) -> Result<Vec<Vec<u8>>> {
+        use lngap_ladder::script::Msg;
+        use lngap_sessions::play::{move_wires, move_wires_in, word_wires};
+        let words = |js: &[usize]| js.iter().map(|&j| self.contract.spec.inputs[j].clone()).collect::<Vec<_>>();
+        let mut reveals = vec![];
+        for msg in &rule.msgs {
+            reveals.push(match *msg {
+                Msg::Field(d, f) => move_wires(&link(&link_name(d))?, self.key(d))?[f].clone(),
+                Msg::Word(j) => {
+                    // a claim word is in the escalation, the rest in `inputs`
+                    let claim = self.contract.claim_words();
+                    match claim.iter().position(|x| *x == j) {
+                        Some(i) => word_wires(&link("escalate")?, &words(&claim), Some(self.key(1)))?[i].clone(),
+                        None => {
+                            let rest = self.contract.rest_words();
+                            let i = rest.iter().position(|x| *x == j).context("an input word of neither link")?;
+                            word_wires(&link("inputs")?, &words(&rest), None)?[i].clone()
+                        }
+                    }
+                }
+                Msg::Path(c, f) => {
+                    let k = k.context("a path's rule without its combine")?;
+                    move_wires_in(&link(&format!("combine_{k}"))?, c, &self.tail()?.path[c])?[f].clone()
+                }
+                Msg::Hop(l) => move_wires(&link(&format!("hop_{}", l + 1))?, std::slice::from_ref(&self.tail()?.hop[l]))?[0].clone(),
+            });
+        }
+        Ok(lngap_ladder::script::rule_wire(wit, &reveals))
+    }
+    /// Alice's proof of her last step's record `rec`: its name, and whether
+    /// it spends on her moves as posted (the hub's check, and hers).
+    pub fn proves(&self, rec: &lngap_zk::game::Record, link: &dyn Fn(&str) -> Result<Transaction>) -> Result<(String, bool)> {
+        let m = self.contract.m();
+        let name = format!("prove_{}", lngap_zk::guard::key_of(rec.read.opcode, rec.read.micro).context("the step's class")?);
+        let rule = self.contract.rule(m, &name)?;
+        let ctx = self.contract.ctx();
+        let script = rule.script(bitcoin::script::Builder::new(), &|msg| self.contract.ladder_spec(&ctx).key(msg));
+        let wire = self.rule_wire(&rule, &[], None, link)?;
+        Ok((name, lngap_ladder::rules::spends(&script, wire).0))
+    }
+}
+
+/// A move's signatures as a link carries them, given each field's: the
+/// last field first (the first is verified first, on top).
+pub fn move_wire(fields: &[lngap_lamport::winternitz::WotsSig]) -> Vec<Vec<u8>> {
+    fields.iter().rev().flat_map(lngap_ladder::script::wots_wire).collect()
+}
+
+/// Sign a message field by field (`sizes`, in order) as a link carries it.
+pub fn sign_fields(keys: &[lngap_lamport::winternitz::WotsSecret], msg: &[u8], sizes: &[usize]) -> Result<Vec<Vec<u8>>> {
+    ensure!(keys.len() == sizes.len() && sizes.iter().sum::<usize>() == msg.len(), "a message of {} bytes for fields {sizes:?}", msg.len());
+    let mut at = 0;
+    let mut sigs = vec![];
+    for (k, n) in keys.iter().zip(sizes) {
+        sigs.push(k.sign(&msg[at..at + n])?);
+        at += n;
+    }
+    Ok(move_wire(&sigs))
+}
+
+/// Sign move `d` field by field, its message split by the schedule.
+pub fn sign_move(program: &Program, d: u32, keys: &[lngap_lamport::winternitz::WotsSecret], msg: &[u8]) -> Result<Vec<Vec<u8>>> {
+    let sizes: Vec<usize> = program.schedule.fields(d).into_iter().map(|(_, l)| l).collect();
+    sign_fields(keys, msg, &sizes)
 }

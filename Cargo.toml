@@ -31,9 +31,17 @@ lichen-wallet = { path = "crates/wallet" }
 # the contract and the dispute (ln-gap)
 lngap-sessions = { path = "../ln-gap/crates/apps/sessions" }
 lngap-zk = { path = "../ln-gap/crates/apps/zk" }
+lngap-ladder = { path = "../ln-gap/crates/apps/ladder" }
 lngap-channel = { path = "../ln-gap/crates/channel" }
 lngap-btc = { path = "../ln-gap/crates/btc" }
 lngap-lamport = { path = "../ln-gap/crates/lamport" }
-lngap-pos = { path = "../ln-gap/crates/apps/pos" }
 emulator = { git = "https://github.com/FairgateLabs/BitVMX-CPU", rev = "299009c65e635327025ee13ffe1e1f1671bd0615" }
 lichen-sequencer = { path = "crates/sequencer" }
+
+# BitVMX-CPU as ln-gap builds it: the `lngap` branch of a public fork
+# (upstream 299009c, bug fixes, the opt-in jump list). A [patch] applies
+# only from the top-level workspace, so lichen repeats ln-gap's.
+[patch."https://github.com/FairgateLabs/BitVMX-CPU"]
+emulator = { git = "https://github.com/AdamISZ/BitVMX-CPU", rev = "0b7d285fc5c7795d16fd58d380ff6ef25f2f0423" }
+bitvmx-cpu-definitions = { git = "https://github.com/AdamISZ/BitVMX-CPU", rev = "0b7d285fc5c7795d16fd58d380ff6ef25f2f0423" }
+bitcoin-script-riscv = { git = "https://github.com/AdamISZ/BitVMX-CPU", rev = "0b7d285fc5c7795d16fd58d380ff6ef25f2f0423" }

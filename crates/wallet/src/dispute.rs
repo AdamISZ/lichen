@@ -3,8 +3,11 @@
 //! input words), then plays BitVMX's search move by move, reading the
 //! hub's moves from the chain; if the hub stops answering she takes the
 //! timeout; if she reaches the last step and no disprove comes, she proves
-//! it. Either way she is paid `b` (in bits, from 512 sats up) and both
-//! reserves, and sweeps them to her wallet.
+//! it. Under a jump list the hub may instead post a path through its
+//! history: she checks it against her own and challenges the first false
+//! hop, which the hub can't reveal (her timeout pays her). Either way she
+//! is paid `b` (in bits, from 512 sats up) and both reserves less the
+//! links' floors, and sweeps them to her wallet.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -12,15 +15,14 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use lichen_chain::Chain;
-use lichen_proto::{link_name, Disputed, Statement, FEERATE};
+use lichen_proto::{anchor_vout, link_name, sign_anchor, sign_move, Disputed, Statement, FEERATE};
 use lngap_btc::sighash::sign_tapscript;
 use lngap_btc::witness::tapscript_witness;
-use lngap_pos::rebut::wots_wire;
-use lngap_sessions::contract::move_message;
-use lngap_sessions::play::{move_wire, read_move, Prover};
+use lngap_ladder::script::wots_wire;
+use lngap_ladder::tail::CHUNKS;
+use lngap_sessions::play::{read_move, read_move_in, Prover};
 use lngap_sessions::session::{bit_tree, reserve_tree};
 use lngap_zk::final_d60::{input_message, input_words};
-use lngap_zk::game::final_witness;
 
 use crate::Wallet;
 
@@ -31,6 +33,9 @@ pub enum Outcome {
     Paused,
     /// The hub stopped answering; her timeout paid her (its txid).
     HubTimedOut(Txid),
+    /// She showed a hop of the hub's path false (it couldn't reveal it):
+    /// her timeout paid her.
+    PathRefuted(Txid),
     /// She proved the disputed step; paid (the proof's txid).
     Proved(Txid),
     /// The hub disproved her claim (or she lost by timeout).
@@ -151,16 +156,16 @@ impl Wallet {
             ensure!(start.elapsed() < PATIENCE, "the contract's funding is not deep enough to escalate");
             std::thread::sleep(Duration::from_millis(200));
         }
-        let mut prover = Prover::start(&d.program, input, &dir.join(format!("dispute-{cid}")))?;
+        let mut prover = Prover::start_with(&d.program, input, &dir.join(format!("dispute-{cid}")), self.lie.clone())?;
         let pause = self.pause_after;
         // escalate: move 1 with the claim's words; then the rest of the input
         let mut wire = word_wire(&d.contract.claim_words())?;
-        wire.extend(wots_wire(&self.move_secret(&held.nonce, 1, m).sign(&move_message(prover.last()))?));
-        let mut last = self.post(chain, &d, "escalate", wire)?;
+        wire.extend(sign_move(&d.program, 1, &self.move_secrets(&held.nonce, &d.program, 1), prover.last())?);
+        let mut last = self.post(chain, &d, &held.nonce, "escalate", wire)?;
         self.step(format!("escalated: the claim of {b} sats on chain (move 1 of {m})"));
         let mut last_id = d.txid("escalate");
         if d.set.contains_key("inputs") {
-            last = self.post(chain, &d, "inputs", word_wire(&d.contract.rest_words())?)?;
+            last = self.post(chain, &d, &held.nonce, "inputs", word_wire(&d.contract.rest_words())?)?;
             last_id = d.txid("inputs");
             self.step("the rest of the claim's input published".into());
         }
@@ -184,36 +189,111 @@ impl Wallet {
             };
             self.step(format!("the hub chose a half (move {j})"));
             let next = prover.answer(&read_move(&tx, d.key(j))?)?;
-            let sig = self.move_secret(&held.nonce, j + 1, m).sign(&move_message(&next))?;
-            last = self.post(chain, &d, &link_name(j + 1), wots_wire(&sig))?;
+            let wire = sign_move(&d.program, j + 1, &self.move_secrets(&held.nonce, &d.program, j + 1), &next)?;
+            last = self.post(chain, &d, &held.nonce, &link_name(j + 1), wire)?;
             last_id = d.txid(&link_name(j + 1));
             self.step(if j + 1 == m { format!("move {m}: the record of the disputed step") } else { format!("move {}: the next midpoint", j + 1) });
             if pause.is_some_and(|p| j + 1 >= p) && j + 1 < m {
                 return Ok((Outcome::Paused, None));
             }
         }
-        // the last step: unless the hub disproves it within its window, prove it
-        while chain.height()? < last + w {
+        // the last step: the hub may disprove it (after a delay) or post a
+        // path against it (at once); if neither comes in her window, she
+        // proves it
+        let last_op = OutPoint { txid: last_id, vout: 0 };
+        while chain.unspent(&last_op)? && chain.height()? < last + w {
             std::thread::sleep(Duration::from_millis(100));
         }
-        let (prior_link, last_link) = (chain.get_tx(&d.txid(&link_name(m - 1))).context("move m - 1")?, chain.get_tx(&d.txid(&link_name(m))).context("move m")?);
-        if !chain.unspent(&OutPoint { txid: last_link.compute_txid(), vout: 0 })? {
+        if !chain.unspent(&last_op)? {
+            if chain.get_tx(&d.txid("path_split")).is_some() {
+                return self.answer_path(chain, &d, k, b, &prover);
+            }
             self.step("the hub disproved the last step: the claim lost".into());
-            self.contracts[k].closed = Some(last_link.compute_txid());
+            self.contracts[k].closed = Some(last_id);
             self.save()?;
             return Ok((Outcome::Lost, None));
         }
-        let e = prover.last().clone();
-        let state = prover.entries[prover.entries.len() - 2].state;
-        let rec = e.record.context("the last move's record")?;
-        let class = lngap_zk::guard::key_of(rec.read.opcode, rec.read.micro).context("the step's class")?;
-        let name = format!("prove_{class}");
-        let file = [move_wire(&prior_link, d.key(m - 1))?, move_wire(&last_link, d.key(m))?].concat();
-        let proof = d.finish(&name, [final_witness(&state, &rec), file].concat())?;
+        let rec = lngap_ladder::moves::View { s: &d.program.schedule, msgs: &prover.msgs }.record();
+        let link = |name: &str| chain.get_tx(&d.txid(name)).with_context(|| format!("{name} is not on chain"));
+        let (name, ok) = d.proves(&rec, &link)?;
+        ensure!(ok, "the last step's proof ({name}) doesn't spend on the moves posted");
+        let wire = d.rule_wire(&d.contract.rule(m, &name)?, &[], None, &link)?;
+        let proof = d.finish(&name, wire)?;
         let fee = Amount::from_sat((proof.vsize() as u64 + 200) * FEERATE);
         let txid = chain.post_terminal(&proof, &d.set[&name].prevout, fee)?;
         self.step(format!("no disprove came: the last step proved ({name}): paid"));
         self.paid(chain, &d, k, b, Outcome::Proved(txid))
+    }
+
+    /// Under a jump list, the hub posted a path against her last step: if a
+    /// hop of it isn't in her history, challenge it (the hub can't reveal
+    /// it: her timeout pays her); if it is genuine, the hub's verdict
+    /// takes the output, unless it never posts it. If the hub never
+    /// finishes posting the path, her timeout pays her.
+    fn answer_path(&mut self, chain: &Chain, d: &Disputed, k: usize, b: u32, prover: &Prover) -> Result<(Outcome, Swept)> {
+        let p = d.contract.spec.params;
+        let w = u32::from(p.delta + p.delta_prime);
+        let nonce = self.contracts[k].nonce.clone();
+        let split_at = wait_confirmed(chain, &d.txid("path_split"))?;
+        self.step("the hub is posting a path against the last step".into());
+        // the hub's combine of n chunks, or her timeout on the split
+        let carrier = OutPoint { txid: d.txid("path_split"), vout: 0 };
+        let start = Instant::now();
+        let (n, comb, comb_at) = loop {
+            if let Some(n) = (1..=CHUNKS).find(|n| chain.get_tx(&d.txid(&format!("combine_{n}"))).is_some()) {
+                let id = d.txid(&format!("combine_{n}"));
+                let at = wait_confirmed(chain, &id)?;
+                break (n, chain.get_tx(&id).context("the combine")?, at);
+            }
+            if chain.unspent(&carrier)? && chain.height()? >= split_at + w + u32::from(p.delta_prime) {
+                self.step("the hub never finished its path: the user's timeout pays".into());
+                let txid = chain.post_terminal(&d.finish("timeout_path_split", vec![])?, &d.set["timeout_path_split"].prevout, Amount::from_sat(2_000))?;
+                return self.paid(chain, d, k, b, Outcome::HubTimedOut(txid));
+            }
+            ensure!(start.elapsed() < PATIENCE, "the chain stalled");
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let tail = d.tail()?;
+        let chunks: Vec<Vec<u8>> = (0..n).map(|c| read_move_in(&comb, c, &tail.path[c])).collect::<Result<_>>()?;
+        let p_op = OutPoint { txid: comb.compute_txid(), vout: 0 };
+        match prover.check_path(&chunks)? {
+            Some(i) => {
+                self.step(format!("hop {i} of the hub's path isn't in the user's history: challenging it"));
+                let hop = format!("hop_{n}");
+                let wire = wots_wire(&self.hop_secret(&nonce, n).sign(&[i as u8])?);
+                let hop_at = self.post(chain, d, &nonce, &hop, wire)?;
+                let h_op = OutPoint { txid: d.txid(&hop), vout: 0 };
+                while chain.unspent(&h_op)? && chain.height()? < hop_at + w {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if !chain.unspent(&h_op)? {
+                    self.step("the hub revealed the hop: the claim lost".into());
+                    self.contracts[k].closed = Some(h_op.txid);
+                    self.save()?;
+                    return Ok((Outcome::Lost, None));
+                }
+                let name = format!("timeout_{hop}");
+                let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000))?;
+                self.step("the hub couldn't reveal the hop: the user's timeout pays".into());
+                self.paid(chain, d, k, b, Outcome::PathRefuted(txid))
+            }
+            None => {
+                self.step("the hub's path is genuine: its verdict will take the output".into());
+                while chain.unspent(&p_op)? && chain.height()? < comb_at + w + u32::from(p.delta_prime) {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if !chain.unspent(&p_op)? {
+                    self.step("the hub's path proved its verdict: the claim lost".into());
+                    self.contracts[k].closed = Some(p_op.txid);
+                    self.save()?;
+                    return Ok((Outcome::Lost, None));
+                }
+                let name = format!("timeout_combine_{n}");
+                let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000))?;
+                self.step("the hub never posted its verdict: the user's timeout pays".into());
+                self.paid(chain, d, k, b, Outcome::HubTimedOut(txid))
+            }
+        }
     }
 
     /// The payout is posted: keep it (a resumed dispute goes straight to
@@ -224,13 +304,16 @@ impl Wallet {
         self.won(chain, d, k, b, outcome)
     }
 
-    /// Post a link of the chain, paying with a child, unless it is already
-    /// there (a resumed dispute replays it); its confirmation height.
-    fn post(&self, chain: &Chain, d: &Disputed, name: &str, wire: Vec<Vec<u8>>) -> Result<u32> {
+    /// Post a link of the chain, paying with a child from her anchor,
+    /// unless it is already there (a resumed dispute replays it); its
+    /// confirmation height.
+    fn post(&self, chain: &Chain, d: &Disputed, nonce: &str, name: &str, wire: Vec<Vec<u8>>) -> Result<u32> {
         let tx = d.finish(name, wire)?;
         let id = tx.compute_txid();
         if chain.get_tx(&id).is_none() {
-            chain.post_link(&tx, 1, FEERATE)?;
+            let kp = self.contract_keys(nonce).payment;
+            let anchor = anchor_vout(&tx, &kp.x_only_public_key().0)?;
+            chain.post_link(&tx, anchor, FEERATE, &|c, p| sign_anchor(&kp, c, p))?;
         } else {
             // posted before: it must be the move we would make now
             let posted = chain.get_tx(&id).context("the link")?;
@@ -245,7 +328,7 @@ impl Wallet {
     /// sweep her bit outputs and the reserves to her wallet.
     fn won(&mut self, chain: &Chain, d: &Disputed, k: usize, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
         let txid = match &outcome {
-            Outcome::HubTimedOut(t) | Outcome::Proved(t) => *t,
+            Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) => *t,
             Outcome::Lost | Outcome::Paused => bail!("not a win"),
         };
         let at = wait_confirmed(chain, &txid)?;

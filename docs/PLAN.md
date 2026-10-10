@@ -37,10 +37,14 @@ transfers; sealed, signed heights; the statement's input for a return),
   granularity: its payout's bit outputs start at the first bit worth at
   least the dust limit (512 sats), so `b` is rounded down there by less
   than 512 sats; the cooperative fold pays exact sats.
-- Fees: no pre-signed transaction pays its own; the chain's links are
-  TRUC with a zero-value anchor (the poster's child pays), the terminal
-  ones ALL|ANYONECANPAY (the broadcaster adds a coin). The contract output
-  holds exactly `V_max` and both reserves.
+- Fees: the chain's links are ordinary (v2) transactions that pay a
+  floor of 1 sat/vB out of the contract and carry an anchor only their
+  poster can spend (its child pays the rest); the terminal ones are
+  ALL|ANYONECANPAY (the broadcaster adds a coin). The contract output holds
+  exactly `V_max` and both reserves; the floors of the links played come
+  out of the loser's reserve, so the hub's reserve is at least the floors
+  of the deepest dispute (125,017 sats on the mock, 195,411 on Groth16).
+  (Until 2026-10-10: TRUC links with a zero-value anchor.)
 - TODO: MuSig2 for every 2-of-2 spend both parties sign together (the
   cooperative close first); for now a 2-of-2 fold leaf (M3).
 - Test (`crates/hub/tests/open.rs`): opening on the mock statement in
@@ -79,9 +83,9 @@ transfers; sealed, signed heights; the statement's input for a return),
   (memo, image id); runs its verifier on the claim: a true claim it
   concedes (an honest hub), a false one it plays and disproves; times out
   an absent Alice. Test switches: `refuse_folds`, `dispute_true_claims`.
-- Fees: every link a TRUC transaction with a zero-value anchor, the
-  poster's child paying (the bitcoind wallet signs it); terminal
-  transactions with a fee coin.
+- Fees: every link broadcast alone at its floor, then the poster's child
+  spending its anchor (the contract's payment key signs that input, the
+  bitcoind wallet its coin); terminal transactions with a fee coin.
 - Test (`crates/hub/tests/dispute.rs`, blocks every 150 ms): A, the
   honest hub concedes a true claim (5 s); B, a hub disputing a true claim,
   the whole search played and proved (10 s); C, a false claim disproved

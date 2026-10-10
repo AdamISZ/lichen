@@ -218,7 +218,7 @@ dependencies = [
 [[package]]
 name = "bitcoin-script-riscv"
 version = "0.8.6"
-source = "git+https://github.com/FairgateLabs/BitVMX-CPU?rev=299009c65e635327025ee13ffe1e1f1671bd0615#299009c65e635327025ee13ffe1e1f1671bd0615"
+source = "git+https://github.com/AdamISZ/BitVMX-CPU?rev=0b7d285fc5c7795d16fd58d380ff6ef25f2f0423#0b7d285fc5c7795d16fd58d380ff6ef25f2f0423"
 dependencies = [
  "bitcoin",
  "bitcoin-script",
@@ -323,7 +323,7 @@ dependencies = [
 [[package]]
 name = "bitvmx-cpu-definitions"
 version = "0.8.6"
-source = "git+https://github.com/FairgateLabs/BitVMX-CPU?rev=299009c65e635327025ee13ffe1e1f1671bd0615#299009c65e635327025ee13ffe1e1f1671bd0615"
+source = "git+https://github.com/AdamISZ/BitVMX-CPU?rev=0b7d285fc5c7795d16fd58d380ff6ef25f2f0423#0b7d285fc5c7795d16fd58d380ff6ef25f2f0423"
 dependencies = [
  "blake3",
  "config",
@@ -683,7 +683,7 @@ dependencies = [
 [[package]]
 name = "emulator"
 version = "0.8.6"
-source = "git+https://github.com/FairgateLabs/BitVMX-CPU?rev=299009c65e635327025ee13ffe1e1f1671bd0615#299009c65e635327025ee13ffe1e1f1671bd0615"
+source = "git+https://github.com/AdamISZ/BitVMX-CPU?rev=0b7d285fc5c7795d16fd58d380ff6ef25f2f0423#0b7d285fc5c7795d16fd58d380ff6ef25f2f0423"
 dependencies = [
  "bitcoin-script-riscv",
  "bitvmx-cpu-definitions",
@@ -1179,8 +1179,8 @@ dependencies = [
  "lichen-wallet",
  "lngap-btc",
  "lngap-channel",
+ "lngap-ladder",
  "lngap-lamport",
- "lngap-pos",
  "lngap-sessions",
  "lngap-zk",
  "serde",
@@ -1210,6 +1210,7 @@ dependencies = [
  "hex",
  "lngap-btc",
  "lngap-channel",
+ "lngap-ladder",
  "lngap-lamport",
  "lngap-sessions",
  "lngap-zk",
@@ -1238,6 +1239,7 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "clap",
+ "emulator",
  "hex",
  "lichen-chain",
  "lichen-ledger",
@@ -1245,8 +1247,8 @@ dependencies = [
  "lichen-sequencer",
  "lngap-btc",
  "lngap-channel",
+ "lngap-ladder",
  "lngap-lamport",
- "lngap-pos",
  "lngap-sessions",
  "lngap-zk",
  "serde",
@@ -1372,6 +1374,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "lngap-ladder"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "bitcoin-script-functions",
+ "bitcoin-script-riscv",
+ "bitcoin-script-stack",
+ "bitvmx-cpu-definitions",
+ "blake3",
+ "emulator",
+ "hex",
+ "lngap-btc",
+ "lngap-channel",
+ "lngap-lamport",
+ "lngap-script32",
+ "lngap-zk",
+ "riscv-decode",
+ "serde",
+]
+
+[[package]]
 name = "lngap-lamport"
 version = "0.1.0"
 dependencies = [
@@ -1488,12 +1512,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bitcoin",
+ "bitvmx-cpu-definitions",
  "blake3",
  "emulator",
  "hex",
  "lngap-btc",
  "lngap-channel",
  "lngap-contract",
+ "lngap-ladder",
  "lngap-lamport",
  "lngap-pos",
  "lngap-seal",

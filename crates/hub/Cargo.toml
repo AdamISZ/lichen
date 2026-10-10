@@ -21,9 +21,9 @@ lngap-sessions.workspace = true
 lngap-channel.workspace = true
 lngap-btc.workspace = true
 lngap-lamport.workspace = true
-lngap-pos.workspace = true
 emulator.workspace = true
 lngap-zk.workspace = true
+lngap-ladder.workspace = true
 
 [dev-dependencies]
 lichen-wallet = { path = "../wallet" }

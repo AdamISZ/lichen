@@ -77,8 +77,8 @@ impl Chain {
         Ok(self.rpc.send_raw_transaction(tx)?)
     }
     /// How many blocks have confirmed `txid` (0 if unconfirmed or unknown).
-    /// Read from the raw JSON: the RPC crate's typed result predates the
-    /// pay-to-anchor script type and fails on a transaction with an anchor.
+    /// Read from the raw JSON (the RPC crate's typed result can lag the
+    /// node's script types).
     pub fn confirmations(&self, txid: &Txid) -> Result<u32> {
         let v: serde_json::Value = match self.rpc.call("getrawtransaction", &[serde_json::json!(txid.to_string()), serde_json::json!(true)]) {
             Ok(v) => v,
@@ -94,27 +94,24 @@ impl Chain {
     pub fn unspent(&self, op: &OutPoint) -> Result<bool> {
         Ok(self.rpc.get_tx_out(&op.txid, op.vout, Some(true))?.is_some())
     }
-    /// Submit a package: parents first, then the child that pays for them.
-    pub fn submit_package(&self, txs: &[Transaction]) -> Result<()> {
-        let raw: Vec<serde_json::Value> = txs.iter().map(|t| serde_json::Value::String(bitcoin::consensus::encode::serialize_hex(t))).collect();
-        let v: serde_json::Value = self.rpc.call("submitpackage", &[serde_json::Value::Array(raw)])?;
-        if v.get("package_msg").and_then(|m| m.as_str()) != Some("success") {
-            bail!("package refused: {v}");
+    /// Broadcast a link of a pre-signed chain (unless it is already
+    /// there): it pays a floor of its own, so it relays alone. Then its
+    /// poster's child: it spends the link's anchor (output `anchor`, an
+    /// output only the poster can spend; `sign_anchor` makes its witness,
+    /// given the child and its prevouts) and a coin of this wallet, pays
+    /// `feerate` sat/vB on both, and returns the change to the wallet.
+    pub fn post_link(&self, link: &Transaction, anchor: u32, feerate: u64, sign_anchor: &dyn Fn(&Transaction, &[TxOut]) -> Result<bitcoin::Witness>) -> Result<()> {
+        if self.get_tx(&link.compute_txid()).is_none() {
+            self.broadcast(link).context("the link, at its floor")?;
         }
-        Ok(())
-    }
-    /// Broadcast a link of a pre-signed chain (a zero-fee TRUC transaction
-    /// whose output `anchor` is a pay-to-anchor): with a child that spends
-    /// the anchor and a coin of this wallet, paying `feerate` sat/vB on
-    /// both, its change back to the wallet.
-    pub fn post_link(&self, link: &Transaction, anchor: u32, feerate: u64) -> Result<()> {
-        let fee = Amount::from_sat((link.vsize() as u64 + 200) * feerate);
+        let fee = Amount::from_sat((link.vsize() as u64 + 220) * feerate);
         let coins = self.select(fee + Amount::from_sat(1_000))?;
         let coin = coins[0].clone();
         let a_op = OutPoint { txid: link.compute_txid(), vout: anchor };
-        let change = TxOut { value: coin.1.value - fee, script_pubkey: self.new_spk()? };
+        let a_out = link.output[anchor as usize].clone();
+        let change = TxOut { value: coin.1.value + a_out.value - fee, script_pubkey: self.new_spk()? };
         let mut child = Transaction {
-            version: bitcoin::transaction::Version(3),
+            version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::absolute::LockTime::ZERO,
             input: vec![
                 bitcoin::TxIn { previous_output: a_op, sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME, ..Default::default() },
@@ -122,8 +119,10 @@ impl Chain {
             ],
             output: vec![change],
         };
-        child = self.sign_mine(&child, &[(a_op, link.output[anchor as usize].clone()), coin])?;
-        self.submit_package(&[link.clone(), child])
+        child = self.sign_mine(&child, &[(a_op, a_out.clone()), coin.clone()])?;
+        child.input[0].witness = sign_anchor(&child, &[a_out, coin.1])?;
+        self.broadcast(&child).context("the link's fee child")?;
+        Ok(())
     }
     /// Broadcast a transaction that ends a chain (pre-signed
     /// ALL|ANYONECANPAY at zero fee, its input 0 spending `prevout`), adding

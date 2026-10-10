@@ -1,5 +1,6 @@
-//! Opt-in (release; about forty minutes): disputes on the REAL statement,
-//! BitVMX's Groth16 verifier (59 depths), with a real proof of the
+//! Opt-in (release; about half an hour): disputes on the REAL statement,
+//! BitVMX's Groth16 verifier (8-ary, its trace hashed as a jump list: 21
+//! depths), with a real proof of the
 //! withdrawal guest: ln-gap's test vector, a return of 9 sats with memo
 //! 42 (proved on x86 Linux). Each hub's first contract is number 42.
 //!
@@ -30,8 +31,8 @@ use lichen_sequencer::Sequencer;
 use lichen_wallet::{Ask, Wallet};
 use lngap_btc::regtest::Regtest;
 
-/// The verifier ELF as BitVMX-CPU ships it (GPL, not vendored), from the
-/// Cargo checkout.
+/// The verifier ELF as BitVMX-CPU ships it (GPL, not vendored), from a
+/// Cargo checkout (the fork ln-gap builds carries it unchanged).
 fn verifier_elf() -> std::path::PathBuf {
     let home = std::env::var("CARGO_HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".cargo"));
     let checkouts = home.join("git/checkouts");
@@ -41,23 +42,23 @@ fn verifier_elf() -> std::path::PathBuf {
         }
         for rev in std::fs::read_dir(d.path()).unwrap().flatten() {
             let elf = rev.path().join("docker-riscv32/verifier/build/zkverifier-new-mul.elf");
-            if rev.file_name().to_string_lossy().starts_with("299009c") && elf.exists() {
+            if elf.exists() {
                 return elf;
             }
         }
     }
-    panic!("BitVMX-CPU 299009c not found under {}", checkouts.display());
+    panic!("no BitVMX-CPU checkout with the verifier ELF under {}", checkouts.display());
 }
 
 #[test]
 #[ignore]
 fn disputes_on_the_groth16_verifier() {
-    let rt = Regtest::start().unwrap();
+    let rt = Regtest::start_standard().unwrap();
     let dir = std::env::temp_dir().join(format!("lichen-g16-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::copy(verifier_elf(), dir.join("zkverifier.elf")).unwrap();
-    std::fs::write(dir.join("groth16.yaml"), "elf: zkverifier.elf\nnary_search: 2\nmax_steps: 536870912\ninput_section_name: .input\ninputs:\n  - size: 172\n    owner: prover\n").unwrap();
+    std::fs::write(dir.join("groth16.yaml"), "elf: zkverifier.elf\nnary_search: 8\nmax_steps: 536870912\ninput_section_name: .input\njump_list: true\ninputs:\n  - size: 172\n    owner: prover\n").unwrap();
     let statement = Statement::Groth16 { pdf: dir.join("groth16.yaml") };
     let valid = hex::decode(include_str!("../../../../ln-gap/crates/apps/sessions/tests/data/withdraw-9-42.hex").trim()).unwrap();
     let mut tampered = valid.clone();
