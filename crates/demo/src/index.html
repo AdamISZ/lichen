@@ -103,7 +103,7 @@ function userPane(name, other) {
       <button id="${name}-send">send to ${other}</button>
     </div>
     <div class="row">
-      <span id="${name}-wdwrap"></span>
+      <input type="number" id="${name}-wdamt" min="1" step="1000" value="100000">
       <button id="${name}-withdraw">withdraw</button>
       <button class="ghost" id="${name}-open" hidden>open a new contract</button>
     </div>
@@ -130,15 +130,6 @@ function userPane(name, other) {
   };
 }
 
-function withdrawField(name, refusing, menu) {
-  const wrap = document.getElementById(name + '-wdwrap');
-  const want = refusing ? 'select' : 'number';
-  if (wrap.dataset.kind === want) return;
-  wrap.dataset.kind = want;
-  wrap.innerHTML = refusing
-    ? `<select id="${name}-wdamt">${menu.map(b => `<option value="${b}">${sats(b)}</option>`).join('')}</select>`
-    : `<input type="number" id="${name}-wdamt" min="1" step="1000" value="100000">`;
-}
 
 function renderUser(u, s) {
   const n = u.name;
@@ -151,7 +142,6 @@ function renderUser(u, s) {
        <span class="muted">deposit ${sats(c.deposit)} · cap ${sats(c.cap)} · reserves ${sats(c.reserve)} + ${sats(c.reserve_hub)} · T_close at block ${c.t_close}</span>`
     : '<span class="muted">no contract</span>';
   document.getElementById(n + '-activity').textContent = u.activity;
-  withdrawField(n, s.hub.refuse_folds, s.menu);
   const closed = c && c.state === 'closed';
   document.getElementById(n + '-withdraw').disabled = !c || closed;
   document.getElementById(n + '-open').hidden = !closed;

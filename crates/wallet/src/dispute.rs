@@ -144,6 +144,13 @@ impl Wallet {
             }
             Ok(wire)
         };
+        // escalating waits to_self_delay after the contract's funding
+        let funded = held.record.funding.txid;
+        let start = Instant::now();
+        while chain.confirmations(&funded)? < u32::from(p.to_self_delay) {
+            ensure!(start.elapsed() < PATIENCE, "the contract's funding is not deep enough to escalate");
+            std::thread::sleep(Duration::from_millis(200));
+        }
         let mut prover = Prover::start(&d.program, input, &dir.join(format!("dispute-{cid}")))?;
         let pause = self.pause_after;
         // escalate: move 1 with the claim's words; then the rest of the input

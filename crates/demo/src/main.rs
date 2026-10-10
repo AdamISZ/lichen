@@ -5,9 +5,10 @@
 //! playing out move by move.
 //!
 //! Everything runs here: bitcoind (regtest, its own data directory), the
-//! sequencer, the hub, the two wallets, a block every second. The dispute
-//! runs on the mock statement, whose true returns are a fixed table for
-//! Alice's contract: in a dispute she withdraws one of those amounts.
+//! sequencer, the hub, the two wallets, a block every second. Disputes run
+//! on the mock statement, set so that every claim is true (the contract's
+//! memo check still applies): a stand-in for a proof of the return, which
+//! the real statement checks.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -28,10 +29,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tiny_http::{Header, Method, Response, Server};
 
-/// The amounts the demo's statement accepts as true returns, for Alice's
-/// contract (number 1000).
-const MENU: [u32; 8] = [50_000, 100_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000];
-const ALICE_CID: u32 = 1000;
+const FIRST_CID: u32 = 1000;
 const ASK: Ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
 
 #[derive(Parser)]
@@ -101,7 +99,9 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
     for _ in 0..4 {
         rt.fund(&hub_chain.new_spk()?, Amount::from_sat(25_000_000))?;
     }
-    let statement = Statement::Mock { session: ALICE_CID, returns: MENU.iter().map(|b| (*b, ALICE_CID)).collect() };
+    // every claim true: a stand-in for proving the return
+    let any = lngap_sessions::statement::ANY;
+    let statement = Statement::Mock { session: any, returns: vec![(any, any)] };
     let hub = Hub::start(Config {
         listen: "127.0.0.1:0".into(),
         sequencer: seq.url.clone(),
@@ -116,7 +116,7 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
         duration: 5_000,
         refuse_folds: false,
         dispute_true_claims: false,
-        first_cid: ALICE_CID,
+        first_cid: FIRST_CID,
     })?;
     let mut users = vec![];
     for name in ["Alice", "Bob"] {
@@ -234,7 +234,6 @@ fn state(d: &Demo) -> Result<Value> {
             "contracts": hub_contracts,
             "log": d.hub.log(),
         },
-        "menu": MENU,
     }))
 }
 
@@ -274,15 +273,6 @@ fn send(d: &Demo, s: Send) -> Result<Value> {
 fn withdraw(d: &Arc<Demo>, r: Withdraw) -> Result<Value> {
     let u = d.user(&r.who)?;
     let cid = *u.cid.lock().unwrap();
-    let (refusing, _) = d.hub.switches();
-    if refusing {
-        if cid != ALICE_CID {
-            bail!("the demo's stand-in statement covers Alice's first contract only: with the hub refusing, only Alice can enforce a withdrawal");
-        }
-        if !MENU.contains(&(r.amount as u32)) {
-            bail!("in a dispute the stand-in statement accepts these amounts only: {MENU:?}");
-        }
-    }
     if u.wallet.try_lock().is_err() {
         bail!("{} is busy", u.name);
     }

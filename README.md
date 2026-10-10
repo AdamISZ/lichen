@@ -57,10 +57,10 @@ address, send, withdraw), the ledger (what the sequencer ordered and
 sealed, and what happened on Bitcoin), and the hub (its contracts,
 headroom, and two switches). Pay each other, withdraw cooperatively, then
 switch the hub to refuse withdrawals and dispute true claims, and
-withdraw with Alice: the dispute plays out move by move (about a minute).
-The dispute runs on the mock statement, whose true returns are a fixed
-table for Alice's first contract, so in a dispute she withdraws one of
-its amounts.
+withdraw: the dispute plays out move by move (about a minute). Disputes
+run on the mock statement set so that every claim is true (the
+contract's memo check still applies), a stand-in for the proof of the
+return that the real statement checks.
 
 ## Try it (regtest keys)
 
