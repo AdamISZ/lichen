@@ -56,6 +56,7 @@ fn main() -> Result<()> {
         duration: a.duration,
         refuse_folds: false,
         dispute_true_claims: false,
+        first_cid: 1000,
     })?;
     println!("lichen hub at {}", hub.url);
     loop {

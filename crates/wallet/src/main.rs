@@ -62,9 +62,11 @@ enum Cmd {
     Withdraw { contract: u32, amount: u64 },
     /// Enforce a withdrawal (already returned on the L2) on Bitcoin, when
     /// the hub won't fold it: escalate and play the dispute to its end.
+    /// Run again to resume (the claim is kept with the contract).
     Dispute {
         contract: u32,
-        amount: u32,
+        /// The amount withdrawn (not needed to resume).
+        amount: Option<u32>,
         /// The statement program's input for the claim, hex (for Groth16:
         /// the verifier's 172-byte input for the proof). The mock's is
         /// built here.
@@ -109,9 +111,12 @@ fn main() -> Result<()> {
         Cmd::Dispute { contract, amount, input } => {
             let (url, cookie) = (a.rpc_url.context("--rpc-url")?, a.cookie.context("--cookie")?);
             let chain = lichen_chain::Chain::connect(&url, &cookie, &a.chain_wallet)?;
-            let input = match input {
-                Some(p) => hex::decode(std::fs::read_to_string(p)?.trim())?,
-                None => a.statement.mock_input(amount, contract).context("--input: the claim's input (a proof's, for groth16)")?,
+            let kept = w.contracts.iter().find(|h| h.record.cid() == contract).and_then(|h| h.claim.clone());
+            let (amount, input) = match (kept, amount, input) {
+                (Some((b, i)), _, _) => (b, hex::decode(i)?),
+                (None, Some(b), Some(p)) => (b, hex::decode(std::fs::read_to_string(p)?.trim())?),
+                (None, Some(b), None) => (b, a.statement.mock_input(b, contract).context("--input: the claim's input (a proof's, for groth16)")?),
+                (None, None, _) => anyhow::bail!("the amount withdrawn"),
             };
             let (outcome, swept) = w.dispute(&chain, &a.statement, &a.wallet.with_extension("d"), contract, amount, &input)?;
             println!("{outcome:?}; swept {swept:?}");

@@ -7,6 +7,11 @@
 //! posting its choice after each of her midpoints; at the end it reads her
 //! record and disproves it with the rule that applies. If she stops
 //! answering, its timeout pays it.
+//!
+//! Nothing of a dispute is kept but the contract: after a restart the hub
+//! rebuilds its verifier from the claim on chain and replays the moves
+//! already made (each of its own checked against what it would play now),
+//! then carries on.
 
 use anyhow::{Context, Result};
 use bitcoin::{Amount, OutPoint, TxOut};
@@ -108,9 +113,22 @@ impl Inner {
             return Ok(Some(State::Conceded));
         };
         eprintln!("hub: contract {cid}: disputing the claim");
-        let choice = v.choose(None)?;
-        let last = self.post_move(&d, cid, 2, &move_message(&choice))?;
-        Ok(Some(State::Playing { d: Box::new(d), v: Box::new(v), awaiting: 3, last }))
+        // replay what is already on chain, then carry on
+        let m = d.contract.m();
+        let mut alice: Option<Vec<u8>> = None;
+        let mut j = 2;
+        loop {
+            let choice = v.choose(alice.as_deref())?;
+            let last = self.post_move(&d, cid, j, &move_message(&choice))?;
+            let next = link_name(j + 1);
+            match confirmed_at(self, &d.txid(&next))? {
+                Some(_) if j + 1 < m => {
+                    alice = Some(read_move(&self.chain.get_tx(&d.txid(&next)).context("Alice's move")?, d.key(j + 1))?);
+                    j += 2;
+                }
+                _ => return Ok(Some(State::Playing { d: Box::new(d), v: Box::new(v), awaiting: j + 1, last })),
+            }
+        }
     }
 
     /// Take the contract with the check `name` on the ladder output after
@@ -135,10 +153,15 @@ impl Inner {
         Ok(Some(State::Done))
     }
 
+    /// Post the hub's move `j` (unless it is already there: replayed,
+    /// checked to be the same); its confirmation height.
     fn post_move(&self, d: &Disputed, cid: u32, j: u32, msg: &[u8]) -> Result<u32> {
         let sig = move_secret(&self.cfg.seed, cid, j, d.contract.m()).sign(msg)?;
         let tx = d.finish(&link_name(j), wots_wire(&sig))?;
-        self.chain.post_link(&tx, 1, FEERATE)?;
+        match self.chain.get_tx(&tx.compute_txid()) {
+            None => self.chain.post_link(&tx, 1, FEERATE)?,
+            Some(posted) => anyhow::ensure!(posted.input[0].witness == tx.input[0].witness, "move {j} on chain is not the move replayed"),
+        }
         let start = std::time::Instant::now();
         loop {
             if let Some(h) = confirmed_at(self, &tx.compute_txid())? {
@@ -154,7 +177,13 @@ impl Inner {
         let (m, p) = (d.contract.m(), d.contract.spec.params);
         let w = u32::from(p.delta + p.delta_prime);
         let id = d.txid(&link_name(awaiting));
+        let ours = OutPoint { txid: d.txid(&link_name(awaiting - 1)), vout: 0 };
         let Some(at) = confirmed_at(self, &id)? else {
+            if !self.chain.unspent(&ours)? && self.chain.get_tx(&id).is_none() {
+                // spent, not by Alice's move: our own timeout, before a restart
+                eprintln!("hub: contract {cid}: already settled by timeout");
+                return Ok(Some(State::Done));
+            }
             if self.chain.height()? >= last + w {
                 // Alice stopped: the ladder output after the hub's last move times out to it
                 let name = format!("timeout_{}", awaiting - 1);
@@ -179,6 +208,10 @@ impl Inner {
                 Ok(Some(State::Done))
             }
             Verdict::Disprove(name) => {
+                if !self.chain.unspent(&OutPoint { txid: id, vout: 0 })? {
+                    eprintln!("hub: contract {cid}: the last step is already settled");
+                    return Ok(Some(State::Done));
+                }
                 while self.chain.height()? < at + u32::from(p.delta) {
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }

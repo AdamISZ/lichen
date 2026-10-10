@@ -86,10 +86,25 @@ transfers; sealed, signed heights; the statement's input for a return),
   honest hub concedes a true claim (5 s); B, a hub disputing a true claim,
   the whole search played and proved (10 s); C, a false claim disproved
   (`zk_halt_exit`); M, another contract's memo taken by the check.
-- Not yet: the Groth16 statement in lichen (the claim's input is the
-  verifier's input for a proof: `--input`; proving is outside lichen),
-  restarts in the middle of a dispute (the engines keep state in memory),
-  watchtowers.
+- Resuming: the wallet keeps the claim (and the payout once posted) with
+  the contract; `lichen dispute <contract>` again replays what is on chain
+  (each of its links checked to be the move it would make) and carries
+  on. The hub keeps nothing of a dispute: after a restart it rebuilds its
+  verifier from the claim on chain and replays. Test: `resume.rs` (the
+  wallet stops after move 5, the hub restarts, both resume; proved).
+- The wallet refuses a claim that breaks a check (it would lose
+  everything to it); the hub's checks catch one escalated anyway.
+- The real statement: `lngap-r0 prove-input` / `claim` (ln-gap's RISC
+  Zero host) prove a wallet's `withdraw-input` JSON; `scripts/linux-claim.sh`
+  on x86 Linux gives the claim's hex for `lichen dispute --input`.
+  Opt-in test `groth16.rs` (release, the canned proof, hubs numbering
+  from 42; 33 minutes): G1, the honest hub runs the verifier on the claim
+  and concedes (403 s); G2, a hub disputing a true claim, all 59 moves
+  played by the two engines, Alice proves (816 s); G3, b tampered, the
+  hub disproves with `zk_halt_exit` (713 s). A return made in lichen's own
+  ledger proves under the canonical guest (`lngap-r0 prove-input`, 5.9M
+  cycles, 6 minutes on a Mac; the wrap still needs x86 Linux).
+- Not yet: watchtowers (undecided).
 
 ## Later
 

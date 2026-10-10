@@ -35,6 +35,10 @@ fn pay_return_and_the_withdrawal_input() {
     assert_eq!((input.index, input.height), (r, sealed.height));
     assert_eq!(check(&input, &SEQUENCER_KEY, &HUB_KEY), Ok([7, 0, 0, 0, 42, 0, 0, 0]));
     assert_eq!(xonly(&regtest_hub()), input.note.owner);
+    // for proving it elsewhere (lngap-r0 prove-input / claim)
+    if let Ok(path) = std::env::var("LICHEN_WRITE_WITHDRAW_INPUT") {
+        std::fs::write(&path, serde_json::to_string_pretty(&input).unwrap()).unwrap();
+    }
 
     // a restarted sequencer keeps the ledger
     drop(seq);

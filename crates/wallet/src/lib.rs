@@ -40,12 +40,25 @@ struct Stored {
 pub struct Held {
     pub nonce: String,
     pub record: Record,
-    /// The fold's txid, once withdrawn cooperatively.
+    /// How it ended: the fold's txid, or the dispute's payout (or the
+    /// spend that took it).
     #[serde(default)]
     pub closed: Option<bitcoin::Txid>,
+    /// A dispute in progress: the claim (`b` and the statement's input,
+    /// hex), so that it can be resumed; and the payout once posted.
+    #[serde(default)]
+    pub claim: Option<(u32, String)>,
+    #[serde(default)]
+    pub payout: Option<dispute::Outcome>,
 }
 
 pub struct Wallet {
+    /// For tests: stop a dispute after posting this move (it resumes
+    /// from the chain when run again).
+    pub pause_after: Option<u32>,
+    /// For tests: escalate a claim even if it breaks one of the contract's
+    /// checks (as a careless or dishonest wallet would).
+    pub unchecked_claims: bool,
     key: SigningKey,
     path: PathBuf,
     returns: Vec<(u32, u32)>,
@@ -67,14 +80,14 @@ impl Wallet {
             bail!("{} already exists", path.display());
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
-        let w = Wallet { key, path: path.to_path_buf(), returns: vec![], contracts: vec![], sequencer: Client::new(sequencer) };
+        let w = Wallet { pause_after: None, unchecked_claims: false, key, path: path.to_path_buf(), returns: vec![], contracts: vec![], sequencer: Client::new(sequencer) };
         w.save()?;
         Ok(w)
     }
     pub fn open(path: &Path, sequencer: &str) -> Result<Wallet> {
         let s: Stored = serde_json::from_slice(&std::fs::read(path).with_context(|| format!("no wallet at {}", path.display()))?)?;
         let key = SigningKey::from_bytes(&hex::decode(&s.secret)?).context("the wallet's key")?;
-        Ok(Wallet { key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, sequencer: Client::new(sequencer) })
+        Ok(Wallet { pause_after: None, unchecked_claims: false, key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, sequencer: Client::new(sequencer) })
     }
     pub(crate) fn save(&self) -> Result<()> {
         let s = Stored { secret: hex::encode(self.key.to_bytes()), returns: self.returns.clone(), contracts: self.contracts.clone() };
@@ -231,7 +244,7 @@ impl Wallet {
         let funding = chain.sign_mine(&offer.funding, &prevouts)?;
         let accept = Accept { cid: offer.cid, alice_sigs: record.alice_sigs.clone(), funding };
         let _: Opened = hub_call(&format!("{hub}/accept"), Some(serde_json::to_string(&accept)?))?;
-        let held = Held { nonce, record, closed: None };
+        let held = Held { nonce, record, closed: None, claim: None, payout: None };
         self.contracts.push(held.clone());
         self.save()?;
         Ok(held)

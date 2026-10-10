@@ -47,6 +47,8 @@ pub struct Config {
     /// dispute claims that are true.
     pub refuse_folds: bool,
     pub dispute_true_claims: bool,
+    /// The first contract's number (its memo); then one more each.
+    pub first_cid: u32,
 }
 
 /// The hub's keys for contract `cid`.
@@ -104,7 +106,7 @@ impl Hub {
             let o: Open = serde_json::from_slice(&std::fs::read(e.path())?)?;
             open.insert(o.record.cid(), o);
         }
-        let next = open.keys().max().map_or(1000, |m| m + 1);
+        let next = open.keys().max().map_or(cfg.first_cid, |m| m + 1);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()) });

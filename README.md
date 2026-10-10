@@ -53,3 +53,24 @@ cargo build
 The sequencer's and the hub's keys are the regtest deployment's
 (`lngap-toy/sequencer`, `lngap-toy/hub`): the withdrawal statement pins
 them, so a proof made with the committed guest is valid for them only.
+
+## Disputes on the real statement
+
+A withdrawal the hub refuses is enforced with a proof of the return, made
+with RISC Zero and wrapped in Groth16 (the wrap runs on x86 Linux):
+
+```sh
+# 1. the claim: the return note, its path, the sequencer's signed root
+lichen --wallet alice.json withdraw-input <memo> > withdraw-input.json
+# 2. on x86 Linux, in ln-gap/crates/apps/sessions/r0 (see WRAP_ON_LINUX.md):
+scripts/linux-claim.sh withdraw-input.json claim.hex
+#    (or on a Mac: lngap-r0 prove-input ... for the STARK, then wrap on Linux)
+# 3. the dispute, on the Groth16 verifier
+lichen --wallet alice.json --statement groth16:<path to groth16.yaml> \
+  dispute <contract> <amount> --input claim.hex
+```
+
+The wallet checks the claim's words against the contract (memo, image
+id, journal length) before escalating; a dispute in progress resumes
+when the command is run again (`lichen dispute <contract>`).
+

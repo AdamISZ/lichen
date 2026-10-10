@@ -25,8 +25,10 @@ use lngap_zk::game::final_witness;
 use crate::Wallet;
 
 /// How a dispute ended for Alice.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Outcome {
+    /// Stopped on request (`pause_after`); run again to resume.
+    Paused,
     /// The hub stopped answering; her timeout paid her (its txid).
     HubTimedOut(Txid),
     /// She proved the disputed step; paid (the proof's txid).
@@ -98,15 +100,37 @@ impl Wallet {
     /// claim's `input` the statement program's (for the mock, `(b, c)`;
     /// for Groth16, the verifier's input for her proof). Blocks until the
     /// dispute ends; on a win, sweeps her winnings to `chain`'s wallet.
+    ///
+    /// Resumable: the claim is kept with the contract, and what is
+    /// already on chain is replayed, not posted again.
     pub fn dispute(&mut self, chain: &Chain, statement: &Statement, dir: &Path, cid: u32, b: u32, input: &[u8]) -> Result<(Outcome, Swept)> {
         let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
+        ensure!(self.contracts[k].closed.is_none(), "contract {cid} is closed");
+        let d = Disputed::new(&self.contracts[k].record, statement, dir)?;
+        let words = input_words(input);
+        ensure!(words.len() == d.contract.spec.inputs.len(), "the input is {} words, the statement's {}", words.len(), d.contract.spec.inputs.len());
+        ensure!(words[d.contract.spec.b_word] == b, "the input claims {}, not {b}", words[d.contract.spec.b_word]);
+        // a claim that breaks a check (the memo, the image id) would lose
+        // everything to it: refuse it here
+        if !self.unchecked_claims {
+            for c in &d.contract.spec.checks {
+                ensure!(words[c.word] == c.value, "the input's {} is {:#x}, the contract's {:#x}", c.name, words[c.word], c.value);
+            }
+        }
+        match &self.contracts[k].claim {
+            Some((b0, i0)) => ensure!(*b0 == b && *i0 == hex::encode(input), "contract {cid} is already disputed with another claim"),
+            None => {
+                self.contracts[k].claim = Some((b, hex::encode(input)));
+                self.save()?;
+            }
+        }
         let held = self.contracts[k].clone();
-        ensure!(held.closed.is_none(), "contract {cid} is closed");
-        let d = Disputed::new(&held.record, statement, dir)?;
+        if let Some(o) = held.payout.clone() {
+            // the payout is posted: what's left is the sweep
+            return self.won(chain, &d, k, b, o);
+        }
         let (m, p) = (d.contract.m(), d.contract.spec.params);
         let w = u32::from(p.delta + p.delta_prime);
-        let words = input_words(input);
-        ensure!(words[d.contract.spec.b_word] == b, "the input claims {}, not {b}", words[d.contract.spec.b_word]);
         let word_wire = |js: &[usize]| -> Result<Vec<Vec<u8>>> {
             let mut wire = vec![];
             for &j in js.iter().rev() {
@@ -115,6 +139,7 @@ impl Wallet {
             Ok(wire)
         };
         let mut prover = Prover::start(&d.program, input, &dir.join(format!("dispute-{cid}")))?;
+        let pause = self.pause_after;
         // escalate: move 1 with the claim's words; then the rest of the input
         let mut wire = word_wire(&d.contract.claim_words())?;
         wire.extend(wots_wire(&self.move_secret(&held.nonce, 1, m).sign(&move_message(prover.last()))?));
@@ -132,7 +157,7 @@ impl Wallet {
                     // the hub didn't answer in time: the ladder output after move j - 1 times out to her
                     let name = format!("timeout_{}", j - 1);
                     let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000))?;
-                    return self.won(chain, &d, k, b, Outcome::HubTimedOut(txid));
+                    return self.paid(chain, &d, k, b, Outcome::HubTimedOut(txid));
                 }
                 Next::Taken => {
                     self.contracts[k].closed = Some(last_id);
@@ -144,6 +169,9 @@ impl Wallet {
             let sig = self.move_secret(&held.nonce, j + 1, m).sign(&move_message(&next))?;
             last = self.post(chain, &d, &link_name(j + 1), wots_wire(&sig))?;
             last_id = d.txid(&link_name(j + 1));
+            if pause.is_some_and(|p| j + 1 >= p) && j + 1 < m {
+                return Ok((Outcome::Paused, None));
+            }
         }
         // the last step: unless the hub disproves it within its window, prove it
         while chain.height()? < last + w {
@@ -164,15 +192,32 @@ impl Wallet {
         let proof = d.finish(&name, [final_witness(&state, &rec), file].concat())?;
         let fee = Amount::from_sat((proof.vsize() as u64 + 200) * FEERATE);
         let txid = chain.post_terminal(&proof, &d.set[&name].prevout, fee)?;
-        self.won(chain, &d, k, b, Outcome::Proved(txid))
+        self.paid(chain, &d, k, b, Outcome::Proved(txid))
     }
 
-    /// Post a link of the chain, paying with a child; its confirmation
-    /// height.
+    /// The payout is posted: keep it (a resumed dispute goes straight to
+    /// the sweep), then sweep.
+    fn paid(&mut self, chain: &Chain, d: &Disputed, k: usize, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
+        self.contracts[k].payout = Some(outcome.clone());
+        self.save()?;
+        self.won(chain, d, k, b, outcome)
+    }
+
+    /// Post a link of the chain, paying with a child, unless it is already
+    /// there (a resumed dispute replays it); its confirmation height.
     fn post(&self, chain: &Chain, d: &Disputed, name: &str, wire: Vec<Vec<u8>>) -> Result<u32> {
         let tx = d.finish(name, wire)?;
-        chain.post_link(&tx, 1, FEERATE)?;
-        wait_confirmed(chain, &tx.compute_txid())
+        let id = tx.compute_txid();
+        if chain.get_tx(&id).is_none() {
+            chain.post_link(&tx, 1, FEERATE)?;
+        } else {
+            // posted before: it must be the move we would make now
+            let posted = chain.get_tx(&id).context("the link")?;
+            // (one-time signatures are deterministic, and both 2-of-2
+            // signatures were made at the opening: the same witness)
+            ensure!(posted.input[0].witness == tx.input[0].witness, "{name} on chain is not the move replayed");
+        }
+        wait_confirmed(chain, &id)
     }
 
     /// She won: once the payout confirms and her outputs' delay passes,
@@ -180,7 +225,7 @@ impl Wallet {
     fn won(&mut self, chain: &Chain, d: &Disputed, k: usize, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
         let txid = match &outcome {
             Outcome::HubTimedOut(t) | Outcome::Proved(t) => *t,
-            Outcome::Lost => bail!("not a win"),
+            Outcome::Lost | Outcome::Paused => bail!("not a win"),
         };
         let at = wait_confirmed(chain, &txid)?;
         let payout = chain.get_tx(&txid).context("the payout")?;

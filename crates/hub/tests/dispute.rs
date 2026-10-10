@@ -73,6 +73,7 @@ fn disputes_on_the_mock_statement() {
         duration: 2_000,
         refuse_folds: true,
         dispute_true_claims,
+        first_cid: 1000,
     };
     for name in ["hub-a", "hub-b"] {
         rt.fund(&chain(name).new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
@@ -105,6 +106,13 @@ fn disputes_on_the_mock_statement() {
         println!("LICHEN {label}: contract {cid}; Alice returned {B} on the L2; the hub refused to fold ({refused:#})");
         // she enforces it: her claim's input (the mock's: b and the memo)
         let input = statement().mock_input(B, claim_c.unwrap_or(cid)).unwrap();
+        if label == "M" {
+            // the wallet refuses a claim that breaks a check; a careless (or
+            // dishonest) one could escalate it anyway: the hub's check takes it
+            let e = w.dispute(&ch, &statement(), &wdir, cid, B, &input).unwrap_err();
+            println!("LICHEN M: the wallet refuses the claim ({e:#}); escalated anyway:");
+            w.unchecked_claims = true;
+        }
         let t = Instant::now();
         let (outcome, swept) = w.dispute(&ch, &statement(), &wdir, cid, B, &input).unwrap();
         println!("LICHEN {label}: {outcome:?} in {:.1?}; swept {swept:?}", t.elapsed());
