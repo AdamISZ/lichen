@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lichen demo</title>
+<style>
+:root {
+  --bg: #f4f5f2; --card: #ffffff; --ink: #1d2320; --muted: #6b736e; --line: #dfe3dc;
+  --accent: #3f7d4f; --accent-ink: #ffffff; --warn: #b0592a; --mint: #2f6fa8; --ret: #8a5a9e; --seal: #9aa19c;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #151816; --card: #1e2320; --ink: #e5e9e4; --muted: #96a09a; --line: #2e3530;
+    --accent: #6fb27f; --accent-ink: #0f1311; --warn: #e08a5a; --mint: #6aa7dc; --ret: #c08fd6; --seal: #5d665f; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; align-items: baseline; gap: 16px; padding: 14px 20px 6px; }
+header h1 { margin: 0; font-size: 19px; letter-spacing: .3px; }
+header .sub { color: var(--muted); }
+main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 10px 20px 20px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+.pane { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-height: 280px; display: flex; flex-direction: column; gap: 10px; }
+.pane h2 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 10px; }
+.pane h2 .tag { font-size: 11px; font-weight: normal; color: var(--muted); }
+.big { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.muted { color: var(--muted); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+input[type=number], select { width: 130px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+button { padding: 5px 11px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); border-radius: 6px; font: inherit; cursor: pointer; }
+button.ghost { background: transparent; color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+.activity { min-height: 1.4em; font-style: italic; color: var(--muted); }
+.log { list-style: none; margin: 0; padding: 0; overflow-y: auto; max-height: 260px; display: flex; flex-direction: column; gap: 3px; }
+.log li { padding: 3px 0; border-bottom: 1px dashed var(--line); }
+.k { display: inline-block; min-width: 62px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+.k.mint { color: var(--mint); } .k.transfer { color: var(--accent); } .k.return { color: var(--ret); } .k.sealed { color: var(--seal); } .k.btc { color: var(--warn); }
+li.sealed { color: var(--seal); }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); font-size: 13px; }
+th { color: var(--muted); font-weight: normal; }
+.toggles label { display: flex; gap: 6px; align-items: center; }
+.err { color: var(--warn); min-height: 1.2em; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stats div { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.stats b { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<header>
+  <h1>lichen</h1>
+  <span class="sub">an L2 of bitcoin, each holding within its cap enforceable on Bitcoin · local regtest demo</span>
+  <span class="sub" id="height"></span>
+</header>
+<main>
+  <section class="pane" id="pane-Alice"></section>
+  <section class="pane" id="pane-Bob"></section>
+  <section class="pane">
+    <h2>The ledger <span class="tag">what the sequencer ordered and sealed</span></h2>
+    <ul class="log" id="ledger"></ul>
+    <h2>On Bitcoin <span class="tag">contracts, withdrawals, disputes</span></h2>
+    <ul class="log" id="chain"></ul>
+  </section>
+  <section class="pane">
+    <h2>The hub <span class="tag">issues tokens, holds the contracts</span></h2>
+    <div class="stats">
+      <div>on chain<b id="hub-onchain"></b></div>
+      <div>returned to it on the L2<b id="hub-returned"></b></div>
+      <div>headroom committed<b id="hub-headroom"></b></div>
+    </div>
+    <div class="row toggles">
+      <label><input type="checkbox" id="refuse"> refuse cooperative withdrawals</label>
+      <label><input type="checkbox" id="disputeall"> dispute claims that are true</label>
+    </div>
+    <table><thead><tr><th>contract</th><th>user</th><th>deposit</th><th>cap</th><th>state</th></tr></thead><tbody id="hub-contracts"></tbody></table>
+    <ul class="log" id="hub-log"></ul>
+  </section>
+</main>
+<script>
+const sats = n => Number(n).toLocaleString('en-US') + ' sats';
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let last = null;
+
+async function post(path, body) {
+  const r = await fetch(path, { method: 'POST', body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'failed');
+  return j;
+}
+
+function userPane(name, other) {
+  const el = document.getElementById('pane-' + name);
+  el.innerHTML = `
+    <h2>${name} <button class="ghost" id="${name}-showaddr">show address</button></h2>
+    <div class="mono" id="${name}-addr" hidden></div>
+    <div><span class="big" id="${name}-l2"></span> <span class="muted">on the L2</span></div>
+    <div class="muted">on-chain wallet: <span id="${name}-onchain"></span></div>
+    <div class="card" id="${name}-contract"></div>
+    <div class="row">
+      <input type="number" id="${name}-sendamt" min="1" step="1000" value="50000">
+      <button id="${name}-send">send to ${other}</button>
+    </div>
+    <div class="row">
+      <span id="${name}-wdwrap"></span>
+      <button id="${name}-withdraw">withdraw</button>
+      <button class="ghost" id="${name}-open" hidden>open a new contract</button>
+    </div>
+    <div class="err" id="${name}-err"></div>
+    <div class="activity" id="${name}-activity"></div>`;
+  const err = m => document.getElementById(name + '-err').textContent = m || '';
+  document.getElementById(name + '-showaddr').onclick = () => {
+    const a = document.getElementById(name + '-addr'); a.hidden = !a.hidden;
+  };
+  document.getElementById(name + '-send').onclick = async () => {
+    err('');
+    try { await post('/send', { from: name, to: other, amount: Number(document.getElementById(name + '-sendamt').value) }); }
+    catch (e) { err(e.message); }
+  };
+  document.getElementById(name + '-withdraw').onclick = async () => {
+    err('');
+    const f = document.getElementById(name + '-wdamt');
+    try { await post('/withdraw', { who: name, amount: Number(f.value) }); }
+    catch (e) { err(e.message); }
+  };
+  document.getElementById(name + '-open').onclick = async () => {
+    err('');
+    try { await post('/open', { who: name }); } catch (e) { err(e.message); }
+  };
+}
+
+function withdrawField(name, refusing, menu) {
+  const wrap = document.getElementById(name + '-wdwrap');
+  const want = refusing ? 'select' : 'number';
+  if (wrap.dataset.kind === want) return;
+  wrap.dataset.kind = want;
+  wrap.innerHTML = refusing
+    ? `<select id="${name}-wdamt">${menu.map(b => `<option value="${b}">${sats(b)}</option>`).join('')}</select>`
+    : `<input type="number" id="${name}-wdamt" min="1" step="1000" value="100000">`;
+}
+
+function renderUser(u, s) {
+  const n = u.name;
+  document.getElementById(n + '-addr').textContent = u.address;
+  document.getElementById(n + '-l2').textContent = Number(u.l2).toLocaleString('en-US');
+  document.getElementById(n + '-onchain').textContent = sats(u.onchain);
+  const c = u.contract;
+  document.getElementById(n + '-contract').innerHTML = c
+    ? `contract <b>${c.cid}</b> · <b>${c.state}</b>${c.dispute ? ' · ' + esc(c.dispute) : ''}<br>
+       <span class="muted">deposit ${sats(c.deposit)} · cap ${sats(c.cap)} · reserves ${sats(c.reserve)} + ${sats(c.reserve_hub)} · T_close at block ${c.t_close}</span>`
+    : '<span class="muted">no contract</span>';
+  document.getElementById(n + '-activity').textContent = u.activity;
+  withdrawField(n, s.hub.refuse_folds, s.menu);
+  const closed = c && c.state === 'closed';
+  document.getElementById(n + '-withdraw').disabled = !c || closed;
+  document.getElementById(n + '-open').hidden = !closed;
+}
+
+function render(s) {
+  document.getElementById('height').textContent = '· block ' + s.height;
+  for (const u of s.users) renderUser(u, s);
+  const ledger = document.getElementById('ledger');
+  ledger.innerHTML = s.ledger.slice().reverse().map(e =>
+    `<li class="${e.kind}"><span class="k ${e.kind}">${e.kind}</span> ${esc(e.text)}</li>`).join('');
+  document.getElementById('chain').innerHTML = s.chain_log.slice().reverse().map(m =>
+    `<li><span class="k btc">bitcoin</span> ${esc(m)}</li>`).join('');
+  const h = s.hub;
+  document.getElementById('hub-onchain').textContent = sats(h.onchain);
+  document.getElementById('hub-returned').textContent = sats(h.returned);
+  document.getElementById('hub-headroom').textContent = sats(h.headroom);
+  document.getElementById('refuse').checked = h.refuse_folds;
+  document.getElementById('disputeall').checked = h.dispute_true_claims;
+  document.getElementById('hub-contracts').innerHTML = h.contracts.map(c =>
+    `<tr><td>${c.cid}</td><td>${esc(c.user)}</td><td>${Number(c.deposit).toLocaleString('en-US')}</td><td>${Number(c.cap).toLocaleString('en-US')}</td><td>${c.state}${c.dispute ? ' · ' + esc(c.dispute) : ''}</td></tr>`).join('');
+  document.getElementById('hub-log').innerHTML = h.log.slice().reverse().map(m => `<li>${esc(m)}</li>`).join('');
+}
+
+async function tick() {
+  try {
+    const r = await fetch('/state');
+    if (r.ok) { last = await r.json(); render(last); }
+  } catch (e) { /* the demo restarting */ }
+}
+
+userPane('Alice', 'Bob');
+userPane('Bob', 'Alice');
+document.getElementById('refuse').onchange = e => post('/switch', { refuse_folds: e.target.checked });
+document.getElementById('disputeall').onchange = e => post('/switch', { dispute_true_claims: e.target.checked });
+tick();
+setInterval(tick, 700);
+</script>
+</body>
+</html>

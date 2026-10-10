@@ -33,6 +33,8 @@ pub(crate) enum State {
     /// Playing: Alice's move `awaiting` is due; the hub's last link
     /// confirmed at `last`.
     Playing { d: Box<Disputed>, v: Box<Verifier>, awaiting: u32, last: u32 },
+    /// Her last move (`last`) is valid: she proves it.
+    Proved { last: u32 },
     Done,
 }
 
@@ -51,6 +53,8 @@ impl Inner {
             let next = match state {
                 None => self.start(&record)?,
                 Some(State::Playing { d, v, awaiting, last }) => self.play(cid, *d, *v, awaiting, last)?,
+                Some(State::Conceded) => self.settled_by_user(&record, None)?,
+                Some(State::Proved { last }) => self.settled_by_user(&record, Some(last))?,
                 Some(s) => Some(s),
             };
             if let Some(s) = next {
@@ -94,7 +98,7 @@ impl Inner {
                 let p = d.contract.spec.params;
                 if self.chain.height()? >= at + u32::from(p.delta + p.delta_prime) {
                     let txid = self.chain.post_terminal(&d.finish("timeout_inputs", vec![])?, &d.set["timeout_inputs"].prevout, Amount::from_sat(2_000))?;
-                    eprintln!("hub: contract {cid}: the input never came; timeout {txid}");
+                    self.note(format!("contract {cid}: the input never came; timeout {txid}"));
                     self.close(cid, txid)?;
                     return Ok(Some(State::Done));
                 }
@@ -106,13 +110,13 @@ impl Inner {
             }
         }
         let move1 = read_move(&esc, d.key(1))?;
-        let force = if self.cfg.dispute_true_claims { ForceCondition::ValidInputStepAndHash } else { ForceCondition::No };
+        let force = if self.dispute_true_claims.load(std::sync::atomic::Ordering::Relaxed) { ForceCondition::ValidInputStepAndHash } else { ForceCondition::No };
         let dir = self.cfg.dir.join("disputes").join(cid.to_string());
         let Some(mut v) = Verifier::start(&d.program, &input_from_words(&words), &dir, &move1, force)? else {
-            eprintln!("hub: contract {cid}: the claim is true; conceding");
+            self.note(format!("contract {cid}: the claim is true; conceding"));
             return Ok(Some(State::Conceded));
         };
-        eprintln!("hub: contract {cid}: disputing the claim");
+        self.note(format!("contract {cid}: disputing the claim"));
         // replay what is already on chain, then carry on
         let m = d.contract.m();
         let mut alice: Option<Vec<u8>> = None;
@@ -129,6 +133,31 @@ impl Inner {
                 _ => return Ok(Some(State::Playing { d: Box::new(d), v: Box::new(v), awaiting: j + 1, last })),
             }
         }
+    }
+
+    /// A dispute the user settles: conceded (her timeout pays her, from the
+    /// ladder output after move 1) or proved (her proof, from the output
+    /// after her last move, `proved`). Once that output is spent, the
+    /// contract is closed.
+    fn settled_by_user(&self, record: &lichen_proto::Record, proved: Option<u32>) -> Result<Option<State>> {
+        let cid = record.cid();
+        let d = Disputed::new(record, &self.cfg.statement, &self.cfg.dir)?;
+        let link = match proved {
+            Some(m) => link_name(m),
+            None if d.set.contains_key("inputs") => "inputs".to_string(),
+            None => "escalate".to_string(),
+        };
+        let op = OutPoint { txid: d.txid(&link), vout: 0 };
+        if self.chain.get_tx(&op.txid).is_some() && !self.chain.unspent(&op)? {
+            let how = if proved.is_some() { "the user proved the last step" } else { "the user's timeout paid the claim" };
+            self.note(format!("contract {cid}: settled: {how}"));
+            self.close(cid, op.txid)?;
+            return Ok(Some(State::Done));
+        }
+        Ok(Some(match proved {
+            Some(last) => State::Proved { last },
+            None => State::Conceded,
+        }))
     }
 
     /// Take the contract with the check `name` on the ladder output after
@@ -148,7 +177,7 @@ impl Inner {
         w.push(sign_tapscript(&contract_keys(&self.cfg.seed, cid).payment, &spend, 0, std::slice::from_ref(&out), &leaf.script)?.as_ref().to_vec());
         spend.input[0].witness = tapscript_witness(&w, &leaf.script, &tree.control_block(name)?);
         let txid = self.chain.broadcast(&spend).with_context(|| format!("the {name} check"))?;
-        eprintln!("hub: contract {cid}: the claim breaks the {name} check; taken ({} vB)", spend.vsize());
+        self.note(format!("contract {cid}: the claim breaks the {name} check; taken ({} vB)", spend.vsize()));
         self.close(cid, txid)?;
         Ok(Some(State::Done))
     }
@@ -181,14 +210,14 @@ impl Inner {
         let Some(at) = confirmed_at(self, &id)? else {
             if !self.chain.unspent(&ours)? && self.chain.get_tx(&id).is_none() {
                 // spent, not by Alice's move: our own timeout, before a restart
-                eprintln!("hub: contract {cid}: already settled by timeout");
+                self.note(format!("contract {cid}: already settled by timeout"));
                 return Ok(Some(State::Done));
             }
             if self.chain.height()? >= last + w {
                 // Alice stopped: the ladder output after the hub's last move times out to it
                 let name = format!("timeout_{}", awaiting - 1);
                 let txid = self.chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000))?;
-                eprintln!("hub: contract {cid}: Alice stopped answering; timeout {txid}");
+                self.note(format!("contract {cid}: the user stopped answering; timeout {txid}"));
                 self.close(cid, txid)?;
                 return Ok(Some(State::Done));
             }
@@ -204,12 +233,12 @@ impl Inner {
         // her record: the disprove that applies, after its delay
         match v.verdict(&signed, &d.final_disproves()?)? {
             Verdict::Proved => {
-                eprintln!("hub: contract {cid}: her last step is valid; she proves it");
-                Ok(Some(State::Done))
+                self.note(format!("contract {cid}: the user's last step is valid; the user proves it"));
+                Ok(Some(State::Proved { last: m }))
             }
             Verdict::Disprove(name) => {
                 if !self.chain.unspent(&OutPoint { txid: id, vout: 0 })? {
-                    eprintln!("hub: contract {cid}: the last step is already settled");
+                    self.note(format!("contract {cid}: the last step is already settled"));
                     return Ok(Some(State::Done));
                 }
                 while self.chain.height()? < at + u32::from(p.delta) {
@@ -229,10 +258,21 @@ impl Inner {
                 wit.push(sign_tapscript(&contract_keys(&self.cfg.seed, cid).payment, &spend, 0, std::slice::from_ref(&out), &leaf.script)?.as_ref().to_vec());
                 spend.input[0].witness = tapscript_witness(&wit, &leaf.script, &tree.control_block(&leaf_name)?);
                 let txid = self.chain.broadcast(&spend).with_context(|| format!("broadcasting {leaf_name}"))?;
-                eprintln!("hub: contract {cid}: {leaf_name} ({} vB)", spend.vsize());
+                self.note(format!("contract {cid}: {leaf_name} ({} vB)", spend.vsize()));
                 self.close(cid, txid)?;
                 Ok(Some(State::Done))
             }
+        }
+    }
+}
+
+impl State {
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            State::Conceded => "the claim is true: conceded".into(),
+            State::Playing { awaiting, .. } => format!("disputing: awaiting the user's move {awaiting}"),
+            State::Proved { .. } => "the user's last step is valid: the user proves it".into(),
+            State::Done => "settled".into(),
         }
     }
 }

@@ -1,0 +1,23 @@
+[package]
+name = "lichen-demo"
+description = "A local web demo: Alice and Bob with contracts on a hub, the L2 ledger, withdrawals and a dispute"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bitcoin.workspace = true
+bitcoincore-rpc.workspace = true
+clap.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true
+lichen-ledger.workspace = true
+lichen-sequencer.workspace = true
+lichen-chain.workspace = true
+lichen-proto.workspace = true
+lichen-hub.workspace = true
+lichen-wallet.workspace = true
+lngap-btc.workspace = true

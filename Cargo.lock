@@ -1141,6 +1141,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "lichen-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "bitcoincore-rpc",
+ "clap",
+ "hex",
+ "lichen-chain",
+ "lichen-hub",
+ "lichen-ledger",
+ "lichen-proto",
+ "lichen-sequencer",
+ "lichen-wallet",
+ "lngap-btc",
+ "serde",
+ "serde_json",
+ "tiny_http",
+]
+
+[[package]]
 name = "lichen-hub"
 version = "0.1.0"
 dependencies = [

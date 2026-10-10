@@ -59,6 +59,8 @@ pub struct Wallet {
     /// For tests: escalate a claim even if it breaks one of the contract's
     /// checks (as a careless or dishonest wallet would).
     pub unchecked_claims: bool,
+    /// Told each step of a dispute, in words (for a front end).
+    pub progress: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
     key: SigningKey,
     path: PathBuf,
     returns: Vec<(u32, u32)>,
@@ -80,14 +82,14 @@ impl Wallet {
             bail!("{} already exists", path.display());
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
-        let w = Wallet { pause_after: None, unchecked_claims: false, key, path: path.to_path_buf(), returns: vec![], contracts: vec![], sequencer: Client::new(sequencer) };
+        let w = Wallet { pause_after: None, unchecked_claims: false, progress: None, key, path: path.to_path_buf(), returns: vec![], contracts: vec![], sequencer: Client::new(sequencer) };
         w.save()?;
         Ok(w)
     }
     pub fn open(path: &Path, sequencer: &str) -> Result<Wallet> {
         let s: Stored = serde_json::from_slice(&std::fs::read(path).with_context(|| format!("no wallet at {}", path.display()))?)?;
         let key = SigningKey::from_bytes(&hex::decode(&s.secret)?).context("the wallet's key")?;
-        Ok(Wallet { pause_after: None, unchecked_claims: false, key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, sequencer: Client::new(sequencer) })
+        Ok(Wallet { pause_after: None, unchecked_claims: false, progress: None, key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, sequencer: Client::new(sequencer) })
     }
     pub(crate) fn save(&self) -> Result<()> {
         let s = Stored { secret: hex::encode(self.key.to_bytes()), returns: self.returns.clone(), contracts: self.contracts.clone() };

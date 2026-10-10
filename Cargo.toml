@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ledger", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet"]
+members = ["crates/ledger", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/demo"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,6 +27,7 @@ lichen-ledger = { path = "crates/ledger" }
 lichen-chain = { path = "crates/chain" }
 lichen-proto = { path = "crates/proto" }
 lichen-hub = { path = "crates/hub" }
+lichen-wallet = { path = "crates/wallet" }
 # the contract and the dispute (ln-gap)
 lngap-sessions = { path = "../ln-gap/crates/apps/sessions" }
 lngap-zk = { path = "../ln-gap/crates/apps/zk" }

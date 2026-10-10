@@ -85,6 +85,11 @@ pub(crate) struct Inner {
     open: Mutex<HashMap<u32, Open>>,
     next_cid: Mutex<u32>,
     disputes: Mutex<HashMap<u32, dispute::State>>,
+    /// The misbehaviour switches (initially the config's), and a log of
+    /// what the hub did.
+    refuse_folds: AtomicBool,
+    dispute_true_claims: AtomicBool,
+    log: Mutex<Vec<String>>,
 }
 
 pub struct Hub {
@@ -107,9 +112,10 @@ impl Hub {
             open.insert(o.record.cid(), o);
         }
         let next = open.keys().max().map_or(cfg.first_cid, |m| m + 1);
+        let (cfg_refuse, cfg_dispute) = (cfg.refuse_folds, cfg.dispute_true_claims);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()) });
+        let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), log: Mutex::new(vec![]) });
         let stop = Arc::new(AtomicBool::new(false));
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
@@ -145,6 +151,29 @@ impl Hub {
     pub fn contracts(&self) -> Vec<(Record, Option<bitcoin::Txid>)> {
         self.inner.open.lock().unwrap().values().map(|o| (o.record.clone(), o.closed)).collect()
     }
+    /// Each disputed contract's state, in words.
+    pub fn disputes(&self) -> HashMap<u32, String> {
+        self.inner.disputes.lock().unwrap().iter().map(|(c, s)| (*c, s.describe())).collect()
+    }
+    /// What the hub has done, in words.
+    pub fn log(&self) -> Vec<String> {
+        self.inner.log.lock().unwrap().clone()
+    }
+    /// The misbehaviour switches: refuse every cooperative withdrawal;
+    /// dispute claims that are true.
+    pub fn set_refuse_folds(&self, on: bool) {
+        self.inner.refuse_folds.store(on, Ordering::Relaxed);
+    }
+    pub fn set_dispute_true_claims(&self, on: bool) {
+        self.inner.dispute_true_claims.store(on, Ordering::Relaxed);
+    }
+    pub fn switches(&self) -> (bool, bool) {
+        (self.inner.refuse_folds.load(Ordering::Relaxed), self.inner.dispute_true_claims.load(Ordering::Relaxed))
+    }
+    /// The hub's on-chain balance.
+    pub fn balance(&self) -> Result<Amount> {
+        self.inner.chain.balance()
+    }
 }
 
 impl Drop for Hub {
@@ -168,6 +197,12 @@ fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String
 }
 
 impl Inner {
+    /// Log what the hub did.
+    pub(crate) fn note(&self, msg: String) {
+        eprintln!("hub: {msg}");
+        self.log.lock().unwrap().push(msg);
+    }
+
     fn info(&self) -> Info {
         Info { statement: self.cfg.statement.id().to_string(), depths: self.program.depths(), reserve_ppm: self.cfg.reserve_ppm, max_bits: self.cfg.max_bits, duration: self.cfg.duration }
     }
@@ -230,6 +265,7 @@ impl Inner {
         let prevouts: Vec<(OutPoint, TxOut)> = p.req.coins.iter().chain(&p.offer.hub_coins).cloned().collect();
         let signed = self.chain.sign_mine(&a.funding, &prevouts)?;
         let txid = self.chain.broadcast(&signed).context("broadcasting the funding")?;
+        self.note(format!("contract {}: opened (deposit {} sats, cap {} sats); funding broadcast", a.cid, record.terms.deposit, record.terms.v_max().to_sat()));
         let o = Open { record, minted: false, closed: None };
         self.save(&o)?;
         self.open.lock().unwrap().insert(a.cid, o);
@@ -246,7 +282,7 @@ impl Inner {
     /// asks for, within the cap; then the hub signs her fold and
     /// broadcasts it.
     fn fold(&self, f: FoldRequest) -> Result<Folded> {
-        ensure!(!self.cfg.refuse_folds, "this hub refuses cooperative withdrawals");
+        ensure!(!self.refuse_folds.load(Ordering::Relaxed), "this hub refuses cooperative withdrawals");
         let o = self.open.lock().unwrap().get(&f.cid).cloned().context("no such contract")?;
         ensure!(o.closed.is_none(), "contract {} is closed", f.cid);
         let input = self.seq.state()?.withdraw_input(f.index)?;
@@ -257,6 +293,7 @@ impl Inner {
         let mine = p.sign(&contract_keys(&self.cfg.seed, f.cid).payment)?;
         let txid = self.chain.broadcast(&p.finish(vec![], &mine, &f.alice_sig)).context("broadcasting the fold")?;
         self.close(f.cid, txid)?;
+        self.note(format!("contract {}: folded: {} sats back to the user, with the user's reserve", f.cid, f.b));
         Ok(Folded { txid })
     }
 
@@ -285,6 +322,7 @@ impl Inner {
             let tx = self.chain.sign_mine(&tx, &[(o.record.funding, p.prevout.clone()), (op, coin)])?;
             let txid = self.chain.broadcast(&tx).context("broadcasting the default")?;
             self.close(o.record.cid(), txid)?;
+            self.note(format!("contract {}: T_close passed; the default (the user's reserve back)", o.record.cid()));
         }
         Ok(())
     }
@@ -298,6 +336,7 @@ impl Inner {
             }
             let d = u64::from(o.record.terms.deposit);
             self.seq.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![note(o.record.l2_address, d, 0)])))?;
+            self.note(format!("contract {}: funding confirmed; minted {d} sats to the user", o.record.cid()));
             o.minted = true;
             self.save(&o)?;
             self.open.lock().unwrap().insert(o.record.cid(), o);

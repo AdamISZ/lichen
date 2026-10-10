@@ -4,9 +4,11 @@
 //!
 //! - `POST /tx`: a [`Tx`]; the new notes' indices, or the reason it was
 //!   refused;
-//! - `POST /seal`: seal a height; its [`SignedRoot`];
+//! - `POST /seal`: seal a height, if anything changed since the last;
+//!   its [`SignedRoot`];
 //! - `GET /state`: every note's opening, the nullifiers, the sealed
-//!   heights (the ledger is transparent; fine at this scale).
+//!   heights (the ledger is transparent; fine at this scale);
+//! - `GET /events?since=<n>`: what happened, in order, from event `n`.
 //!
 //! The sequencer is trusted for the L2's finality, inclusion and
 //! availability (the L2's own assumptions), and for nothing else: a
@@ -65,6 +67,27 @@ impl State {
     }
 }
 
+/// What the sequencer did, for observers.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Event {
+    /// The hub issued notes: (owner, value).
+    Mint { to: Vec<(Hash, u64)> },
+    /// A transfer: the owners of the notes spent, and the new notes
+    /// (owner, value, memo).
+    Transfer { from: Vec<Hash>, to: Vec<(Hash, u64, u32)> },
+    /// A height sealed: the notes so far, its signed root.
+    Sealed { height: u64, notes: u32, root: Hash },
+}
+
+impl Event {
+    fn of(tx: &Tx) -> Event {
+        match tx {
+            Tx::Mint(m) => Event::Mint { to: m.outputs.iter().map(|n| (n.owner, n.value)).collect() },
+            Tx::Transfer(t) => Event::Transfer { from: t.spends.iter().map(|s| s.note.owner).collect(), to: t.outputs.iter().map(|n| (n.owner, n.value, n.memo)).collect() },
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Applied {
     indices: Vec<u32>,
@@ -93,12 +116,13 @@ impl Sequencer {
         let server = Arc::new(Server::http(addr).map_err(|e| anyhow!("listen on {addr}: {e}"))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let ledger = Arc::new(Mutex::new(ledger));
+        let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(vec![]));
         let srv = server.clone();
         let thread = std::thread::spawn(move || {
             for mut req in srv.incoming_requests() {
                 let mut body = String::new();
                 let _ = req.as_reader().read_to_string(&mut body);
-                let (code, json) = handle(&ledger, &key, req.method(), req.url(), &body);
+                let (code, json) = handle(&ledger, &events, &key, req.method(), req.url(), &body);
                 if code == 200 {
                     if let Some(p) = &path {
                         let l = ledger.lock().unwrap();
@@ -122,18 +146,37 @@ impl Drop for Sequencer {
     }
 }
 
-fn handle(ledger: &Mutex<Ledger>, key: &SigningKey, method: &Method, url: &str, body: &str) -> (u16, String) {
+fn handle(ledger: &Mutex<Ledger>, events: &Mutex<Vec<Event>>, key: &SigningKey, method: &Method, url: &str, body: &str) -> (u16, String) {
     let refuse = |code: u16, e: String| (code, serde_json::to_string(&Refused { error: e }).unwrap());
     let mut l = ledger.lock().unwrap();
+    if let (Method::Get, Some(q)) = (method, url.strip_prefix("/events?since=")) {
+        let since: usize = q.parse().unwrap_or(0);
+        let ev = events.lock().unwrap();
+        let tail: Vec<(usize, Event)> = ev.iter().cloned().enumerate().skip(since).collect();
+        return (200, serde_json::to_string(&tail).unwrap());
+    }
     match (method, url) {
         (Method::Post, "/tx") => match serde_json::from_str::<Tx>(body) {
             Ok(tx) => match l.apply(&tx) {
-                Ok(indices) => (200, serde_json::to_string(&Applied { indices }).unwrap()),
+                Ok(indices) => {
+                    events.lock().unwrap().push(Event::of(&tx));
+                    (200, serde_json::to_string(&Applied { indices }).unwrap())
+                }
                 Err(e) => refuse(400, format!("{e:#}")),
             },
             Err(e) => refuse(400, format!("not a transaction: {e}")),
         },
-        (Method::Post, "/seal") => (200, serde_json::to_string(&l.seal(key)).unwrap()),
+        (Method::Post, "/seal") => {
+            // nothing new since the last height: no new height
+            if let Some(last) = l.sealed.last() {
+                if last.size == l.tree.len() && last.nullifiers == l.nullifiers.root() {
+                    return (200, serde_json::to_string(last).unwrap());
+                }
+            }
+            let s = l.seal(key);
+            events.lock().unwrap().push(Event::Sealed { height: s.height, notes: s.size, root: s.root() });
+            (200, serde_json::to_string(&s).unwrap())
+        }
         (Method::Get, "/state") => (200, serde_json::to_string(&State::of(&l)).unwrap()),
         _ => refuse(404, format!("no {method} {url}")),
     }
@@ -167,6 +210,10 @@ impl Client {
         let s: SignedRoot = self.post("/seal", "")?;
         s.verify(&SEQUENCER_KEY).context("the sealed root's signature")?;
         Ok(s)
+    }
+    /// The events from number `since` on, with their numbers.
+    pub fn events(&self, since: usize) -> Result<Vec<(usize, Event)>> {
+        Ok(ureq::get(&format!("{}/events?since={since}", self.url)).call().map_err(|e| anyhow!("/events: {e}"))?.into_json()?)
     }
     /// The ledger, its sealed roots checked.
     pub fn state(&self) -> Result<State> {

@@ -26,6 +26,7 @@ a separate asset.
 | `chain` | | each party: its own bitcoind wallet over RPC |
 | `proto` | | wallet and hub: the opening messages, the contract record |
 | `hub` | `lichen-hub` | the hub: opens contracts, issues tokens, folds withdrawals, answers disputes |
+| `demo` | `lichen-demo` | a local web demo of all of the above |
 
 ## Status
 
@@ -40,6 +41,26 @@ default after `T_close` otherwise). Milestone 4, disputes: when the hub
 won't fold, the wallet enforces the withdrawal on Bitcoin, the hub
 daemon answering from the chain. See
 [docs/PLAN.md](docs/PLAN.md).
+
+## The demo
+
+```sh
+cargo build --release -p lichen-demo
+./target/release/lichen-demo        # then open http://127.0.0.1:18330
+```
+
+It starts its own regtest bitcoind (`bitcoind` on the PATH, or
+`LNGAP_BITCOIND`), the sequencer, a hub and two wallets, opens a contract
+each for Alice and Bob (400,000 sats deposited, a cap of about 2.1M
+sats), and mines a block a second. Four panes: Alice and Bob (balances,
+address, send, withdraw), the ledger (what the sequencer ordered and
+sealed, and what happened on Bitcoin), and the hub (its contracts,
+headroom, and two switches). Pay each other, withdraw cooperatively, then
+switch the hub to refuse withdrawals and dispute true claims, and
+withdraw with Alice: the dispute plays out move by move (about a minute).
+The dispute runs on the mock statement, whose true returns are a fixed
+table for Alice's first contract, so in a dispute she withdraws one of
+its amounts.
 
 ## Try it (regtest keys)
 

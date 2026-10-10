@@ -96,6 +96,12 @@ fn wait_link(chain: &Chain, txid: &Txid, ours: &OutPoint, deadline: u32) -> Resu
 }
 
 impl Wallet {
+    fn step(&self, msg: String) {
+        if let Some(f) = &self.progress {
+            f(msg);
+        }
+    }
+
     /// Enforce a withdrawal of `b` from contract `cid` on Bitcoin, the
     /// claim's `input` the statement program's (for the mock, `(b, c)`;
     /// for Groth16, the verifier's input for her proof). Blocks until the
@@ -144,10 +150,12 @@ impl Wallet {
         let mut wire = word_wire(&d.contract.claim_words())?;
         wire.extend(wots_wire(&self.move_secret(&held.nonce, 1, m).sign(&move_message(prover.last()))?));
         let mut last = self.post(chain, &d, "escalate", wire)?;
+        self.step(format!("escalated: the claim of {b} sats on chain (move 1 of {m})"));
         let mut last_id = d.txid("escalate");
         if d.set.contains_key("inputs") {
             last = self.post(chain, &d, "inputs", word_wire(&d.contract.rest_words())?)?;
             last_id = d.txid("inputs");
+            self.step("the rest of the claim's input published".into());
         }
         // the search: the hub moves at even depths
         for j in (2..m).step_by(2) {
@@ -155,20 +163,24 @@ impl Wallet {
                 Next::Link(tx) => tx,
                 Next::Deadline => {
                     // the hub didn't answer in time: the ladder output after move j - 1 times out to her
+                    self.step(format!("the hub didn't answer move {} in time: the user's timeout pays", j - 1));
                     let name = format!("timeout_{}", j - 1);
                     let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000))?;
                     return self.paid(chain, &d, k, b, Outcome::HubTimedOut(txid));
                 }
                 Next::Taken => {
+                    self.step("the user's output was taken (a check or a disprove): the claim lost".into());
                     self.contracts[k].closed = Some(last_id);
                     self.save()?;
                     return Ok((Outcome::Lost, None));
                 }
             };
+            self.step(format!("the hub chose a half (move {j})"));
             let next = prover.answer(&read_move(&tx, d.key(j))?)?;
             let sig = self.move_secret(&held.nonce, j + 1, m).sign(&move_message(&next))?;
             last = self.post(chain, &d, &link_name(j + 1), wots_wire(&sig))?;
             last_id = d.txid(&link_name(j + 1));
+            self.step(if j + 1 == m { format!("move {m}: the record of the disputed step") } else { format!("move {}: the next midpoint", j + 1) });
             if pause.is_some_and(|p| j + 1 >= p) && j + 1 < m {
                 return Ok((Outcome::Paused, None));
             }
@@ -179,6 +191,7 @@ impl Wallet {
         }
         let (prior_link, last_link) = (chain.get_tx(&d.txid(&link_name(m - 1))).context("move m - 1")?, chain.get_tx(&d.txid(&link_name(m))).context("move m")?);
         if !chain.unspent(&OutPoint { txid: last_link.compute_txid(), vout: 0 })? {
+            self.step("the hub disproved the last step: the claim lost".into());
             self.contracts[k].closed = Some(last_link.compute_txid());
             self.save()?;
             return Ok((Outcome::Lost, None));
@@ -192,6 +205,7 @@ impl Wallet {
         let proof = d.finish(&name, [final_witness(&state, &rec), file].concat())?;
         let fee = Amount::from_sat((proof.vsize() as u64 + 200) * FEERATE);
         let txid = chain.post_terminal(&proof, &d.set[&name].prevout, fee)?;
+        self.step(format!("no disprove came: the last step proved ({name}): paid"));
         self.paid(chain, &d, k, b, Outcome::Proved(txid))
     }
 
@@ -259,6 +273,7 @@ impl Wallet {
             sweep.input[n].witness = tapscript_witness(&w, &leaf.script, &tree.control_block(name)?);
         }
         let swept = chain.broadcast(&sweep).context("sweeping the winnings")?;
+        self.step(format!("swept {} sats to the user's wallet", (total - fee).to_sat()));
         self.contracts[k].closed = Some(txid);
         self.save()?;
         Ok((outcome, Some((swept, total - fee))))
