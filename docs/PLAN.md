@@ -106,6 +106,16 @@ transfers; sealed, signed heights; the statement's input for a return),
   cycles, 6 minutes on a Mac; the wrap still needs x86 Linux).
 - Not yet: watchtowers (undecided).
 
+## Demo: possible improvements
+
+- A dispute on the real statement (option 1, noted 2026-10-09): make the
+  demo's state deterministic (fixed seeds, note `rho`s and signing
+  randomness), so that the withdrawal made live is one proved in advance
+  (on x86 Linux: `lngap-r0 claim`); the demo then disputes it on the
+  Groth16 verifier (59 moves, about 14 minutes of emulation, fine while
+  people ask questions). Proving live instead needs the wrap on x86
+  (a remote box) and, to be quick, the accelerated guest.
+
 ## Later
 
 Watchtowers (open problem: research/lngap_v3 §6.4); several hubs
