@@ -139,7 +139,15 @@ impl Inner {
             }
         }
         let move1 = read_move(&esc, d.key(1))?;
-        let force = if self.dispute_true_claims.load(std::sync::atomic::Ordering::Relaxed) { ForceCondition::ValidInputStepAndHash } else { ForceCondition::No };
+        let dispute_true = self.dispute_true_claims.load(std::sync::atomic::Ordering::Relaxed);
+        // an honest hub disputes only an input the program rejects: when the
+        // statement can say so natively, a true claim is conceded at once,
+        // without emulating
+        if !dispute_true && self.cfg.statement.accepts(&input_from_words(&words)) == Some(true) {
+            self.note(format!("contract {cid}: the claim is true (checked natively); conceding"));
+            return Ok(Some(State::Conceded));
+        }
+        let force = if dispute_true { ForceCondition::ValidInputStepAndHash } else { ForceCondition::No };
         let dir = self.cfg.dir.join("disputes").join(cid.to_string());
         let Some(mut v) = Verifier::start(&d.program, &input_from_words(&words), &dir, &move1, force)? else {
             self.note(format!("contract {cid}: the claim is true; conceding"));

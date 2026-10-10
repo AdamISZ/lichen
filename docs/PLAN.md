@@ -110,13 +110,40 @@ transfers; sealed, signed heights; the statement's input for a return),
   cycles, 6 minutes on a Mac; the wrap still needs x86 Linux).
 - Not yet: watchtowers (undecided).
 
+## The new ladder (ln-gap v3-jumplist, done 2026-10-10)
+
+Ported to ln-gap's reworked ladder (its JUMPLIST_PLAN.md, phase J6):
+links without TRUC (a floor of their own, the poster's keyed anchor), an
+8-ary search with BitVMX's own moves signed field by field, and reads
+settled by an authenticated jump list instead of a second search (the
+hub posts a path through its history as a split and a combine of up to
+eight inputs; Alice challenges a false hop or the hub's verdict stands).
+BitVMX-CPU from the public fork AdamISZ/BitVMX-CPU (branch `lngap`).
+
+- The hub's reserve: the larger of its share of the cap and the floors of
+  the deepest dispute (they come out of the loser's reserve): 125,017
+  sats on the mock, 195,411 on Groth16, measured at the first opening.
+- The native check: on Groth16 the honest hub checks the claim's proof
+  natively (`lngap_zk::groth16`, about 1.5 ms) and concedes a true claim
+  without emulating; it emulates only an input it will dispute.
+- Tests (release, mainnet relay policy): open, fold, dispute (A, B, C, M),
+  resume, and `tail.rs` on a full mock table: J (a wrong long-jump hash,
+  `disprove_jump`), L (a read lie, a 6-hop path, `disprove_read_1`), F
+  (the hub forges a hop; Alice refutes it, her timeout pays), L2 and F2
+  (11-hop paths in two chunks). Test switches: `Wallet::lie`,
+  `Hub::set_forge_paths`.
+- `groth16.rs` (opt-in, 30 minutes, before the native check): G1
+  conceded (497 s), G2 the whole search (21 depths) played by both
+  engines and proved (725 s, against 816 s for the old 59 moves), G3
+  `disprove_halt_exit` (5,142 vB; 540 s).
+
 ## Demo: possible improvements
 
 - A dispute on the real statement (option 1, noted 2026-10-09): make the
   demo's state deterministic (fixed seeds, note `rho`s and signing
   randomness), so that the withdrawal made live is one proved in advance
   (on x86 Linux: `lngap-r0 claim`); the demo then disputes it on the
-  Groth16 verifier (59 moves, about 14 minutes of emulation, fine while
+  Groth16 verifier (21 depths, about 12 minutes of emulation, fine while
   people ask questions). Proving live instead needs the wrap on x86
   (a remote box) and, to be quick, the accelerated guest.
 

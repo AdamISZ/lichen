@@ -9,7 +9,9 @@
 //!   step that last wrote it; its `read` verdict takes everything;
 //! - F: the same lie, but the hub forges a hash in its path: Alice finds
 //!   it against her own history and challenges that hop; the hub can't
-//!   reveal it; her timeout pays her.
+//!   reveal it; her timeout pays her;
+//! - L2 and F2: L and F with a path of more than ten hops, posted as a
+//!   combine of two inputs.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,8 +36,14 @@ const B: u32 = 300_000;
 /// What each claim says: not in the table.
 const FALSE_B: u32 = B + 1_024;
 
+/// The mock's table, full (16 returns, any memo, under any session: the
+/// contracts' memo check still applies): a false claim scans all of it,
+/// so its trace is long enough for paths of more than ten hops.
 fn statement() -> Statement {
-    Statement::Mock { session: 1000, returns: vec![(B, 1000)] }
+    let any = lngap_sessions::statement::ANY;
+    let mut returns: Vec<(u32, u32)> = (1..16).map(|i| (B + 4_096 * i, any)).collect();
+    returns.push((B, any));
+    Statement::Mock { session: any, returns }
 }
 
 fn background(stop: &Arc<AtomicBool>, every: Duration, f: impl Fn() + Send + 'static) -> std::thread::JoinHandle<()> {
@@ -52,7 +60,7 @@ fn background(stop: &Arc<AtomicBool>, every: Duration, f: impl Fn() + Send + 'st
 /// an address written earlier, its value flipped, such that the honest
 /// hub's search disputes that very step (and it isn't the halt). (the
 /// step, the lie)
-fn a_read_lie(program: &Program, claim: &[u8], dir: &Path) -> (u64, FailConfiguration) {
+fn a_read_lie(program: &Program, claim: &[u8], dir: &Path, min_hops: usize) -> (u64, FailConfiguration) {
     let j = program.schedule.jump.expect("a jump list");
     let d = format!("{}/", dir.display());
     std::fs::create_dir_all(&d).unwrap();
@@ -63,7 +71,7 @@ fn a_read_lie(program: &Program, claim: &[u8], dir: &Path) -> (u64, FailConfigur
     let never = u64::MAX;
     for (t, _) in trace.iter().rev() {
         for (r, rd) in [(2u8, &t.read_2), (1, &t.read_1)] {
-            if rd.last_step == never || rd.last_step == 0 || t.step_number <= rd.last_step + 2 || j.path(t.step_number - 1, rd.last_step).is_empty() {
+            if rd.last_step == never || rd.last_step == 0 || t.step_number <= rd.last_step + 2 || j.path(t.step_number - 1, rd.last_step).len() < min_hops.max(1) {
                 continue;
             }
             let args: Vec<String> = vec![t.step_number.to_string(), format!("{:#x}", rd.address), format!("{:#x}", rd.value ^ 1), format!("{:#x}", rd.address), rd.last_step.to_string()];
@@ -120,7 +128,7 @@ fn the_read_and_jump_challenges_on_the_mock_statement() {
     let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
     let program = statement().program(&dir.join("probe")).unwrap();
 
-    for (label, user, kind, forge) in [("J", "jo", "jump", false), ("L", "lou", "read", false), ("F", "fay", "read", true)] {
+    for (label, user, kind, forge, min_hops) in [("J", "jo", "jump", false, 0), ("L", "lou", "read", false, 0), ("F", "fay", "read", true, 0), ("L2", "lee", "read", false, 10), ("F2", "flo", "read", true, 10)] {
         let ch = chain(user);
         rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
         let wdir = dir.join(user);
@@ -130,7 +138,7 @@ fn the_read_and_jump_challenges_on_the_mock_statement() {
         let claim = statement().mock_input(FALSE_B, cid).unwrap();
         // a lie the search lands on, on this claim; or a wrong long-jump
         // hash at that step
-        let (step, read_lie) = a_read_lie(&program, &claim, &dir.join(format!("probe-{cid}")));
+        let (step, read_lie) = a_read_lie(&program, &claim, &dir.join(format!("probe-{cid}")), min_hops);
         w.lie = Some(if kind == "jump" { FailConfiguration { fail_jump: Some(step), ..Default::default() } } else { read_lie });
         hub.set_forge_paths(forge);
         let t = Instant::now();
@@ -141,6 +149,10 @@ fn the_read_and_jump_challenges_on_the_mock_statement() {
             assert!(swept.is_some(), "{label}: and sweeps her winnings");
         } else {
             assert_eq!(outcome, Outcome::Lost, "{label}: the hub's path proves its verdict");
+        }
+        if min_hops > 9 {
+            let chunks = hub.log().iter().filter(|l| l.starts_with(&format!("contract {cid}: "))).find_map(|l| l.split(" hops in ").nth(1).and_then(|r| r.split(' ').next()).and_then(|n| n.parse::<usize>().ok()));
+            assert!(chunks.is_some_and(|k| k >= 2), "{label}: a path of several chunks ({chunks:?})");
         }
         // the hub closed the contract on its side too
         let start = Instant::now();

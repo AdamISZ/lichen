@@ -92,6 +92,16 @@ impl Statement {
             Statement::Mock { .. } => (0, vec![check("memo", 1, c)]),
         }
     }
+    /// Whether the program accepts `input`, answered natively when that is
+    /// cheap: the Groth16 verifier's check in milliseconds instead of its
+    /// 478M-step emulation (`None` for the mock: its emulation is quick).
+    /// The emulation stays the authority whenever the trace matters.
+    pub fn accepts(&self, input: &[u8]) -> Option<bool> {
+        match self {
+            Statement::Groth16 { .. } => Some(lngap_zk::groth16::verify_input(input).is_ok()),
+            Statement::Mock { .. } => None,
+        }
+    }
     /// The input a claim of `b` with memo `c` runs the program on: for the
     /// mock, `(b, c)`; for Groth16 it is the verifier's input for a proof
     /// (made elsewhere).
@@ -436,4 +446,25 @@ pub fn sign_fields(keys: &[lngap_lamport::winternitz::WotsSecret], msg: &[u8], s
 pub fn sign_move(program: &Program, d: u32, keys: &[lngap_lamport::winternitz::WotsSecret], msg: &[u8]) -> Result<Vec<Vec<u8>>> {
     let sizes: Vec<usize> = program.schedule.fields(d).into_iter().map(|(_, l)| l).collect();
     sign_fields(keys, msg, &sizes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The hub checks the claim natively on the input it rebuilds from the
+    /// words read off the chain: that round trip keeps a valid proof valid
+    /// (and a tampered one not).
+    #[test]
+    fn the_native_check_on_the_words_read() {
+        let valid = hex::decode(include_str!("../../../../ln-gap/crates/apps/sessions/tests/data/withdraw-9-42.hex").trim()).unwrap();
+        let g16 = Statement::Groth16 { pdf: PathBuf::from("unused.yaml") };
+        let rebuilt = input_from_words(&lngap_zk::final_d60::input_words(&valid));
+        assert_eq!(rebuilt, valid);
+        assert_eq!(g16.accepts(&rebuilt), Some(true));
+        let mut words = lngap_zk::final_d60::input_words(&valid);
+        words[41] = 10;
+        assert_eq!(g16.accepts(&input_from_words(&words)), Some(false), "b tampered");
+        assert_eq!(Statement::Mock { session: 0, returns: vec![] }.accepts(&valid), None);
+    }
 }

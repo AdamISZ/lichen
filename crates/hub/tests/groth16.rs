@@ -4,8 +4,8 @@
 //! withdrawal guest: ln-gap's test vector, a return of 9 sats with memo
 //! 42 (proved on x86 Linux). Each hub's first contract is number 42.
 //!
-//! - G1: an honest hub runs the verifier on the claim: valid, so it
-//!   concedes; Alice's timeout pays her (9 sats round down to no bit
+//! - G1: an honest hub checks the claim's proof natively (milliseconds):
+//!   valid, so it concedes; Alice's timeout pays her (9 sats round down to no bit
 //!   output; the reserves);
 //! - G2: a hub disputing true claims: the whole search, each side its own
 //!   emulator over the 478M-step verifier; Alice proves the last step;
