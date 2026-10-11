@@ -30,7 +30,10 @@ use serde_json::{json, Value};
 use tiny_http::{Header, Method, Response, Server};
 
 const FIRST_CID: u32 = 1000;
-const ASK: Ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+/// Millions of sats, so that fees at a realistic feerate stay small beside
+/// them: a cap of 2^24 sats (16.8M), and a reserve above the mock
+/// dispute's floors (125k sats).
+const ASK: Ask = Ask { deposit: 2_000_000, bits: 24, reserve: 250_000 };
 
 #[derive(Parser)]
 #[command(about = "lichen's web demo (local, regtest)")]
@@ -96,8 +99,8 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
     let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w);
     // several coins, so the hub can fund more than one contract a block
     let hub_chain = chain("hub")?;
-    for _ in 0..4 {
-        rt.fund(&hub_chain.new_spk()?, Amount::from_sat(25_000_000))?;
+    for _ in 0..8 {
+        rt.fund(&hub_chain.new_spk()?, Amount::from_sat(50_000_000))?;
     }
     // every claim true: a stand-in for proving the return
     let any = lngap_sessions::statement::ANY;
@@ -121,7 +124,7 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
     let mut users = vec![];
     for name in ["Alice", "Bob"] {
         let ch = chain(&name.to_lowercase())?;
-        rt.fund(&ch.new_spk()?, Amount::from_sat(10_000_000))?;
+        rt.fund(&ch.new_spk()?, Amount::from_sat(20_000_000))?;
         let w = Wallet::create(&args.dir.join(format!("{}.json", name.to_lowercase())), &seq.url)?;
         let address = w.address();
         users.push(Arc::new(User { name, wallet: Mutex::new(w), chain: ch, dir: args.dir.join(name.to_lowercase()), address, cid: Mutex::new(0), activity: Mutex::new(String::new()) }));

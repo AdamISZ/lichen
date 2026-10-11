@@ -99,11 +99,11 @@ function userPane(name, other) {
     <div class="muted">on-chain wallet: <span id="${name}-onchain"></span></div>
     <div class="card" id="${name}-contract"></div>
     <div class="row">
-      <input type="number" id="${name}-sendamt" min="1" step="1000" value="50000">
+      <input type="number" id="${name}-sendamt" min="1" step="10000" value="500000">
       <button id="${name}-send">send to ${other}</button>
     </div>
     <div class="row">
-      <input type="number" id="${name}-wdamt" min="1" step="1000" value="100000">
+      <input type="number" id="${name}-wdamt" min="1" step="10000" value="1000000">
       <button id="${name}-withdraw">withdraw</button>
       <button class="ghost" id="${name}-open" hidden>open a new contract</button>
     </div>
