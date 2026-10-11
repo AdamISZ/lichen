@@ -9,9 +9,11 @@ cooperatively, and if it refuses (or is gone), the user proves the return
 (RISC Zero, wrapped in Groth16) and enforces it on Bitcoin by BitVMX's
 search over a Groth16 verifier. No change to Bitcoin is needed.
 
-The protocol and its proof of concept are in
-[ln-gap](../ln-gap) (the LN-GAP v3 paper, `crates/apps/sessions`); this
-repository is the software the parties run.
+The design is described in the draft paper
+[papers/lichen-draft.pdf](papers/lichen-draft.pdf) (source alongside).
+The contracts and the dispute machinery are in
+[ln-gap](https://github.com/AdamISZ/ln-gap) (`crates/apps/sessions`); this repository is the
+software the parties run.
 
 Amounts are in sats throughout: what the ledger carries is bitcoin, not
 a separate asset.
@@ -51,7 +53,7 @@ cargo build --release -p lichen-demo
 
 It starts its own regtest bitcoind (`bitcoind` on the PATH, or
 `LNGAP_BITCOIND`), the sequencer, a hub and two wallets, opens a contract
-each for Alice and Bob (400,000 sats deposited, a cap of about 2.1M
+each for Alice and Bob (2M sats deposited, a cap of about 16.8M
 sats), and mines a block a second. Four panes: Alice and Bob (balances,
 address, send, withdraw), the ledger (what the sequencer ordered and
 sealed, and what happened on Bitcoin), and the hub (its contracts,

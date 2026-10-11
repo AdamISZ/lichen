@@ -149,5 +149,5 @@ BitVMX-CPU from the public fork AdamISZ/BitVMX-CPU (branch `lngap`).
 
 ## Later
 
-Watchtowers (open problem: research/lngap_v3 §6.4); several hubs
+Watchtowers (open problem: the paper's Watchtowers section, papers/lichen-draft.pdf); several hubs
 (colours, clearing lines); shielded notes; the accelerated guest; a GUI.
