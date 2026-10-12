@@ -1,4 +1,4 @@
-//! `lichen-hub`: the hub's daemon (regtest).
+//! `lichen-hub`: the hub's daemon.
 //!
 //! Its secrets are made on first start and kept in `--dir`: its L2 key
 //! (`l2.key`: it mints; the sequencer names it with `--issuer`, as
@@ -15,8 +15,11 @@ use lichen_ledger::{fresh_rho, load_or_create_key, regtest_hub, xonly};
 use lichen_proto::Statement;
 
 #[derive(Parser)]
-#[command(about = "A lichen hub (regtest)")]
+#[command(about = "A lichen hub")]
 struct Args {
+    /// `regtest` or `mutinynet`.
+    #[arg(long, default_value = "regtest")]
+    network: lichen_proto::Net,
     #[arg(long, default_value = "127.0.0.1:18310")]
     listen: String,
     #[arg(long, default_value = "http://127.0.0.1:18300")]
@@ -45,9 +48,10 @@ struct Args {
     reserve_ppm: u64,
     #[arg(long, default_value_t = 24)]
     max_bits: u32,
-    /// Blocks from opening to T_close.
-    #[arg(long, default_value_t = 1_000)]
-    duration: u32,
+    /// Blocks from opening to T_close (the network's default: a week on
+    /// Mutinynet).
+    #[arg(long)]
+    duration: Option<u32>,
 }
 
 fn main() -> Result<()> {
@@ -67,6 +71,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let hub = Hub::start(Config {
+        network: a.network,
         listen: a.listen,
         sequencer: a.sequencer,
         rpc_url: a.rpc_url.context("--rpc-url: the node's RPC URL")?,
@@ -78,7 +83,7 @@ fn main() -> Result<()> {
         l2_key,
         reserve_ppm: a.reserve_ppm,
         max_bits: a.max_bits,
-        duration: a.duration,
+        duration: a.duration.unwrap_or(a.network.default_duration()),
         refuse_folds: false,
         dispute_true_claims: false,
         first_cid: 1000,

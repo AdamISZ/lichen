@@ -37,9 +37,135 @@ pub const LOW_BITS: u32 = 9;
 /// `guests/withdraw.bin`).
 pub const IMAGE_ID: &str = "e0cd81a7ada6a59415be2e4a4e0cea04b6a616cc0efeeb7443e49be38a90298e";
 
-/// The contracts' timing, on regtest.
-pub fn params() -> ChannelParams {
-    ChannelParams::regtest(Amount::from_sat(0))
+/// The Bitcoin network lichen runs on: its addresses, its contracts'
+/// timing (in blocks), the defaults that depend on its block time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Net {
+    /// A local regtest, mined as fast as the tests like.
+    #[default]
+    Regtest,
+    /// Mutinynet: a public signet with 30-second blocks.
+    Mutinynet,
+}
+
+impl std::str::FromStr for Net {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Net> {
+        match s {
+            "regtest" => Ok(Net::Regtest),
+            "mutinynet" => Ok(Net::Mutinynet),
+            _ => bail!("a network is `regtest` or `mutinynet`"),
+        }
+    }
+}
+
+impl std::fmt::Display for Net {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Net::Regtest => "regtest",
+            Net::Mutinynet => "mutinynet",
+        })
+    }
+}
+
+impl Net {
+    /// The address network.
+    pub fn bitcoin(&self) -> bitcoin::Network {
+        match self {
+            Net::Regtest => bitcoin::Network::Regtest,
+            Net::Mutinynet => bitcoin::Network::Signet,
+        }
+    }
+    /// The contracts' timing. On Mutinynet (30 s blocks): escalating waits
+    /// 10 blocks (5 min) after the funding, and each move's window δ, and
+    /// the prover's extra δ′, is 40 blocks (20 min): time for a person, or
+    /// a restart.
+    pub fn params(&self) -> ChannelParams {
+        let p = ChannelParams::regtest(Amount::from_sat(0));
+        match self {
+            Net::Regtest => p,
+            Net::Mutinynet => ChannelParams { to_self_delay: 10, delta: 40, delta_prime: 40, deadline_margin: 20, ..p },
+        }
+    }
+    /// A contract's default life, opening to `T_close`, in blocks.
+    pub fn default_duration(&self) -> u32 {
+        match self {
+            Net::Regtest => 1_000,
+            Net::Mutinynet => 20_160, // a week
+        }
+    }
+    /// How many blocks a wait may see pass before it gives up (with
+    /// [`Net::patience`]'s time also passed).
+    pub fn patience_blocks(&self) -> u32 {
+        match self {
+            Net::Regtest => 50,
+            Net::Mutinynet => 40,
+        }
+    }
+    /// How long without a new block counts as a stalled chain, in seconds.
+    pub fn stall_secs(&self) -> u64 {
+        match self {
+            Net::Regtest => 300,
+            Net::Mutinynet => 1_800,
+        }
+    }
+    /// The network of an address network (Mutinynet is our only signet).
+    pub fn of(n: bitcoin::Network) -> Result<Net> {
+        match n {
+            bitcoin::Network::Regtest => Ok(Net::Regtest),
+            bitcoin::Network::Signet => Ok(Net::Mutinynet),
+            n => bail!("lichen doesn't run on {n}"),
+        }
+    }
+    /// The public Esplora, if there is one.
+    pub fn default_esplora(&self) -> Option<&'static str> {
+        match self {
+            Net::Regtest => None,
+            Net::Mutinynet => Some("https://mutinynet.com/api"),
+        }
+    }
+}
+
+/// A bounded wait: it expires once `blocks` blocks *and* `secs` seconds
+/// have passed since it began, so that slow blocks don't trip it and a
+/// fast regtest still fails in reasonable time.
+pub struct Patience {
+    start: std::time::Instant,
+    height: u32,
+    blocks: u32,
+    secs: u64,
+}
+
+/// A watchdog on the chain itself: stalled once no new block has come
+/// for the network's [`Net::stall_secs`]. For waits already bounded by a
+/// height (a deadline, a depth), which may rightly take many blocks.
+pub struct Stall {
+    height: u32,
+    since: std::time::Instant,
+    secs: u64,
+}
+
+impl Stall {
+    pub fn new(height: u32, net: Net) -> Stall {
+        Stall { height, since: std::time::Instant::now(), secs: net.stall_secs() }
+    }
+    pub fn stalled(&mut self, height: u32) -> bool {
+        if height != self.height {
+            (self.height, self.since) = (height, std::time::Instant::now());
+            return false;
+        }
+        self.since.elapsed().as_secs() >= self.secs
+    }
+}
+
+impl Patience {
+    pub fn new(height: u32, net: Net) -> Patience {
+        Patience { start: std::time::Instant::now(), height, blocks: net.patience_blocks(), secs: 300 }
+    }
+    pub fn expired(&self, height: u32) -> bool {
+        height >= self.height + self.blocks && self.start.elapsed().as_secs() >= self.secs
+    }
 }
 
 /// The statement the disputes run: `groth16`, BitVMX's Groth16 verifier
@@ -57,17 +183,70 @@ pub enum Statement {
 
 impl std::str::FromStr for Statement {
     type Err = anyhow::Error;
-    /// `mock`, or `groth16:<path to the verifier's program definition>`.
+    /// `mock`, `groth16` (BitVMX's verifier found in the cargo checkout:
+    /// [`Statement::groth16`]) or `groth16:<path to the verifier's program
+    /// definition>`.
     fn from_str(s: &str) -> Result<Statement> {
         match s.split_once(':') {
             None if s == "mock" => Ok(Statement::Mock { session: 0, returns: vec![] }),
+            None if s == "groth16" => Statement::groth16(),
             Some(("groth16", pdf)) => Ok(Statement::Groth16 { pdf: PathBuf::from(pdf) }),
-            _ => bail!("a statement is `mock` or `groth16:<pdf>`"),
+            _ => bail!("a statement is `mock`, `groth16` or `groth16:<pdf>`"),
         }
     }
 }
 
+/// BitVMX's Groth16 verifier ELF (FairgateLabs' `bitvmx-zk-verifier`, as
+/// BitVMX-CPU ships it), by its SHA-256.
+pub const VERIFIER_ELF_SHA256: &str = "2b96e192300ab938b918a860b5bdf5f72a066e0e4688fdf7efc32228d6915598";
+
+/// The verifier's program definition: an 8-ary search with a jump list,
+/// the input of [`Statement::layout`] (51 words).
+pub const GROTH16_PDF: &str = "elf: zkverifier.elf\nnary_search: 8\nmax_steps: 536870912\ninput_section_name: .input\njump_list: true\ninputs:\n  - size: 204\n    owner: prover\n";
+
+/// Where BitVMX's verifier ELF is: `LICHEN_VERIFIER_ELF`, or BitVMX-CPU's
+/// cargo checkout (it is a dependency, so building lichen fetched it);
+/// checked against [`VERIFIER_ELF_SHA256`].
+pub fn verifier_elf() -> Result<PathBuf> {
+    let found = match std::env::var_os("LICHEN_VERIFIER_ELF") {
+        Some(p) => PathBuf::from(p),
+        None => {
+            let cargo = std::env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo"))).context("no CARGO_HOME or HOME")?;
+            let checkouts = cargo.join("git").join("checkouts");
+            let mut found = None;
+            for d in std::fs::read_dir(&checkouts).with_context(|| format!("reading {}", checkouts.display()))?.flatten() {
+                if !d.file_name().to_string_lossy().starts_with("bitvmx-cpu-") {
+                    continue;
+                }
+                for rev in std::fs::read_dir(d.path())?.flatten() {
+                    let elf = rev.path().join("docker-riscv32/verifier/build/zkverifier-new-mul.elf");
+                    if elf.exists() {
+                        found = Some(elf);
+                    }
+                }
+            }
+            found.with_context(|| format!("no BitVMX-CPU checkout with the verifier ELF under {} (set LICHEN_VERIFIER_ELF)", checkouts.display()))?
+        }
+    };
+    let bytes = std::fs::read(&found).with_context(|| format!("reading {}", found.display()))?;
+    let sha = <bitcoin::hashes::sha256::Hash as bitcoin::hashes::Hash>::hash(&bytes).to_string();
+    ensure!(sha == VERIFIER_ELF_SHA256, "{}: SHA-256 {sha}, not the verifier's {VERIFIER_ELF_SHA256}", found.display());
+    Ok(found)
+}
+
 impl Statement {
+    /// The Groth16 statement on BitVMX's verifier ([`verifier_elf`]), its
+    /// program definition written beside a copy of the ELF in the
+    /// temporary directory.
+    pub fn groth16() -> Result<Statement> {
+        let dir = std::env::temp_dir().join(format!("lichen-groth16-{}", &VERIFIER_ELF_SHA256[..12]));
+        std::fs::create_dir_all(&dir)?;
+        if !dir.join("zkverifier.elf").exists() {
+            std::fs::copy(verifier_elf()?, dir.join("zkverifier.elf"))?;
+        }
+        std::fs::write(dir.join("groth16.yaml"), GROTH16_PDF)?;
+        Ok(Statement::Groth16 { pdf: dir.join("groth16.yaml") })
+    }
     pub fn id(&self) -> &'static str {
         match self {
             Statement::Groth16 { .. } => "groth16",
@@ -127,6 +306,9 @@ impl Statement {
 /// What the hub offers (`GET /info`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Info {
+    /// The Bitcoin network; the wallet must be on the same.
+    #[serde(default)]
+    pub network: Net,
     /// The L2 deployment the hub is in (its sequencer's key and its own);
     /// the wallet must know the same.
     pub deployment: Deployment,
@@ -258,6 +440,9 @@ pub fn sign_anchor(kp: &bitcoin::key::Keypair, child: &Transaction, prevouts: &[
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
     pub statement: String,
+    /// The Bitcoin network, which fixes the contract's timing.
+    #[serde(default)]
+    pub network: Net,
     /// The L2 deployment's id: the claim's journal must carry it.
     pub deployment: Hash,
     pub terms: Terms,
@@ -280,7 +465,7 @@ impl Record {
     }
     pub fn spec(&self, statement: &Statement) -> Spec {
         let (b_word, checks) = statement.layout(self.terms.id, &self.deployment);
-        Spec { terms: self.terms, cid: self.terms.id, params: params(), pubs: self.pubs.clone(), b_word, checks, moves: self.moves.clone(), inputs: self.inputs.clone(), tail: self.tail.clone() }
+        Spec { terms: self.terms, cid: self.terms.id, params: self.network.params(), pubs: self.pubs.clone(), b_word, checks, moves: self.moves.clone(), inputs: self.inputs.clone(), tail: self.tail.clone() }
     }
     pub fn contract(&self, statement: &Statement, program: &Program) -> Result<Contract> {
         ensure!(statement.id() == self.statement, "the contract runs {}, not {}", self.statement, statement.id());
@@ -482,6 +667,19 @@ mod tests {
         words[41] = 10;
         assert_eq!(g16.accepts(&input_from_words(&words)), Some(false), "b tampered");
         assert_eq!(Statement::Mock { session: 0, returns: vec![] }.accepts(&valid), None);
+    }
+
+    /// `groth16` alone finds the verifier, and its program definition's
+    /// input is the layout's: the journal's length, the image id, the proof,
+    /// the journal.
+    #[test]
+    fn the_groth16_statement_found() {
+        assert!(GROTH16_PDF.contains(&format!("size: {}", 4 + 32 + 128 + JOURNAL_LEN)));
+        let Statement::Groth16 { pdf } = "groth16".parse::<Statement>().unwrap() else { panic!("not groth16") };
+        assert!(pdf.exists() && pdf.with_file_name("zkverifier.elf").exists());
+        assert!(Net::Mutinynet.params().delta > Net::Regtest.params().delta);
+        assert_eq!(Net::of(bitcoin::Network::Signet).unwrap(), Net::Mutinynet);
+        assert_eq!("mutinynet".parse::<Net>().unwrap().to_string(), "mutinynet");
     }
 
     /// The Groth16 layout checks the journal `b ‖ c ‖ D`: a claim in this

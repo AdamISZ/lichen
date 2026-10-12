@@ -102,6 +102,7 @@ fn the_read_and_jump_challenges_on_the_mock_statement() {
     let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w).unwrap();
     rt.fund(&chain("hub").new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
     let hub = Hub::start(Config {
+        network: lichen_proto::Net::Regtest,
         listen: "127.0.0.1:0".into(),
         sequencer: seq.url.clone(),
         rpc_url: rt.rpc_url().to_string(),

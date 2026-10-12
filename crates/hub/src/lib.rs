@@ -20,7 +20,7 @@ use bitcoin::{Amount, OutPoint, Sequence, TxOut};
 use lichen_chain::Chain;
 use lichen_ledger::{note, xonly, Mint, Tx};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_proto::{all_moves, check_funding, tail_keys, contributions, terms, Accept, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{all_moves, check_funding, tail_keys, contributions, terms, Accept, FoldRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, FEE_SHARE, FOLD_FEE};
 use lichen_sequencer::Client;
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
@@ -30,6 +30,8 @@ use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Response, Server};
 
 pub struct Config {
+    /// The Bitcoin network (the contracts' timing with it).
+    pub network: Net,
     pub listen: String,
     pub sequencer: String,
     /// The node's RPC URL and cookie, and the hub's wallet there.
@@ -125,7 +127,7 @@ impl Hub {
     pub fn start(cfg: Config) -> Result<Hub> {
         std::fs::create_dir_all(cfg.dir.join("contracts"))?;
         let program = cfg.statement.program(&cfg.dir)?;
-        let chain = Chain::connect(&cfg.rpc_url, &cfg.cookie, &cfg.wallet)?;
+        let chain = Chain::connect_on(&cfg.rpc_url, &cfg.cookie, &cfg.wallet, cfg.network.bitcoin())?;
         let seq = Client::new(&cfg.sequencer)?;
         ensure!(seq.deployment.hub == xonly(&cfg.l2_key), "the sequencer's issuer is {}, not this hub's key {}", hex::encode(seq.deployment.hub), hex::encode(xonly(&cfg.l2_key)));
         let mut open = HashMap::new();
@@ -231,7 +233,7 @@ impl Inner {
     }
 
     fn info(&self) -> Info {
-        Info { deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.depths(), reserve_ppm: self.cfg.reserve_ppm, max_bits: self.cfg.max_bits, duration: self.cfg.duration }
+        Info { network: self.cfg.network, deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.depths(), reserve_ppm: self.cfg.reserve_ppm, max_bits: self.cfg.max_bits, duration: self.cfg.duration }
     }
 
     fn open(&self, req: OpenRequest) -> Result<OpenOffer> {
@@ -254,6 +256,7 @@ impl Inner {
         let path: Vec<_> = path_secrets(&self.cfg.seed, cid, program).into_iter().map(pub_of).collect();
         let mut record = Record {
             statement: self.cfg.statement.id().to_string(),
+            network: self.cfg.network,
             deployment: self.seq.deployment.id(),
             // a reserve to measure the floors under; the real one below
             terms: terms(cid, &req, t_close, v_max)?,

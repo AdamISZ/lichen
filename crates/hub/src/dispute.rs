@@ -249,12 +249,12 @@ impl Inner {
             }
             Some(posted) => anyhow::ensure!(posted.input.iter().zip(&tx.input).all(|(a, b)| a.witness == b.witness), "{txid} on chain is not the link replayed"),
         }
-        let start = std::time::Instant::now();
+        let patience = lichen_proto::Patience::new(self.chain.height()?, self.cfg.network);
         loop {
             if let Some(h) = confirmed_at(self, &txid)? {
                 return Ok(h);
             }
-            anyhow::ensure!(start.elapsed() < std::time::Duration::from_secs(300), "{txid} never confirmed");
+            anyhow::ensure!(!patience.expired(self.chain.height()?), "{txid} never confirmed");
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }

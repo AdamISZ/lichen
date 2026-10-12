@@ -106,6 +106,7 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
     let any = lngap_sessions::statement::ANY;
     let statement = Statement::Mock { session: any, returns: vec![(any, any)] };
     let hub = Hub::start(Config {
+        network: lichen_proto::Net::Regtest,
         listen: "127.0.0.1:0".into(),
         sequencer: seq.url.clone(),
         rpc_url: rt.rpc_url().to_string(),

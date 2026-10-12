@@ -52,6 +52,7 @@ fn fold_and_default() {
     let hub_chain = chain("hub");
     rt.fund(&hub_chain.new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
     let hub = Hub::start(Config {
+        network: lichen_proto::Net::Regtest,
         listen: "127.0.0.1:0".into(),
         sequencer: seq.url.clone(),
         rpc_url: rt.rpc_url().to_string(),

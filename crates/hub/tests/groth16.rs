@@ -31,25 +31,6 @@ use lichen_sequencer::Sequencer;
 use lichen_wallet::{Ask, Wallet};
 use lngap_btc::regtest::Regtest;
 
-/// The verifier ELF as BitVMX-CPU ships it (GPL, not vendored), from a
-/// Cargo checkout (the fork ln-gap builds carries it unchanged).
-fn verifier_elf() -> std::path::PathBuf {
-    let home = std::env::var("CARGO_HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".cargo"));
-    let checkouts = home.join("git/checkouts");
-    for d in std::fs::read_dir(&checkouts).unwrap().flatten() {
-        if !d.file_name().to_string_lossy().starts_with("bitvmx-cpu-") {
-            continue;
-        }
-        for rev in std::fs::read_dir(d.path()).unwrap().flatten() {
-            let elf = rev.path().join("docker-riscv32/verifier/build/zkverifier-new-mul.elf");
-            if elf.exists() {
-                return elf;
-            }
-        }
-    }
-    panic!("no BitVMX-CPU checkout with the verifier ELF under {}", checkouts.display());
-}
-
 #[test]
 #[ignore]
 fn disputes_on_the_groth16_verifier() {
@@ -57,9 +38,9 @@ fn disputes_on_the_groth16_verifier() {
     let dir = std::env::temp_dir().join(format!("lichen-g16-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::copy(verifier_elf(), dir.join("zkverifier.elf")).unwrap();
-    std::fs::write(dir.join("groth16.yaml"), "elf: zkverifier.elf\nnary_search: 8\nmax_steps: 536870912\ninput_section_name: .input\njump_list: true\ninputs:\n  - size: 204\n    owner: prover\n").unwrap();
-    let statement = Statement::Groth16 { pdf: dir.join("groth16.yaml") };
+    // BitVMX's verifier, as BitVMX-CPU ships it (GPL, not vendored), from
+    // the cargo checkout
+    let statement = Statement::groth16().unwrap();
     // the canned claim: the toy deployment's return of 9 with memo 42,
     // proved under the committed guest (ln-gap's r0/scripts/linux-withdraw.sh
     // prints it, on x86 Linux)
@@ -91,6 +72,7 @@ fn disputes_on_the_groth16_verifier() {
         let hub_name = format!("hub-{label}");
         rt.fund(&chain(&hub_name).new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
         let hub = Hub::start(Config {
+            network: lichen_proto::Net::Regtest,
             listen: "127.0.0.1:0".into(),
             sequencer: seq.url.clone(),
             rpc_url: rt.rpc_url().to_string(),

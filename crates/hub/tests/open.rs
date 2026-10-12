@@ -31,6 +31,7 @@ fn open_a_contract_and_receive_the_deposit() {
     rt.fund(&hub_chain.new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
     rt.fund(&alice_chain.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
     let hub = Hub::start(Config {
+        network: lichen_proto::Net::Regtest,
         listen: "127.0.0.1:0".into(),
         sequencer: seq.url.clone(),
         rpc_url: rt.rpc_url().to_string(),

@@ -13,26 +13,32 @@ use bitcoincore_rpc::{Auth, Client, RpcApi};
 pub struct Chain {
     rpc: Client,
     pub wallet: String,
+    /// The network its addresses are on.
+    pub network: Network,
 }
 
 impl Chain {
-    /// Connect to the node at `url` with its cookie, using (creating if
-    /// needed) the wallet `wallet`.
+    /// Connect to a regtest node at `url` with its cookie, using (creating
+    /// if needed) the wallet `wallet`.
     pub fn connect(url: &str, cookie: &Path, wallet: &str) -> Result<Chain> {
+        Chain::connect_on(url, cookie, wallet, Network::Regtest)
+    }
+    /// The same, on `network`.
+    pub fn connect_on(url: &str, cookie: &Path, wallet: &str, network: Network) -> Result<Chain> {
         let node = Client::new(url, Auth::CookieFile(cookie.to_path_buf())).context("the node")?;
         let loaded = node.list_wallets()?;
         if !loaded.iter().any(|w| w == wallet) && node.load_wallet(wallet).is_err() {
             node.create_wallet(wallet, None, None, None, None).with_context(|| format!("creating wallet {wallet}"))?;
         }
         let rpc = Client::new(&format!("{url}/wallet/{wallet}"), Auth::CookieFile(cookie.to_path_buf()))?;
-        Ok(Chain { rpc, wallet: wallet.to_string() })
+        Ok(Chain { rpc, wallet: wallet.to_string(), network })
     }
     pub fn height(&self) -> Result<u32> {
         Ok(self.rpc.get_block_count()? as u32)
     }
     /// A fresh address of this wallet, as a script.
     pub fn new_spk(&self) -> Result<ScriptBuf> {
-        Ok(self.rpc.get_new_address(None, Some(AddressType::Bech32m))?.require_network(Network::Regtest)?.script_pubkey())
+        Ok(self.rpc.get_new_address(None, Some(AddressType::Bech32m))?.require_network(self.network)?.script_pubkey())
     }
     pub fn balance(&self) -> Result<Amount> {
         Ok(self.rpc.get_balance(Some(1), None)?)
@@ -67,7 +73,7 @@ impl Chain {
     /// A coin of exactly `amount` (sent to ourselves, unconfirmed), to add
     /// to a transaction whose outputs are fixed: all of it is fee.
     pub fn fee_coin(&self, amount: Amount) -> Result<(OutPoint, TxOut)> {
-        let addr = self.rpc.get_new_address(None, Some(AddressType::Bech32m))?.require_network(Network::Regtest)?;
+        let addr = self.rpc.get_new_address(None, Some(AddressType::Bech32m))?.require_network(self.network)?;
         let txid = self.rpc.send_to_address(&addr, amount, None, None, None, None, None, None)?;
         let tx = self.rpc.get_raw_transaction(&txid, None)?;
         let vout = tx.output.iter().position(|o| o.script_pubkey == addr.script_pubkey()).context("the fee coin")?;

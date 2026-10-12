@@ -10,12 +10,12 @@
 //! links' floors, and sweeps them to her wallet.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use lichen_chain::Chain;
-use lichen_proto::{anchor_vout, link_name, sign_anchor, sign_move, Disputed, Statement, FEERATE};
+use lichen_proto::{anchor_vout, link_name, sign_anchor, sign_move, Disputed, Net, Patience, Stall, Statement, FEERATE};
 use lngap_btc::sighash::sign_tapscript;
 use lngap_btc::witness::tapscript_witness;
 use lngap_ladder::script::wots_wire;
@@ -45,9 +45,10 @@ pub enum Outcome {
 /// Her winnings swept to her wallet: the sweep's txid and what it pays.
 pub type Swept = Option<(Txid, Amount)>;
 
-/// How long to wait on the chain before giving up (the test's blocks come
-/// fast; a real dispute waits blocks, not seconds).
-const PATIENCE: Duration = Duration::from_secs(300);
+/// The network a chain is on (its waits depend on its block time).
+fn net(chain: &Chain) -> Result<Net> {
+    Net::of(chain.network)
+}
 
 /// The height a transaction confirmed at, if it has.
 fn confirmed_at(chain: &Chain, txid: &Txid) -> Result<Option<u32>> {
@@ -56,12 +57,12 @@ fn confirmed_at(chain: &Chain, txid: &Txid) -> Result<Option<u32>> {
 }
 
 fn wait_confirmed(chain: &Chain, txid: &Txid) -> Result<u32> {
-    let start = Instant::now();
+    let patience = Patience::new(chain.height()?, net(chain)?);
     loop {
         if let Some(h) = confirmed_at(chain, txid)? {
             return Ok(h);
         }
-        ensure!(start.elapsed() < PATIENCE, "{txid} never confirmed");
+        ensure!(!patience.expired(chain.height()?), "{txid} never confirmed");
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -79,7 +80,7 @@ enum Next {
 /// Wait for the other side's link `txid` spending `ours`, until the chain
 /// reaches `deadline`.
 fn wait_link(chain: &Chain, txid: &Txid, ours: &OutPoint, deadline: u32) -> Result<Next> {
-    let start = Instant::now();
+    let mut stall = Stall::new(chain.height()?, net(chain)?);
     loop {
         if confirmed_at(chain, txid)?.is_some() {
             return Ok(Next::Link(chain.get_tx(txid).context("the link")?));
@@ -92,10 +93,11 @@ fn wait_link(chain: &Chain, txid: &Txid, ours: &OutPoint, deadline: u32) -> Resu
             }
             continue;
         }
-        if chain.height()? >= deadline {
+        let h = chain.height()?;
+        if h >= deadline {
             return Ok(Next::Deadline);
         }
-        ensure!(start.elapsed() < PATIENCE, "the chain stalled");
+        ensure!(!stall.stalled(h), "the chain stalled");
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -151,9 +153,9 @@ impl Wallet {
         };
         // escalating waits to_self_delay after the contract's funding
         let funded = held.record.funding.txid;
-        let start = Instant::now();
+        let mut stall = Stall::new(chain.height()?, net(chain)?);
         while chain.confirmations(&funded)? < u32::from(p.to_self_delay) {
-            ensure!(start.elapsed() < PATIENCE, "the contract's funding is not deep enough to escalate");
+            ensure!(!stall.stalled(chain.height()?), "the chain stalled before the contract's funding was deep enough to escalate");
             std::thread::sleep(Duration::from_millis(200));
         }
         let mut prover = Prover::start_with(&d.program, input, &dir.join(format!("dispute-{cid}")), self.lie.clone())?;
@@ -238,7 +240,7 @@ impl Wallet {
         self.step("the hub is posting a path against the last step".into());
         // the hub's combine of n chunks, or her timeout on the split
         let carrier = OutPoint { txid: d.txid("path_split"), vout: 0 };
-        let start = Instant::now();
+        let mut stall = Stall::new(chain.height()?, net(chain)?);
         let (n, comb, comb_at) = loop {
             if let Some(n) = (1..=CHUNKS).find(|n| chain.get_tx(&d.txid(&format!("combine_{n}"))).is_some()) {
                 let id = d.txid(&format!("combine_{n}"));
@@ -250,7 +252,7 @@ impl Wallet {
                 let txid = chain.post_terminal(&d.finish("timeout_path_split", vec![])?, &d.set["timeout_path_split"].prevout, Amount::from_sat(2_000))?;
                 return self.paid(chain, d, k, b, Outcome::HubTimedOut(txid));
             }
-            ensure!(start.elapsed() < PATIENCE, "the chain stalled");
+            ensure!(!stall.stalled(chain.height()?), "the chain stalled");
             std::thread::sleep(Duration::from_millis(100));
         };
         let tail = d.tail()?;

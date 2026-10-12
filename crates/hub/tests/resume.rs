@@ -50,6 +50,7 @@ fn a_dispute_resumes_after_restarts() {
     let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w).unwrap();
     rt.fund(&chain("hub").new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
     let config = || Config {
+        network: lichen_proto::Net::Regtest,
         listen: "127.0.0.1:0".into(),
         sequencer: seq.url.clone(),
         rpc_url: rt.rpc_url().to_string(),

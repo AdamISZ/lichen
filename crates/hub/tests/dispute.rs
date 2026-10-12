@@ -60,6 +60,7 @@ fn disputes_on_the_mock_statement() {
     });
     let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w).unwrap();
     let hub_config = |name: &str, dispute_true_claims: bool| Config {
+        network: lichen_proto::Net::Regtest,
         listen: "127.0.0.1:0".into(),
         sequencer: seq.url.clone(),
         rpc_url: rt.rpc_url().to_string(),

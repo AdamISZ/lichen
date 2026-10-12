@@ -226,6 +226,8 @@ impl Wallet {
     pub fn open_contract(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, ask: Ask) -> Result<Held> {
         let Ask { deposit, bits, reserve } = ask;
         let info: Info = hub_call(&format!("{hub}/info"), None)?;
+        let net = lichen_proto::Net::of(chain.network)?;
+        ensure!(info.network == net, "the hub is on {}, this wallet's coins on {net}", info.network);
         let d = self.sequencer.deployment;
         ensure!(info.deployment == d, "the hub is in another deployment (sequencer {}, hub {}) than this wallet's (sequencer {}, hub {})", hex::encode(info.deployment.sequencer), hex::encode(info.deployment.hub), hex::encode(d.sequencer), hex::encode(d.hub));
         ensure!(info.statement == statement.id(), "the hub runs {}, this wallet {}", info.statement, statement.id());
@@ -251,6 +253,7 @@ impl Wallet {
         ensure!(offer.t_close > chain.height()?, "T_close is past");
         let mut record = Record {
             statement: statement.id().to_string(),
+            network: net,
             deployment: d.id(),
             terms: t,
             pubs: [req.alice.clone(), offer.hub.clone()],
