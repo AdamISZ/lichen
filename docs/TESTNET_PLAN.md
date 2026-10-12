@@ -211,6 +211,20 @@ budget, G3 545 s.
   Ports: the hub's and the sequencer's HTTP only (no TLS yet: test
   coins, test environment).
 
+Status (2026-10-12): T3 DONE (deploy/, README there). `LNGAP_REV` pins
+ln-gap (lichen keeps path dependencies for development; `build.sh`
+exports lichen's HEAD and ln-gap at that commit with `git archive`).
+Images: `lichen` (hub, sequencer, wallet, the verifier ELF) and
+`lichen-bitcoind:<network>` (Core 31.1, or for Mutinynet benthecarman's
+build, which is Core 25.99: it ignores `rpccookieperms`, harmless with
+both containers as root). One compose per network, `--profile regtest`
+adds a miner; data in `deploy/data/<network>/`. Checked on this Mac
+(Colima, arm64): a regtest deployment passes `deploy/smoke.sh` (deposit,
+mint, fold, payout) on the Groth16 statement; the node restarted under
+the hub keeps its wallets (now created with `load_on_startup`); a
+Mutinynet deployment starts against the v25 node (the hub's wallet, its
+`/info`), syncing ~10k headers a second. Not yet on an x86 VPS.
+
 ## T4: the wrap service
 
 - `POST /wrap`: a succinct receipt in, the BitVMX verifier's input out
