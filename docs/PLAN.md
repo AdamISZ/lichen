@@ -159,9 +159,20 @@ fatal in any shared test. Now:
   records `D` and checks its eight input words (43-50) like the memo; the
   Groth16 input is 51 words (204 bytes).
 - Tests and the demo stay on the toy deployment. `groth16.rs` reads its
-  canned claim, `withdraw-9-42-deployment.hex`, from ln-gap: to be made
-  with the canonical guest (`linux-withdraw.sh` on x86), as is
-  `IMAGE_ID` (a Mac development build's for now).
+  canned claim, `withdraw-9-42-deployment.hex`, from ln-gap, made with the
+  canonical guest (`IMAGE_ID` `e0cd81a7...298e`; on the x86 laptop the
+  proof took 2 min 24 s, 4.8 GB, against 27.7 min and 9.6 GB).
+- Found by `groth16.rs`: with the deployment's eight words the escalation
+  (the claim's words and move 1's hashes) exceeded Script's 1,000-element
+  stack. A check now says which link publishes its word
+  (`Check::in_claim`, ln-gap): the deployment's go in `inputs`, the
+  check leaves being on the ladder output after it either way, and the
+  hub reads every word before applying the checks. G1 conceded natively
+  (495 s), G2 the whole search proved (728 s), G3 `disprove_halt_exit`
+  (5,141 vB, 542 s).
+- Not covered end to end: a claim breaking a check on a word in `inputs`
+  (another deployment's); the mock's only check, the memo, is in the
+  escalation.
 
 ## Demo: possible improvements
 

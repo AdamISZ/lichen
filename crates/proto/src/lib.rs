@@ -35,7 +35,7 @@ pub const FEE_SHARE: Amount = Amount::from_sat(1_000);
 pub const LOW_BITS: u32 = 9;
 /// The withdrawal guest's image id (the build committed in ln-gap,
 /// `guests/withdraw.bin`).
-pub const IMAGE_ID: &str = "1bb827a083155b984971443d0c11a0e161041ff77fb77360dcaa7b2013693cdf";
+pub const IMAGE_ID: &str = "e0cd81a7ada6a59415be2e4a4e0cea04b6a616cc0efeeb7443e49be38a90298e";
 
 /// The contracts' timing, on regtest.
 pub fn params() -> ChannelParams {
@@ -84,16 +84,20 @@ impl Statement {
     /// Where `b` is in the input, and the checks for memo `c` and the
     /// deployment (`deployment`, its id). The Groth16 verifier's input: the
     /// journal's length in words (0), the image id (1-8), the proof (9-40),
-    /// the journal `b ‖ c ‖ D` (41, 42, 43-50).
+    /// the journal `b ‖ c ‖ D` (41, 42, 43-50). The escalation publishes
+    /// `b` and the eleven words up to the memo; the deployment's eight go
+    /// with the rest of the input (`inputs`), since the escalation's
+    /// witness, with move 1's hashes, must fit Script's stack.
     pub fn layout(&self, c: u32, deployment: &Hash) -> (usize, Vec<Check>) {
-        let check = |name: &str, word: usize, value: u32| Check { name: name.to_string(), word, value };
+        let check = |name: &str, word: usize, value: u32| Check { name: name.to_string(), word, value, in_claim: true };
+        let late = |name: &str, word: usize, value: u32| Check { name: name.to_string(), word, value, in_claim: false };
         match self {
             Statement::Groth16 { .. } => {
                 let id = lngap_zk::final_d60::input_words(&hex::decode(IMAGE_ID).expect("hex"));
                 let dep = lngap_zk::final_d60::input_words(deployment);
                 let mut checks = vec![check("journal_len", 0, (JOURNAL_LEN / 4) as u32), check("memo", 42, c)];
                 checks.extend((1..9).map(|j| check(&format!("image_{j}"), j, id[j - 1])));
-                checks.extend((0..8).map(|j| check(&format!("deployment_{}", j + 1), 43 + j, dep[j])));
+                checks.extend((0..8).map(|j| late(&format!("deployment_{}", j + 1), 43 + j, dep[j])));
                 (41, checks)
             }
             Statement::Mock { .. } => (0, vec![check("memo", 1, c)]),
@@ -469,7 +473,7 @@ mod tests {
     /// (and a tampered one not).
     #[test]
     fn the_native_check_on_the_words_read() {
-        let valid = hex::decode(include_str!("../../../../ln-gap/crates/apps/sessions/tests/data/withdraw-9-42.hex").trim()).unwrap();
+        let valid = hex::decode(include_str!("../../../../ln-gap/crates/apps/sessions/tests/data/withdraw-9-42-deployment.hex").trim()).unwrap();
         let g16 = Statement::Groth16 { pdf: PathBuf::from("unused.yaml") };
         let rebuilt = input_from_words(&lngap_zk::final_d60::input_words(&valid));
         assert_eq!(rebuilt, valid);
@@ -502,5 +506,13 @@ mod tests {
         assert_eq!(claim(&ours).len(), 51);
         assert!(failing(&claim(&ours)).is_empty());
         assert_eq!(failing(&claim(&theirs)), (1..=8).map(|j| format!("deployment_{j}")).collect::<Vec<_>>());
+        // the real claim (the canonical guest's proof of the toy
+        // deployment's return of 9, memo 42) passes every check
+        let real = hex::decode(include_str!("../../../../ln-gap/crates/apps/sessions/tests/data/withdraw-9-42-deployment.hex").trim()).unwrap();
+        let words = lngap_zk::final_d60::input_words(&real);
+        assert_eq!(words.len(), 51);
+        assert!(failing(&words).is_empty(), "{:?}", failing(&words));
+        assert_eq!(words[b_word], 9);
+        assert_eq!(g16.accepts(&real), Some(true));
     }
 }

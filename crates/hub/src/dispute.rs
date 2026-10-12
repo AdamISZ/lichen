@@ -110,15 +110,8 @@ impl Inner {
         for (j, w) in claim.iter().zip(read_words(&esc, &keys(&claim), Some(d.key(1)))?) {
             words[*j] = w;
         }
-        // a claim whose words break the contract's checks (another
-        // contract's memo, another program's image id) takes no search
-        let wires = word_wires(&esc, &keys(&claim), Some(d.key(1)))?;
-        for c in &d.contract.spec.checks {
-            if words[c.word] != c.value {
-                let k = claim.iter().position(|j| *j == c.word).context("a checked word outside the claim")?;
-                return self.take_by_check(&d, cid, &c.name, wires[k].clone());
-            }
-        }
+        // each word's signature, from the link that published it
+        let mut wires: std::collections::HashMap<usize, Vec<Vec<u8>>> = claim.iter().copied().zip(word_wires(&esc, &keys(&claim), Some(d.key(1)))?).collect();
         if d.set.contains_key("inputs") {
             let id = d.txid("inputs");
             if confirmed_at(self, &id)?.is_none() {
@@ -134,8 +127,20 @@ impl Inner {
                 return Ok(None);
             }
             let rest = d.contract.rest_words();
-            for (j, w) in rest.iter().zip(read_words(&self.chain.get_tx(&id).context("the inputs")?, &keys(&rest), None)?) {
+            let inputs = self.chain.get_tx(&id).context("the inputs")?;
+            for (j, w) in rest.iter().zip(read_words(&inputs, &keys(&rest), None)?) {
                 words[*j] = w;
+            }
+            wires.extend(rest.iter().copied().zip(word_wires(&inputs, &keys(&rest), None)?));
+        }
+        // a claim whose words break the contract's checks (another
+        // contract's memo or deployment, another program's image id) takes
+        // no search: the check's leaf is on the ladder output after move 1,
+        // whichever link published the word
+        for c in &d.contract.spec.checks {
+            if words[c.word] != c.value {
+                let wire = wires.get(&c.word).context("a checked word no link published")?.clone();
+                return self.take_by_check(&d, cid, &c.name, wire);
             }
         }
         let move1 = read_move(&esc, d.key(1))?;
