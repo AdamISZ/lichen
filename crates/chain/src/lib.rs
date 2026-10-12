@@ -267,6 +267,22 @@ impl Fees for KeyFees {
     }
 }
 
+/// Load `name` on the node, creating it (watch-only if `watch_only`) if
+/// there is none, set to load whenever the node starts: a node restarted
+/// under a running hub keeps its wallet open.
+fn open_wallet(node: &Client, name: &str, watch_only: bool) -> Result<()> {
+    use serde_json::json;
+    if node.list_wallets()?.iter().any(|w| w == name) {
+        return Ok(());
+    }
+    if node.call::<serde_json::Value>("loadwallet", &[json!(name), json!(true)]).is_ok() {
+        return Ok(());
+    }
+    // name, disable_private_keys, blank, passphrase, avoid_reuse, descriptors, load_on_startup
+    node.call::<serde_json::Value>("createwallet", &[json!(name), json!(watch_only), json!(watch_only), json!(""), json!(false), json!(true), json!(true)]).with_context(|| format!("creating wallet {name}"))?;
+    Ok(())
+}
+
 impl Chain {
     /// Connect to a regtest node at `url` with its cookie, using (creating
     /// if needed) the wallet `wallet`.
@@ -276,10 +292,7 @@ impl Chain {
     /// The same, on `network`.
     pub fn connect_on(url: &str, cookie: &Path, wallet: &str, network: Net) -> Result<Chain> {
         let node = Client::new(url, Auth::CookieFile(cookie.to_path_buf())).context("the node")?;
-        let loaded = node.list_wallets()?;
-        if !loaded.iter().any(|w| w == wallet) && node.load_wallet(wallet).is_err() {
-            node.create_wallet(wallet, None, None, None, None).with_context(|| format!("creating wallet {wallet}"))?;
-        }
+        open_wallet(&node, wallet, false)?;
         let rpc = Client::new(&format!("{url}/wallet/{wallet}"), Auth::CookieFile(cookie.to_path_buf()))?;
         Ok(Chain { backend: Backend::Rpc { rpc, wallet: wallet.to_string(), url: url.to_string(), cookie: cookie.to_path_buf() }, network })
     }
@@ -360,9 +373,7 @@ impl Chain {
         let Backend::Rpc { url, cookie, .. } = &self.backend else { bail!("no node") };
         let node = Client::new(url, Auth::CookieFile(cookie.clone()))?;
         const W: &str = "lichen-watch";
-        if !node.list_wallets()?.iter().any(|w| w == W) && node.load_wallet(W).is_err() {
-            node.create_wallet(W, Some(true), Some(true), None, None).context("creating the watch-only wallet")?;
-        }
+        open_wallet(&node, W, true)?;
         Ok(Client::new(&format!("{url}/wallet/{W}"), Auth::CookieFile(cookie.clone()))?)
     }
     /// Track a script's coins from now on, for [`Chain::coins_of`]: on RPC,

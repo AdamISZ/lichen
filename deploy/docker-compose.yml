@@ -31,6 +31,8 @@ services:
     image: lichen-bitcoind:${NETWORK}
     profiles: ["regtest"]
     command: ["miner", "${MINE_EVERY:-5}"]
+    environment:
+      RPC_HOST: bitcoind
     volumes:
       - ./data/${NETWORK}/bitcoind:/data
     depends_on:

@@ -50,14 +50,20 @@ fn main() -> Result<()> {
     let client = Client::new(&s.url)?;
     let d = client.deployment;
     println!("lichen sequencer at {}: sequencer {}, hub {}, deployment {}", s.url, hex::encode(d.sequencer), hex::encode(d.hub), hex::encode(d.id()));
+    let mut last = 0;
     loop {
         if a.seal_every == 0 {
             std::thread::park();
             continue;
         }
         std::thread::sleep(std::time::Duration::from_secs(a.seal_every));
+        // (no new height when nothing changed: say so only when there is one)
         match client.seal() {
-            Ok(r) => println!("sealed {r}"),
+            Ok(r) if r.height != last => {
+                last = r.height;
+                println!("sealed {r}");
+            }
+            Ok(_) => {}
             Err(e) => eprintln!("seal: {e:#}"),
         }
     }

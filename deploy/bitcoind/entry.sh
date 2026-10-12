@@ -28,7 +28,8 @@ case "$NETWORK" in
     *) echo "unknown NETWORK $NETWORK" >&2; exit 1 ;;
 esac
 
-cli() { bitcoin-cli -datadir=/data "$@"; }
+# RPC_HOST: the node, for a container beside it (the miner)
+cli() { bitcoin-cli -datadir=/data -rpcconnect="${RPC_HOST:-127.0.0.1}" "$@"; }
 
 case "${1:-bitcoind}" in
     bitcoind)
