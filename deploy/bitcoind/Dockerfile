@@ -8,7 +8,8 @@ ARG NETWORK
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 RUN set -eu; \
-    case "$TARGETARCH" in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) echo "no build for $TARGETARCH" >&2; exit 1 ;; esac; \
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "$arch" in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) echo "no build for $arch" >&2; exit 1 ;; esac; \
     case "$NETWORK/$triplet" in \
         mutinynet/x86_64-linux-gnu) url=https://github.com/benthecarman/bitcoin/releases/download/paircommit/bitcoin-d4a86277ed8a-x86_64-linux-gnu.tar.gz; sha=e7323dae628f48676fe59b5caa36bd36cf7973e98b7753b965811b61fbd33ced ;; \
         mutinynet/aarch64-linux-gnu) url=https://github.com/benthecarman/bitcoin/releases/download/paircommit/bitcoin-d4a86277ed8a-aarch64-linux-gnu.tar.gz; sha=df9360e302c6a46ae60faf31bc28713874b16767ab8a012f21c744257aeafad4 ;; \
