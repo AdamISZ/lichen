@@ -13,3 +13,6 @@ k256.workspace = true
 serde.workspace = true
 sha2.workspace = true
 lngap-r0-core.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

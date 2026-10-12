@@ -1432,6 +1432,7 @@ dependencies = [
  "k256",
  "lngap-r0-core",
  "serde",
+ "serde_json",
  "sha2",
 ]
 

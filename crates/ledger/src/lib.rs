@@ -78,8 +78,33 @@ pub fn load_or_create_key(path: &std::path::Path) -> Result<SigningKey> {
 /// commits to them as [`Deployment::id`]; a contract pins that id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Deployment {
+    #[serde(with = "hex32")]
     pub sequencer: Hash,
+    #[serde(with = "hex32")]
     pub hub: Hash,
+}
+
+/// A 32-byte key as hex in JSON; read from hex or, as files and peers
+/// from before wrote it, a list of numbers.
+pub mod hex32 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(h: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(h))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Hex(String),
+            Bytes([u8; 32]),
+        }
+        match Either::deserialize(d)? {
+            Either::Bytes(b) => Ok(b),
+            Either::Hex(h) => hex::decode(&h).ok().and_then(|v| v.try_into().ok()).ok_or_else(|| serde::de::Error::custom(format!("not a 32-byte hex key: {h}"))),
+        }
+    }
 }
 
 impl Deployment {
@@ -408,6 +433,17 @@ mod tests {
     fn the_regtest_keys_are_the_statements() {
         assert_eq!(xonly(&regtest_sequencer()), SEQUENCER_KEY);
         assert_eq!(xonly(&regtest_hub()), HUB_KEY);
+    }
+
+    #[test]
+    fn a_deployment_in_json() {
+        let d = Deployment::toy();
+        let j = serde_json::to_string(&d).unwrap();
+        assert_eq!(j, format!(r#"{{"sequencer":"{}","hub":"{}"}}"#, hex::encode(SEQUENCER_KEY), hex::encode(HUB_KEY)));
+        assert_eq!(serde_json::from_str::<Deployment>(&j).unwrap(), d);
+        // as before: lists of numbers
+        let old = format!(r#"{{"sequencer":{:?},"hub":{:?}}}"#, SEQUENCER_KEY, HUB_KEY);
+        assert_eq!(serde_json::from_str::<Deployment>(&old).unwrap(), d);
     }
 
     #[test]
