@@ -78,20 +78,95 @@ time) and `Stall` (no new block for a while: regtest 5 min, Mutinynet
 `--statement groth16` finds the verifier ELF (its SHA-256 pinned;
 `LICHEN_VERIFIER_ELF` to override). Regtest suite green unchanged.
 
-## T2: the Esplora backend (the wallet's)
+## T2: no user wallet: a deposit address, Esplora
 
-- `Chain` becomes two backends behind one interface: bitcoind RPC (the
-  hub, the tests) and Esplora with keys held by the wallet.
-- The wallet's own coins: single-key P2TR (BIP86-style key path) from
-  its secret, an index per address kept in the wallet file; UTXOs from
-  Esplora per used address; signing its own inputs (it has every
-  prevout, as taproot sighashes need); `fee_coin` as a send to itself.
-  Hand-rolled (~200 lines, the repo's style) rather than BDK; BDK is the
-  fallback if coin tracking grows hairy.
-- `lichen address-btc`, `lichen balance-btc` (or folded into `balance`);
-  `--esplora <url>`, defaulting by network.
-- Test: regtest with electrs alongside bitcoind (the harness starts it);
-  a wallet on Esplora opens, folds and disputes against a hub on RPC.
+Decided 2026-10-12: the user's side of lichen is not a Bitcoin wallet.
+It holds keys (as now) and builds the transactions the protocol defines,
+but does no coin selection, no change, and shows no receiving addresses
+or balances beyond what a contract needs. (The user's experience with
+Babilonia: making the user co-sign PSBTs in Sparrow or Core is a UI
+mess.) The hub keeps its bitcoind wallet: operator infrastructure.
+
+Why not "pay the contract address from anywhere": the contract output
+is spent only by transactions pre-signed against its outpoint, so they
+must exist before money goes in; paid first, the deposit would sit
+where the hub alone could refuse to sign. Hence the joint funding
+transaction, and the deposit address in front of it.
+
+### The deposit (boarding) address
+
+The pattern of Ark's boarding addresses and Phoenix's swap-ins.
+
+- lichen shows one address per opening: a P2TR output with two leaves,
+  Alice and the hub together (2-of-2 for now), and Alice alone after a
+  timeout (`deposit_timeout`, per network: a day or so). She pays it from
+  any wallet, or a faucet: `D + r_A`, the fee budget below, and her share
+  of the funding transaction's fee.
+- lichen watches that one address on Esplora and waits for one
+  confirmation (an unconfirmed payment could be replaced, changing the
+  txid the pre-signed set is built on).
+- The opening as now, with the deposit in place of Alice's coins:
+  `OpenRequest` carries the deposit's outpoint (and its keys' public
+  halves) instead of `coins` and `change`; the hub checks it on its node
+  (unspent, the script, the amount). The funding transaction spends the
+  deposit and the hub's coins into the contract output, the hub's change
+  and Alice's fee budget output. Both sign the whole pre-signed set
+  first; then both sign the deposit input (2-of-2) and the hub its
+  coins; the hub broadcasts.
+- If the hub never funds (gone, refusing, or the opening failing),
+  `lichen refund` sweeps the deposit by the timeout leaf to the payout
+  address. Alice's worst case is waiting out the timeout.
+- Privacy: with MuSig2 for the 2-of-2 (PLAN.md's TODO, for the fold too)
+  the cooperative path is a key-path spend: the deposit looks like any
+  P2TR output and its spend like any single-key spend; the script tree
+  shows only on a refund. What remains is the timing of a deposit
+  followed by a funding transaction. MuSig2 is not part of T2.
+
+### Where money goes out: a payout address
+
+- Alice gives one at opening (`lichen open --payout <address>`, any
+  wallet's). The fold pays it; so do the dispute's payouts, which are
+  pre-signed at opening (hence at opening, not at withdrawal). Replaces
+  `payout_spk = chain.new_spk()`.
+
+### Fees: a fee budget, one coin
+
+- A dispute's links pay a floor of 1 sat/vB out of the contract: on
+  test networks that usually confirms alone. The poster's child (CPFP,
+  above the floor) and the coin a terminal transaction needs come from
+  the fee budget: an output of the funding transaction under a key
+  lichen holds (Alice's fee key, per contract), spent as a chain: each
+  child's change is the next fee coin. One coin, no selection; its
+  outpoint kept with the contract.
+- Size: the deepest dispute's children and terminals at the backend's
+  feerate (`FEERATE`, 2 sat/vB): on the order of 10k sats; 20k by
+  default, per network.
+- `lichen sweep-fees`: what's left goes to the payout address once the
+  contract is closed.
+- (A later option in ln-gap: terminal transactions paying their fee from
+  their own outputs, so no coin is added. Not needed for T2.)
+
+### The Esplora backend
+
+- The chain queries, for both parties' code: height, broadcast,
+  confirmations, get_tx, unspent, and the watch of the deposit address,
+  through `esplora-client` (the crate BDK uses), blocking, with
+  `--esplora <url>` defaulting by network (`Net::default_esplora`).
+- The wallet's side of `Chain` (`new_spk`, `balance`, `select`,
+  `sign_mine`, `fee_coin`) splits off: the hub keeps bitcoind's; the
+  user's side signs with the keys above and spends the fee coin. In
+  code: a chain-query trait both backends implement, and the funding
+  roles (the hub's coins, Alice's deposit) as separate code paths in the
+  opening, not one generic wallet.
+- No BDK: with no user wallet there is nothing for it to do.
+
+### Tests
+
+- Regtest with Blockstream's electrs beside bitcoind (`~/code/electrs`;
+  the harness starts it): a wallet on Esplora, with no bitcoind wallet,
+  pays its deposit from the harness, opens, folds; another disputes
+  (fees from its budget); one refunds after a hub that never funds.
+- The existing suite, on the RPC backend, unchanged.
 
 ## T3: the VPS deployment
 
@@ -117,7 +192,7 @@ time) and `Stall` (no new block for a while: regtest 5 min, Mutinynet
   (prove-free: the wrap only). Trustless (TURNKEY_TOWER.md): the wrapper
   sees the receipt and its journal, and can't change `b`; it can only
   refuse, and then the tester uses another.
-- The wallet: `lichen claim <memo> --wrapper <url>`: `withdraw-input`,
+- The user's side: `lichen claim <memo> --wrapper <url>`: `withdraw-input`,
   the STARK locally (r0vm: 30 s on a Mac), the wrap remotely, the claim
   ready for `lichen dispute --input`.
 - Lives in ln-gap's `r0` host (`lngap-r0 serve`), so lichen doesn't take
