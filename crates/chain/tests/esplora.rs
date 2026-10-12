@@ -47,3 +47,36 @@ fn esplora_answers_as_the_node_does() {
     assert_eq!(esplora.confirmations(&txid).unwrap(), node.confirmations(&txid).unwrap());
     assert!(esplora.new_spk().is_err(), "no wallet on Esplora");
 }
+
+/// A fee budget (one key's P2TR coins): found by script on either backend,
+/// split into an exact coin, its change back to the budget.
+#[test]
+fn a_fee_budget_on_either_backend() {
+    use lichen_chain::{Fees, KeyFees};
+    let rt = Regtest::start().unwrap();
+    let mut e = Electrs::start(rt.datadir(), rt.rpc_url()).unwrap();
+    let node = Chain::connect(rt.rpc_url(), rt.cookie(), "alice").unwrap();
+    let esplora = Chain::esplora(&e.url, Net::Regtest).unwrap();
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let fees = KeyFees { keypair: bitcoin::key::Keypair::from_seckey_slice(&secp, &[7u8; 32]).unwrap(), feerate: 2 };
+    let spk = fees.spk();
+    node.watch(&spk).unwrap();
+    rt.fund(&spk, Amount::from_sat(20_000)).unwrap();
+    e.wait_synced(rt.datadir(), rt.rpc_url()).unwrap();
+    for chain in [&node, &esplora] {
+        assert_eq!(fees.balance(chain).unwrap(), Amount::from_sat(20_000));
+    }
+    // an exact coin, through the node; its change back to the budget
+    let (op, coin) = fees.exact_coin(&node, Amount::from_sat(2_000)).unwrap();
+    assert_eq!(coin.value, Amount::from_sat(2_000));
+    let mut coins: Vec<_> = node.coins_of(&spk).unwrap().into_iter().map(|c| (c.0.txid, c.1.value, c.2)).collect();
+    coins.sort_by_key(|c| c.1);
+    assert_eq!(coins, vec![(op.txid, Amount::from_sat(2_000), None), (op.txid, Amount::from_sat(20_000 - 2_000 - 320), None)]);
+    rt.mine(1).unwrap();
+    e.wait_synced(rt.datadir(), rt.rpc_url()).unwrap();
+    assert_eq!(esplora.coins_of(&spk).unwrap().len(), 2);
+    assert_eq!(fees.balance(&esplora).unwrap(), fees.balance(&node).unwrap());
+    // the budget's coins spend through Esplora too
+    let (op2, _) = fees.exact_coin(&esplora, Amount::from_sat(1_000)).unwrap();
+    assert!(node.get_tx(&op2.txid).is_some());
+}

@@ -143,7 +143,7 @@ impl Stall {
 }
 
 enum Backend {
-    Rpc { rpc: Client, wallet: String },
+    Rpc { rpc: Client, wallet: String, url: String, cookie: std::path::PathBuf },
     Esplora(BlockingClient),
 }
 
@@ -190,6 +190,73 @@ impl Fees for NodeWallet {
     }
 }
 
+/// Fees from coins of one key, as a single-key P2TR output (key path,
+/// no scripts): the user's fee budget for a contract. Its coins are found
+/// by script ([`Chain::coins_of`]), so a chain of children each spending
+/// the last one's change needs no bookkeeping.
+pub struct KeyFees {
+    pub keypair: bitcoin::key::Keypair,
+    /// sat/vB for the split [`Fees::exact_coin`] makes.
+    pub feerate: u64,
+}
+
+impl KeyFees {
+    pub fn spk(&self) -> ScriptBuf {
+        ScriptBuf::new_p2tr(&bitcoin::secp256k1::Secp256k1::verification_only(), self.keypair.x_only_public_key().0, None)
+    }
+    /// What the budget holds.
+    pub fn balance(&self, chain: &Chain) -> Result<Amount> {
+        Ok(chain.coins_of(&self.spk())?.iter().map(|c| c.1.value).sum())
+    }
+}
+
+impl Fees for KeyFees {
+    fn coin(&self, chain: &Chain, amount: Amount) -> Result<(OutPoint, TxOut)> {
+        let coins = chain.coins_of(&self.spk())?;
+        let c = coins.iter().filter(|c| c.1.value >= amount).max_by_key(|c| c.1.value).with_context(|| format!("the fee budget has {}, no coin of {amount}", coins.iter().map(|c| c.1.value).sum::<Amount>()))?;
+        Ok((c.0, c.1.clone()))
+    }
+    fn exact_coin(&self, chain: &Chain, amount: Amount) -> Result<(OutPoint, TxOut)> {
+        // split a coin: `amount` and the change, both back to the budget
+        let fee = Amount::from_sat(160 * self.feerate);
+        let dust = Amount::from_sat(330);
+        let (op, out) = self.coin(chain, amount + fee + dust)?;
+        let spk = self.spk();
+        let split = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn { previous_output: op, sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME, ..Default::default() }],
+            output: vec![TxOut { value: amount, script_pubkey: spk.clone() }, TxOut { value: out.value - amount - fee, script_pubkey: spk }],
+        };
+        let split = self.sign(chain, &split, &[(op, out)])?;
+        let txid = chain.broadcast(&split).context("splitting a fee coin")?;
+        Ok((OutPoint { txid, vout: 0 }, split.output[0].clone()))
+    }
+    fn change(&self, _: &Chain) -> Result<ScriptBuf> {
+        Ok(self.spk())
+    }
+    fn sign(&self, _: &Chain, tx: &Transaction, prevouts: &[(OutPoint, TxOut)]) -> Result<Transaction> {
+        use bitcoin::hashes::Hash;
+        use bitcoin::key::TapTweak;
+        use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+        let spk = self.spk();
+        let outs: Vec<TxOut> = prevouts.iter().map(|p| p.1.clone()).collect();
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let tweaked = self.keypair.tap_tweak(&secp, None).to_keypair();
+        let mut tx = tx.clone();
+        for i in 0..tx.input.len() {
+            if outs.get(i).map(|o| &o.script_pubkey) != Some(&spk) {
+                continue;
+            }
+            let h = SighashCache::new(&tx).taproot_key_spend_signature_hash(i, &Prevouts::All(&outs), TapSighashType::Default)?;
+            let msg = bitcoin::secp256k1::Message::from_digest(h.to_byte_array());
+            let sig = secp.sign_schnorr(&msg, &tweaked);
+            tx.input[i].witness = bitcoin::Witness::from_slice(&[sig.as_ref().to_vec()]);
+        }
+        Ok(tx)
+    }
+}
+
 impl Chain {
     /// Connect to a regtest node at `url` with its cookie, using (creating
     /// if needed) the wallet `wallet`.
@@ -204,7 +271,7 @@ impl Chain {
             node.create_wallet(wallet, None, None, None, None).with_context(|| format!("creating wallet {wallet}"))?;
         }
         let rpc = Client::new(&format!("{url}/wallet/{wallet}"), Auth::CookieFile(cookie.to_path_buf()))?;
-        Ok(Chain { backend: Backend::Rpc { rpc, wallet: wallet.to_string() }, network })
+        Ok(Chain { backend: Backend::Rpc { rpc, wallet: wallet.to_string(), url: url.to_string(), cookie: cookie.to_path_buf() }, network })
     }
     /// An Esplora server at `url` (e.g. `https://mutinynet.com/api`), on
     /// `network`. No wallet: fees come from a [`Fees`] of the caller's.
@@ -277,11 +344,45 @@ impl Chain {
             }
         }
     }
-    /// The unspent coins of a script, confirmed or not, with the height
-    /// each confirmed at. (Esplora only: the user's deposit and fee coins.)
+    /// The node's watch-only wallet (RPC): the scripts [`Chain::watch`]
+    /// asked for, whoever's they are.
+    fn watcher(&self) -> Result<Client> {
+        let Backend::Rpc { url, cookie, .. } = &self.backend else { bail!("no node") };
+        let node = Client::new(url, Auth::CookieFile(cookie.clone()))?;
+        const W: &str = "lichen-watch";
+        if !node.list_wallets()?.iter().any(|w| w == W) && node.load_wallet(W).is_err() {
+            node.create_wallet(W, Some(true), Some(true), None, None).context("creating the watch-only wallet")?;
+        }
+        Ok(Client::new(&format!("{url}/wallet/{W}"), Auth::CookieFile(cookie.clone()))?)
+    }
+    /// Track a script's coins from now on, for [`Chain::coins_of`]: on RPC,
+    /// a watch-only descriptor (coins paid before this aren't seen); on
+    /// Esplora nothing is needed.
+    pub fn watch(&self, spk: &Script) -> Result<()> {
+        if let Backend::Esplora(_) = self.backend {
+            return Ok(());
+        }
+        let w = self.watcher()?;
+        let info: serde_json::Value = w.call("getdescriptorinfo", &[serde_json::json!(format!("raw({})", spk.to_hex_string()))])?;
+        let desc = info["descriptor"].as_str().context("a descriptor")?;
+        let r: serde_json::Value = w.call("importdescriptors", &[serde_json::json!([{ "desc": desc, "timestamp": "now" }])])?;
+        ensure!(r[0]["success"].as_bool() == Some(true), "importing {desc}: {r}");
+        Ok(())
+    }
+    /// The unspent coins of a script, confirmed or not (spent in the
+    /// mempool counts as spent), with the height each confirmed at: the
+    /// user's deposit and fee coins. On RPC, the script must be watched.
     pub fn coins_of(&self, spk: &Script) -> Result<Vec<(OutPoint, TxOut, Option<u32>)>> {
         match &self.backend {
-            Backend::Rpc { .. } => bail!("a script's coins are read from Esplora"),
+            Backend::Rpc { .. } => {
+                let tip = self.height()?;
+                let addr = bitcoin::Address::from_script(spk, self.network.bitcoin())?;
+                let coins = self.watcher()?.list_unspent(Some(0), None, Some(&[&addr]), Some(true), None)?;
+                Ok(coins
+                    .into_iter()
+                    .map(|c| (OutPoint { txid: c.txid, vout: c.vout }, TxOut { value: c.amount, script_pubkey: spk.to_owned() }, (c.confirmations > 0).then(|| tip + 1 - c.confirmations)))
+                    .collect())
+            }
             Backend::Esplora(e) => Ok(e
                 .get_scripthash_utxos(spk)?
                 .into_iter()
@@ -325,6 +426,12 @@ impl Chain {
             .collect();
         let r = self.rpc()?.sign_raw_transaction_with_wallet(tx, Some(&utxos), None)?;
         Ok(r.transaction()?)
+    }
+    /// Pay `amount` to `spk` from this wallet (tests: a user paying a
+    /// deposit address from a wallet of her own).
+    pub fn pay(&self, spk: &Script, amount: Amount) -> Result<Txid> {
+        let addr = bitcoin::Address::from_script(spk, self.network.bitcoin())?;
+        Ok(self.rpc()?.send_to_address(&addr, amount, None, None, None, None, None, None)?)
     }
     /// A coin of exactly `amount` (sent to ourselves, unconfirmed), to add
     /// to a transaction whose outputs are fixed: all of it is fee.
