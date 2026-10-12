@@ -147,10 +147,19 @@ fn main() -> Result<()> {
             println!("contract {} (memo {}): deposit {} sats, cap {} sats, T_close {}; funding {}", h.record.cid(), t.id, t.deposit, t.v_max().to_sat(), t.t_close, h.record.funding.txid);
         }
         Cmd::Contracts => {
+            let addr = |spk: &bitcoin::Script| bitcoin::Address::from_script(spk, a.network.bitcoin()).map_or_else(|_| spk.to_hex_string(), |x| x.to_string());
             for h in &w.contracts {
                 let t = &h.record.terms;
-                let state = h.closed.map_or("open".to_string(), |x| format!("folded in {x}"));
-                println!("{}: deposit {} sats, cap {} sats, T_close {}, funding {}; {state}", h.record.cid(), t.deposit, t.v_max().to_sat(), t.t_close, h.record.funding.txid);
+                let state = h.closed.map_or("open".to_string(), |x| format!("closed by {x}"));
+                println!("contract {}: deposit {} sats, cap {} sats, T_close {}; {state}", h.record.cid(), t.deposit, t.v_max().to_sat(), t.t_close);
+                println!("  funding     {}", h.record.funding);
+                println!("  payout      {}", addr(&h.record.pubs[0].payout_spk));
+                println!("  fee budget  {}", addr(&w.fees(&h.nonce, h.record.network).spk()));
+            }
+            for d in &w.deposits {
+                let tree = lichen_proto::deposit_tree(&w.deposit_key(&d.nonce).x_only_public_key().0, &d.hub, d.timeout)?;
+                println!("deposit for contract {} (not open): {}", d.cid, addr(&tree.script_pubkey()));
+                println!("  refund to   {} (after {} blocks)", addr(&d.payout), d.timeout);
             }
         }
         Cmd::SweepFees { contract, fee, force } => {
