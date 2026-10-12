@@ -127,7 +127,7 @@ impl Hub {
     pub fn start(cfg: Config) -> Result<Hub> {
         std::fs::create_dir_all(cfg.dir.join("contracts"))?;
         let program = cfg.statement.program(&cfg.dir)?;
-        let chain = Chain::connect_on(&cfg.rpc_url, &cfg.cookie, &cfg.wallet, cfg.network.bitcoin())?;
+        let chain = Chain::connect_on(&cfg.rpc_url, &cfg.cookie, &cfg.wallet, cfg.network)?;
         let seq = Client::new(&cfg.sequencer)?;
         ensure!(seq.deployment.hub == xonly(&cfg.l2_key), "the sequencer's issuer is {}, not this hub's key {}", hex::encode(seq.deployment.hub), hex::encode(xonly(&cfg.l2_key)));
         let mut open = HashMap::new();

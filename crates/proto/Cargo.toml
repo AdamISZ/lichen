@@ -18,3 +18,4 @@ lngap-channel.workspace = true
 lngap-btc.workspace = true
 lngap-lamport.workspace = true
 lichen-ledger.workspace = true
+lichen-chain.workspace = true

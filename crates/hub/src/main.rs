@@ -17,7 +17,7 @@ use lichen_proto::Statement;
 #[derive(Parser)]
 #[command(about = "A lichen hub")]
 struct Args {
-    /// `regtest` or `mutinynet`.
+    /// `regtest`, `mutinynet`, `signet` or `testnet4`.
     #[arg(long, default_value = "regtest")]
     network: lichen_proto::Net,
     #[arg(long, default_value = "127.0.0.1:18310")]
@@ -83,7 +83,7 @@ fn main() -> Result<()> {
         l2_key,
         reserve_ppm: a.reserve_ppm,
         max_bits: a.max_bits,
-        duration: a.duration.unwrap_or(a.network.default_duration()),
+        duration: a.duration.unwrap_or(lichen_proto::default_duration(a.network)),
         refuse_folds: false,
         dispute_true_claims: false,
         first_cid: 1000,

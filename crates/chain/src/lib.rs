@@ -9,22 +9,144 @@ use anyhow::{bail, Context, Result};
 use bitcoin::{Amount, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 use bitcoincore_rpc::json::{AddressType, SignRawTransactionInput};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
+use serde::{Deserialize, Serialize};
+
+/// The Bitcoin network lichen runs on: its address network, its block
+/// time's waits, its public Esplora. (The contracts' timing on it is
+/// `lichen_proto::params`.)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Net {
+    /// A local regtest, mined as fast as the tests like.
+    #[default]
+    Regtest,
+    /// Mutinynet: a signet with 30-second blocks (a patched bitcoind).
+    Mutinynet,
+    /// The default signet: 10-minute blocks, stock Bitcoin Core.
+    Signet,
+    /// Testnet4: nominally 10-minute blocks, in practice in bursts.
+    Testnet4,
+}
+
+impl std::str::FromStr for Net {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Net> {
+        match s {
+            "regtest" => Ok(Net::Regtest),
+            "mutinynet" => Ok(Net::Mutinynet),
+            "signet" => Ok(Net::Signet),
+            "testnet4" => Ok(Net::Testnet4),
+            _ => bail!("a network is regtest, mutinynet, signet or testnet4"),
+        }
+    }
+}
+
+impl std::fmt::Display for Net {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Net::Regtest => "regtest",
+            Net::Mutinynet => "mutinynet",
+            Net::Signet => "signet",
+            Net::Testnet4 => "testnet4",
+        })
+    }
+}
+
+impl Net {
+    /// The address network (Mutinynet is a signet).
+    pub fn bitcoin(&self) -> Network {
+        match self {
+            Net::Regtest => Network::Regtest,
+            Net::Mutinynet | Net::Signet => Network::Signet,
+            Net::Testnet4 => Network::Testnet4,
+        }
+    }
+    /// How many blocks a confirmation may take before a wait gives up
+    /// (with [`Patience`]'s time also passed).
+    pub fn patience_blocks(&self) -> u32 {
+        match self {
+            Net::Regtest => 50,
+            Net::Mutinynet => 40,
+            Net::Signet => 6,
+            Net::Testnet4 => 12,
+        }
+    }
+    /// How long without a new block counts as a stalled chain, in seconds.
+    pub fn stall_secs(&self) -> u64 {
+        match self {
+            Net::Regtest => 300,
+            Net::Mutinynet => 1_800,
+            Net::Signet => 3_600,
+            Net::Testnet4 => 7_200,
+        }
+    }
+    /// The public Esplora (mempool.space's, or Mutinynet's own).
+    pub fn default_esplora(&self) -> Option<&'static str> {
+        match self {
+            Net::Regtest => None,
+            Net::Mutinynet => Some("https://mutinynet.com/api"),
+            Net::Signet => Some("https://mempool.space/signet/api"),
+            Net::Testnet4 => Some("https://mempool.space/testnet4/api"),
+        }
+    }
+}
+
+/// A bounded wait for a confirmation: it expires once the network's
+/// [`Net::patience_blocks`] *and* five minutes have passed since it
+/// began, so that slow blocks don't trip it and a fast regtest still
+/// fails in reasonable time.
+pub struct Patience {
+    start: std::time::Instant,
+    height: u32,
+    blocks: u32,
+}
+
+impl Patience {
+    pub fn new(height: u32, net: Net) -> Patience {
+        Patience { start: std::time::Instant::now(), height, blocks: net.patience_blocks() }
+    }
+    pub fn expired(&self, height: u32) -> bool {
+        height >= self.height + self.blocks && self.start.elapsed().as_secs() >= 300
+    }
+}
+
+/// A watchdog on the chain itself: stalled once no new block has come
+/// for the network's [`Net::stall_secs`]. For waits already bounded by a
+/// height (a deadline, a depth), which may rightly take many blocks.
+pub struct Stall {
+    height: u32,
+    since: std::time::Instant,
+    secs: u64,
+}
+
+impl Stall {
+    pub fn new(height: u32, net: Net) -> Stall {
+        Stall { height, since: std::time::Instant::now(), secs: net.stall_secs() }
+    }
+    pub fn stalled(&mut self, height: u32) -> bool {
+        if height != self.height {
+            (self.height, self.since) = (height, std::time::Instant::now());
+            return false;
+        }
+        self.since.elapsed().as_secs() >= self.secs
+    }
+}
 
 pub struct Chain {
     rpc: Client,
     pub wallet: String,
-    /// The network its addresses are on.
-    pub network: Network,
+    /// The network it is on.
+    pub network: Net,
 }
 
 impl Chain {
     /// Connect to a regtest node at `url` with its cookie, using (creating
     /// if needed) the wallet `wallet`.
     pub fn connect(url: &str, cookie: &Path, wallet: &str) -> Result<Chain> {
-        Chain::connect_on(url, cookie, wallet, Network::Regtest)
+        Chain::connect_on(url, cookie, wallet, Net::Regtest)
     }
     /// The same, on `network`.
-    pub fn connect_on(url: &str, cookie: &Path, wallet: &str, network: Network) -> Result<Chain> {
+    pub fn connect_on(url: &str, cookie: &Path, wallet: &str, network: Net) -> Result<Chain> {
         let node = Client::new(url, Auth::CookieFile(cookie.to_path_buf())).context("the node")?;
         let loaded = node.list_wallets()?;
         if !loaded.iter().any(|w| w == wallet) && node.load_wallet(wallet).is_err() {
@@ -38,7 +160,7 @@ impl Chain {
     }
     /// A fresh address of this wallet, as a script.
     pub fn new_spk(&self) -> Result<ScriptBuf> {
-        Ok(self.rpc.get_new_address(None, Some(AddressType::Bech32m))?.require_network(self.network)?.script_pubkey())
+        Ok(self.rpc.get_new_address(None, Some(AddressType::Bech32m))?.require_network(self.network.bitcoin())?.script_pubkey())
     }
     pub fn balance(&self) -> Result<Amount> {
         Ok(self.rpc.get_balance(Some(1), None)?)
@@ -73,7 +195,7 @@ impl Chain {
     /// A coin of exactly `amount` (sent to ourselves, unconfirmed), to add
     /// to a transaction whose outputs are fixed: all of it is fee.
     pub fn fee_coin(&self, amount: Amount) -> Result<(OutPoint, TxOut)> {
-        let addr = self.rpc.get_new_address(None, Some(AddressType::Bech32m))?.require_network(self.network)?;
+        let addr = self.rpc.get_new_address(None, Some(AddressType::Bech32m))?.require_network(self.network.bitcoin())?;
         let txid = self.rpc.send_to_address(&addr, amount, None, None, None, None, None, None)?;
         let tx = self.rpc.get_raw_transaction(&txid, None)?;
         let vout = tx.output.iter().position(|o| o.script_pubkey == addr.script_pubkey()).context("the fee coin")?;

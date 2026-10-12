@@ -9,7 +9,7 @@ use lichen_wallet::Wallet;
 #[derive(Parser)]
 #[command(about = "A lichen wallet")]
 struct Args {
-    /// `regtest` or `mutinynet`.
+    /// `regtest`, `mutinynet`, `signet` or `testnet4`.
     #[arg(long, default_value = "regtest")]
     network: lichen_proto::Net,
     /// The wallet file.
@@ -98,7 +98,7 @@ fn main() -> Result<()> {
         Cmd::WithdrawInput { memo } => println!("{}", serde_json::to_string_pretty(&w.withdraw_input(memo)?)?),
         Cmd::Open { deposit, bits, reserve } => {
             let (url, cookie) = (a.rpc_url.context("--rpc-url")?, a.cookie.context("--cookie")?);
-            let chain = lichen_chain::Chain::connect_on(&url, &cookie, &a.chain_wallet, a.network.bitcoin())?;
+            let chain = lichen_chain::Chain::connect_on(&url, &cookie, &a.chain_wallet, a.network)?;
             let dir = a.wallet.with_extension("d");
             let h = w.open_contract(&a.hub, &chain, &a.statement, &dir, lichen_wallet::Ask { deposit, bits, reserve })?;
             let t = &h.record.terms;
@@ -113,7 +113,7 @@ fn main() -> Result<()> {
         }
         Cmd::Dispute { contract, amount, input } => {
             let (url, cookie) = (a.rpc_url.context("--rpc-url")?, a.cookie.context("--cookie")?);
-            let chain = lichen_chain::Chain::connect_on(&url, &cookie, &a.chain_wallet, a.network.bitcoin())?;
+            let chain = lichen_chain::Chain::connect_on(&url, &cookie, &a.chain_wallet, a.network)?;
             let kept = w.contracts.iter().find(|h| h.record.cid() == contract).and_then(|h| h.claim.clone());
             let (amount, input) = match (kept, amount, input) {
                 (Some((b, i)), _, _) => (b, hex::decode(i)?),

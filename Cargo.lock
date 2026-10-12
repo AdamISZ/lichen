@@ -1341,6 +1341,7 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "bitcoincore-rpc",
+ "serde",
  "serde_json",
 ]
 
@@ -1412,6 +1413,7 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "hex",
+ "lichen-chain",
  "lichen-ledger",
  "lngap-btc",
  "lngap-channel",

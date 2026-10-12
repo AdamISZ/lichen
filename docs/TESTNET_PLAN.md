@@ -1,21 +1,40 @@
-# lichen on Mutinynet: plan
+# lichen on public test networks: plan
 
 Written 2026-10-12. The goal: a test environment other people can use. A
 hub and a sequencer run in one Docker deployment on a VPS (anywhere the
 user likes); testers run only the `lichen` wallet, with no node of their
-own, on Mutinynet, a public signet with 30-second blocks. Cooperative
-withdrawals and real disputes on the Groth16 statement.
+own. Cooperative withdrawals and real disputes on the Groth16
+statement.
+
+Four networks from the start (decided 2026-10-12): regtest (the tests),
+Mutinynet (first, for fast iteration: 30 s blocks), signet (stock
+software, the most widely available), testnet4. A network is a whole
+profile, not just magic bytes:
+
+| network | blocks | `to_self_delay` | δ, δ′ | duration | confirmation patience | stalled after | Esplora |
+|---|---|---|---|---|---|---|---|
+| regtest | as mined | 6 | 6 | 1,000 | 50 blocks | 5 min | (electrs, local) |
+| mutinynet | 30 s | 10 (5 min) | 40 (20 min) | 20,160 (a week) | 40 | 30 min | mutinynet.com/api |
+| signet | 10 min | 3 (30 min) | 6 (1 h) | 1,008 (a week) | 6 | 1 h | mempool.space/signet/api |
+| testnet4 | ~10 min, bursts | 6 | 36 (~6 h) | 1,008 | 12 | 2 h | mempool.space/testnet4/api |
+
+Testnet4's windows are wide in blocks because its difficulty rule makes
+blocks come in bursts: a burst could use up a narrow window in minutes.
+Deadlines there are the least predictable.
 
 Branch `testnet` (lichen). ln-gap needs nothing so far.
 
 ## Facts it rests on
 
-- **Mutinynet** (BlockSpaces/mutiny-net): a signet with
+- **Mutinynet** (MutinyWallet/mutiny-net, BlockSpaces fork): a signet with
   `signetchallenge=512102f7561d208dd9ae99bf497273e16f389bdbd6c4742ddb8e6b216e64fa2928ad8f51ae`,
   peer `45.79.52.207:38333`, 30 s blocks (`signetblocktime=30`). It needs
   benthecarman's patched bitcoind (release `paircommit`,
   `bitcoin-d4a86277ed8a-x86_64-linux-gnu.tar.gz`), not stock Core; it
-  also activates some soft forks, which lichen doesn't use. Esplora at
+  also activates some soft forks, which lichen doesn't use. One signer
+  (a 1-of-1 challenge). Live on 2026-10-12: height 3,500,307, blocks
+  every 30-32 s, running about three years. Only the hub's node needs
+  the patched bitcoind; testers on Esplora run none. Esplora at
   `https://mutinynet.com/api`; a faucet (URL to confirm). Checked
   2026-10-12 against the repo's `.env.mutinynet` and `Dockerfile`; check
   again before deploying.
@@ -50,7 +69,8 @@ Branch `testnet` (lichen). ln-gap needs nothing so far.
 - Done when: the regtest suite is green unchanged; unit tests of the
   networks' parameters.
 
-Status (2026-10-12): DONE. `proto::Net` with each network's timing,
+Status (2026-10-12): DONE. `Net` (in `lichen-chain`: regtest, mutinynet,
+signet, testnet4; the chain connection carries it) and `proto::params`, each network's timing,
 defaults and waits: `Patience` (a confirmation due within blocks and
 time) and `Stall` (no new block for a while: regtest 5 min, Mutinynet
 30), so a wait bounded by a deadline may take as many blocks as it needs.
@@ -76,8 +96,9 @@ time) and `Stall` (no new block for a while: regtest 5 min, Mutinynet
 ## T3: the VPS deployment
 
 - `deploy/`: a Docker Compose of
-  - `bitcoind`: the Mutinynet build, txindex, RPC on the internal
-    network only;
+  - `bitcoind`: per network, chosen at deploy time: the Mutinynet build
+    for mutinynet, stock Bitcoin Core for signet and testnet4; txindex,
+    RPC on the internal network only;
   - `sequencer`, `hub`: lichen's binaries; first start makes the hub's
     keys, the sequencer is started with the hub's `--print-key`;
     volumes for the ledger, the hub's dir, the node;

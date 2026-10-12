@@ -37,134 +37,33 @@ pub const LOW_BITS: u32 = 9;
 /// `guests/withdraw.bin`).
 pub const IMAGE_ID: &str = "e0cd81a7ada6a59415be2e4a4e0cea04b6a616cc0efeeb7443e49be38a90298e";
 
-/// The Bitcoin network lichen runs on: its addresses, its contracts'
-/// timing (in blocks), the defaults that depend on its block time.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Net {
-    /// A local regtest, mined as fast as the tests like.
-    #[default]
-    Regtest,
-    /// Mutinynet: a public signet with 30-second blocks.
-    Mutinynet,
-}
+pub use lichen_chain::{Net, Patience, Stall};
 
-impl std::str::FromStr for Net {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Net> {
-        match s {
-            "regtest" => Ok(Net::Regtest),
-            "mutinynet" => Ok(Net::Mutinynet),
-            _ => bail!("a network is `regtest` or `mutinynet`"),
-        }
+/// The contracts' timing on a network, in blocks: escalating waits
+/// `to_self_delay` after the funding; each move's window is δ, and the
+/// prover's extra δ′. Windows leave time for a person, or a restart, at
+/// the network's block time; on testnet4, whose blocks come in bursts,
+/// wide in blocks so that a burst doesn't use one up.
+pub fn params(net: Net) -> ChannelParams {
+    let p = ChannelParams::regtest(Amount::from_sat(0));
+    match net {
+        Net::Regtest => p,
+        // 30 s blocks: 5 min, 20 min windows
+        Net::Mutinynet => ChannelParams { to_self_delay: 10, delta: 40, delta_prime: 40, deadline_margin: 20, ..p },
+        // 10 min blocks: 30 min, 1 h windows
+        Net::Signet => ChannelParams { to_self_delay: 3, delta: 6, delta_prime: 6, deadline_margin: 3, ..p },
+        // nominally 10 min, in bursts: 6 h windows
+        Net::Testnet4 => ChannelParams { to_self_delay: 6, delta: 36, delta_prime: 36, deadline_margin: 12, ..p },
     }
 }
 
-impl std::fmt::Display for Net {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Net::Regtest => "regtest",
-            Net::Mutinynet => "mutinynet",
-        })
-    }
-}
-
-impl Net {
-    /// The address network.
-    pub fn bitcoin(&self) -> bitcoin::Network {
-        match self {
-            Net::Regtest => bitcoin::Network::Regtest,
-            Net::Mutinynet => bitcoin::Network::Signet,
-        }
-    }
-    /// The contracts' timing. On Mutinynet (30 s blocks): escalating waits
-    /// 10 blocks (5 min) after the funding, and each move's window δ, and
-    /// the prover's extra δ′, is 40 blocks (20 min): time for a person, or
-    /// a restart.
-    pub fn params(&self) -> ChannelParams {
-        let p = ChannelParams::regtest(Amount::from_sat(0));
-        match self {
-            Net::Regtest => p,
-            Net::Mutinynet => ChannelParams { to_self_delay: 10, delta: 40, delta_prime: 40, deadline_margin: 20, ..p },
-        }
-    }
-    /// A contract's default life, opening to `T_close`, in blocks.
-    pub fn default_duration(&self) -> u32 {
-        match self {
-            Net::Regtest => 1_000,
-            Net::Mutinynet => 20_160, // a week
-        }
-    }
-    /// How many blocks a wait may see pass before it gives up (with
-    /// [`Net::patience`]'s time also passed).
-    pub fn patience_blocks(&self) -> u32 {
-        match self {
-            Net::Regtest => 50,
-            Net::Mutinynet => 40,
-        }
-    }
-    /// How long without a new block counts as a stalled chain, in seconds.
-    pub fn stall_secs(&self) -> u64 {
-        match self {
-            Net::Regtest => 300,
-            Net::Mutinynet => 1_800,
-        }
-    }
-    /// The network of an address network (Mutinynet is our only signet).
-    pub fn of(n: bitcoin::Network) -> Result<Net> {
-        match n {
-            bitcoin::Network::Regtest => Ok(Net::Regtest),
-            bitcoin::Network::Signet => Ok(Net::Mutinynet),
-            n => bail!("lichen doesn't run on {n}"),
-        }
-    }
-    /// The public Esplora, if there is one.
-    pub fn default_esplora(&self) -> Option<&'static str> {
-        match self {
-            Net::Regtest => None,
-            Net::Mutinynet => Some("https://mutinynet.com/api"),
-        }
-    }
-}
-
-/// A bounded wait: it expires once `blocks` blocks *and* `secs` seconds
-/// have passed since it began, so that slow blocks don't trip it and a
-/// fast regtest still fails in reasonable time.
-pub struct Patience {
-    start: std::time::Instant,
-    height: u32,
-    blocks: u32,
-    secs: u64,
-}
-
-/// A watchdog on the chain itself: stalled once no new block has come
-/// for the network's [`Net::stall_secs`]. For waits already bounded by a
-/// height (a deadline, a depth), which may rightly take many blocks.
-pub struct Stall {
-    height: u32,
-    since: std::time::Instant,
-    secs: u64,
-}
-
-impl Stall {
-    pub fn new(height: u32, net: Net) -> Stall {
-        Stall { height, since: std::time::Instant::now(), secs: net.stall_secs() }
-    }
-    pub fn stalled(&mut self, height: u32) -> bool {
-        if height != self.height {
-            (self.height, self.since) = (height, std::time::Instant::now());
-            return false;
-        }
-        self.since.elapsed().as_secs() >= self.secs
-    }
-}
-
-impl Patience {
-    pub fn new(height: u32, net: Net) -> Patience {
-        Patience { start: std::time::Instant::now(), height, blocks: net.patience_blocks(), secs: 300 }
-    }
-    pub fn expired(&self, height: u32) -> bool {
-        height >= self.height + self.blocks && self.start.elapsed().as_secs() >= self.secs
+/// A contract's default life, opening to `T_close`, in blocks: a week
+/// (regtest: 1,000 blocks).
+pub fn default_duration(net: Net) -> u32 {
+    match net {
+        Net::Regtest => 1_000,
+        Net::Mutinynet => 20_160,
+        Net::Signet | Net::Testnet4 => 1_008,
     }
 }
 
@@ -465,7 +364,7 @@ impl Record {
     }
     pub fn spec(&self, statement: &Statement) -> Spec {
         let (b_word, checks) = statement.layout(self.terms.id, &self.deployment);
-        Spec { terms: self.terms, cid: self.terms.id, params: self.network.params(), pubs: self.pubs.clone(), b_word, checks, moves: self.moves.clone(), inputs: self.inputs.clone(), tail: self.tail.clone() }
+        Spec { terms: self.terms, cid: self.terms.id, params: params(self.network), pubs: self.pubs.clone(), b_word, checks, moves: self.moves.clone(), inputs: self.inputs.clone(), tail: self.tail.clone() }
     }
     pub fn contract(&self, statement: &Statement, program: &Program) -> Result<Contract> {
         ensure!(statement.id() == self.statement, "the contract runs {}, not {}", self.statement, statement.id());
@@ -677,9 +576,12 @@ mod tests {
         assert!(GROTH16_PDF.contains(&format!("size: {}", 4 + 32 + 128 + JOURNAL_LEN)));
         let Statement::Groth16 { pdf } = "groth16".parse::<Statement>().unwrap() else { panic!("not groth16") };
         assert!(pdf.exists() && pdf.with_file_name("zkverifier.elf").exists());
-        assert!(Net::Mutinynet.params().delta > Net::Regtest.params().delta);
-        assert_eq!(Net::of(bitcoin::Network::Signet).unwrap(), Net::Mutinynet);
-        assert_eq!("mutinynet".parse::<Net>().unwrap().to_string(), "mutinynet");
+        for n in ["regtest", "mutinynet", "signet", "testnet4"] {
+            assert_eq!(n.parse::<Net>().unwrap().to_string(), n);
+        }
+        // the windows are in blocks: wider where blocks come faster or in bursts
+        assert!(params(Net::Mutinynet).delta > params(Net::Signet).delta);
+        assert!(params(Net::Testnet4).delta > params(Net::Signet).delta);
     }
 
     /// The Groth16 layout checks the journal `b ‖ c ‖ D`: a claim in this
