@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
-use lichen_chain::Chain;
+use lichen_chain::{Chain, NodeWallet};
 use lichen_proto::{anchor_vout, link_name, sign_anchor, sign_move, Disputed, Patience, Stall, Statement, FEERATE};
 use lngap_btc::sighash::sign_tapscript;
 use lngap_btc::witness::tapscript_witness;
@@ -175,7 +175,7 @@ impl Wallet {
                     // the hub didn't answer in time: the ladder output after move j - 1 times out to her
                     self.step(format!("the hub didn't answer move {} in time: the user's timeout pays", j - 1));
                     let name = format!("timeout_{}", j - 1);
-                    let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000))?;
+                    let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000), &NodeWallet)?;
                     return self.paid(chain, &d, k, b, Outcome::HubTimedOut(txid));
                 }
                 Next::Taken => {
@@ -218,7 +218,7 @@ impl Wallet {
         let wire = d.rule_wire(&d.contract.rule(m, &name)?, &[], None, &link)?;
         let proof = d.finish(&name, wire)?;
         let fee = Amount::from_sat((proof.vsize() as u64 + 200) * FEERATE);
-        let txid = chain.post_terminal(&proof, &d.set[&name].prevout, fee)?;
+        let txid = chain.post_terminal(&proof, &d.set[&name].prevout, fee, &NodeWallet)?;
         self.step(format!("no disprove came: the last step proved ({name}): paid"));
         self.paid(chain, &d, k, b, Outcome::Proved(txid))
     }
@@ -245,7 +245,7 @@ impl Wallet {
             }
             if chain.unspent(&carrier)? && chain.height()? >= split_at + w + u32::from(p.delta_prime) {
                 self.step("the hub never finished its path: the user's timeout pays".into());
-                let txid = chain.post_terminal(&d.finish("timeout_path_split", vec![])?, &d.set["timeout_path_split"].prevout, Amount::from_sat(2_000))?;
+                let txid = chain.post_terminal(&d.finish("timeout_path_split", vec![])?, &d.set["timeout_path_split"].prevout, Amount::from_sat(2_000), &NodeWallet)?;
                 return self.paid(chain, d, k, b, Outcome::HubTimedOut(txid));
             }
             ensure!(!stall.stalled(chain.height()?), "the chain stalled");
@@ -271,7 +271,7 @@ impl Wallet {
                     return Ok((Outcome::Lost, None));
                 }
                 let name = format!("timeout_{hop}");
-                let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000))?;
+                let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000), &NodeWallet)?;
                 self.step("the hub couldn't reveal the hop: the user's timeout pays".into());
                 self.paid(chain, d, k, b, Outcome::PathRefuted(txid))
             }
@@ -287,7 +287,7 @@ impl Wallet {
                     return Ok((Outcome::Lost, None));
                 }
                 let name = format!("timeout_combine_{n}");
-                let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000))?;
+                let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000), &NodeWallet)?;
                 self.step("the hub never posted its verdict: the user's timeout pays".into());
                 self.paid(chain, d, k, b, Outcome::HubTimedOut(txid))
             }
@@ -311,7 +311,7 @@ impl Wallet {
         if chain.get_tx(&id).is_none() {
             let kp = self.contract_keys(nonce).payment;
             let anchor = anchor_vout(&tx, &kp.x_only_public_key().0)?;
-            chain.post_link(&tx, anchor, FEERATE, &|c, p| sign_anchor(&kp, c, p))?;
+            chain.post_link(&tx, anchor, FEERATE, &|c, p| sign_anchor(&kp, c, p), &NodeWallet)?;
         } else {
             // posted before: it must be the move we would make now
             let posted = chain.get_tx(&id).context("the link")?;

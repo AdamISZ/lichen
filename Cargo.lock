@@ -463,6 +463,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitreq"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b65c2e1ab98050c93cc9ada070d5070e014329c65196d03f6f8f1f75c2666f37"
+dependencies = [
+ "base64 0.22.1",
+ "rustls",
+ "rustls-webpki",
+ "serde",
+ "serde_json",
+ "webpki-roots 1.0.9",
+]
+
+[[package]]
 name = "bitvmx-cpu-definitions"
 version = "0.8.6"
 source = "git+https://github.com/AdamISZ/BitVMX-CPU?rev=0b7d285fc5c7795d16fd58d380ff6ef25f2f0423#0b7d285fc5c7795d16fd58d380ff6ef25f2f0423"
@@ -926,6 +940,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "esplora-client"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "647f9c89c653d69cce478202b7377c03737e33fc6bc5ec044187bf83e5597ea2"
+dependencies = [
+ "bitcoin",
+ "bitreq",
+ "hex-conservative 0.2.3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1341,6 +1368,8 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "bitcoincore-rpc",
+ "esplora-client",
+ "lngap-btc",
  "serde",
  "serde_json",
 ]

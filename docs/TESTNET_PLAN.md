@@ -160,6 +160,14 @@ The pattern of Ark's boarding addresses and Phoenix's swap-ins.
   opening, not one generic wallet.
 - No BDK: with no user wallet there is nothing for it to do.
 
+Status (2026-10-12): the backend DONE. `Chain` has two backends (RPC,
+Esplora via `esplora-client` blocking); queries, broadcast and
+`coins_of(script)` on either, wallet calls on RPC only; posting links
+takes a `Fees` (`NodeWallet` for a bitcoind wallet). `chain::electrs`
+runs Blockstream's electrs on a regtest node for tests;
+`chain/tests/esplora.rs` checks Esplora's answers against the node's.
+Next: the deposit opening, the payout address, the fee budget.
+
 ### Tests
 
 - Regtest with Blockstream's electrs beside bitcoind (`~/code/electrs`;
