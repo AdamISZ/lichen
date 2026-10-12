@@ -211,10 +211,20 @@ impl KeyFees {
 }
 
 impl Fees for KeyFees {
+    /// Waits up to 30 s for one: an index (Esplora's) may not yet show the
+    /// change of the child just posted.
     fn coin(&self, chain: &Chain, amount: Amount) -> Result<(OutPoint, TxOut)> {
-        let coins = chain.coins_of(&self.spk())?;
-        let c = coins.iter().filter(|c| c.1.value >= amount).max_by_key(|c| c.1.value).with_context(|| format!("the fee budget has {}, no coin of {amount}", coins.iter().map(|c| c.1.value).sum::<Amount>()))?;
-        Ok((c.0, c.1.clone()))
+        let start = std::time::Instant::now();
+        loop {
+            let coins = chain.coins_of(&self.spk())?;
+            if let Some(c) = coins.iter().filter(|c| c.1.value >= amount).max_by_key(|c| c.1.value) {
+                return Ok((c.0, c.1.clone()));
+            }
+            if start.elapsed() > std::time::Duration::from_secs(30) {
+                bail!("the fee budget has {}, no coin of {amount}", coins.iter().map(|c| c.1.value).sum::<Amount>());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
     }
     fn exact_coin(&self, chain: &Chain, amount: Amount) -> Result<(OutPoint, TxOut)> {
         // split a coin: `amount` and the change, both back to the budget
@@ -447,16 +457,21 @@ impl Chain {
     // ----- posting a dispute's links: either backend, fees from `fees` -----
 
     /// Broadcast a link of a pre-signed chain (unless it is already
-    /// there): it pays a floor of its own, so it relays alone. Then its
-    /// poster's child: it spends the link's anchor (output `anchor`, an
-    /// output only the poster can spend; `sign_anchor` makes its witness,
-    /// given the child and its prevouts) and a coin from `fees`, pays
-    /// `feerate` sat/vB on both, and returns the change to `fees`.
+    /// there): it pays a floor of its own (1 sat/vB), so it relays alone.
+    /// Above that floor, its poster's child: it spends the link's anchor
+    /// (output `anchor`, an output only the poster can spend; `sign_anchor`
+    /// makes its witness, given the child and its prevouts) and a coin from
+    /// `fees`, brings the pair to `feerate` sat/vB (crediting the link's
+    /// floor), and returns the change to `fees`. At `feerate` 1 there is no
+    /// child.
     pub fn post_link(&self, link: &Transaction, anchor: u32, feerate: u64, sign_anchor: &dyn Fn(&Transaction, &[TxOut]) -> Result<bitcoin::Witness>, fees: &dyn Fees) -> Result<()> {
         if self.get_tx(&link.compute_txid()).is_none() {
             self.broadcast(link).context("the link, at its floor")?;
         }
-        let fee = Amount::from_sat((link.vsize() as u64 + 220) * feerate);
+        if feerate <= 1 {
+            return Ok(());
+        }
+        let fee = Amount::from_sat((link.vsize() as u64 + 220) * feerate - link.vsize() as u64);
         let coin = fees.coin(self, fee + Amount::from_sat(1_000))?;
         let a_op = OutPoint { txid: link.compute_txid(), vout: anchor };
         let a_out = link.output[anchor as usize].clone();

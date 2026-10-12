@@ -20,7 +20,7 @@ use bitcoin::{Amount, OutPoint, Sequence, TxOut};
 use lichen_chain::Chain;
 use lichen_ledger::{note, xonly, Mint, Tx};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_proto::{all_moves, check_funding, tail_keys, contributions, terms, Accept, FoldRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{all_moves, check_funding, deposit_timeout, deposit_tree, tail_keys, contributions, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
 use lichen_sequencer::Client;
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
@@ -63,6 +63,11 @@ pub(crate) fn contract_keys(seed: &str, cid: u32) -> PartyKeys {
     PartyKeys::from_seed(Role::Hub, Seed::from_label(&format!("{seed}/contract/{cid}")))
 }
 
+/// The hub's key in contract `cid`'s deposit tree.
+pub(crate) fn deposit_key(seed: &str, cid: u32) -> bitcoin::key::Keypair {
+    contract_keys(seed, cid).seed().keypair("deposit")
+}
+
 /// The hub's move keys for depth `d` of contract `cid`, one per field.
 pub fn move_secrets(seed: &str, cid: u32, program: &Program, d: u32) -> Vec<WotsSecret> {
     let at = |f: usize, n: u32| WotsSecret::from_entropy(WotsParams::for_bytes(n), Seed::from_label(&format!("{seed}/contract/{cid}/move/{d}/{f}")).derive_bytes("wots"));
@@ -100,6 +105,8 @@ pub(crate) struct Inner {
     chain: Chain,
     seq: Client,
     pending: Mutex<HashMap<u32, Pending>>,
+    /// The deposits asked for, not yet opened: Alice's key in each tree.
+    deposits: Mutex<HashMap<u32, bitcoin::XOnlyPublicKey>>,
     open: Mutex<HashMap<u32, Open>>,
     next_cid: Mutex<u32>,
     disputes: Mutex<HashMap<u32, dispute::State>>,
@@ -135,11 +142,17 @@ impl Hub {
             let o: Open = serde_json::from_slice(&std::fs::read(e.path())?)?;
             open.insert(o.record.cid(), o);
         }
-        let next = open.keys().max().map_or(cfg.first_cid, |m| m + 1);
+        std::fs::create_dir_all(cfg.dir.join("deposits"))?;
+        let mut deposits = HashMap::new();
+        for e in std::fs::read_dir(cfg.dir.join("deposits"))?.flatten() {
+            let (cid, alice): (u32, bitcoin::XOnlyPublicKey) = serde_json::from_slice(&std::fs::read(e.path())?)?;
+            deposits.insert(cid, alice);
+        }
+        let next = open.keys().chain(deposits.keys()).max().map_or(cfg.first_cid, |m| m + 1);
         let (cfg_refuse, cfg_dispute) = (cfg.refuse_folds, cfg.dispute_true_claims);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), log: Mutex::new(vec![]), floors: std::sync::OnceLock::new() });
+        let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), log: Mutex::new(vec![]), floors: std::sync::OnceLock::new() });
         let stop = Arc::new(AtomicBool::new(false));
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
@@ -218,6 +231,7 @@ impl Drop for Hub {
 fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String> {
     Ok(match (method, url) {
         (Method::Get, "/info") => serde_json::to_string(&inner.info())?,
+        (Method::Post, "/deposit") => serde_json::to_string(&inner.deposit(serde_json::from_str(body)?)?)?,
         (Method::Post, "/open") => serde_json::to_string(&inner.open(serde_json::from_str(body)?)?)?,
         (Method::Post, "/accept") => serde_json::to_string(&inner.accept(serde_json::from_str(body)?)?)?,
         (Method::Post, "/fold") => serde_json::to_string(&inner.fold(serde_json::from_str(body)?)?)?,
@@ -236,16 +250,39 @@ impl Inner {
         Info { network: self.cfg.network, deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.depths(), reserve_ppm: self.cfg.reserve_ppm, max_bits: self.cfg.max_bits, duration: self.cfg.duration }
     }
 
-    fn open(&self, req: OpenRequest) -> Result<OpenOffer> {
-        let m = self.program.depths();
-        ensure!(req.bits <= self.cfg.max_bits, "a cap above 2^{} sats", self.cfg.max_bits);
-        ensure!(req.moves.len() as u32 == m.div_ceil(2), "{} move keys for the odd depths of {m}", req.moves.len());
-        let program = &self.program;
+    /// A deposit address for a contract to come: its number, and the hub's
+    /// key in the deposit's tree.
+    fn deposit(&self, req: DepositRequest) -> Result<DepositOffer> {
         let cid = {
             let mut n = self.next_cid.lock().unwrap();
             *n += 1;
             *n - 1
         };
+        std::fs::write(self.cfg.dir.join("deposits").join(format!("{cid}.json")), serde_json::to_vec(&(cid, req.alice))?)?;
+        self.deposits.lock().unwrap().insert(cid, req.alice);
+        Ok(DepositOffer { cid, hub: deposit_key(&self.cfg.seed, cid).x_only_public_key().0, timeout: deposit_timeout(self.cfg.network) })
+    }
+
+    /// The deposit tree of contract `cid`.
+    fn deposit_tree(&self, cid: u32) -> Result<lngap_btc::taptree::TapTree> {
+        let alice = *self.deposits.lock().unwrap().get(&cid).with_context(|| format!("no deposit asked for contract {cid}"))?;
+        deposit_tree(&alice, &deposit_key(&self.cfg.seed, cid).x_only_public_key().0, deposit_timeout(self.cfg.network))
+    }
+
+    fn open(&self, req: OpenRequest) -> Result<OpenOffer> {
+        let m = self.program.depths();
+        ensure!(req.bits <= self.cfg.max_bits, "a cap above 2^{} sats", self.cfg.max_bits);
+        ensure!(req.moves.len() as u32 == m.div_ceil(2), "{} move keys for the odd depths of {m}", req.moves.len());
+        let program = &self.program;
+        let cid = req.cid;
+        ensure!(!self.open.lock().unwrap().contains_key(&cid), "contract {cid} is open already");
+        // the deposit: to this contract's tree, confirmed, unspent
+        let (dep_op, dep_out) = &req.deposit_coin;
+        ensure!(dep_out.script_pubkey == self.deposit_tree(cid)?.script_pubkey(), "the deposit is not to contract {cid}'s address");
+        let on_chain = self.chain.get_tx(&dep_op.txid).and_then(|t| t.output.get(dep_op.vout as usize).cloned());
+        ensure!(on_chain.as_ref() == Some(dep_out), "no such deposit on chain");
+        ensure!(self.chain.confirmations(&dep_op.txid)? >= 1, "the deposit is not confirmed");
+        ensure!(self.chain.unspent(dep_op)?, "the deposit is spent");
         let keys = contract_keys(&self.cfg.seed, cid);
         let mut hub = keys.public();
         hub.payout_spk = self.chain.new_spk()?;
@@ -287,16 +324,17 @@ impl Inner {
         let reserve_hub = (v_max * self.cfg.reserve_ppm / 1_000_000).max(floors);
         let t = terms(cid, &req, t_close, reserve_hub)?;
         record.terms = t;
-        let (alice_in, hub_in) = contributions(&t);
-        let alice_spent: Amount = req.coins.iter().map(|c| c.1.value).sum();
-        ensure!(alice_spent == alice_in + FEE_SHARE + req.change.value, "your coins less your change should be {}", alice_in + FEE_SHARE);
+        let (_, hub_in) = contributions(&t);
+        let fee_budget = lichen_proto::fee_budget_of(dep_out.value, &t)?;
+        ensure!(fee_budget >= Amount::from_sat(330), "the deposit leaves no fee budget");
+        let fee_out = TxOut { value: fee_budget, script_pubkey: req.fee_spk.clone() };
         let margin = Amount::from_sat(10_000);
         let hub_coins = self.chain.select(hub_in + FEE_SHARE + margin)?;
         let hub_spent: Amount = hub_coins.iter().map(|c| c.1.value).sum();
         let hub_change = TxOut { value: hub_spent - hub_in - FEE_SHARE, script_pubkey: self.chain.new_spk()? };
         let c = record.contract(&self.cfg.statement, &self.program)?;
-        let ins: Vec<(OutPoint, Sequence)> = req.coins.iter().chain(&hub_coins).map(|c| (c.0, Sequence::ENABLE_RBF_NO_LOCKTIME)).collect();
-        let outs = vec![TxOut { value: c.value(), script_pubkey: c.tree()?.script_pubkey() }, req.change.clone(), hub_change.clone()];
+        let ins: Vec<(OutPoint, Sequence)> = std::iter::once(&req.deposit_coin).chain(&hub_coins).map(|c| (c.0, Sequence::ENABLE_RBF_NO_LOCKTIME)).collect();
+        let outs = vec![TxOut { value: c.value(), script_pubkey: c.tree()?.script_pubkey() }, fee_out, hub_change.clone()];
         let funding = lngap_btc::tx::build_tx(&ins, outs, bitcoin::absolute::LockTime::ZERO);
         check_funding(&funding, &c, &hub_coins, &hub_change, hub_in)?;
         record.funding = OutPoint { txid: funding.compute_txid(), vout: 0 };
@@ -309,18 +347,27 @@ impl Inner {
 
     fn accept(&self, a: Accept) -> Result<Opened> {
         let p = self.pending.lock().unwrap().remove(&a.cid).context("no such offer")?;
-        ensure!(a.funding.compute_txid() == p.offer.funding.compute_txid(), "not the funding transaction offered");
         let mut record = p.record;
         record.alice_sigs = a.alice_sigs;
         let c = record.contract(&self.cfg.statement, &self.program)?;
         record.presigned(&c).context("Alice's signatures")?;
-        let prevouts: Vec<(OutPoint, TxOut)> = p.req.coins.iter().chain(&p.offer.hub_coins).cloned().collect();
-        let signed = self.chain.sign_mine(&a.funding, &prevouts)?;
+        // the deposit input: Alice's signature and the hub's, then the hub's coins
+        let prevouts: Vec<(OutPoint, TxOut)> = std::iter::once(&p.req.deposit_coin).chain(&p.offer.hub_coins).cloned().collect();
+        let outs: Vec<TxOut> = prevouts.iter().map(|c| c.1.clone()).collect();
+        let mut funding = p.offer.funding.clone();
+        let dep = funding.input.iter().position(|i| i.previous_output == p.req.deposit_coin.0).context("the deposit input")?;
+        let tree = self.deposit_tree(a.cid)?;
+        let leaf = tree.leaf(DEPOSIT_OPEN)?;
+        let hub_sig = lngap_btc::sighash::sign_tapscript(&deposit_key(&self.cfg.seed, a.cid), &funding, dep, &outs, &leaf.script)?;
+        funding.input[dep].witness = lngap_btc::witness::tapscript_witness(&[a.deposit_sig.clone(), hub_sig.as_ref().to_vec()], &leaf.script, &tree.control_block(DEPOSIT_OPEN)?);
+        let signed = self.chain.sign_mine(&funding, &prevouts)?;
         let txid = self.chain.broadcast(&signed).context("broadcasting the funding")?;
         self.note(format!("contract {}: opened (deposit {} sats, cap {} sats); funding broadcast", a.cid, record.terms.deposit, record.terms.v_max().to_sat()));
         let o = Open { record, minted: false, closed: None };
         self.save(&o)?;
         self.open.lock().unwrap().insert(a.cid, o);
+        self.deposits.lock().unwrap().remove(&a.cid);
+        let _ = std::fs::remove_file(self.cfg.dir.join("deposits").join(format!("{}.json", a.cid)));
         Ok(Opened { txid })
     }
 

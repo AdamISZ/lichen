@@ -168,6 +168,23 @@ runs Blockstream's electrs on a regtest node for tests;
 `chain/tests/esplora.rs` checks Esplora's answers against the node's.
 Next: the deposit opening, the payout address, the fee budget.
 
+Status (2026-10-12): T2 DONE. The opening runs through the deposit
+address on every backend (on RPC the user's scripts are watched by a
+watch-only bitcoind wallet), so the whole suite uses it; `Fees` for the
+dispute's children and terminals, `KeyFees` the user's fee budget (one
+key, its coins found by script, waiting out an index's lag).
+`lichen refund`, `lichen sweep-fees`, `--payout`, `--esplora`.
+Sizing found by the tests: a child's fee credits its link's own floor,
+and the target feerate is per network (`proto::feerate`: 1, so no
+children, on Mutinynet and signet; 2 on regtest and testnet4), as is the
+budget (`proto::fee_budget`: 20k sats where there are no children, 150k
+where there are; the mock dispute's children took 79k at 2 sat/vB).
+`hub/tests/deposit.rs`: E1 open and fold through Esplora, E2 a whole
+dispute through Esplora (40 s, blocks every second) and the budget's
+rest swept, R a refund after the opening fails. `groth16.rs` on the
+new opening: G1 496 s, G2 (the whole search) 730 s within the regtest
+budget, G3 545 s.
+
 ### Tests
 
 - Regtest with Blockstream's electrs beside bitcoind (`~/code/electrs`;

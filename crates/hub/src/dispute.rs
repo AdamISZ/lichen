@@ -20,7 +20,7 @@ use lichen_chain::NodeWallet;
 use anyhow::{Context, Result};
 use bitcoin::{Amount, OutPoint, Transaction, TxOut, Txid};
 use emulator::decision::challenge::ForceCondition;
-use lichen_proto::{anchor_vout, input_from_words, link_name, sign_anchor, sign_fields, sign_move, Disputed, FEERATE};
+use lichen_proto::{anchor_vout, input_from_words, link_name, sign_anchor, sign_fields, sign_move, Disputed};
 use lngap_btc::sighash::sign_tapscript;
 use lngap_btc::taptree::TapTree;
 use lngap_btc::tx::build_spend;
@@ -220,7 +220,7 @@ impl Inner {
     }
 
     /// The hub's own spend of `(op, out)` under `tree`'s leaf `leaf_name`,
-    /// `wire` below its signature, to its wallet at [`FEERATE`].
+    /// `wire` below its signature, to its wallet at the network's feerate.
     fn spend_leaf(&self, cid: u32, tree: &TapTree, leaf_name: &str, op: OutPoint, out: &TxOut, wire: Vec<Vec<u8>>) -> Result<Transaction> {
         let leaf = tree.leaf(leaf_name)?;
         let kp = contract_keys(&self.cfg.seed, cid).payment;
@@ -234,7 +234,7 @@ impl Inner {
         };
         // sized once at no fee, then paid
         let vsize = build(Amount::ZERO)?.vsize() as u64;
-        build(Amount::from_sat((vsize + 10) * FEERATE))
+        build(Amount::from_sat((vsize + 10) * lichen_proto::feerate(self.cfg.network)))
     }
 
     /// Post one of the hub's links (unless it is already there: replayed,
@@ -246,7 +246,7 @@ impl Inner {
             None => {
                 let kp = contract_keys(&self.cfg.seed, cid).payment;
                 let anchor = anchor_vout(tx, &kp.x_only_public_key().0)?;
-                self.chain.post_link(tx, anchor, FEERATE, &|c, p| sign_anchor(&kp, c, p), &NodeWallet)?;
+                self.chain.post_link(tx, anchor, lichen_proto::feerate(self.cfg.network), &|c, p| sign_anchor(&kp, c, p), &NodeWallet)?;
             }
             Some(posted) => anyhow::ensure!(posted.input.iter().zip(&tx.input).all(|(a, b)| a.witness == b.witness), "{txid} on chain is not the link replayed"),
         }

@@ -76,7 +76,7 @@ fn fold_and_default() {
         let ch = chain(name);
         rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
         let mut w = Wallet::create(&dir.join(format!("{name}.json")), &seq.url).unwrap();
-        let held = w.open_contract(&hub.url, &ch, &mock(), &dir.join(name), ask(deposit)).unwrap();
+        let held = w.open_contract(&hub.url, &ch, &mock(), &dir.join(name), ask(deposit), ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
         println!("LICHEN {name} opened contract {} with a deposit of {deposit} sats", held.record.cid());
         users.push((w, ch, held));
     }

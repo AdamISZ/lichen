@@ -96,7 +96,7 @@ fn disputes_on_the_mock_statement() {
         rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
         let wdir = dir.join(user);
         let mut w = Wallet::create(&dir.join(format!("{user}.json")), &seq.url).unwrap();
-        let held = w.open_contract(&hub.url, &ch, &statement(), &wdir, ask).unwrap();
+        let held = w.open_contract(&hub.url, &ch, &statement(), &wdir, ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
         let cid = held.record.cid();
         let start = Instant::now();
         while w.balance().unwrap() < ask.deposit {

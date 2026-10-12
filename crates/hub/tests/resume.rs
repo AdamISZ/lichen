@@ -79,7 +79,7 @@ fn a_dispute_resumes_after_restarts() {
     rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
     let (wfile, wdir) = (dir.join("alice.json"), dir.join("alice"));
     let mut w = Wallet::create(&wfile, &seq.url).unwrap();
-    let cid = w.open_contract(&hub.url, &ch, &statement(), &wdir, Ask { deposit: 400_000, bits: 21, reserve: 20_000 }).unwrap().record.cid();
+    let cid = w.open_contract(&hub.url, &ch, &statement(), &wdir, Ask { deposit: 400_000, bits: 21, reserve: 20_000 }, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap().record.cid();
     let start = Instant::now();
     while w.balance().unwrap() < 400_000 {
         assert!(start.elapsed() < Duration::from_secs(60), "the deposit");

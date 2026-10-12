@@ -95,7 +95,7 @@ fn disputes_on_the_groth16_verifier() {
         rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
         let mut w = Wallet::create(&dir.join(format!("{user}.json")), &seq.url).unwrap();
         let t = Instant::now();
-        let held = w.open_contract(&hub.url, &ch, &statement, &dir.join(&user), ask).unwrap();
+        let held = w.open_contract(&hub.url, &ch, &statement, &dir.join(&user), ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
         assert_eq!(held.record.cid(), 42);
         println!("LICHEN {label}: contract 42 on the Groth16 verifier opened in {:.1?}", t.elapsed());
         let b = lngap_zk::final_d60::input_words(input)[41];

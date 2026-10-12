@@ -82,7 +82,29 @@ cargo build
 ```
 
 A wallet pins the deployment the sequencer announces when it is made,
-and won't open a contract with a hub in another. `--toy` (sequencer and
+and won't open a contract with a hub in another.
+
+## Networks, and no wallet of the user's
+
+`--network regtest|mutinynet|signet|testnet4` (hub and wallet): each a
+whole profile, the addresses and the contracts' timing in blocks (see
+[docs/TESTNET_PLAN.md](docs/TESTNET_PLAN.md)). The hub runs a node and
+its wallet. The user runs neither: `lichen` reads Bitcoin from an
+Esplora server (`--esplora`, by default the network's public one) and
+holds keys, not coins. Opening a contract:
+
+```sh
+lichen --network mutinynet --wallet alice.json open 400000 --payout <an address of yours>
+# pay 571000 sats to tb1p... (from any wallet, or a faucet); it waits
+```
+
+The deposit address is the hub's and yours together, or yours alone
+after about a day: if the contract never opens, `lichen refund
+<contract>` takes it back. It carries `D + r_A`, a share of the funding
+fee, and a fee budget for a dispute, which the funding transaction pays
+to a key of yours; `lichen sweep-fees <contract>` returns what is left
+once the contract is closed. Withdrawals and dispute payouts go to the
+payout address. `--toy` (sequencer and
 hub) runs the toy deployment instead, whose keys anyone can derive
 (`lngap-toy/sequencer`, `lngap-toy/hub`): the tests and the demo use it,
 so that a proof made in advance is valid for them.
@@ -99,11 +121,12 @@ lichen --wallet alice.json withdraw-input <memo> > withdraw-input.json
 scripts/linux-claim.sh withdraw-input.json claim.hex
 #    (or on a Mac: lngap-r0 prove-input ... for the STARK, then wrap on Linux)
 # 3. the dispute, on the Groth16 verifier
-lichen --wallet alice.json --statement groth16:<path to groth16.yaml> \
-  dispute <contract> <amount> --input claim.hex
+lichen --wallet alice.json --statement groth16 dispute <contract> <amount> --input claim.hex
 ```
 
-The wallet checks the claim's words against the contract (memo, image
-id, journal length) before escalating; a dispute in progress resumes
+`--statement groth16` finds BitVMX's verifier in the cargo checkout (by
+its SHA-256; `LICHEN_VERIFIER_ELF` overrides). The wallet checks the
+claim's words against the contract (memo, image id, deployment, journal
+length) before escalating; a dispute in progress resumes
 when the command is run again (`lichen dispute <contract>`).
 

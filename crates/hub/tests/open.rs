@@ -53,7 +53,7 @@ fn open_a_contract_and_receive_the_deposit() {
     let mut alice = Wallet::create(&dir.join("alice.json"), &seq.url).unwrap();
     let (deposit, bits, reserve) = (400_000u64, 21u32, 20_000u64);
     let t = Instant::now();
-    let held = alice.open_contract(&hub.url, &alice_chain, &mock(), &dir.join("alice"), Ask { deposit, bits, reserve }).unwrap();
+    let held = alice.open_contract(&hub.url, &alice_chain, &mock(), &dir.join("alice"), Ask { deposit, bits, reserve }, alice_chain.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { alice_chain.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
     let r = &held.record;
     println!("LICHEN opened contract {} in {:.1?}: cap {} sats, Alice's reserve {}, the hub's {}, T_close {}", r.cid(), t.elapsed(), r.terms.v_max().to_sat(), r.terms.reserve_alice, r.terms.reserve_hub, r.terms.t_close);
 

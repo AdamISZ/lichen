@@ -57,6 +57,46 @@ pub fn params(net: Net) -> ChannelParams {
     }
 }
 
+/// How long a deposit waits before Alice may take it back alone (CSV,
+/// blocks from its confirmation): about a day; a hub that never funds the
+/// contract costs her that wait, never the coins.
+pub fn deposit_timeout(net: Net) -> u16 {
+    match net {
+        Net::Regtest => 20,
+        Net::Mutinynet => 2_880,
+        Net::Signet | Net::Testnet4 => 144,
+    }
+}
+
+/// What a deposit carries beyond the contract's `D + r_A` and the funding
+/// fee's share: Alice's fee budget for a dispute. Where the target
+/// feerate is the links' own floor (1 sat/vB) no child is needed, and
+/// the budget covers the coins terminal transactions add; above it, each
+/// of her links' children pays about `vsize · (feerate − 1)` (her links
+/// are ~90 kvB in the deepest Groth16 dispute).
+pub fn fee_budget(net: Net) -> Amount {
+    match net {
+        Net::Mutinynet | Net::Signet => Amount::from_sat(20_000),
+        Net::Regtest | Net::Testnet4 => Amount::from_sat(150_000),
+    }
+}
+
+/// The deposit address's tree: the hub and Alice together (the funding
+/// transaction spends it), or Alice alone after `timeout` blocks (her
+/// refund). A NUMS key path: every spend is a script path. (With MuSig2 the
+/// first leaf would be the key path, and the deposit an ordinary-looking
+/// P2TR output.)
+pub fn deposit_tree(alice: &bitcoin::XOnlyPublicKey, hub: &bitcoin::XOnlyPublicKey, timeout: u16) -> Result<lngap_btc::taptree::TapTree> {
+    use bitcoin::opcodes::all::{OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_CSV, OP_DROP};
+    use lngap_btc::taptree::Leaf;
+    use lngap_btc::tx::Timelock;
+    let open = bitcoin::script::Builder::new().push_x_only_key(hub).push_opcode(OP_CHECKSIGVERIFY).push_x_only_key(alice).push_opcode(OP_CHECKSIG).into_script();
+    let refund = bitcoin::script::Builder::new().push_int(i64::from(timeout)).push_opcode(OP_CSV).push_opcode(OP_DROP).push_x_only_key(alice).push_opcode(OP_CHECKSIG).into_script();
+    lngap_btc::taptree::TapTree::new(vec![Leaf::new(DEPOSIT_OPEN, open, Timelock::NONE), Leaf::new(DEPOSIT_REFUND, refund, Timelock { cltv: None, csv: Some(timeout) })])
+}
+pub const DEPOSIT_OPEN: &str = "deposit_open";
+pub const DEPOSIT_REFUND: &str = "deposit_refund";
+
 /// A contract's default life, opening to `T_close`, in blocks: a week
 /// (regtest: 1,000 blocks).
 pub fn default_duration(net: Net) -> u32 {
@@ -242,9 +282,29 @@ pub struct OpenRequest {
     /// combine of the hub's path.
     #[serde(default)]
     pub hops: Vec<WotsPublic>,
-    /// The coins Alice funds with, and her change.
-    pub coins: Vec<(OutPoint, TxOut)>,
-    pub change: TxOut,
+    /// The contract number the hub gave the deposit ([`DepositOffer`]).
+    pub cid: u32,
+    /// Alice's deposit coin (to [`deposit_tree`]), confirmed: `D + r_A`,
+    /// the funding fee's share, and the rest her fee budget.
+    pub deposit_coin: (OutPoint, TxOut),
+    /// Where the funding transaction pays her fee budget (a key of hers).
+    pub fee_spk: bitcoin::ScriptBuf,
+}
+
+/// Alice asks for a deposit address (`POST /deposit`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DepositRequest {
+    /// Her key in the deposit's tree.
+    pub alice: bitcoin::XOnlyPublicKey,
+}
+
+/// The hub's answer: the contract's number, its key in the deposit's
+/// tree, the refund's timeout.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DepositOffer {
+    pub cid: u32,
+    pub hub: bitcoin::XOnlyPublicKey,
+    pub timeout: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -271,8 +331,9 @@ pub struct OpenOffer {
 pub struct Accept {
     pub cid: u32,
     pub alice_sigs: HashMap<String, Vec<u8>>,
-    /// The funding transaction, Alice's inputs signed.
-    pub funding: Transaction,
+    /// Alice's signature on the funding transaction's deposit input (the
+    /// `deposit_open` leaf; the hub adds its own).
+    pub deposit_sig: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -423,10 +484,34 @@ pub fn check_funding(tx: &Transaction, c: &Contract, mine: &[(OutPoint, TxOut)],
     Ok(())
 }
 
+/// Alice's check of the funding transaction offered: it spends her
+/// deposit, its output 0 is the contract, and it pays her fee budget
+/// `fee` (the rest of the deposit). The hub's coins are its business.
+pub fn check_deposit_funding(tx: &Transaction, c: &Contract, deposit: &OutPoint, fee: &TxOut) -> Result<()> {
+    let tree = c.tree()?;
+    ensure!(tx.output.first().map(|o| (o.value, &o.script_pubkey)) == Some((c.value(), &tree.script_pubkey())), "output 0 is not the contract");
+    ensure!(tx.input.iter().any(|i| i.previous_output == *deposit), "my deposit is not spent");
+    ensure!(tx.output.contains(fee), "my fee budget is missing");
+    Ok(())
+}
+
+/// The fee budget a deposit leaves: what it holds beyond `D + r_A` and the
+/// funding fee's share.
+pub fn fee_budget_of(deposit: Amount, t: &Terms) -> Result<Amount> {
+    deposit.checked_sub(contributions(t).0 + FEE_SHARE).context("the deposit doesn't cover the deposit, the reserve and the funding fee")
+}
+
 // ----- disputes: what both sides' engines share -----
 
-/// The feerate the parties pay on the dispute's transactions, sat/vB.
-pub const FEERATE: u64 = 2;
+/// The feerate the parties aim for on a dispute's transactions, sat/vB:
+/// the links' own floor (1) where that confirms (Mutinynet, signet: no
+/// children), 2 on regtest (so the tests post children) and testnet4.
+pub fn feerate(net: Net) -> u64 {
+    match net {
+        Net::Mutinynet | Net::Signet => 1,
+        Net::Regtest | Net::Testnet4 => 2,
+    }
+}
 
 /// The link that carries move `j` (`escalate` for move 1).
 pub fn link_name(j: u32) -> String {

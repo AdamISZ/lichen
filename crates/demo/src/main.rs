@@ -83,7 +83,7 @@ impl Demo {
 
 fn open_contract(d: &Demo, u: &User) -> Result<u32> {
     let mut w = u.wallet.lock().unwrap();
-    let h = w.open_contract(&d.hub.url, &u.chain, &d.statement, &u.dir, ASK)?;
+    let h = w.open_contract(&d.hub.url, &u.chain, &d.statement, &u.dir, ASK, u.chain.new_spk()?, &|addr: &bitcoin::Address, v| u.chain.pay(&addr.script_pubkey(), v).map(|_| ()))?;
     let cid = h.record.cid();
     *u.cid.lock().unwrap() = cid;
     d.log(format!("{}: contract {cid} opened with the hub: deposit {} sats, cap {} sats, reserves {} + {} sats", u.name, ASK.deposit, h.record.terms.v_max().to_sat(), h.record.terms.reserve_alice.to_sat(), h.record.terms.reserve_hub.to_sat()));
