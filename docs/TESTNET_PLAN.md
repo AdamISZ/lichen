@@ -225,7 +225,17 @@ the hub keeps its wallets (now created with `load_on_startup`); a
 Mutinynet deployment starts against the v25 node (the hub's wallet, its
 `/info`), syncing ~10k headers a second. Not yet on an x86 VPS.
 
-## T4: the wrap service
+## T4: the wrap service (DEFERRED, 2026-10-12)
+
+Deferred by the user: the first trials run locally (a Mutinynet
+deployment in Colima on the Mac, the wallet native), and dispute tests
+are done by hand between testers who know the Groth16 wrap needs x86
+(`linux-claim.sh`). Cooperative withdrawals need no proofs; the mock
+statement covers dispute mechanics. Build this if Mac testers' disputes
+show the wrap is the friction. Not the tower (TURNKEY_TOWER.md: keys,
+moves, liveness): wrap only, stateless, trustless (it can refuse, not
+cheat), so even the hub's operator may run it.
+
 
 - `POST /wrap`: a succinct receipt in, the BitVMX verifier's input out
   (prove-free: the wrap only). Trustless (TURNKEY_TOWER.md): the wrapper
@@ -239,8 +249,10 @@ Mutinynet deployment starts against the v25 node (the hub's wallet, its
 
 ## T5: a live trial
 
-Open, pay, fold, then a refused withdrawal disputed on the real
-statement, on Mutinynet, with the hub on a VPS and a wallet on the Mac.
+First locally: the deployment in Colima on the Mac (Mutinynet), the
+wallet native, paying deposits from the Mutinynet faucet; then on a
+VPS with other testers. Open, pay, fold, then a refused withdrawal
+disputed (the mock statement, or the real one wrapped on x86).
 Measure: times, kvB, fees. Write it up in PLAN.md.
 
 ## Not in scope
