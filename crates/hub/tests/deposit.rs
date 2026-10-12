@@ -11,6 +11,8 @@
 //!   to her payout address.
 //! - R: a hub that never funds (the opening fails after the deposit):
 //!   the deposit refunds by its timeout, not before.
+//! - S: an opening that fails after the deposit, resumed with it at a
+//!   small cap (2^16).
 //!
 //! Needs electrs (`LICHEN_ELECTRS`, or `electrs` on the PATH).
 
@@ -77,10 +79,10 @@ fn a_user_with_no_wallet() {
         dispute_true_claims: refuse,
         first_cid: 1000,
     };
-    for name in ["hub-e", "hub-d"] {
+    for name in ["hub-e", "hub-d", "hub-s"] {
         rt.fund(&node(name).new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
     }
-    let (hub_e, hub_d) = (Hub::start(hub_config("hub-e", false)).unwrap(), Hub::start(hub_config("hub-d", true)).unwrap());
+    let (hub_e, hub_d, hub_s) = (Hub::start(hub_config("hub-e", false)).unwrap(), Hub::start(hub_config("hub-d", true)).unwrap(), Hub::start(hub_config("hub-s", false)).unwrap());
     // the user's Bitcoin: Esplora, nothing else; payouts to another wallet
     let esplora = Chain::esplora(&e.url, Net::Regtest).unwrap();
     let payee = node("payee");
@@ -135,6 +137,19 @@ fn a_user_with_no_wallet() {
     assert_eq!(rt.get_tx(&refund).unwrap().output[0], bitcoin::TxOut { value: Wallet::deposit_amount(&too_big, Net::Regtest) - Amount::from_sat(500), script_pubkey: to_carol });
     assert!(carol.deposits.is_empty());
     println!("LICHEN R: the opening failed ({err:#}); refunded {refund} after {} blocks", lichen_proto::deposit_timeout(Net::Regtest));
+
+    // S: an opening refused after the deposit, resumed with the same
+    // deposit on terms the hub takes (a small cap: 2^16, below the floors
+    // a dispute's links take, which the hub's first measure once tripped on)
+    let mut dave = Wallet::create(&dir.join("dave.json"), &seq.url).unwrap();
+    let small = Ask { deposit: 30_000, bits: 16, reserve: 20_000 };
+    // (hub-s's first opening: its floors are measured at this small cap)
+    dave.open_contract(&hub_s.url, &esplora, &statement(), &dir.join("dave"), Ask { bits: 25, ..small }, payee.new_spk().unwrap(), &pay).unwrap_err();
+    let cid = dave.deposits[0].cid;
+    let held = dave.resume_open(&hub_s.url, &esplora, &statement(), &dir.join("dave"), small, cid).unwrap();
+    assert_eq!((held.record.cid(), held.record.terms.v_max().to_sat()), (cid, 65_535));
+    assert!(dave.deposits.is_empty());
+    println!("LICHEN S: contract {cid} refused at a cap of 2^25, resumed with its deposit at 2^16 (the hub's reserve {} sats)", held.record.terms.reserve_hub.to_sat());
 
     // E2: the whole dispute through Esplora, blocks every second
     let mut bob = Wallet::create(&dir.join("bob.json"), &seq.url).unwrap();

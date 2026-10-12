@@ -264,7 +264,6 @@ impl Wallet {
     /// funding is broadcast. The hub mints the deposit when it confirms.
     /// The deposit is kept from before it is paid ([`Wallet::refund`]).
     pub fn open_contract(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, ask: Ask, payout: bitcoin::ScriptBuf, pay: &dyn Fn(&bitcoin::Address, bitcoin::Amount) -> Result<()>) -> Result<Held> {
-        let Ask { deposit, bits, reserve } = ask;
         let info: Info = hub_call(&format!("{hub}/info"), None)?;
         let net = chain.network;
         ensure!(info.network == net, "the hub is on {}, this wallet's coins on {net}", info.network);
@@ -283,18 +282,44 @@ impl Wallet {
         let dep = Deposit { nonce: nonce.clone(), cid: offer.cid, hub: offer.hub, timeout: offer.timeout, payout: payout.clone() };
         self.deposits.push(dep.clone());
         self.save()?;
-        let dep_tree = deposit_tree(&dep_kp.x_only_public_key().0, &dep.hub, dep.timeout)?;
-        let dep_spk = dep_tree.script_pubkey();
+        let dep_spk = deposit_tree(&dep_kp.x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();
         chain.watch(&dep_spk)?;
         let amount = Wallet::deposit_amount(&ask, net);
         pay(&bitcoin::Address::from_script(&dep_spk, net.bitcoin())?, amount)?;
         let coin = self.wait_deposit(chain, &dep_spk, amount)?;
+        self.open_with(hub, chain, statement, &program, ask, dep, coin)
+    }
+
+    /// Finish the opening of contract `cid` with the deposit already paid
+    /// for it (an opening that failed after the deposit: the hub's
+    /// refusal, a restart), on the terms `ask` (the deposit must cover
+    /// them). Its payout address is the deposit's.
+    pub fn resume_open(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, ask: Ask, cid: u32) -> Result<Held> {
+        let dep = self.deposits.iter().find(|d| d.cid == cid).cloned().with_context(|| format!("no deposit for contract {cid}"))?;
+        let info: Info = hub_call(&format!("{hub}/info"), None)?;
+        ensure!(info.network == chain.network, "the hub is on {}, this wallet's coins on {}", info.network, chain.network);
+        let program = statement.program(dir)?;
+        let dep_spk = deposit_tree(&self.deposit_key(&dep.nonce).x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();
+        chain.watch(&dep_spk)?;
+        let coin = self.wait_deposit(chain, &dep_spk, Wallet::deposit_amount(&ask, chain.network))?;
+        self.open_with(hub, chain, statement, &program, ask, dep, coin)
+    }
+
+    /// The opening, the deposit `coin` confirmed: the hub's offer checked,
+    /// the pre-signed set and the deposit input signed.
+    fn open_with(&mut self, hub: &str, chain: &Chain, statement: &Statement, program: &Program, ask: Ask, dep: Deposit, coin: (bitcoin::OutPoint, bitcoin::TxOut)) -> Result<Held> {
+        let Ask { deposit, bits, reserve } = ask;
+        let (net, d) = (chain.network, self.sequencer.deployment);
+        let (nonce, payout) = (dep.nonce.clone(), dep.payout.clone());
+        let dep_kp = self.deposit_key(&nonce);
+        let dep_tree = deposit_tree(&dep_kp.x_only_public_key().0, &dep.hub, dep.timeout)?;
+        let m = program.depths();
 
         let keys = self.contract_keys(&nonce);
         let mut alice = keys.public();
         alice.payout_spk = payout;
         let pub_of = |ks: Vec<WotsSecret>| ks.iter().map(|k| k.public()).collect::<Vec<_>>();
-        let moves: Vec<_> = (1..=m).filter(|d| d % 2 == 1).map(|d| pub_of(self.move_secrets(&nonce, &program, d))).collect();
+        let moves: Vec<_> = (1..=m).filter(|d| d % 2 == 1).map(|d| pub_of(self.move_secrets(&nonce, program, d))).collect();
         let hops: Vec<_> = if program.schedule.jump.is_some() { (1..=lngap_ladder::tail::CHUNKS).map(|k| self.hop_secret(&nonce, k).public()).collect() } else { vec![] };
         let inputs: Vec<_> = (0..program.info.input_words).map(|j| self.input_secret(&nonce, j).public()).collect();
         let fees = self.fees(&nonce, net);
@@ -312,13 +337,13 @@ impl Wallet {
             pubs: [req.alice.clone(), offer.hub.clone()],
             moves: all_moves(&moves, &offer.moves),
             inputs,
-            tail: tail_keys(&program, &offer.path, &hops)?,
+            tail: tail_keys(program, &offer.path, &hops)?,
             l2_address: self.address(),
             funding: bitcoin::OutPoint { txid: offer.funding.compute_txid(), vout: 0 },
             hub_sigs: offer.hub_sigs.clone(),
             alice_sigs: Default::default(),
         };
-        let c = record.contract(statement, &program)?;
+        let c = record.contract(statement, program)?;
         let fee_out = bitcoin::TxOut { value: fee_budget_of(coin.1.value, &t)?, script_pubkey: fees.spk() };
         check_deposit_funding(&offer.funding, &c, &coin.0, &fee_out)?;
         let set = c.presign(record.funding)?;

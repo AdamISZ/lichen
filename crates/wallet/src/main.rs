@@ -66,8 +66,13 @@ enum Cmd {
         reserve: u64,
         /// Where withdrawals, refunds and the fee budget's rest are paid
         /// (an address of any wallet of yours).
+        #[arg(long, required_unless_present = "resume")]
+        payout: Option<String>,
+        /// Finish the opening of this contract with its deposit, already
+        /// paid (an opening that failed after the deposit); the payout
+        /// address is the deposit's.
         #[arg(long)]
-        payout: String,
+        resume: Option<u32>,
     },
     /// Send what is left of a contract's fee budget to its payout address
     /// (once it is closed, unless --force).
@@ -134,15 +139,21 @@ fn main() -> Result<()> {
         }
         Cmd::Return { amount, memo } => println!("returned: note {}", w.return_to_hub(amount, memo)?),
         Cmd::WithdrawInput { memo } => println!("{}", serde_json::to_string_pretty(&w.withdraw_input(memo)?)?),
-        Cmd::Open { deposit, bits, reserve, ref payout } => {
+        Cmd::Open { deposit, bits, reserve, ref payout, resume } => {
             let chain = chain(&a)?;
-            let payout = payout.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()?.require_network(a.network.bitcoin()).context("--payout")?.script_pubkey();
             let dir = a.wallet.with_extension("d");
-            let pay = |addr: &bitcoin::Address, amount: bitcoin::Amount| -> Result<()> {
-                println!("pay {} sats to {addr}\n(waiting for it to confirm)", amount.to_sat());
-                Ok(())
+            let ask = lichen_wallet::Ask { deposit, bits, reserve };
+            let h = match resume {
+                Some(cid) => w.resume_open(&a.hub, &chain, &a.statement, &dir, ask, cid)?,
+                None => {
+                    let payout = payout.as_deref().context("--payout")?.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()?.require_network(a.network.bitcoin()).context("--payout")?.script_pubkey();
+                    let pay = |addr: &bitcoin::Address, amount: bitcoin::Amount| -> Result<()> {
+                        println!("pay {} sats to {addr}\n(waiting for it to confirm)", amount.to_sat());
+                        Ok(())
+                    };
+                    w.open_contract(&a.hub, &chain, &a.statement, &dir, ask, payout, &pay)?
+                }
             };
-            let h = w.open_contract(&a.hub, &chain, &a.statement, &dir, lichen_wallet::Ask { deposit, bits, reserve }, payout, &pay)?;
             let t = &h.record.terms;
             println!("contract {} (memo {}): deposit {} sats, cap {} sats, T_close {}; funding {}", h.record.cid(), t.id, t.deposit, t.v_max().to_sat(), t.t_close, h.record.funding.txid);
         }

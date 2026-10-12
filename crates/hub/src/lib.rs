@@ -295,8 +295,10 @@ impl Inner {
             statement: self.cfg.statement.id().to_string(),
             network: self.cfg.network,
             deployment: self.seq.deployment.id(),
-            // a reserve to measure the floors under; the real one below
-            terms: terms(cid, &req, t_close, v_max)?,
+            // a reserve to measure the floors under (any amount above them:
+            // they depend on the links' sizes, not on the amounts; the cap
+            // isn't, for a small one); the real one below
+            terms: terms(cid, &req, t_close, v_max.max(100_000_000))?,
             pubs: [req.alice.clone(), hub.clone()],
             moves: all_moves(&req.moves, &hub_moves),
             inputs: req.inputs.clone(),

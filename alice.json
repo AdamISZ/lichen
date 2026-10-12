@@ -1,0 +1,18 @@
+{
+  "secret": "7d3413e6c2c55956f41bf4c9fe56704e00d7db0a2d696ef31cf79189d8b7bc3a",
+  "deployment": {
+    "sequencer": "06f7117d2346441217573a957257eb2888313e9e91deec033e1da2d090b9edf2",
+    "hub": "a07ae8af06d8d36c2d8779e8eb857fb68ebf195d334ec38cadc2414f9c398249"
+  },
+  "returns": [],
+  "contracts": [],
+  "deposits": [
+    {
+      "nonce": "3e204a3ccd7b49cef68c335393e72e3c7e6628b62c9fcc015ef1086c23c6c788",
+      "cid": 1000,
+      "hub": "302bb7a743cccba28c3912854370fa374d1aee3da8f639f87fb40d90097f329b",
+      "timeout": 2880,
+      "payout": "00141b00a6ff7a74e879060d87d6aacb835218dcb087"
+    }
+  ]
+}
