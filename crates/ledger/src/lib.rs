@@ -22,7 +22,7 @@ use k256::schnorr::{Signature, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub use lngap_r0_core::{check, node, root_from_path, state_root, Note, Reject, WithdrawInput, HUB_KEY, SEQUENCER_KEY, TREE_DEPTH};
+pub use lngap_r0_core::{check, deployment_id, node, root_from_path, state_root, Note, Reject, WithdrawInput, HUB_KEY, JOURNAL_LEN, SEQUENCER_KEY, TREE_DEPTH};
 
 pub type Hash = [u8; 32];
 
@@ -34,20 +34,68 @@ fn sha256(parts: &[&[u8]]) -> Hash {
     h.finalize().into()
 }
 
-/// A key from a label (the regtest deployment's sequencer and hub, whose
-/// public keys the withdrawal statement pins).
+/// A key from a label: anyone can derive it, so for tests and the toy
+/// deployment only.
 pub fn key_from_label(label: &str) -> SigningKey {
     SigningKey::from_bytes(&sha256(&[label.as_bytes()])).expect("a valid scalar")
 }
 
-/// The regtest sequencer's key (`SEQUENCER_KEY`).
+/// The toy deployment's sequencer key (`SEQUENCER_KEY`): tests, the demo.
 pub fn regtest_sequencer() -> SigningKey {
     key_from_label("lngap-toy/sequencer")
 }
 
-/// The regtest hub's key (`HUB_KEY`).
+/// The toy deployment's hub key (`HUB_KEY`): tests, the demo.
 pub fn regtest_hub() -> SigningKey {
     key_from_label("lngap-toy/hub")
+}
+
+/// A fresh random key.
+pub fn fresh_key() -> SigningKey {
+    loop {
+        if let Ok(k) = SigningKey::from_bytes(&fresh_rho()) {
+            return k;
+        }
+    }
+}
+
+/// The key kept (hex) in `path`, made and saved there if there is none.
+pub fn load_or_create_key(path: &std::path::Path) -> Result<SigningKey> {
+    if path.exists() {
+        let s = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        return SigningKey::from_bytes(&hex::decode(s.trim()).context("a hex key")?).context("a valid key");
+    }
+    let k = fresh_key();
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(path, hex::encode(k.to_bytes()))?;
+    Ok(k)
+}
+
+/// An L2 deployment: who seals (the sequencer) and who mints and receives
+/// returns (the hub), as x-only keys. The withdrawal statement's journal
+/// commits to them as [`Deployment::id`]; a contract pins that id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Deployment {
+    pub sequencer: Hash,
+    pub hub: Hash,
+}
+
+impl Deployment {
+    /// The toy deployment's (tests, the demo): keys anyone can derive.
+    pub fn toy() -> Deployment {
+        Deployment { sequencer: SEQUENCER_KEY, hub: HUB_KEY }
+    }
+    pub fn id(&self) -> Hash {
+        deployment_id(&self.sequencer, &self.hub)
+    }
+}
+
+impl Default for Deployment {
+    fn default() -> Deployment {
+        Deployment::toy()
+    }
 }
 
 pub fn xonly(k: &SigningKey) -> Hash {
@@ -249,13 +297,13 @@ pub struct Ledger {
     pub nullifiers: Nullifiers,
     commitments: HashSet<Hash>,
     pub sealed: Vec<SignedRoot>,
-    /// Who may mint (the hub's x-only key).
-    pub issuer: Hash,
+    /// Who seals and who may mint.
+    pub deployment: Deployment,
 }
 
 impl Ledger {
-    pub fn new(issuer: Hash) -> Ledger {
-        Ledger { issuer, ..Ledger::default() }
+    pub fn new(deployment: Deployment) -> Ledger {
+        Ledger { deployment, ..Ledger::default() }
     }
 
     fn append(&mut self, outputs: &[Note]) -> Result<Vec<u32>> {
@@ -278,7 +326,7 @@ impl Ledger {
     pub fn apply(&mut self, tx: &Tx) -> Result<Vec<u32>> {
         match tx {
             Tx::Mint(m) => {
-                verify(&self.issuer, &Mint::digest(&m.outputs), &m.sig).context("a mint not signed by the hub")?;
+                verify(&self.deployment.hub, &Mint::digest(&m.outputs), &m.sig).context("a mint not signed by the hub")?;
                 self.append(&m.outputs)
             }
             Tx::Transfer(t) => {
@@ -326,8 +374,9 @@ impl Ledger {
     pub fn withdraw_input(&self, index: u32) -> Result<WithdrawInput> {
         let note = *self.notes.get(index as usize).context("no such note")?;
         let s = self.sealed_with(index).context("the return is not sealed yet")?;
-        let input = WithdrawInput { height: s.height, nullifiers: s.nullifiers, signature: s.signature.clone(), note, index, path: self.tree.path_at(index, s.size) };
-        if let Err(r) = check(&input, &SEQUENCER_KEY, &HUB_KEY) {
+        let d = self.deployment;
+        let input = WithdrawInput { height: s.height, nullifiers: s.nullifiers, signature: s.signature.clone(), note, index, path: self.tree.path_at(index, s.size), sequencer: d.sequencer, hub: d.hub };
+        if let Err(r) = check(&input) {
             bail!("the statement would reject this return: {r:?}");
         }
         Ok(input)
@@ -362,10 +411,30 @@ mod tests {
     }
 
     #[test]
+    fn a_deployment_of_its_own() {
+        // fresh keys, no labels: the statement's input carries them and its
+        // journal commits to them
+        let (hub, seq) = (fresh_key(), fresh_key());
+        let d = Deployment { sequencer: xonly(&seq), hub: xonly(&hub) };
+        assert_ne!(d.id(), Deployment::toy().id());
+        let mut l = Ledger::new(d);
+        assert!(l.apply(&Tx::Mint(Mint::new(&regtest_hub(), vec![note(d.hub, 7, 0)]))).is_err(), "the toy hub can't mint here");
+        let r = l.apply(&Tx::Mint(Mint::new(&hub, vec![note(d.hub, 7, 9)]))).unwrap()[0];
+        l.seal(&seq);
+        let input = l.withdraw_input(r).unwrap();
+        assert_eq!(check(&input).unwrap()[8..], d.id());
+        // sealed by another key: no withdrawal input
+        let mut l2 = Ledger::new(d);
+        let r2 = l2.apply(&Tx::Mint(Mint::new(&hub, vec![note(d.hub, 7, 9)]))).unwrap()[0];
+        l2.seal(&regtest_sequencer());
+        assert!(l2.withdraw_input(r2).is_err());
+    }
+
+    #[test]
     fn mint_transfer_return_and_the_statements_input() {
         let (hub, seq) = (regtest_hub(), regtest_sequencer());
         let (alice, bob) = (key_from_label("test/alice"), key_from_label("test/bob"));
-        let mut l = Ledger::new(xonly(&hub));
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub) });
         let n0 = note(xonly(&alice), 10, 0);
         let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![n0]))).unwrap()[0];
         // nobody but the hub mints
@@ -385,7 +454,9 @@ mod tests {
         let s = l.seal(&seq);
         s.verify(&SEQUENCER_KEY).unwrap();
         let input = l.withdraw_input(r).unwrap();
-        assert_eq!(check(&input, &SEQUENCER_KEY, &HUB_KEY), Ok([6, 0, 0, 0, 42, 0, 0, 0]));
+        let journal = check(&input).unwrap();
+        assert_eq!(journal[..8], [6, 0, 0, 0, 42, 0, 0, 0]);
+        assert_eq!(journal[8..], Deployment::toy().id());
         // a note that isn't the hub's is no return
         assert!(l.withdraw_input(idx[0]).is_err());
     }

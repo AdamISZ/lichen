@@ -44,7 +44,7 @@ fn fold_and_default() {
     let (s2, url) = (stop.clone(), seq.url.clone());
     let sealer = std::thread::spawn(move || {
         while !s2.load(Ordering::Relaxed) {
-            let _ = Client::new(&url).seal();
+            let _ = Client::new(&url).and_then(|c| c.seal());
             std::thread::sleep(Duration::from_millis(200));
         }
     });
@@ -60,6 +60,7 @@ fn fold_and_default() {
         statement: mock(),
         dir: dir.join("hub"),
         seed: "test-hub".into(),
+        l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
         max_bits: 24,
         duration: 40,

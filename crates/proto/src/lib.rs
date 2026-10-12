@@ -26,14 +26,16 @@ use lngap_channel::{ChannelParams, PartyPubKeys};
 use lngap_lamport::winternitz::WotsPublic;
 use lngap_sessions::contract::{Check, Contract, Presign, Program, Signed, Spec};
 use lngap_sessions::session::Terms;
+pub use lichen_ledger::{Deployment, Hash, JOURNAL_LEN};
 use serde::{Deserialize, Serialize};
 
 /// Each party's share of the funding transaction's fee.
 pub const FEE_SHARE: Amount = Amount::from_sat(1_000);
 /// On the dispute path, bits below this pay nothing (dust): `2^9` sats.
 pub const LOW_BITS: u32 = 9;
-/// The withdrawal guest's image id (the canonical build pinned in ln-gap).
-pub const IMAGE_ID: &str = "4beda75466ff0db4aa6c6fe9512140368ad287c695f0ff162775db93039aa639";
+/// The withdrawal guest's image id (the build committed in ln-gap,
+/// `guests/withdraw.bin`).
+pub const IMAGE_ID: &str = "1bb827a083155b984971443d0c11a0e161041ff77fb77360dcaa7b2013693cdf";
 
 /// The contracts' timing, on regtest.
 pub fn params() -> ChannelParams {
@@ -79,14 +81,19 @@ impl Statement {
             Statement::Mock { session, returns } => Program::load(&lngap_sessions::statement::write_program_with(&dir.join(format!("mock-statement-{session}")), *session, returns, 8, true)?),
         }
     }
-    /// Where `b` is in the input, and the checks for memo `c`.
-    pub fn layout(&self, c: u32) -> (usize, Vec<Check>) {
+    /// Where `b` is in the input, and the checks for memo `c` and the
+    /// deployment (`deployment`, its id). The Groth16 verifier's input: the
+    /// journal's length in words (0), the image id (1-8), the proof (9-40),
+    /// the journal `b ‖ c ‖ D` (41, 42, 43-50).
+    pub fn layout(&self, c: u32, deployment: &Hash) -> (usize, Vec<Check>) {
         let check = |name: &str, word: usize, value: u32| Check { name: name.to_string(), word, value };
         match self {
             Statement::Groth16 { .. } => {
                 let id = lngap_zk::final_d60::input_words(&hex::decode(IMAGE_ID).expect("hex"));
-                let mut checks = vec![check("journal_len", 0, 2), check("memo", 42, c)];
+                let dep = lngap_zk::final_d60::input_words(deployment);
+                let mut checks = vec![check("journal_len", 0, (JOURNAL_LEN / 4) as u32), check("memo", 42, c)];
                 checks.extend((1..9).map(|j| check(&format!("image_{j}"), j, id[j - 1])));
+                checks.extend((0..8).map(|j| check(&format!("deployment_{}", j + 1), 43 + j, dep[j])));
                 (41, checks)
             }
             Statement::Mock { .. } => (0, vec![check("memo", 1, c)]),
@@ -116,6 +123,9 @@ impl Statement {
 /// What the hub offers (`GET /info`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Info {
+    /// The L2 deployment the hub is in (its sequencer's key and its own);
+    /// the wallet must know the same.
+    pub deployment: Deployment,
     /// The statement's id ([`Statement::id`]); the wallet must run the same.
     pub statement: String,
     /// Its depths: how many move keys a contract takes.
@@ -244,6 +254,8 @@ pub fn sign_anchor(kp: &bitcoin::key::Keypair, child: &Transaction, prevouts: &[
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
     pub statement: String,
+    /// The L2 deployment's id: the claim's journal must carry it.
+    pub deployment: Hash,
     pub terms: Terms,
     pub pubs: [PartyPubKeys; 2],
     /// The move keys by depth, one per field.
@@ -263,7 +275,7 @@ impl Record {
         self.terms.id
     }
     pub fn spec(&self, statement: &Statement) -> Spec {
-        let (b_word, checks) = statement.layout(self.terms.id);
+        let (b_word, checks) = statement.layout(self.terms.id, &self.deployment);
         Spec { terms: self.terms, cid: self.terms.id, params: params(), pubs: self.pubs.clone(), b_word, checks, moves: self.moves.clone(), inputs: self.inputs.clone(), tail: self.tail.clone() }
     }
     pub fn contract(&self, statement: &Statement, program: &Program) -> Result<Contract> {
@@ -466,5 +478,29 @@ mod tests {
         words[41] = 10;
         assert_eq!(g16.accepts(&input_from_words(&words)), Some(false), "b tampered");
         assert_eq!(Statement::Mock { session: 0, returns: vec![] }.accepts(&valid), None);
+    }
+
+    /// The Groth16 layout checks the journal `b ‖ c ‖ D`: a claim in this
+    /// contract's deployment passes every check, one in another fails the
+    /// deployment's words.
+    #[test]
+    fn the_groth16_layout_pins_the_deployment() {
+        let g16 = Statement::Groth16 { pdf: PathBuf::from("unused.yaml") };
+        let (ours, theirs) = (Deployment::toy(), Deployment { sequencer: [1; 32], hub: [2; 32] });
+        let (b_word, checks) = g16.layout(42, &ours.id());
+        assert_eq!(b_word, 41);
+        assert_eq!(checks.len(), 1 + 8 + 1 + 8, "the journal's length, the image id, the memo, the deployment");
+        let claim = |d: &Deployment| {
+            let mut w = vec![(JOURNAL_LEN / 4) as u32];
+            w.extend(lngap_zk::final_d60::input_words(&hex::decode(IMAGE_ID).unwrap()));
+            w.extend([0; 32]); // the proof
+            w.extend([9, 42]);
+            w.extend(lngap_zk::final_d60::input_words(&d.id()));
+            w
+        };
+        let failing = |w: &[u32]| checks.iter().filter(|c| w[c.word] != c.value).map(|c| c.name.clone()).collect::<Vec<_>>();
+        assert_eq!(claim(&ours).len(), 51);
+        assert!(failing(&claim(&ours)).is_empty());
+        assert_eq!(failing(&claim(&theirs)), (1..=8).map(|j| format!("deployment_{j}")).collect::<Vec<_>>());
     }
 }

@@ -97,7 +97,7 @@ fn the_read_and_jump_challenges_on_the_mock_statement() {
     let stop = Arc::new(AtomicBool::new(false));
     let url = seq.url.clone();
     let sealer = background(&stop, Duration::from_millis(200), move || {
-        let _ = Client::new(&url).seal();
+        let _ = Client::new(&url).and_then(|c| c.seal());
     });
     let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w).unwrap();
     rt.fund(&chain("hub").new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
@@ -110,6 +110,7 @@ fn the_read_and_jump_challenges_on_the_mock_statement() {
         statement: statement(),
         dir: dir.join("hub"),
         seed: "test-tail-hub".into(),
+        l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
         max_bits: 24,
         duration: 2_000,

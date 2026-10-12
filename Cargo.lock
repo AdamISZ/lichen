@@ -1412,6 +1412,7 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "hex",
+ "lichen-ledger",
  "lngap-btc",
  "lngap-channel",
  "lngap-ladder",

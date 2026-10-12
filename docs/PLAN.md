@@ -137,6 +137,32 @@ BitVMX-CPU from the public fork AdamISZ/BitVMX-CPU (branch `lngap`).
   engines and proved (725 s, against 816 s for the old 59 moves), G3
   `disprove_halt_exit` (5,142 vB; 540 s).
 
+## Deployment keys (2026-10-12)
+
+The toy keys (`lngap-toy/sequencer`, `lngap-toy/hub`, the hub's seed a
+label) let anyone mint, seal or sign as the hub: fine alone on regtest,
+fatal in any shared test. Now:
+
+- The statement (ln-gap, r0 core) takes the sequencer's and the hub's
+  keys as input; its journal is `b ‖ c ‖ D`, `D` the deployment id
+  (`SHA256("lngap/deployment" ‖ sequencer ‖ hub)`): one guest for every
+  deployment. The guest uses RISC Zero's accelerated crypto: 440k cycles,
+  30 s on an M4 Pro, against 5.9M and 6 minutes.
+- `ledger::Deployment` (the two keys, its `id`); the ledger, the
+  sequencer's client and the withdrawal input use it instead of
+  constants. The sequencer serves it at `GET /info`.
+- `lichen-sequencer` makes its key (`--key`) and names the minting hub
+  (`--issuer`); `lichen-hub` makes its L2 key and contract seed in its
+  `--dir` (`--print-key` for the sequencer); `--toy` keeps the old keys.
+- A wallet pins the sequencer's deployment when made (an older file on
+  first open) and refuses a hub whose `/info` names another. A contract
+  records `D` and checks its eight input words (43-50) like the memo; the
+  Groth16 input is 51 words (204 bytes).
+- Tests and the demo stay on the toy deployment. `groth16.rs` reads its
+  canned claim, `withdraw-9-42-deployment.hex`, from ln-gap: to be made
+  with the canonical guest (`linux-withdraw.sh` on x86), as is
+  `IMAGE_ID` (a Mac development build's for now).
+
 ## Demo: possible improvements
 
 - A dispute on the real statement (option 1, noted 2026-10-09): make the

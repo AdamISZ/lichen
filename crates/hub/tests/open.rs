@@ -39,6 +39,7 @@ fn open_a_contract_and_receive_the_deposit() {
         statement: mock(),
         dir: dir.join("hub"),
         seed: "test-hub".into(),
+        l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
         max_bits: 24,
         duration: 500,

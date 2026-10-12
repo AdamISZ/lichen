@@ -8,6 +8,8 @@
 //!   its [`SignedRoot`];
 //! - `GET /state`: every note's opening, the nullifiers, the sealed
 //!   heights (the ledger is transparent; fine at this scale);
+//! - `GET /info`: the deployment, the sequencer's and the hub's keys (a
+//!   client pins it on first contact: [`Client::new`]);
 //! - `GET /events?since=<n>`: what happened, in order, from event `n`.
 //!
 //! The sequencer is trusted for the L2's finality, inclusion and
@@ -20,7 +22,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_ledger::{Hash, Ledger, Note, SignedRoot, Tree, Tx, WithdrawInput, SEQUENCER_KEY};
+use lichen_ledger::{xonly, Deployment, Hash, Ledger, Note, SignedRoot, Tree, Tx, WithdrawInput};
 use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Response, Server};
 
@@ -44,11 +46,12 @@ impl State {
         }
         t
     }
-    /// Check every sealed root's signature and that the notes reach it.
-    pub fn verify(&self) -> Result<()> {
+    /// Check every sealed root's signature (the sequencer's key) and that
+    /// the notes reach it.
+    pub fn verify(&self, sequencer: &Hash) -> Result<()> {
         let tree = self.tree();
         for s in &self.sealed {
-            s.verify(&SEQUENCER_KEY).with_context(|| format!("height {}", s.height))?;
+            s.verify(sequencer).with_context(|| format!("height {}", s.height))?;
             anyhow::ensure!(s.size <= tree.len() && tree.root_at(s.size) == s.tree, "height {}: the notes don't reach its root", s.height);
         }
         Ok(())
@@ -56,13 +59,13 @@ impl State {
     pub fn is_spent(&self, note: &Note) -> bool {
         self.nullifiers.contains(&lichen_ledger::nullifier(note))
     }
-    /// The withdrawal statement's input for the return at `index`, built
-    /// and checked locally.
-    pub fn withdraw_input(&self, index: u32) -> Result<WithdrawInput> {
+    /// The withdrawal statement's input for the return at `index` in
+    /// deployment `d`, built and checked locally.
+    pub fn withdraw_input(&self, index: u32, d: &Deployment) -> Result<WithdrawInput> {
         let note = *self.notes.get(index as usize).context("no such note")?;
         let s = self.sealed.iter().find(|s| s.size > index).context("the return is not sealed yet")?;
-        let input = WithdrawInput { height: s.height, nullifiers: s.nullifiers, signature: s.signature.clone(), note, index, path: self.tree().path_at(index, s.size) };
-        lichen_ledger::check(&input, &SEQUENCER_KEY, &lichen_ledger::HUB_KEY).map_err(|r| anyhow!("the statement would reject this return: {r:?}"))?;
+        let input = WithdrawInput { height: s.height, nullifiers: s.nullifiers, signature: s.signature.clone(), note, index, path: self.tree().path_at(index, s.size), sequencer: d.sequencer, hub: d.hub };
+        lichen_ledger::check(&input).map_err(|r| anyhow!("the statement would reject this return: {r:?}"))?;
         Ok(input)
     }
 }
@@ -107,12 +110,14 @@ pub struct Sequencer {
 
 impl Sequencer {
     /// Serve on `addr` (e.g. "127.0.0.1:0"), the ledger kept in `path` if
-    /// given, signing with `key`.
+    /// given, signing with `key`, the hub's key `issuer` minting.
     pub fn start(addr: &str, path: Option<PathBuf>, key: SigningKey, issuer: Hash) -> Result<Sequencer> {
-        let ledger = match &path {
+        let deployment = Deployment { sequencer: xonly(&key), hub: issuer };
+        let ledger: Ledger = match &path {
             Some(p) if p.exists() => serde_json::from_slice(&std::fs::read(p)?).context("the ledger file")?,
-            _ => Ledger::new(issuer),
+            _ => Ledger::new(deployment),
         };
+        anyhow::ensure!(ledger.deployment == deployment, "the ledger file is another deployment's (sequencer {}, hub {})", hex::encode(ledger.deployment.sequencer), hex::encode(ledger.deployment.hub));
         let server = Arc::new(Server::http(addr).map_err(|e| anyhow!("listen on {addr}: {e}"))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let ledger = Arc::new(Mutex::new(ledger));
@@ -177,20 +182,31 @@ fn handle(ledger: &Mutex<Ledger>, events: &Mutex<Vec<Event>>, key: &SigningKey, 
             events.lock().unwrap().push(Event::Sealed { height: s.height, notes: s.size, root: s.root() });
             (200, serde_json::to_string(&s).unwrap())
         }
+        (Method::Get, "/info") => (200, serde_json::to_string(&l.deployment).unwrap()),
         (Method::Get, "/state") => (200, serde_json::to_string(&State::of(&l)).unwrap()),
         _ => refuse(404, format!("no {method} {url}")),
     }
 }
 
-/// A client of the sequencer.
+/// A client of the sequencer, pinned to a deployment: every root it
+/// reads is checked against the deployment's sequencer key.
 #[derive(Clone, Debug)]
 pub struct Client {
     pub url: String,
+    pub deployment: Deployment,
 }
 
 impl Client {
-    pub fn new(url: &str) -> Client {
-        Client { url: url.trim_end_matches('/').to_string() }
+    /// Connect, taking the deployment the sequencer announces (trust on
+    /// first use: keep it, and use [`Client::pinned`] after).
+    pub fn new(url: &str) -> Result<Client> {
+        let url = url.trim_end_matches('/').to_string();
+        let deployment: Deployment = ureq::get(&format!("{url}/info")).call().map_err(|e| anyhow!("{url}/info: {e}"))?.into_json()?;
+        Ok(Client { url, deployment })
+    }
+    /// A client of a deployment already known.
+    pub fn pinned(url: &str, deployment: Deployment) -> Client {
+        Client { url: url.trim_end_matches('/').to_string(), deployment }
     }
     fn post<T: for<'de> Deserialize<'de>>(&self, path: &str, body: &str) -> Result<T> {
         match ureq::post(&format!("{}{path}", self.url)).set("Content-Type", "application/json").send_string(body) {
@@ -208,7 +224,7 @@ impl Client {
     }
     pub fn seal(&self) -> Result<SignedRoot> {
         let s: SignedRoot = self.post("/seal", "")?;
-        s.verify(&SEQUENCER_KEY).context("the sealed root's signature")?;
+        s.verify(&self.deployment.sequencer).context("the sealed root's signature")?;
         Ok(s)
     }
     /// The events from number `since` on, with their numbers.
@@ -218,7 +234,7 @@ impl Client {
     /// The ledger, its sealed roots checked.
     pub fn state(&self) -> Result<State> {
         let s: State = ureq::get(&format!("{}/state", self.url)).call().map_err(|e| anyhow!("/state: {e}"))?.into_json()?;
-        s.verify()?;
+        s.verify(&self.deployment.sequencer)?;
         Ok(s)
     }
 }

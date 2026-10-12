@@ -58,9 +58,13 @@ fn disputes_on_the_groth16_verifier() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::copy(verifier_elf(), dir.join("zkverifier.elf")).unwrap();
-    std::fs::write(dir.join("groth16.yaml"), "elf: zkverifier.elf\nnary_search: 8\nmax_steps: 536870912\ninput_section_name: .input\njump_list: true\ninputs:\n  - size: 172\n    owner: prover\n").unwrap();
+    std::fs::write(dir.join("groth16.yaml"), "elf: zkverifier.elf\nnary_search: 8\nmax_steps: 536870912\ninput_section_name: .input\njump_list: true\ninputs:\n  - size: 204\n    owner: prover\n").unwrap();
     let statement = Statement::Groth16 { pdf: dir.join("groth16.yaml") };
-    let valid = hex::decode(include_str!("../../../../ln-gap/crates/apps/sessions/tests/data/withdraw-9-42.hex").trim()).unwrap();
+    // the canned claim: the toy deployment's return of 9 with memo 42,
+    // proved under the committed guest (ln-gap's r0/scripts/linux-withdraw.sh
+    // prints it, on x86 Linux)
+    let canned = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../ln-gap/crates/apps/sessions/tests/data/withdraw-9-42-deployment.hex");
+    let valid = hex::decode(std::fs::read_to_string(canned).unwrap_or_else(|e| panic!("{canned}: {e} (make it with linux-withdraw.sh)")).trim()).unwrap();
     let mut tampered = valid.clone();
     tampered[164] = 10; // b, word 41's low byte
     let seq = Sequencer::start("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY).unwrap();
@@ -95,6 +99,7 @@ fn disputes_on_the_groth16_verifier() {
             statement: statement.clone(),
             dir: dir.join(&hub_name),
             seed: format!("test-{hub_name}"),
+            l2_key: lichen_ledger::regtest_hub(),
             reserve_ppm: 20_000,
             max_bits: 24,
             duration: 5_000,

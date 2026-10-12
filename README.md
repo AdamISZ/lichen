@@ -64,18 +64,28 @@ run on the mock statement set so that every claim is true (the
 contract's memo check still applies), a stand-in for the proof of the
 return that the real statement checks.
 
-## Try it (regtest keys)
+## Try it
+
+Each deployment has its own keys, made on first start: the hub's L2 key
+(it mints; returns are paid to it) and its contract seed, in the hub's
+data directory, and the sequencer's key. The withdrawal statement takes
+the keys as input and its journal commits to them (the deployment id),
+so one guest serves every deployment; each contract checks its own.
 
 ```sh
 cargo build
-./target/debug/lichen-sequencer --ledger /tmp/ledger.json &
-./target/debug/lichen --wallet /tmp/alice.json init
-./target/debug/lichen --wallet /tmp/alice.json balance
+./target/debug/lichen-hub --dir hub-data --print-key          # the hub's L2 key
+./target/debug/lichen-sequencer --ledger ledger.json --issuer <that key> &
+./target/debug/lichen-hub --dir hub-data --rpc-url ... --cookie ... &
+./target/debug/lichen --wallet alice.json init                 # pins the deployment
+./target/debug/lichen --wallet alice.json balance
 ```
 
-The sequencer's and the hub's keys are the regtest deployment's
-(`lngap-toy/sequencer`, `lngap-toy/hub`): the withdrawal statement pins
-them, so a proof made with the committed guest is valid for them only.
+A wallet pins the deployment the sequencer announces when it is made,
+and won't open a contract with a hub in another. `--toy` (sequencer and
+hub) runs the toy deployment instead, whose keys anyone can derive
+(`lngap-toy/sequencer`, `lngap-toy/hub`): the tests and the demo use it,
+so that a proof made in advance is valid for them.
 
 ## Disputes on the real statement
 

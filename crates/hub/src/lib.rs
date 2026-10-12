@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, TxOut};
 use lichen_chain::Chain;
-use lichen_ledger::{note, regtest_hub, Mint, Tx};
+use lichen_ledger::{note, xonly, Mint, Tx};
+use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_proto::{all_moves, check_funding, tail_keys, contributions, terms, Accept, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, FEE_SHARE, FOLD_FEE};
 use lichen_sequencer::Client;
 use lngap_btc::keys::Seed;
@@ -38,8 +39,12 @@ pub struct Config {
     pub statement: Statement,
     /// Where the hub keeps its contracts.
     pub dir: PathBuf,
-    /// The hub's secret seed (a label, on regtest).
+    /// The hub's secret seed for its contract keys (a label: keep it
+    /// secret; the binary makes a random one).
     pub seed: String,
+    /// The hub's L2 key: it mints, and returns are paid to it. The
+    /// sequencer must name it as the issuer.
+    pub l2_key: SigningKey,
     pub reserve_ppm: u64,
     pub max_bits: u32,
     pub duration: u32,
@@ -121,7 +126,8 @@ impl Hub {
         std::fs::create_dir_all(cfg.dir.join("contracts"))?;
         let program = cfg.statement.program(&cfg.dir)?;
         let chain = Chain::connect(&cfg.rpc_url, &cfg.cookie, &cfg.wallet)?;
-        let seq = Client::new(&cfg.sequencer);
+        let seq = Client::new(&cfg.sequencer)?;
+        ensure!(seq.deployment.hub == xonly(&cfg.l2_key), "the sequencer's issuer is {}, not this hub's key {}", hex::encode(seq.deployment.hub), hex::encode(xonly(&cfg.l2_key)));
         let mut open = HashMap::new();
         for e in std::fs::read_dir(cfg.dir.join("contracts"))?.flatten() {
             let o: Open = serde_json::from_slice(&std::fs::read(e.path())?)?;
@@ -225,7 +231,7 @@ impl Inner {
     }
 
     fn info(&self) -> Info {
-        Info { statement: self.cfg.statement.id().to_string(), depths: self.program.depths(), reserve_ppm: self.cfg.reserve_ppm, max_bits: self.cfg.max_bits, duration: self.cfg.duration }
+        Info { deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.depths(), reserve_ppm: self.cfg.reserve_ppm, max_bits: self.cfg.max_bits, duration: self.cfg.duration }
     }
 
     fn open(&self, req: OpenRequest) -> Result<OpenOffer> {
@@ -248,6 +254,7 @@ impl Inner {
         let path: Vec<_> = path_secrets(&self.cfg.seed, cid, program).into_iter().map(pub_of).collect();
         let mut record = Record {
             statement: self.cfg.statement.id().to_string(),
+            deployment: self.seq.deployment.id(),
             // a reserve to measure the floors under; the real one below
             terms: terms(cid, &req, t_close, v_max)?,
             pubs: [req.alice.clone(), hub.clone()],
@@ -327,7 +334,7 @@ impl Inner {
         ensure!(!self.refuse_folds.load(Ordering::Relaxed), "this hub refuses cooperative withdrawals");
         let o = self.open.lock().unwrap().get(&f.cid).cloned().context("no such contract")?;
         ensure!(o.closed.is_none(), "contract {} is closed", f.cid);
-        let input = self.seq.state()?.withdraw_input(f.index)?;
+        let input = self.seq.state()?.withdraw_input(f.index, &self.seq.deployment)?;
         ensure!(input.note.memo == f.cid && input.note.value == f.b, "note {} is not a return of {} with memo {}", f.index, f.b, f.cid);
         let c = o.record.contract(&self.cfg.statement, &self.program)?;
         let p = c.fold(o.record.funding, Amount::from_sat(f.b), FOLD_FEE)?;
@@ -377,7 +384,7 @@ impl Inner {
                 continue;
             }
             let d = u64::from(o.record.terms.deposit);
-            self.seq.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![note(o.record.l2_address, d, 0)])))?;
+            self.seq.submit(&Tx::Mint(Mint::new(&self.cfg.l2_key, vec![note(o.record.l2_address, d, 0)])))?;
             self.note(format!("contract {}: funding confirmed; minted {d} sats to the user", o.record.cid()));
             o.minted = true;
             self.save(&o)?;

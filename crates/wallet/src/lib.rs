@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_ledger::{fresh_rho, note, sign, xonly, Hash, Note, Spend, Transfer, Tx, WithdrawInput, HUB_KEY};
+use lichen_ledger::{fresh_rho, note, sign, xonly, Deployment, Hash, Note, Spend, Transfer, Tx, WithdrawInput};
 use lichen_chain::Chain;
 use lichen_proto::{all_moves, check_funding, tail_keys, contributions, terms, Accept, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, FEE_SHARE, FOLD_FEE};
 use lichen_sequencer::{Client, State};
@@ -27,6 +27,10 @@ use serde::{Deserialize, Serialize};
 struct Stored {
     /// The secret key, hex.
     secret: String,
+    /// The L2 deployment, pinned when the wallet was made (an older file
+    /// without it pins it on first open).
+    #[serde(default)]
+    deployment: Option<Deployment>,
     /// This wallet's returns to the hub: (memo, note index).
     returns: Vec<(u32, u32)>,
     /// Its contracts: each one's nonce (from which its keys derive) and
@@ -85,17 +89,26 @@ impl Wallet {
             bail!("{} already exists", path.display());
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
-        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, key, path: path.to_path_buf(), returns: vec![], contracts: vec![], sequencer: Client::new(sequencer) };
+        // the deployment the sequencer announces, kept from now on
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, key, path: path.to_path_buf(), returns: vec![], contracts: vec![], sequencer: Client::new(sequencer)? };
         w.save()?;
         Ok(w)
     }
     pub fn open(path: &Path, sequencer: &str) -> Result<Wallet> {
         let s: Stored = serde_json::from_slice(&std::fs::read(path).with_context(|| format!("no wallet at {}", path.display()))?)?;
         let key = SigningKey::from_bytes(&hex::decode(&s.secret)?).context("the wallet's key")?;
-        Ok(Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, sequencer: Client::new(sequencer) })
+        let client = match s.deployment {
+            Some(d) => Client::pinned(sequencer, d),
+            None => Client::new(sequencer)?,
+        };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, sequencer: client };
+        if s.deployment.is_none() {
+            w.save()?;
+        }
+        Ok(w)
     }
     pub(crate) fn save(&self) -> Result<()> {
-        let s = Stored { secret: hex::encode(self.key.to_bytes()), returns: self.returns.clone(), contracts: self.contracts.clone() };
+        let s = Stored { secret: hex::encode(self.key.to_bytes()), deployment: Some(self.sequencer.deployment), returns: self.returns.clone(), contracts: self.contracts.clone() };
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -143,7 +156,7 @@ impl Wallet {
     /// Return `b` to the hub with the contract's memo `c`: a withdrawal's
     /// first step. The return's note index.
     pub fn return_to_hub(&mut self, b: u64, c: u32) -> Result<u32> {
-        let idx = self.send(HUB_KEY, b, c)?[0];
+        let idx = self.send(self.sequencer.deployment.hub, b, c)?[0];
         self.returns.push((c, idx));
         self.save()?;
         Ok(idx)
@@ -152,7 +165,7 @@ impl Wallet {
     /// it is sealed.
     pub fn withdraw_input(&self, c: u32) -> Result<WithdrawInput> {
         let &(_, idx) = self.returns.iter().find(|r| r.0 == c).with_context(|| format!("no return with memo {c}"))?;
-        self.sequencer.state()?.withdraw_input(idx)
+        self.sequencer.state()?.withdraw_input(idx, &self.sequencer.deployment)
     }
 }
 
@@ -213,6 +226,8 @@ impl Wallet {
     pub fn open_contract(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, ask: Ask) -> Result<Held> {
         let Ask { deposit, bits, reserve } = ask;
         let info: Info = hub_call(&format!("{hub}/info"), None)?;
+        let d = self.sequencer.deployment;
+        ensure!(info.deployment == d, "the hub is in another deployment (sequencer {}, hub {}) than this wallet's (sequencer {}, hub {})", hex::encode(info.deployment.sequencer), hex::encode(info.deployment.hub), hex::encode(d.sequencer), hex::encode(d.hub));
         ensure!(info.statement == statement.id(), "the hub runs {}, this wallet {}", info.statement, statement.id());
         let program = statement.program(dir)?;
         let m = program.depths();
@@ -236,6 +251,7 @@ impl Wallet {
         ensure!(offer.t_close > chain.height()?, "T_close is past");
         let mut record = Record {
             statement: statement.id().to_string(),
+            deployment: d.id(),
             terms: t,
             pubs: [req.alice.clone(), offer.hub.clone()],
             moves: all_moves(&moves, &offer.moves),
@@ -278,7 +294,7 @@ impl Wallet {
         ensure!(bitcoin::Amount::from_sat(b) <= held.record.terms.v_max(), "{b} sats is above the cap");
         let index = self.return_to_hub(b, cid)?;
         let start = std::time::Instant::now();
-        while self.sequencer.state()?.withdraw_input(index).is_err() {
+        while self.sequencer.state()?.withdraw_input(index, &self.sequencer.deployment).is_err() {
             ensure!(start.elapsed() < std::time::Duration::from_secs(120), "the return was never sealed");
             std::thread::sleep(std::time::Duration::from_millis(200));
         }

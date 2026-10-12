@@ -1,7 +1,7 @@
 //! The L2 end to end: a sequencer, the hub minting, two wallets paying
 //! each other, a return to the hub, and the withdrawal statement's input.
 
-use lichen_ledger::{check, regtest_hub, regtest_sequencer, xonly, Mint, Tx, HUB_KEY, SEQUENCER_KEY};
+use lichen_ledger::{check, regtest_hub, regtest_sequencer, xonly, Deployment, Mint, Tx, HUB_KEY};
 use lichen_sequencer::Sequencer;
 use lichen_wallet::Wallet;
 
@@ -33,7 +33,9 @@ fn pay_return_and_the_withdrawal_input() {
     let sealed = alice.sequencer.seal().unwrap();
     let input = alice.withdraw_input(42).unwrap();
     assert_eq!((input.index, input.height), (r, sealed.height));
-    assert_eq!(check(&input, &SEQUENCER_KEY, &HUB_KEY), Ok([7, 0, 0, 0, 42, 0, 0, 0]));
+    let journal = check(&input).unwrap();
+    assert_eq!(journal[..8], [7, 0, 0, 0, 42, 0, 0, 0]);
+    assert_eq!(journal[8..], Deployment::toy().id(), "the wallet pinned the sequencer's deployment");
     assert_eq!(xonly(&regtest_hub()), input.note.owner);
     // for proving it elsewhere (lngap-r0 prove-input / claim)
     if let Ok(path) = std::env::var("LICHEN_WRITE_WITHDRAW_INPUT") {

@@ -114,6 +114,7 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
         statement: statement.clone(),
         dir: args.dir.join("hub"),
         seed: "lichen-demo-hub".into(),
+        l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
         max_bits: 24,
         duration: 5_000,
@@ -129,7 +130,7 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
         let address = w.address();
         users.push(Arc::new(User { name, wallet: Mutex::new(w), chain: ch, dir: args.dir.join(name.to_lowercase()), address, cid: Mutex::new(0), activity: Mutex::new(String::new()) }));
     }
-    let d = Arc::new(Demo { seq: Client::new(&seq.url), hub, users, statement, chain_log: Mutex::new(vec![]), rt });
+    let d = Arc::new(Demo { seq: Client::new(&seq.url)?, hub, users, statement, chain_log: Mutex::new(vec![]), rt });
     // the sequencer seals, and blocks come, in the background
     std::mem::forget(seq); // runs for the demo's life
     let s = d.seq.clone();
