@@ -25,11 +25,25 @@ The contracts and the dispute machinery are in [ln-gap](https://github.com/AdamI
 
 Worth mentioning these as idiosyncracies: first, this was built without a user-side bitcoin wallet as that's probably the right choice anyway: you fund an intermediate joint-control address and then from there the contract is funded. Explained in the procedures below. Second: in case you actually want to test *disputes*, and not normal usage, you'll have to create proofs to do withdrawals. The instructions are [here](#disputes-on-the-real-statement), and note that this involves running a proving step on x86 architecture that might take about 5 minutes. Notably, this step is partly delegatable but it will remain a point of interest in making this a usable system.
 
-Things not implemented yet:
+### Things not implemented yet:
 
 * Any L2 consensus development. No finality through publishing roots on bitcoin; no distribution of the sequencer (just a single entity's key). See the [paper](./papers/lichen-draft.pdf) for discussion of what could be done here.
 * Any watchtower infrastructure: a turnkey deployment for a VPS (like a docker instance), that a user could deploy at the time when a dispute occurs.
 * Shielded instead of transparent notes on the L2. This is the intended first application of the idea.
+
+### High level plan of work to do:
+
+* Completing documentation of all the internal steps for normal operation and dispute, in the Bitcoin contracts
+
+* Building extra support functionality - a turnkey watchtower, so there is a realistic path for a constrained user to dispute correctly.
+
+* Creating a useful feature for the L2: shielded transfers.
+
+* Creating a commitment mechanism (seals) for the L2 sequencer to gain finality from the Bitcoin chain (on a slower timescale)
+
+* As per the above, but further strengthening against malicious or disruptive sequencer behavior.
+
+* LONG TERM: potential replacement of BitVMX with a BABE-style construction.
 
 -------
 
