@@ -253,7 +253,64 @@ First locally: the deployment in Colima on the Mac (Mutinynet), the
 wallet native, paying deposits from the Mutinynet faucet; then on a
 VPS with other testers. Open, pay, fold, then a refused withdrawal
 disputed (the mock statement, or the real one wrapped on x86).
-Measure: times, kvB, fees. Write it up in PLAN.md.
+Measure: times, kvB, fees.
+
+Status (2026-10-13): the local trials are DONE, three contracts on the
+Groth16 statement. The setup:
+
+- **Deployment:** Colima on the Mac. The wallet ran natively through
+  mutinynet.com's Esplora.
+- **Deposits** were paid from a Core wallet ("payer").
+- **Claims** were proved and wrapped on an x86 laptop
+  (`linux-claim.sh`).
+- **Each contract:**
+  - a cap of 2^16, a deposit of 30,000, and `r_A` 20,000;
+  - the hub's `r_H` 197,356, the floors of the deepest dispute;
+  - δ = δ′ = 40.
+
+Walkthroughs, with every transaction: [explainers/](explainers/README.md).
+
+| test | contract | what happened | on chain | fees |
+|---|---|---|---|---|
+| A | 1000 | Alice pays Bob 5,000 on the L2, withdraws 20,000; the hub folds | fold 193 vB, `sweep-fees` 99 vB | 1,500 |
+| B | 1001 | the hub stopped; Alice withdraws 35,000 by dispute | 5 txs, 23,051 vB | 24,903 |
+| C | 1002 | as B (30,000), the hub restarted after the escalation: it concedes | 5 txs, 23,957 vB | 23,985 |
+
+The fees are the withdrawal's, not the deposit's or the funding's. From
+the deposit's confirmation to the mint took about a minute (1001, 1002).
+
+- **A** ([cooperative.md](explainers/cooperative.md)): the fold confirmed
+  25 blocks after the funding, most of it time at the keyboard.
+- **B** ([hub-absent.md](explainers/hub-absent.md)): escalation to sweep
+  took 67 minutes: a block between the links, then two windows (80 + 40
+  blocks). It found three tidy-ups, fixed in 75ba18a and seen in C:
+  - the timeout's fee coin was a fixed 2,000; it is now sized to the
+    transaction;
+  - the anchors were left unspent;
+  - the fee budget's rest needed `sweep-fees`.
+
+  The sweep now takes the last two.
+- **C** ([hub-returns.md](explainers/hub-returns.md)): the hub was
+  started after `inputs` confirmed.
+  - It read the claim from the chain, checked it natively, and conceded
+    2.4 s after starting.
+  - It logged the contract settled when the timeout appeared.
+  - The timeout's fee coin was 600.
+  - One sweep of 8 inputs took the payout, both anchors and the budget's
+    rest: 243,067 in all.
+
+  Starting the hub before C also caught it up on 1001.
+
+Found along the way:
+
+- **Fixed:** a hub's first opening at a small cap (61ad4a0, with
+  `open --resume`).
+- **Not fixed:** the hub never collects its own bit outputs after a
+  dispute (`hub_bit_i`). 1001's and 1002's sit unspent, 30,208 and
+  35,328 sats.
+
+Next: a VPS with other testers, and T4 (the wrap service) if Mac
+testers' claims are the friction.
 
 ## Not in scope
 
