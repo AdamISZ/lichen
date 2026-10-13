@@ -513,6 +513,13 @@ pub fn feerate(net: Net) -> u64 {
     }
 }
 
+/// The fee a terminal transaction's broadcaster adds with its coin
+/// (`Chain::post_terminal`): the transaction's own size and the coin's
+/// input (a key-path spend, 58 vB), at the network's feerate.
+pub fn terminal_fee(tx: &Transaction, net: Net) -> Amount {
+    Amount::from_sat((tx.vsize() as u64 + 60) * feerate(net))
+}
+
 /// The link that carries move `j` (`escalate` for move 1).
 pub fn link_name(j: u32) -> String {
     if j == 1 { "escalate".into() } else { format!("move_{j}") }

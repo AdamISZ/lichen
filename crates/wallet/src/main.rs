@@ -75,7 +75,8 @@ enum Cmd {
         resume: Option<u32>,
     },
     /// Send what is left of a contract's fee budget to its payout address
-    /// (once it is closed, unless --force).
+    /// (once it is closed, unless --force). A won dispute's sweep takes it
+    /// already; this is for a fold, a refund or a lost dispute.
     SweepFees {
         contract: u32,
         #[arg(long, default_value_t = 500)]
@@ -190,6 +191,7 @@ fn main() -> Result<()> {
                 (None, Some(b), None) => (b, a.statement.mock_input(b, contract).context("--input: the claim's input (a proof's, for groth16)")?),
                 (None, None, _) => anyhow::bail!("the amount withdrawn"),
             };
+            w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
             let (outcome, swept) = w.dispute(&chain, &a.statement, &a.wallet.with_extension("d"), contract, amount, &input)?;
             println!("{outcome:?}; swept {swept:?}");
         }

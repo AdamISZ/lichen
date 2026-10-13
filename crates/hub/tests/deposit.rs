@@ -7,8 +7,8 @@
 //!   `b + r_A`.
 //! - E2: a hub that refuses and disputes true claims: the whole search
 //!   played through Esplora (blocks every second), fees from the budget;
-//!   Alice proves the last step and is paid; the budget's rest is swept
-//!   to her payout address.
+//!   Alice proves the last step and is paid; her sweep takes the budget's
+//!   rest to her payout address too.
 //! - R: a hub that never funds (the opening fails after the deposit):
 //!   the deposit refunds by its timeout, not before.
 //! - S: an opening that fails after the deposit, resumed with it at a
@@ -174,14 +174,16 @@ fn a_user_with_no_wallet() {
     assert!(matches!(outcome, Outcome::Proved(_)), "{outcome:?}");
     let (txid, value) = swept.expect("swept");
     assert_eq!(budget, lichen_proto::fee_budget(Net::Regtest));
-    assert!(left < budget, "the children were paid from the budget");
     let sweep = esplora.get_tx(&txid).unwrap();
     assert!(sweep.output.iter().all(|o| o.script_pubkey == to_bob), "swept to the payout address");
     assert!(value > Amount::from_sat(u64::from(B) / 2), "{value}");
-    // what's left of the budget, to the payout address too (closed now)
-    let sweep = bob.sweep_fees(&esplora, cid, Amount::from_sat(500), false).unwrap();
-    assert_eq!(esplora.get_tx(&sweep).unwrap().output, vec![bitcoin::TxOut { value: left - Amount::from_sat(500), script_pubkey: to_bob }]);
-    println!("LICHEN E2: the fee budget's {} sats swept to the payout address", (left - Amount::from_sat(500)).to_sat());
+    // the sweep took what was left of the budget (the children paid from
+    // it), so there is nothing for sweep-fees
+    let budget_spk = bob.fees_for(cid).unwrap().spk();
+    let from_budget: Amount = sweep.input.iter().map(|i| esplora.get_tx(&i.previous_output.txid).unwrap().output[i.previous_output.vout as usize].clone()).filter(|o| o.script_pubkey == budget_spk).map(|o| o.value).sum();
+    assert!(from_budget > Amount::ZERO && from_budget < budget, "the children paid from the budget, its rest swept: {from_budget}");
+    bob.sweep_fees(&esplora, cid, Amount::from_sat(500), false).unwrap_err();
+    println!("LICHEN E2: the sweep took the fee budget's rest, {} sats", from_budget.to_sat());
     stop.store(true, Ordering::Relaxed);
     let _ = std::fs::remove_dir_all(&dir);
 }

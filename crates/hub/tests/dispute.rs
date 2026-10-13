@@ -96,6 +96,7 @@ fn disputes_on_the_mock_statement() {
         rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
         let wdir = dir.join(user);
         let mut w = Wallet::create(&dir.join(format!("{user}.json")), &seq.url).unwrap();
+        w.progress = Some(Arc::new(move |m: String| println!("LICHEN {label}: {m}")));
         let held = w.open_contract(&hub.url, &ch, &statement(), &wdir, ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
         let cid = held.record.cid();
         let start = Instant::now();
@@ -135,13 +136,21 @@ fn disputes_on_the_mock_statement() {
             let floors = t.v_max() + t.reserves() - rt.get_tx(&op.txid).unwrap().output[op.vout as usize].value;
             let paid = Amount::from_sat(u64::from(B / 512 * 512)) + t.reserves() - floors;
             println!("LICHEN {label}: the floors of the links played: {floors}");
-            assert!(swept <= paid && swept > paid - Amount::from_sat(20_000), "{label}: swept {swept} of {paid}");
             let start = Instant::now();
             while ch.confirmations(&sweep).unwrap() == 0 {
                 assert!(start.elapsed() < Duration::from_secs(30), "{label}: the sweep confirms");
                 std::thread::sleep(Duration::from_millis(200));
             }
-            assert_eq!(rt.get_tx(&sweep).unwrap().output[0].value, swept);
+            let sweep_tx = rt.get_tx(&sweep).unwrap();
+            assert_eq!(sweep_tx.output[0].value, swept);
+            // the sweep takes the rest of the contract's that is hers too:
+            // her unspent anchors and the fee budget, which it empties
+            let value = |op: &bitcoin::OutPoint| rt.get_tx(&op.txid).unwrap().output[op.vout as usize].value;
+            let extra: Amount = sweep_tx.input.iter().map(|i| &i.previous_output).filter(|op| op.txid != payout.compute_txid()).map(value).sum();
+            assert!(extra > Amount::ZERO, "{label}: the fee budget's rest swept");
+            assert_eq!(w.fees_for(cid).unwrap().balance(&ch).unwrap(), Amount::ZERO, "{label}: the fee budget emptied");
+            let won = swept - extra;
+            assert!(won <= paid && won > paid - Amount::from_sat(20_000), "{label}: swept {won} of {paid}, and {extra} besides");
         } else {
             assert!(label == "C" || label == "M");
         }

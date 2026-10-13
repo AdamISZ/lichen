@@ -94,6 +94,13 @@ impl Inner {
         self.chain.get_tx(&d.txid(name)).with_context(|| format!("{name} is not on chain"))
     }
 
+    /// Post the pre-signed terminal `name` (a timeout), its fee paid by a
+    /// coin of the hub's wallet.
+    fn terminal(&self, d: &Disputed, name: &str) -> Result<bitcoin::Txid> {
+        let tx = d.finish(name, vec![])?;
+        self.chain.post_terminal(&tx, &d.set[name].prevout, lichen_proto::terminal_fee(&tx, self.cfg.network), &NodeWallet)
+    }
+
     /// If the contract has been escalated (and its input published), read
     /// the claim and decide.
     fn start(&self, record: &lichen_proto::Record) -> Result<Option<State>> {
@@ -120,7 +127,7 @@ impl Inner {
                 let at = confirmed_at(self, &esc_id)?.unwrap();
                 let p = d.contract.spec.params;
                 if self.chain.height()? >= at + u32::from(p.delta + p.delta_prime) {
-                    let txid = self.chain.post_terminal(&d.finish("timeout_inputs", vec![])?, &d.set["timeout_inputs"].prevout, Amount::from_sat(2_000), &NodeWallet)?;
+                    let txid = self.terminal(&d, "timeout_inputs")?;
                     self.note(format!("contract {cid}: the input never came; timeout {txid}"));
                     self.close(cid, txid)?;
                     return Ok(Some(State::Done));
@@ -282,7 +289,7 @@ impl Inner {
             if self.chain.height()? >= last + w {
                 // Alice stopped: the ladder output after the hub's last move times out to it
                 let name = format!("timeout_{}", awaiting - 1);
-                let txid = self.chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000), &NodeWallet)?;
+                let txid = self.terminal(&d, &name)?;
                 self.note(format!("contract {cid}: the user stopped answering; timeout {txid}"));
                 self.close(cid, txid)?;
                 return Ok(Some(State::Done));
@@ -367,7 +374,7 @@ impl Inner {
             return Ok(Some(State::Waiting { d: Box::new(d), at }));
         }
         let name = format!("timeout_{m}");
-        let txid = self.chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000), &NodeWallet)?;
+        let txid = self.terminal(&d, &name)?;
         self.note(format!("contract {cid}: the user's step neither proved nor was disproved; timeout {txid}"));
         self.close(cid, txid)?;
         Ok(Some(State::Done))

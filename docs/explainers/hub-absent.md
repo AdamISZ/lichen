@@ -288,13 +288,18 @@ the hub loses by vanishing is its reserve.
 - **Proving cost Alice time, not sats.** Her on-chain costs were 3,360
   sats from her budget and her payout. The 21,543 of floors came out of
   the hub's reserve.
-- **Tidy-ups this run surfaced:**
-  - the anchors (2 × 330) are never spent when no child is needed; the
-    sweep could collect them;
-  - the timeout's fee coin is a fixed 2,000 sats, 3.4 sat/vB at 589 vB,
-    so the split can size it to the feerate;
-  - `sweep-fees` is a separate command, and the sweep could collect the
-    fee budget too.
+- **Tidy-ups this run surfaced, since fixed:**
+  - the anchors (2 × 330) were left unspent when no fee child was
+    needed: the sweep now collects them;
+  - the timeout's fee coin was a fixed 2,000 sats, 3.4 sat/vB at
+    589 vB: it is now the transaction's size at the network's feerate
+    (about 590 sats here), for the hub's timeouts too;
+  - the fee budget's rest needed `sweep-fees`: a won dispute's sweep now
+    takes it, and `sweep-fees` is left for folds, refunds and lost
+    disputes.
+
+  A rerun would show a timeout fee of about 590 sats, and one sweep
+  paying out the winnings, the anchors and the budget's rest together.
 
 ## Reproducing it
 

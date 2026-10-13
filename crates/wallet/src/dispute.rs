@@ -7,15 +7,18 @@
 //! history: she checks it against her own and challenges the first false
 //! hop, which the hub can't reveal (her timeout pays her). Either way she
 //! is paid `b` (in bits, from 512 sats up) and both reserves less the
-//! links' floors, and sweeps them to her wallet.
+//! links' floors, and sweeps them to her payout address.
 
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
-use lichen_chain::Chain;
+use lichen_chain::{Chain, Fees};
 use lichen_proto::{anchor_vout, link_name, sign_anchor, sign_move, Disputed, Patience, Stall, Statement};
+use lngap_btc::taptree::TapTree;
+use lngap_channel::Role;
+use lngap_sessions::contract::anchor_tree_for;
 use lngap_btc::sighash::sign_tapscript;
 use lngap_btc::witness::tapscript_witness;
 use lngap_ladder::script::wots_wire;
@@ -42,9 +45,15 @@ pub enum Outcome {
     Lost,
 }
 
-/// Her winnings swept to her wallet: the sweep's txid and what it pays.
+/// Her winnings swept to her payout address, with her anchors and the fee
+/// budget's rest: the sweep's txid and what it pays.
 pub type Swept = Option<(Txid, Amount)>;
 
+
+/// An input of the sweep: its outpoint, prevout and sequence, and its leaf
+/// (and whether the witness carries `b`'s signature), or none for a coin
+/// of the fee budget (its key path).
+type SweepIn = (OutPoint, TxOut, Sequence, Option<(TapTree, String, bool)>);
 
 /// The height a transaction confirmed at, if it has.
 fn confirmed_at(chain: &Chain, txid: &Txid) -> Result<Option<u32>> {
@@ -105,6 +114,15 @@ impl Wallet {
         }
     }
 
+    /// Post the pre-signed terminal `name` with its runtime `wire` (a
+    /// timeout's is empty), its fee a coin of exactly that from the
+    /// contract's fee budget.
+    fn terminal(&self, chain: &Chain, d: &Disputed, name: &str, wire: Vec<Vec<u8>>) -> Result<Txid> {
+        let tx = d.finish(name, wire)?;
+        let fee = lichen_proto::terminal_fee(&tx, chain.network);
+        chain.post_terminal(&tx, &d.set[name].prevout, fee, &self.fees_for(d.contract.spec.cid)?)
+    }
+
     /// Enforce a withdrawal of `b` from contract `cid` on Bitcoin, the
     /// claim's `input` the statement program's (for the mock, `(b, c)`;
     /// for Groth16, the verifier's input for her proof). Blocks until the
@@ -159,23 +177,27 @@ impl Wallet {
         // escalate: move 1 with the claim's words; then the rest of the input
         let mut wire = word_wire(&d.contract.claim_words())?;
         wire.extend(sign_move(&d.program, 1, &self.move_secrets(&held.nonce, &d.program, 1), prover.last())?);
+        self.step(format!("escalating: the claim of {b} sats and move 1 of {m}, {}", d.txid("escalate")));
         let mut last = self.post(chain, &d, &held.nonce, "escalate", wire)?;
-        self.step(format!("escalated: the claim of {b} sats on chain (move 1 of {m})"));
+        self.step(format!("escalated, confirmed at {last}"));
         let mut last_id = d.txid("escalate");
         if d.set.contains_key("inputs") {
+            self.step(format!("publishing the rest of the claim's input, {}", d.txid("inputs")));
             last = self.post(chain, &d, &held.nonce, "inputs", word_wire(&d.contract.rest_words())?)?;
             last_id = d.txid("inputs");
-            self.step("the rest of the claim's input published".into());
+            self.step(format!("published, confirmed at {last}"));
         }
         // the search: the hub moves at even depths
         for j in (2..m).step_by(2) {
+            self.step(format!("waiting for the hub's move {j}: its window ends at block {}", last + w));
             let tx = match wait_link(chain, &d.txid(&link_name(j)), &OutPoint { txid: last_id, vout: 0 }, last + w)? {
                 Next::Link(tx) => tx,
                 Next::Deadline => {
                     // the hub didn't answer in time: the ladder output after move j - 1 times out to her
                     self.step(format!("the hub didn't answer move {} in time: the user's timeout pays", j - 1));
                     let name = format!("timeout_{}", j - 1);
-                    let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000), &self.fees_for(d.contract.spec.cid)?)?;
+                    let txid = self.terminal(chain, &d, &name, vec![])?;
+                    self.step(format!("the timeout pays the user: {txid}"));
                     return self.paid(chain, &d, k, b, Outcome::HubTimedOut(txid));
                 }
                 Next::Taken => {
@@ -185,7 +207,7 @@ impl Wallet {
                     return Ok((Outcome::Lost, None));
                 }
             };
-            self.step(format!("the hub chose a half (move {j})"));
+            self.step(format!("the hub chose a segment (move {j})"));
             let next = prover.answer(&read_move(&tx, d.key(j))?)?;
             let wire = sign_move(&d.program, j + 1, &self.move_secrets(&held.nonce, &d.program, j + 1), &next)?;
             last = self.post(chain, &d, &held.nonce, &link_name(j + 1), wire)?;
@@ -216,10 +238,8 @@ impl Wallet {
         let (name, ok) = d.proves(&rec, &link)?;
         ensure!(ok, "the last step's proof ({name}) doesn't spend on the moves posted");
         let wire = d.rule_wire(&d.contract.rule(m, &name)?, &[], None, &link)?;
-        let proof = d.finish(&name, wire)?;
-        let fee = Amount::from_sat((proof.vsize() as u64 + 200) * lichen_proto::feerate(chain.network));
-        let txid = chain.post_terminal(&proof, &d.set[&name].prevout, fee, &self.fees_for(d.contract.spec.cid)?)?;
-        self.step(format!("no disprove came: the last step proved ({name}): paid"));
+        let txid = self.terminal(chain, &d, &name, wire)?;
+        self.step(format!("no disprove came: the last step proved ({name}), paid by {txid}"));
         self.paid(chain, &d, k, b, Outcome::Proved(txid))
     }
 
@@ -245,7 +265,7 @@ impl Wallet {
             }
             if chain.unspent(&carrier)? && chain.height()? >= split_at + w + u32::from(p.delta_prime) {
                 self.step("the hub never finished its path: the user's timeout pays".into());
-                let txid = chain.post_terminal(&d.finish("timeout_path_split", vec![])?, &d.set["timeout_path_split"].prevout, Amount::from_sat(2_000), &self.fees_for(d.contract.spec.cid)?)?;
+                let txid = self.terminal(chain, d, "timeout_path_split", vec![])?;
                 return self.paid(chain, d, k, b, Outcome::HubTimedOut(txid));
             }
             ensure!(!stall.stalled(chain.height()?), "the chain stalled");
@@ -271,7 +291,7 @@ impl Wallet {
                     return Ok((Outcome::Lost, None));
                 }
                 let name = format!("timeout_{hop}");
-                let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000), &self.fees_for(d.contract.spec.cid)?)?;
+                let txid = self.terminal(chain, d, &name, vec![])?;
                 self.step("the hub couldn't reveal the hop: the user's timeout pays".into());
                 self.paid(chain, d, k, b, Outcome::PathRefuted(txid))
             }
@@ -287,7 +307,7 @@ impl Wallet {
                     return Ok((Outcome::Lost, None));
                 }
                 let name = format!("timeout_combine_{n}");
-                let txid = chain.post_terminal(&d.finish(&name, vec![])?, &d.set[&name].prevout, Amount::from_sat(2_000), &self.fees_for(d.contract.spec.cid)?)?;
+                let txid = self.terminal(chain, d, &name, vec![])?;
                 self.step("the hub never posted its verdict: the user's timeout pays".into());
                 self.paid(chain, d, k, b, Outcome::HubTimedOut(txid))
             }
@@ -323,7 +343,9 @@ impl Wallet {
     }
 
     /// She won: once the payout confirms and her outputs' delay passes,
-    /// sweep her bit outputs and the reserves to her wallet.
+    /// sweep to her payout address her bit outputs and the reserves, and
+    /// what else of the contract's is hers: the anchors of her links (left
+    /// unspent where no fee child was needed) and the fee budget's rest.
     fn won(&mut self, chain: &Chain, d: &Disputed, k: usize, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
         let txid = match &outcome {
             Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) => *t,
@@ -337,31 +359,74 @@ impl Wallet {
         let b_key = d.contract.b_key().clone();
         let b_sig = self.input_secret(&held.nonce, d.contract.spec.b_word).sign(&input_message(b))?;
         let kp = self.contract_keys(&held.nonce).payment;
+        let delta = d.contract.spec.params.delta;
+        let mut ins: Vec<SweepIn> = vec![];
         // her outputs: the bits set in b, then the reserves
-        let mut spends = vec![];
+        let at_delta = Sequence::from_height(delta);
         for i in t.low_bits..t.bits {
             if (b >> i) & 1 == 1 {
-                spends.push((i - t.low_bits, bit_tree(&ctx, i, &b_key)?, format!("alice_bit_{i}"), true));
+                let vout = i - t.low_bits;
+                ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), at_delta, Some((bit_tree(&ctx, i, &b_key)?, format!("alice_bit_{i}"), true))));
             }
         }
-        spends.push((t.bits - t.low_bits, reserve_tree(&ctx, t, &b_key)?, "alice_reserve".to_string(), false));
-        let delta = d.contract.spec.params.delta;
+        let vout = t.bits - t.low_bits;
+        ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), at_delta, Some((reserve_tree(&ctx, t, &b_key)?, "alice_reserve".to_string(), false))));
+        let winnings: Amount = ins.iter().map(|i| i.1.value).sum();
+        // her links' anchors, where they are unspent
+        let mine = kp.x_only_public_key().0;
+        let anchor = anchor_tree_for(&mine)?;
+        let link = |n: &str| n == "escalate" || n == "inputs" || n.starts_with("move_") || n.starts_with("hop_");
+        let mut names: Vec<&String> = d.set.keys().filter(|n| link(n) && d.contract.poster(n) == Role::User).collect();
+        names.sort();
+        for name in names {
+            let id = d.txid(name);
+            let Some(tx) = chain.get_tx(&id) else { continue };
+            let op = OutPoint { txid: id, vout: anchor_vout(&tx, &mine)? };
+            if chain.unspent(&op)? {
+                ins.push((op, tx.output[op.vout as usize].clone(), Sequence::ENABLE_RBF_NO_LOCKTIME, Some((anchor.clone(), "fee".to_string(), false))));
+            }
+        }
+        let anchors: Amount = ins.iter().map(|i| i.1.value).sum::<Amount>() - winnings;
+        // the fee budget's rest
+        let fees = self.fees_for(d.contract.spec.cid)?;
+        for (op, out, _) in chain.coins_of(&fees.spk())? {
+            ins.push((op, out, Sequence::ENABLE_RBF_NO_LOCKTIME, None));
+        }
+        let total: Amount = ins.iter().map(|i| i.1.value).sum();
+        let budget = total - winnings - anchors;
+        self.step(format!("the payout confirmed at {at}: the user's outputs can be swept from block {}", at + u32::from(delta)));
         while chain.height()? < at + u32::from(delta) {
             std::thread::sleep(Duration::from_millis(100));
         }
-        let prevouts: Vec<TxOut> = spends.iter().map(|s| payout.output[s.0 as usize].clone()).collect();
-        let total: Amount = prevouts.iter().map(|o| o.value).sum();
-        let fee = Amount::from_sat(400 * spends.len() as u64 * lichen_proto::feerate(chain.network));
-        let ins: Vec<(OutPoint, Sequence)> = spends.iter().map(|s| (OutPoint { txid, vout: s.0 }, Sequence::from_height(delta))).collect();
-        let mut sweep = lngap_btc::tx::build_tx(&ins, vec![TxOut { value: total - fee, script_pubkey: held.record.pubs[0].payout_spk.clone() }], bitcoin::absolute::LockTime::ZERO);
-        for (n, (_, tree, name, with_b)) in spends.iter().enumerate() {
-            let leaf = tree.leaf(name)?;
-            let mut w = if *with_b { wots_wire(&b_sig) } else { vec![] };
-            w.push(sign_tapscript(&kp, &sweep, n, &prevouts, &leaf.script)?.as_ref().to_vec());
-            sweep.input[n].witness = tapscript_witness(&w, &leaf.script, &tree.control_block(name)?);
-        }
-        let swept = chain.broadcast(&sweep).context("sweeping the winnings")?;
-        self.step(format!("swept {} sats to the user's wallet", (total - fee).to_sat()));
+        let prevouts: Vec<TxOut> = ins.iter().map(|i| i.1.clone()).collect();
+        let pairs: Vec<(OutPoint, TxOut)> = ins.iter().map(|i| (i.0, i.1.clone())).collect();
+        let seqs: Vec<(OutPoint, Sequence)> = ins.iter().map(|i| (i.0, i.2)).collect();
+        let build = |fee: Amount| -> Result<Transaction> {
+            let out = TxOut { value: total.checked_sub(fee).context("the sweep can't pay its fee")?, script_pubkey: held.record.pubs[0].payout_spk.clone() };
+            let mut sweep = lngap_btc::tx::build_tx(&seqs, vec![out], bitcoin::absolute::LockTime::ZERO);
+            for (n, i) in ins.iter().enumerate() {
+                if let Some((tree, name, with_b)) = &i.3 {
+                    let leaf = tree.leaf(name)?;
+                    let mut w = if *with_b { wots_wire(&b_sig) } else { vec![] };
+                    w.push(sign_tapscript(&kp, &sweep, n, &prevouts, &leaf.script)?.as_ref().to_vec());
+                    sweep.input[n].witness = tapscript_witness(&w, &leaf.script, &tree.control_block(name)?);
+                }
+            }
+            // the budget's coins, by its key
+            fees.sign(chain, &sweep, &pairs)
+        };
+        // sized once at no fee, then paid
+        let vsize = build(Amount::ZERO)?.vsize() as u64;
+        let fee = Amount::from_sat((vsize + 2) * lichen_proto::feerate(chain.network));
+        let swept = chain.broadcast(&build(fee)?).context("sweeping the winnings")?;
+        self.step(format!(
+            "swept {} sats to the payout address, {swept}: b's bits and the reserves {}, the anchors {}, the fee budget's rest {}, less the fee {}",
+            (total - fee).to_sat(),
+            winnings.to_sat(),
+            anchors.to_sat(),
+            budget.to_sat(),
+            fee.to_sat()
+        ));
         self.contracts[k].closed = Some(txid);
         self.save()?;
         Ok((outcome, Some((swept, total - fee))))
