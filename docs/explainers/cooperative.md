@@ -194,6 +194,8 @@ a dispute if the hub won't fold. Each contract allows one withdrawal:
 the fold spends the whole contract output, and contract 1000 is now
 closed. Bob never had a contract. So nothing on Bitcoin makes the hub pay
 out either 5,000, though the bitcoin for them is in its wallet.
+([minting.md](minting.md) explains what a token is worth, by who holds
+it.)
 
 Alice had two ways to leave nothing on the L2:
 
