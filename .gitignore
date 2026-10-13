@@ -1,3 +1,7 @@
 target/
 .DS_Store
 *.log
+# a local run's files: wallets (they hold secrets), their dispute dirs, claims
+/*.json
+/*.d/
+/*.hex
