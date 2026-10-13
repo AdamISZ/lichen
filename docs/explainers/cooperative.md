@@ -26,7 +26,7 @@ transactions come to 23,051 vB.
 
 ## The contract
 
-The terms are those of contract 1001 (see [its table](hub-absent.md#the-contract)):
+The terms are the same as those of contract 1001 (see [its table](hub-absent.md#the-contract)):
 
 | term | value |
 |---|---|
