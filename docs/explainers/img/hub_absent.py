@@ -24,6 +24,8 @@ def esc(s):
 
 
 class Svg:
+    PREFIX = "hub-absent"
+
     def __init__(self, w, h):
         self.w, self.h, self.parts = w, h, []
 
@@ -57,7 +59,7 @@ class Svg:
                 f'<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
                 f'<path d="M0,0 L10,5 L0,10 z" fill="{INK2}"/></marker></defs>'
                 f'<rect x="0.5" y="0.5" width="{self.w - 1}" height="{self.h - 1}" rx="12" fill="#ffffff" stroke="#e5e7eb"/>')
-        with open(os.path.join(HERE, f"hub-absent-{name}.svg"), "w") as f:
+        with open(os.path.join(HERE, f"{self.PREFIX}-{name}.svg"), "w") as f:
             f.write(head + "".join(self.parts) + "</svg>\n")
 
 

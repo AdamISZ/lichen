@@ -2,6 +2,9 @@
 
 How lichen's contracts work, from real runs.
 
+- [A cooperative withdrawal](cooperative.md): the simplest case on
+  Mutinynet. A deposit, an L2 payment, and a fold of 193 vB. Where the
+  money goes, and what happens to the tokens left on the L2.
 - [A withdrawal when the hub disappears](hub-absent.md): a dispute on
   Mutinynet, transaction by transaction. What each one does, its size,
   and who pays for it.

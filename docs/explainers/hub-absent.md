@@ -20,7 +20,7 @@ sizes and fees are as mined.
 The dispute is transactions 1 to 5: **23,051 vB, 24,903 sats in fees.**
 For comparison, Test A's cooperative withdrawal from contract 1000 was one
 [fold](https://mutinynet.com/tx/0a1efc47e251e32dab3d57d1ef0052f9f55b5ef6527ecc0b65957d5f69652338)
-of 193 vB.
+of 193 vB ([cooperative.md](cooperative.md)).
 
 ## The contract
 
