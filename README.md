@@ -37,9 +37,9 @@ Worth mentioning these as idiosyncracies: first, this was built without a user-s
 
 * Building extra support functionality - a turnkey watchtower, so there is a realistic path for a constrained user to dispute correctly.
 
-* Making the ZKP prove validity and not only sequencer authorization.
-
 * Creating a useful feature for the L2: shielded transfers.
+
+* Making the ZKP prove validity and not only sequencer authorization.
 
 * Creating a commitment mechanism (seals) for the L2 sequencer to gain finality from the Bitcoin chain (on a slower timescale)
 
