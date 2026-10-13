@@ -1,22 +1,37 @@
 # lichen
 
-**L**2 **I**n **CH**annels, **EN**forced: a layer 2 ledger whose tokens a
-hub issues, each user's holdings up to a cap collateralised in her own
-contract with the hub, and withdrawable on Bitcoin without trusting the
-hub for anything: not its honesty, not its liveness. A withdrawal is a
-return of tokens to the hub on the ledger; the hub pays it out
-cooperatively, and if it refuses (or is gone), the user proves the return
-(RISC Zero, wrapped in Groth16) and enforces it on Bitcoin by BitVMX's
-search over a Groth16 verifier. No change to Bitcoin is needed.
+**L**2 **I**n **CH**annels, **EN**forced on Bitcoin.
 
-The design is described in the draft paper
-[papers/lichen-draft.pdf](papers/lichen-draft.pdf) (source alongside).
-The contracts and the dispute machinery are in
-[ln-gap](https://github.com/AdamISZ/ln-gap) (`crates/apps/sessions`); this repository is the
-software the parties run.
+## Introduction
 
-Amounts are in sats throughout: what the ledger carries is bitcoin, not
-a separate asset.
+To follow an evolving tradition: the Introduction section here, is written by me. Most of the lower level documentation and instructions are LLM generated.
+
+Choose your adventure:
+
+*New to the concept and want to understand it* - read this short intro, then go to the main [design paper](./papers/lichen-draft.pdf)
+
+*Want to run the web demo* - that is, running the stack on regtest locally and playing with it in the browser to see how it operates: go [here](#the-demo).
+
+*Want to understand the mechanics, in more detail than covered in the paper* - look at the growing set of [explainers](./docs/explainers/README.md); these are AI generated and have lots of nice diagrams to take you through the steps of, e.g. the dispute mechanism onchain, the ZKP, etc.
+
+### General concepts in a few words
+
+A layer 2 ledger whose tokens a hub issues, each user's holdings up to a cap collateralised in her own contract with the hub, and withdrawable on Bitcoin without trusting the hub for anything: not its honesty, not its liveness. A withdrawal is a
+return of tokens to the hub on the ledger; the hub pays it out cooperatively, and if it refuses (or is gone), the user proves the return (RISC Zero, wrapped in Groth16) and enforces it on Bitcoin by BitVMX's search over a Groth16 verifier. No change to Bitcoin is needed.
+
+The contracts and the dispute machinery are in [ln-gap](https://github.com/AdamISZ/ln-gap) (`crates/apps/sessions`); think of that as the backend including both all the bitcoin side and also all the ZKP dispute management side. This repository is the software the parties run.
+
+### A few operational details that are mostly PoC limitations
+
+Worth mentioning these as idiosyncracies: first, this was built without a user-side bitcoin wallet as that's probably the right choice anyway: you fund an intermediate joint-control address and then from there the contract is funded. Explained in the procedures below. Second: in case you actually want to test *disputes*, and not normal usage, you'll have to create proofs to do withdrawals. The instructions are [here](#disputes-on-the-real-statement), and note that this involves running a proving step on x86 architecture that might take about 5 minutes. Notably, this step is partly delegatable but it will remain a point of interest in making this a usable system.
+
+Things not implemented yet:
+
+* Any L2 consensus development. No finality through publishing roots on bitcoin; no distribution of the sequencer (just a single entity's key). See the [paper](./papers/lichen-draft.pdf) for discussion of what could be done here.
+* Any watchtower infrastructure: a turnkey deployment for a VPS (like a docker instance), that a user could deploy at the time when a dispute occurs.
+* Shielded instead of transparent notes on the L2. This is the intended first application of the idea.
+
+-------
 
 ## Components
 
@@ -29,20 +44,6 @@ a separate asset.
 | `proto` | | wallet and hub: the opening messages, the contract record |
 | `hub` | `lichen-hub` | the hub: opens contracts, issues tokens, folds withdrawals, answers disputes |
 | `demo` | `lichen-demo` | a local web demo of all of the above |
-
-## Status
-
-Milestone 1, the ledger: a single sequencer; the hub mints; wallets pay
-each other and return to the hub with a contract's memo; the wallet
-builds the withdrawal statement's input for a return, checked against the
-statement. Milestone 2, contracts: a wallet opens a contract with the
-hub, both pre-sign every transaction a dispute could need, and the hub
-mints the deposit once the funding confirms. Milestone 3, the cooperative
-withdrawal: return tokens on the L2, and the hub folds the contract (the
-default after `T_close` otherwise). Milestone 4, disputes: when the hub
-won't fold, the wallet enforces the withdrawal on Bitcoin, the hub
-daemon answering from the chain. See
-[docs/PLAN.md](docs/PLAN.md).
 
 ## The demo
 
