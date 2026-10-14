@@ -22,6 +22,7 @@ main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 10px 2
 @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
 .pane { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-height: 280px; display: flex; flex-direction: column; gap: 10px; }
 .pane h2 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 10px; }
+.pane h2.next { margin-top: 10px; }
 .pane h2 .tag { font-size: 11px; font-weight: normal; color: var(--muted); }
 .big { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -60,7 +61,7 @@ th { color: var(--muted); font-weight: normal; }
   <section class="pane">
     <h2>The ledger <span class="tag">what the sequencer ordered and sealed</span></h2>
     <ul class="log" id="ledger"></ul>
-    <h2>On Bitcoin <span class="tag">contracts, withdrawals, disputes</span></h2>
+    <h2 class="next">On Bitcoin <span class="tag">contracts, withdrawals, disputes</span></h2>
     <ul class="log" id="chain"></ul>
   </section>
   <section class="pane">

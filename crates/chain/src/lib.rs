@@ -283,6 +283,25 @@ fn open_wallet(node: &Client, name: &str, watch_only: bool) -> Result<()> {
     Ok(())
 }
 
+/// Wait (a few seconds at most) for the node's transaction index to reach
+/// its tip. The index follows each block on a thread of its own, so a
+/// transaction just mined has briefly left the mempool but isn't indexed
+/// yet: a lookup then misses it while the output it spends already shows
+/// spent, which reads as something else having spent it.
+fn index_caught_up(node: &Client) {
+    for _ in 0..100 {
+        let at_tip = || -> Result<bool> {
+            let tip = node.get_block_count()?;
+            let info: serde_json::Value = node.call("getindexinfo", &[serde_json::json!("txindex")])?;
+            Ok(info["txindex"]["best_block_height"].as_u64().is_some_and(|h| h >= tip))
+        };
+        if at_tip().unwrap_or(true) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 impl Chain {
     /// Connect to a regtest node at `url` with its cookie, using (creating
     /// if needed) the wallet `wallet`.
@@ -337,7 +356,11 @@ impl Chain {
             // read from the raw JSON (the RPC crate's typed result can lag
             // the node's script types)
             Backend::Rpc { rpc, .. } => {
-                let v: serde_json::Value = match rpc.call("getrawtransaction", &[serde_json::json!(txid.to_string()), serde_json::json!(true)]) {
+                let lookup = || rpc.call::<serde_json::Value>("getrawtransaction", &[serde_json::json!(txid.to_string()), serde_json::json!(true)]);
+                let v = match lookup().or_else(|_| {
+                    index_caught_up(rpc);
+                    lookup()
+                }) {
                     Ok(v) => v,
                     Err(_) => return Ok(0),
                 };
@@ -353,7 +376,10 @@ impl Chain {
     pub fn get_tx(&self, txid: &Txid) -> Option<Transaction> {
         match &self.backend {
             // the node keeps a transaction index
-            Backend::Rpc { rpc, .. } => rpc.get_raw_transaction(txid, None).ok(),
+            Backend::Rpc { rpc, .. } => rpc.get_raw_transaction(txid, None).ok().or_else(|| {
+                index_caught_up(rpc);
+                rpc.get_raw_transaction(txid, None).ok()
+            }),
             Backend::Esplora(e) => e.get_tx(txid).ok().flatten(),
         }
     }

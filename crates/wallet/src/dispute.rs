@@ -212,7 +212,7 @@ impl Wallet {
             let wire = sign_move(&d.program, j + 1, &self.move_secrets(&held.nonce, &d.program, j + 1), &next)?;
             last = self.post(chain, &d, &held.nonce, &link_name(j + 1), wire)?;
             last_id = d.txid(&link_name(j + 1));
-            self.step(if j + 1 == m { format!("move {m}: the record of the disputed step") } else { format!("move {}: the next midpoint", j + 1) });
+            self.step(if j + 1 == m { format!("move {m}: the record of the disputed step") } else { format!("move {}: the trace's hashes at the seven boundaries inside that segment", j + 1) });
             if pause.is_some_and(|p| j + 1 >= p) && j + 1 < m {
                 return Ok((Outcome::Paused, None));
             }
@@ -419,14 +419,14 @@ impl Wallet {
         let vsize = build(Amount::ZERO)?.vsize() as u64;
         let fee = Amount::from_sat((vsize + 2) * lichen_proto::feerate(chain.network));
         let swept = chain.broadcast(&build(fee)?).context("sweeping the winnings")?;
-        self.step(format!(
-            "swept {} sats to the payout address, {swept}: b's bits and the reserves {}, the anchors {}, the fee budget's rest {}, less the fee {}",
-            (total - fee).to_sat(),
-            winnings.to_sat(),
-            anchors.to_sat(),
-            budget.to_sat(),
-            fee.to_sat()
-        ));
+        // the parts that came to nothing (on regtest the anchors often went
+        // to fee bumps) are left out
+        let parts: Vec<String> = [("b's bits and the reserves", winnings), ("the anchors", anchors), ("the fee budget's rest", budget)]
+            .into_iter()
+            .filter(|(_, v)| *v > Amount::ZERO)
+            .map(|(name, v)| format!("{name} {}", v.to_sat()))
+            .collect();
+        self.step(format!("swept {} sats to the payout address, {swept}: {}, less the fee {}", (total - fee).to_sat(), parts.join(", "), fee.to_sat()));
         self.contracts[k].closed = Some(txid);
         self.save()?;
         Ok((outcome, Some((swept, total - fee))))

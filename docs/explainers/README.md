@@ -17,6 +17,9 @@ How lichen's contracts work, from real runs.
 - [A withdrawal when the hub comes back](hub-returns.md): the same
   dispute, with the hub restarted after the escalation. What it rebuilds
   from the chain, why it concedes, and the fixes from Test B on chain.
+- [How a dispute pays out](payout.md): how one pre-signed transaction
+  pays Alice exactly `b`, in bits, and the hub the rest. A toy example,
+  then Test B's payout traced down to the witness.
 
 The diagrams are SVG, drawn by the scripts in `img/` (Python, standard
 library only); rerun a script after changing its numbers.
