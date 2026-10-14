@@ -275,6 +275,8 @@ Walkthroughs, with every transaction: [explainers/](explainers/README.md).
 | A | 1000 | Alice pays Bob 5,000 on the L2, withdraws 20,000; the hub folds | fold 193 vB, `sweep-fees` 99 vB | 1,500 |
 | B | 1001 | the hub stopped; Alice withdraws 35,000 by dispute | 5 txs, 23,051 vB | 24,903 |
 | C | 1002 | as B (30,000), the hub restarted after the escalation: it concedes | 5 txs, 23,957 vB | 23,985 |
+| D | 1003 | Alice lies (claims 40,000, a proof that doesn't verify): the exit code | 23 txs, 100,445 vB | 100,576 |
+| E | 1004 | as D, propped up by a read lie at step 478,324,074 | 25 txs, 200,493 vB | 200,832 |
 
 The fees are the withdrawal's, not the deposit's or the funding's. From
 the deposit's confirmation to the mint took about a minute (1001, 1002).
@@ -300,6 +302,15 @@ the deposit's confirmation to the mint took about a minute (1001, 1002).
     rest: 243,067 in all.
 
   Starting the hub before C also caught it up on 1001.
+
+- **D and E** ([lie-caught.md](explainers/lie-caught.md), 2026-10-14):
+  the hub disputed both and won, each search landing on the lie.
+  - D: `disprove_halt_exit` (5,143 vB) on the final step.
+  - E: a 66-hop path (`path_split`, then `combine_7` of 81 kvB), then
+    `disprove_read_2` (23,599 vB).
+  - Before them the hub was rebuilt from 527e767 (the txindex fix).
+  - At these sizes the honest hub ends down on chain (−57,836 and
+    −159,082): the search's fees exceed the liar's stake `D + r_A`.
 
 Found along the way:
 

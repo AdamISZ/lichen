@@ -107,6 +107,10 @@ enum Cmd {
         /// built here.
         #[arg(long)]
         input: Option<PathBuf>,
+        /// For trials: lie in the dispute's execution, by BitVMX's fault
+        /// configuration (JSON). An honest hub wins against any lie.
+        #[arg(long, hide = true)]
+        lie: Option<PathBuf>,
     },
 }
 
@@ -182,7 +186,7 @@ fn main() -> Result<()> {
             let txid = w.refund(&chain(&a)?, contract, bitcoin::Amount::from_sat(fee))?;
             println!("refunded the deposit for contract {contract}: {txid}");
         }
-        Cmd::Dispute { contract, amount, ref input } => {
+        Cmd::Dispute { contract, amount, ref input, ref lie } => {
             let chain = chain(&a)?;
             let kept = w.contracts.iter().find(|h| h.record.cid() == contract).and_then(|h| h.claim.clone());
             let (amount, input) = match (kept, amount, input) {
@@ -191,6 +195,9 @@ fn main() -> Result<()> {
                 (None, Some(b), None) => (b, a.statement.mock_input(b, contract).context("--input: the claim's input (a proof's, for groth16)")?),
                 (None, None, _) => anyhow::bail!("the amount withdrawn"),
             };
+            if let Some(p) = lie {
+                w.lie = Some(serde_json::from_str(&std::fs::read_to_string(p)?).context("--lie: a FailConfiguration")?);
+            }
             w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
             let (outcome, swept) = w.dispute(&chain, &a.statement, &a.wallet.with_extension("d"), contract, amount, &input)?;
             println!("{outcome:?}; swept {swept:?}");
