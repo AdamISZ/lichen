@@ -1,0 +1,23 @@
+# A lichen sequencer, for one hub (ISSUER in deploy/sequencer/.env).
+#   deploy/sequencer/build.sh && docker compose -f deploy/sequencer/docker-compose.yml up -d
+# Data (its key and the ledger): deploy/sequencer/data/<NETWORK>/.
+name: lichen-sequencer-${NETWORK:?set NETWORK in deploy/sequencer/.env}
+
+services:
+  sequencer:
+    image: lichen-sequencer:latest
+    command:
+      - --listen=0.0.0.0:18300
+      - --ledger=/seq/ledger.json
+      - --key=/seq/sequencer.key
+      - --issuer=${ISSUER:?set ISSUER in deploy/sequencer/.env (the hub's L2 key)}
+      - --seal-every=${SEAL_EVERY:-5}
+    volumes:
+      - ./data/${NETWORK}:/seq
+    ports:
+      - "${SEQUENCER_PORT:-18300}:18300"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18300/info"]
+      interval: 5s
+      retries: 12
+    restart: unless-stopped

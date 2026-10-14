@@ -1385,6 +1385,7 @@ dependencies = [
  "hex",
  "lichen-chain",
  "lichen-hub",
+ "lichen-l2",
  "lichen-ledger",
  "lichen-proto",
  "lichen-sequencer",
@@ -1407,6 +1408,7 @@ dependencies = [
  "emulator",
  "hex",
  "lichen-chain",
+ "lichen-l2",
  "lichen-ledger",
  "lichen-proto",
  "lichen-sequencer",
@@ -1420,6 +1422,17 @@ dependencies = [
  "serde",
  "serde_json",
  "tiny_http",
+]
+
+[[package]]
+name = "lichen-l2"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lichen-ledger",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
@@ -1462,11 +1475,10 @@ dependencies = [
  "anyhow",
  "clap",
  "hex",
+ "lichen-l2",
  "lichen-ledger",
- "serde",
  "serde_json",
  "tiny_http",
- "ureq",
 ]
 
 [[package]]
@@ -1479,6 +1491,7 @@ dependencies = [
  "emulator",
  "hex",
  "lichen-chain",
+ "lichen-l2",
  "lichen-ledger",
  "lichen-proto",
  "lichen-sequencer",

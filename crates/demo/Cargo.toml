@@ -16,6 +16,7 @@ serde_json.workspace = true
 tiny_http.workspace = true
 lichen-ledger.workspace = true
 lichen-sequencer.workspace = true
+lichen-l2.workspace = true
 lichen-chain.workspace = true
 lichen-proto.workspace = true
 lichen-hub.workspace = true

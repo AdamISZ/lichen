@@ -21,7 +21,7 @@ use lichen_chain::Chain;
 use lichen_ledger::{note, xonly, Mint, Tx};
 use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_proto::{all_moves, check_funding, deposit_timeout, deposit_tree, tail_keys, contributions, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
-use lichen_sequencer::Client;
+use lichen_l2::Client;
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
 use lngap_lamport::winternitz::{WotsParams, WotsSecret};
@@ -137,6 +137,15 @@ impl Hub {
         let chain = Chain::connect_on(&cfg.rpc_url, &cfg.cookie, &cfg.wallet, cfg.network)?;
         let seq = Client::new(&cfg.sequencer)?;
         ensure!(seq.deployment.hub == xonly(&cfg.l2_key), "the sequencer's issuer is {}, not this hub's key {}", hex::encode(seq.deployment.hub), hex::encode(xonly(&cfg.l2_key)));
+        // the sequencer may be another machine's: pin its key on first
+        // contact, as a wallet does, and refuse another after
+        let pin = cfg.dir.join("deployment.json");
+        if pin.exists() {
+            let d: lichen_ledger::Deployment = serde_json::from_slice(&std::fs::read(&pin)?).context("deployment.json")?;
+            ensure!(d == seq.deployment, "the sequencer at {} has key {}, not {} as pinned in {}", cfg.sequencer, hex::encode(seq.deployment.sequencer), hex::encode(d.sequencer), pin.display());
+        } else {
+            std::fs::write(&pin, serde_json::to_vec_pretty(&seq.deployment)?)?;
+        }
         let mut open = HashMap::new();
         for e in std::fs::read_dir(cfg.dir.join("contracts"))?.flatten() {
             let o: Open = serde_json::from_slice(&std::fs::read(e.path())?)?;

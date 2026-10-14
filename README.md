@@ -57,6 +57,7 @@ Worth mentioning these as idiosyncracies: first, this was built without a user-s
 |---|---|---|
 | `ledger` | | everyone: notes, transfers, mints, signed roots (the withdrawal statement's own data structures) |
 | `sequencer` | `lichen-sequencer` | the L2's sequencer: orders transactions, seals and signs heights |
+| `l2` | | wallet and hub: the sequencer's API and its client |
 | `wallet` | `lichen` | the user |
 | `chain` | | each party: its own bitcoind wallet over RPC |
 | `proto` | | wallet and hub: the opening messages, the contract record |
@@ -82,6 +83,20 @@ withdraw: the dispute plays out move by move (about a minute). Disputes
 run on the mock statement set so that every claim is true (the
 contract's memo check still applies), a stand-in for the proof of the
 return that the real statement checks.
+
+## Running a sequencer or a hub
+
+The sequencer and the hub are separate parties, deployed separately,
+normally on different machines. Each has its own Docker image, settings
+and data, and its own guide:
+
+- [Running a sequencer](docs/RUN_A_SEQUENCER.md): the L2's sequencer.
+  It has no node and no coins, and needs only the hub's key.
+- [Running a hub](docs/RUN_A_HUB.md): the hub and its Bitcoin node. It
+  reaches the sequencer by URL. The guide also covers setting the two up
+  together, and what testers need.
+
+[deploy/README.md](deploy/README.md) lays out the files.
 
 ## Try it
 

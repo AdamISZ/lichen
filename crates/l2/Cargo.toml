@@ -1,0 +1,13 @@
+[package]
+name = "lichen-l2"
+description = "The L2's wire types and the sequencer's client (for the wallet and the hub)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+lichen-ledger.workspace = true

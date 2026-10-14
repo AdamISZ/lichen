@@ -225,6 +225,19 @@ the hub keeps its wallets (now created with `load_on_startup`); a
 Mutinynet deployment starts against the v25 node (the hub's wallet, its
 `/info`), syncing ~10k headers a second. Not yet on an x86 VPS.
 
+2026-10-14: the hub and the sequencer split into separate deployments,
+for separate machines: `deploy/hub/` (image `lichen-hub`, with the node)
+and `deploy/sequencer/` (image `lichen-sequencer`, no chain), each with
+its own compose, settings and data; guides in `docs/RUN_A_HUB.md` and
+`docs/RUN_A_SEQUENCER.md`. The hub's key goes to the sequencer's
+operator by hand (`ISSUER`); the hub reaches the sequencer at
+`SEQUENCER_URL` and pins its key on first start (`deployment.json`).
+In code, the sequencer's client and wire types moved to `lichen-l2`, so
+the hub and the wallet no longer link the sequencer's server. Checked on
+this Mac (Colima): a regtest hub and sequencer as two compose projects,
+through the published port, pass `deploy/hub/smoke.sh`; the hub refuses
+a sequencer with another key.
+
 ## T4: the wrap service (DEFERRED, 2026-10-12)
 
 Deferred by the user: the first trials run locally (a Mutinynet

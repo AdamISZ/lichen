@@ -14,7 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 tiny_http.workspace = true
 lichen-ledger.workspace = true
-lichen-sequencer.workspace = true
+lichen-l2.workspace = true
 lichen-chain.workspace = true
 lichen-proto.workspace = true
 lngap-sessions.workspace = true
@@ -26,5 +26,6 @@ lngap-zk.workspace = true
 lngap-ladder.workspace = true
 
 [dev-dependencies]
+lichen-sequencer.workspace = true
 lichen-wallet = { path = "../wallet" }
 bitcoincore-rpc.workspace = true

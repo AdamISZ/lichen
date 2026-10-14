@@ -1,27 +1,28 @@
 #!/usr/bin/env bash
-# A smoke test of a running regtest deployment (`--profile regtest`): a
-# user's wallet, as a one-off container on the compose network, opens a
-# contract (its deposit paid from the miner's coins), waits for the
-# deposit to be minted on the L2, withdraws cooperatively, and checks the
-# payout address received it.
-#   deploy/smoke.sh
+# A smoke test of a running regtest hub (`--profile regtest`) and its
+# sequencer: a user's wallet, as a one-off container on the hub's compose
+# network, opens a contract (its deposit paid from the miner's coins),
+# waits for the deposit to be minted on the L2, withdraws cooperatively,
+# and checks the payout address received it.
+#   deploy/hub/smoke.sh              (deploy/hub/.env, or ENV_FILE)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck disable=SC1091
-. "$here/.env"
+env_file="${ENV_FILE:-$here/.env}"
+# shellcheck disable=SC1090
+. "$env_file"
 [ "$NETWORK" = regtest ] || { echo "the smoke test is for regtest" >&2; exit 1; }
-dc() { docker compose -f "$here/docker-compose.yml" "$@"; }
+dc() { docker compose --env-file "$env_file" -f "$here/docker-compose.yml" "$@"; }
 cli() { dc exec -T bitcoind bitcoin-cli -datadir=/data "$@"; }
 w=/w/smoke-$$.json
 wallet() {
     dc run --rm --no-deps -T -v "$here/data/regtest/smoke:/w" -v "$here/data/regtest/bitcoind:/bitcoind:ro" --entrypoint lichen hub \
-        --network regtest --wallet "$w" --sequencer http://sequencer:18300 --hub http://hub:18310 \
+        --network regtest --wallet "$w" --sequencer "$SEQUENCER_URL" --hub http://hub:18310 \
         --rpc-url http://bitcoind:8332 --cookie /bitcoind/regtest/.cookie --chain-wallet smoke --statement "${STATEMENT:-groth16}" "$@"
 }
 mkdir -p "$here/data/regtest/smoke"
 
 echo "== the hub's funds"
-[ "$(cli -rpcwallet=hub getbalance | cut -d. -f1)" -ge 5 ] || { "$here/lichen.sh" fund 10 >/dev/null; sleep 5; }
+[ "$(cli -rpcwallet=hub getbalance | cut -d. -f1)" -ge 5 ] || { ENV_FILE="$env_file" "$here/hub.sh" fund 10 >/dev/null; sleep 5; }
 cli -rpcwallet=hub getbalance
 
 echo "== a wallet, pinned to the deployment"

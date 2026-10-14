@@ -1,74 +1,56 @@
-# Deploying a lichen hub
+# Deploying lichen
 
-One Docker Compose deployment: a node for the network, the sequencer and
-the hub. Testers run only the `lichen` wallet, on their own machines,
-with no node: it reads Bitcoin from a public Esplora (mutinynet.com,
-mempool.space) and is paid into, and pays out to, addresses of any
-wallet they like.
+Two components, set up separately, normally on different machines, each
+with its own image, compose project, settings and data:
 
-## A machine
+| component | guide | here |
+|---|---|---|
+| the sequencer | [docs/RUN_A_SEQUENCER.md](../docs/RUN_A_SEQUENCER.md) | `sequencer/` |
+| the hub, with its node | [docs/RUN_A_HUB.md](../docs/RUN_A_HUB.md) | `hub/` |
 
-x86-64 or arm64 Linux with Docker (Compose v2). 16 GB of memory is
-comfortable (the image's build compiles the Rust tree; a Groth16 wrap
-service, later, needs ~10 GB); a few GB of disk for Mutinynet, more for
-signet or testnet4 (`txindex`). Open the hub's and the sequencer's ports
-(18310, 18300) to testers; the node's RPC stays inside the compose
-network.
-
-## Build
-
-```sh
-git clone https://github.com/AdamISZ/lichen && git clone https://github.com/AdamISZ/ln-gap
-cd lichen && cp deploy/.env.example deploy/.env    # set NETWORK
-deploy/build.sh
-```
-
-`build.sh` builds from committed sources only: lichen's HEAD, and ln-gap
-at the commit in `LNGAP_REV` (lichen depends on ln-gap by path, so this
-file is what pins it; bump it when lichen moves to a newer ln-gap). The
-node image is the network's: stock Bitcoin Core 31.1 for regtest, signet
-and testnet4, benthecarman's patched build (Core 25.99 with 30 s signet
-blocks) for Mutinynet, each tarball pinned by SHA-256.
-
-## Run
-
-```sh
-docker compose -f deploy/docker-compose.yml up -d          # regtest: add --profile regtest
-deploy/lichen.sh info                                      # the hub's key, the deployment, the chain
-deploy/lichen.sh address                                   # fund the hub here (a faucet)
-```
-
-First start: `hub-key` makes the hub's keys (`data/<network>/hub/`: its
-L2 key and contract seed, secrets: back them up), the sequencer starts
-with the hub's public key as its issuer and makes its own key
-(`data/<network>/sequencer/`), the hub starts once the node answers. The
-node syncs before the hub should open contracts: watch
-`deploy/lichen.sh info` until `initialblockdownload` is false.
-
-The hub needs coins: its share of every cap (`V_max − D` plus its
-reserve). Fund `deploy/lichen.sh address` from the network's faucet
-(regtest: `deploy/lichen.sh fund 10`).
-
-## Testers
-
-```sh
-lichen --network mutinynet --wallet alice.json --sequencer http://<host>:18300 init
-lichen --network mutinynet --wallet alice.json --sequencer http://<host>:18300 --hub http://<host>:18310 \
-  --statement groth16 open 400000 --payout <an address of hers>
-```
-
-`init` pins the deployment the sequencer announces. `open` prints a
-deposit address and an amount; she pays it from any wallet or faucet.
+Testers run only the `lichen` wallet, with no node (RUN_A_HUB.md,
+"Testers").
 
 ## Layout
 
 | path | what |
 |---|---|
-| `Dockerfile` | the lichen image: `lichen-hub`, `lichen-sequencer`, `lichen`, BitVMX's verifier ELF |
-| `entry.sh` | its roles: `hub-key`, `sequencer`, `hub` |
-| `bitcoind/` | the node image and its `bitcoin.conf` per network |
-| `docker-compose.yml`, `.env.example` | the deployment |
-| `lichen.sh` | the operator's commands |
-| `data/<network>/` | everything kept (not in git) |
+| `context.sh` | shared by both `build.sh`: a build context of committed sources (lichen's HEAD, ln-gap at `LNGAP_REV`) |
+| `sequencer/Dockerfile` | the `lichen-sequencer` image: the sequencer alone |
+| `sequencer/docker-compose.yml`, `.env.example` | the sequencer's deployment |
+| `sequencer/build.sh`, `sequencer.sh` | its build, its operator's commands |
+| `hub/Dockerfile`, `entry.sh` | the `lichen-hub` image (`lichen-hub`, BitVMX's verifier ELF, the `lichen` wallet) and its roles, `key` and `hub` |
+| `hub/bitcoind/` | the node image (`lichen-bitcoind:<network>`) and its `bitcoin.conf` per network |
+| `hub/docker-compose.yml`, `.env.example` | the hub's deployment: node, hub, and on regtest a miner |
+| `hub/build.sh`, `hub.sh`, `smoke.sh` | its build, its operator's commands, a regtest smoke test |
+| `*/data/<network>/` | everything kept (not in git) |
 
-Not here yet: TLS (test coins only), the wrap service (TESTNET_PLAN.md T4).
+## Moving from the single deployment
+
+Until 2026-10-14 one compose project (`lichen-<network>`) ran the node, the
+sequencer and the hub, from `deploy/docker-compose.yml`, with data in
+`deploy/data/<network>/`. Each data directory moves unchanged, so a
+deployment keeps its keys, its ledger and its contracts. For
+`NETWORK=mutinynet`, on the same machine:
+
+```sh
+docker compose -p lichen-mutinynet down       # the old project (its compose file is gone)
+mkdir -p deploy/hub/data/mutinynet deploy/sequencer/data
+mv deploy/data/mutinynet/bitcoind deploy/data/mutinynet/hub deploy/hub/data/mutinynet/
+mv deploy/data/mutinynet/sequencer deploy/sequencer/data/mutinynet
+cp deploy/hub/.env.example deploy/hub/.env
+cp deploy/sequencer/.env.example deploy/sequencer/.env
+```
+
+Then the settings, from the old `deploy/.env`:
+
+- **`deploy/sequencer/.env`:** `NETWORK`, `SEAL_EVERY`, `SEQUENCER_PORT`,
+  and `ISSUER=$(cat deploy/data/mutinynet/shared/hub.pub)`.
+- **`deploy/hub/.env`:** `NETWORK`, `STATEMENT`, `RESERVE_PPM`, `MAX_BITS`,
+  `DURATION`, `HUB_PORT`, `MINE_EVERY`, and
+  `SEQUENCER_URL=http://host.docker.internal:18300`, with the sequencer's
+  port.
+
+Then build and start both, as in the guides. The ports stay as they were,
+so wallets need no change. The old `deploy/.env` and
+`deploy/data/<network>/shared/` are no longer used.

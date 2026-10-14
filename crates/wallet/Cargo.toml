@@ -16,7 +16,7 @@ hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 lichen-ledger.workspace = true
-lichen-sequencer.workspace = true
+lichen-l2.workspace = true
 lichen-chain.workspace = true
 lichen-proto.workspace = true
 bitcoin.workspace = true
@@ -28,3 +28,6 @@ lngap-lamport.workspace = true
 lngap-zk.workspace = true
 emulator.workspace = true
 lngap-ladder.workspace = true
+
+[dev-dependencies]
+lichen-sequencer.workspace = true

@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use lichen_ledger::{load_or_create_key, regtest_sequencer, Hash, HUB_KEY};
-use lichen_sequencer::{Client, Sequencer};
+use lichen_l2::Client;
+use lichen_sequencer::Sequencer;
 
 #[derive(Parser)]
 #[command(about = "The lichen L2's sequencer")]

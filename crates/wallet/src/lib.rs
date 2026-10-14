@@ -15,7 +15,7 @@ use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{fresh_rho, note, sign, xonly, Deployment, Hash, Note, Spend, Transfer, Tx, WithdrawInput};
 use lichen_chain::{Chain, KeyFees};
 use lichen_proto::{all_moves, check_deposit_funding, deposit_tree, fee_budget_of, tail_keys, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, DEPOSIT_OPEN, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
-use lichen_sequencer::{Client, State};
+use lichen_l2::{Client, State};
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
 use lngap_lamport::winternitz::{WotsParams, WotsSecret};

@@ -1,0 +1,52 @@
+# A lichen hub with its node, for NETWORK (deploy/hub/.env); the sequencer
+# runs elsewhere, at SEQUENCER_URL.
+#   deploy/hub/build.sh && docker compose -f deploy/hub/docker-compose.yml up -d
+# On regtest add `--profile regtest` for a miner. Data: deploy/hub/data/<network>/.
+name: lichen-hub-${NETWORK:?set NETWORK in deploy/hub/.env}
+
+services:
+  bitcoind:
+    image: lichen-bitcoind:${NETWORK}
+    command: ["bitcoind"]
+    volumes:
+      - ./data/${NETWORK}/bitcoind:/data
+    restart: unless-stopped
+    stop_grace_period: 1m
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-datadir=/data", "getblockchaininfo"]
+      interval: 5s
+      retries: 60
+
+  miner:
+    image: lichen-bitcoind:${NETWORK}
+    profiles: ["regtest"]
+    command: ["miner", "${MINE_EVERY:-5}"]
+    environment:
+      RPC_HOST: bitcoind
+    volumes:
+      - ./data/${NETWORK}/bitcoind:/data
+    depends_on:
+      bitcoind: { condition: service_healthy }
+    restart: unless-stopped
+
+  hub:
+    image: lichen-hub:latest
+    command: ["hub"]
+    environment:
+      NETWORK: ${NETWORK}
+      SEQUENCER_URL: ${SEQUENCER_URL:-}
+      STATEMENT: ${STATEMENT:-groth16}
+      RESERVE_PPM: ${RESERVE_PPM:-20000}
+      MAX_BITS: ${MAX_BITS:-24}
+      DURATION: ${DURATION:-}
+    volumes:
+      - ./data/${NETWORK}/hub:/hub
+      - ./data/${NETWORK}/bitcoind:/bitcoind:ro
+    ports:
+      - "${HUB_PORT:-18310}:18310"
+    # a sequencer on this same machine is reachable as host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      bitcoind: { condition: service_healthy }
+    restart: unless-stopped

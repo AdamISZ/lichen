@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ledger", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/demo"]
+members = ["crates/ledger", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/demo"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,6 +25,7 @@ esplora-client = { version = "0.13", default-features = false, features = ["bloc
 # roots are exactly what the proof checks (ln-gap, path for now)
 lngap-r0-core = { path = "../ln-gap/crates/apps/sessions/r0/core" }
 lichen-ledger = { path = "crates/ledger" }
+lichen-l2 = { path = "crates/l2" }
 lichen-chain = { path = "crates/chain" }
 lichen-proto = { path = "crates/proto" }
 lichen-hub = { path = "crates/hub" }

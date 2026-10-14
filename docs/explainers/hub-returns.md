@@ -188,13 +188,13 @@ As in Test B ([hub-absent.md](hub-absent.md#reproducing-it)), with the
 hub started again after the escalation:
 
 ```sh
-docker compose -f deploy/docker-compose.yml stop hub
+docker compose -f deploy/hub/docker-compose.yml stop hub
 L --wallet alice.json withdraw 1002 30000              # the return; the fold fails
 L --wallet alice.json withdraw-input 1002 > withdraw-input.json
 #   on an x86 machine: scripts/linux-claim.sh withdraw-input.json claim-1002.hex
 L --wallet alice.json dispute 1002 30000 --input claim-1002.hex
 #   once it prints "escalated, confirmed at …":
-docker compose -f deploy/docker-compose.yml start hub
+docker compose -f deploy/hub/docker-compose.yml start hub
 ```
 
 The diagrams are drawn by `img/hub_returns.py` from the numbers above.

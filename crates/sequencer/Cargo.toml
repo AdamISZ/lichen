@@ -1,6 +1,6 @@
 [package]
 name = "lichen-sequencer"
-description = "The L2's sequencer: orders transactions, seals and signs state roots; and its client"
+description = "The L2's sequencer: orders transactions, seals and signs state roots"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,8 +9,7 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 hex.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 tiny_http.workspace = true
-ureq.workspace = true
 lichen-ledger.workspace = true
+lichen-l2.workspace = true
