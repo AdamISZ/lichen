@@ -4,6 +4,8 @@
 
 ## Introduction
 
+CAVEAT: Do not use with real money. Currently missing a number of features that could bring that within reach, and more importantly, the code is unaudited either by humans or LLMs, all written by one LLM with only peripheral oversight by me.
+
 To follow an evolving tradition: the Introduction section here, is written by me. Most of the lower level documentation and instructions are LLM generated.
 
 Choose your adventure:
@@ -17,7 +19,7 @@ Choose your adventure:
 ### General concepts in a few words
 
 A layer 2 ledger whose tokens a hub issues, each user's holdings up to a cap collateralised in her own contract with the hub, and withdrawable on Bitcoin without trusting the hub for anything: not its honesty, not its liveness. A withdrawal is a
-return of tokens to the hub on the ledger; the hub pays it out cooperatively, and if it refuses (or is gone), the user proves the return (RISC Zero, wrapped in Groth16) and enforces it on Bitcoin by BitVMX's search over a Groth16 verifier. No change to Bitcoin is needed.
+return of tokens to the hub on the ledger; the hub pays it out in btc in the contract, on the bitcoin blockchain, cooperatively, and if it refuses (or is gone), the user proves the return (RISC Zero, wrapped in Groth16) and enforces it on Bitcoin by BitVMX's search over a Groth16 verifier. No change to Bitcoin is needed.
 
 The contracts and the dispute machinery are in [ln-gap](https://github.com/AdamISZ/ln-gap) (`crates/apps/sessions`); think of that as the backend including both all the bitcoin side and also all the ZKP dispute management side. This repository is the software the parties run.
 
