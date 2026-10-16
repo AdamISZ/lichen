@@ -40,6 +40,14 @@ lngap-lamport = { path = "../ln-gap/crates/lamport" }
 emulator = { git = "https://github.com/FairgateLabs/BitVMX-CPU", rev = "299009c65e635327025ee13ffe1e1f1671bd0615" }
 lichen-sequencer = { path = "crates/sequencer" }
 
+# Dependencies (ln-gap's crates among them) optimised even in debug builds:
+# the emulator, the pre-signing and the curve arithmetic are too slow at
+# opt-level 0 for a hub to answer within a move's window in the tests. A
+# profile applies only from the top-level workspace, so lichen repeats
+# ln-gap's. Our own crates stay at debug for fast rebuilds.
+[profile.dev.package."*"]
+opt-level = 2
+
 # BitVMX-CPU as ln-gap builds it: the `lngap` branch of a public fork
 # (upstream 299009c, bug fixes, the opt-in jump list). A [patch] applies
 # only from the top-level workspace, so lichen repeats ln-gap's.
