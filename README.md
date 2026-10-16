@@ -10,7 +10,7 @@ To follow an evolving tradition: the Introduction section here, is written by me
 
 Choose your adventure:
 
-*New to the concept and want to understand it* - read this short intro, then go to the main [design paper](./papers/lichen-draft.pdf)
+*New to the concept and want to understand it* - read this short intro, then go to the main [design paper](./papers/lichen-v0.1.pdf)
 
 *Want to run the web demo* - that is, running the stack on regtest locally and playing with it in the browser to see how it operates: go [here](#the-demo).
 
@@ -29,7 +29,7 @@ Worth mentioning these as idiosyncracies: first, this was built without a user-s
 
 ### Things not implemented yet:
 
-* Any L2 consensus development. No finality through publishing roots on bitcoin; no distribution of the sequencer (just a single entity's key). See the [paper](./papers/lichen-draft.pdf) for discussion of what could be done here.
+* Any L2 consensus development. No finality through publishing roots on bitcoin; no distribution of the sequencer (just a single entity's key). See the [paper](./papers/lichen-v0.1.pdf) for discussion of what could be done here.
 * Any watchtower infrastructure: a turnkey deployment for a VPS (like a docker instance), that a user could deploy at the time when a dispute occurs.
 * Shielded instead of transparent notes on the L2. This is the intended first application of the idea.
 

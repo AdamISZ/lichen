@@ -234,5 +234,5 @@ fatal in any shared test. Now:
 
 ## Later
 
-Watchtowers (open problem: the paper's Watchtowers section, papers/lichen-draft.pdf); several hubs
+Watchtowers (open problem: the paper's Watchtowers section, papers/lichen-v0.1.pdf); several hubs
 (colours, clearing lines); shielded notes; a GUI.
