@@ -201,7 +201,38 @@ fatal in any shared test. Now:
   people ask questions). Proving live instead needs the wrap on x86
   (a remote box) and, to be quick, the accelerated guest.
 
+## Windows per move (decided 2026-10-16)
+
+- TODO: give each kind of move its own window instead of one `w` for
+  all. Long where the honest side's move is heavy: Alice's `inputs`, her
+  rounds of hashes, the final record and the last step's proof (25 kvB),
+  and the hub's read-lie path (`combine_k`, up to 93 kvB, and the
+  verdict). Short where it is light: the hub's choices (0.3 kvB).
+- Why: congestion safety needs contracts × heaviest move ≤ window × block
+  (the paper's Table 2), so the heavy windows must grow with the hub's
+  contract count (75 blocks for 3,000 contracts against a hostile hub,
+  280 against hostile users with read lies). With one `w`, a vanished
+  hub's users would wait that long too; with per-move windows they wait
+  only the hub's short reply window. Disputes stay as long as before, and
+  `Tc` must still leave room for the longest.
+- Where: the ladder's pre-signed timeouts (ln-gap), the contract terms
+  (one window per kind, in the `OpenOffer`), the hub and wallet's
+  deadlines, and the paper (the dispute's duration, `11(w+1)` blocks, and
+  Table 2).
+
+## The paper: figures still from before the deployment keys
+
+- TODO: the verifier's input is 204 bytes, 51 words (the journal now
+  carries `D`), not 172 bytes and 43 words: the pipeline figure, the text
+  beside it, the word table, and the Costs rows for the verifier
+  (477,943,091 steps, not 478,100,841) and for `inputs` ("the other 32
+  input words"; the deployment's eight go there too, per
+  `Check::in_claim`). Take the split between `escalate` and `inputs`
+  from the code.
+- TODO: re-measure the Groth16 wrap (109 s was on the six-segment,
+  unaccelerated proof; the proof is now one segment).
+
 ## Later
 
 Watchtowers (open problem: the paper's Watchtowers section, papers/lichen-draft.pdf); several hubs
-(colours, clearing lines); shielded notes; the accelerated guest; a GUI.
+(colours, clearing lines); shielded notes; a GUI.
