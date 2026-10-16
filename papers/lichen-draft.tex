@@ -13,6 +13,7 @@
 \usetikzlibrary{arrows.meta,positioning,fit,calc,decorations.pathreplacing}
 \usepackage{listings}
 \usepackage{hyperref}
+
 \hypersetup{colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black, citecolor=blue!60!black}
 \usepackage[skip=0.6\baselineskip, indent=0pt]{parskip}
 
@@ -75,7 +76,7 @@ consensus is required. A withdrawal is a claim that a program, the withdrawal st
 
 \paragraph{But this an IOU/ hub's token, so it's not actually bitcoin.} Incorrect with a crucial caveat. See the first point: every sat is redeemable via the user-hub contracts, \emph{without} the hub's permission, one-to-one, so these are actually bitcoin \emph{but only as long as you have liquidity to receive them}. A new user on L2 without a contract with the hub, or a user holding a balance on L2 far in excess of their inbound liquidity in their own contract, is holding \emph{credit}, and has no such guarantee. But that's their choice.
 
-\paragraph{But still, a single central hub feels like bad design. Why not multiple hubs?} It's because of what these L2 tokens are. They are fungible, \underline{enforceable} claims on the hub's money; they are minted by the hub itself, just on its own say-so. If you had hub 1 and hub 2, those claims are not transferrable trustlessly to the hubs themselves. If hub 2 prints a billion sats out of nothing and users accept it on the L2 they can redeem it with hub1, leaving hub1 out of pocket. From this line of thinking we see an interesting comparison with ecash servers: the hub can print as much as it likes, but it cannot steal/``rug''.
+\paragraph{But still, a single central hub feels like bad design. Why not multiple hubs?} Having multiple hubs \emph{will} make sense --- see Section~\ref{sec:multihub}, but done naively, it is broken. It's because of what these L2 tokens are. They are fungible, \underline{enforceable} claims on the hub's money; they are minted by the hub itself, just on its own say-so. If you had hub 1 and hub 2, those claims are not transferrable trustlessly to the hubs themselves. If hub 2 prints a billion sats out of nothing and users accept it on the L2 they can redeem it with hub1, leaving hub1 out of pocket. From this line of thinking we see an interesting comparison with ecash servers: the hub can print as much as it likes, but it cannot steal/``rug''.
 
 \paragraph{So what's the catch?} The negatives are twofold: one is liquidity, and this is easy to understand as the analog of the inbound liquidity pain point in Lightning, because it's basically the same thing. Such a hub \emph{can} give no inbound liquidity to a user: they get tokens on L2 to spend, but they cannot (safely) receive. If they receive, it's just credit that someone else will hopefully buy from them. But the design does not assume that, of course, it allows receiving up to a ``cap'': the user negotiates that extra potential receiving amount (inbound liquidity) when it sets up the contract with the hub. The second negative is very concrete, and is a design decision rather than an absolute requirement: we use BitVMX's bisection (in fact 8-ary not binary) to enforce that the ZKP is valid, on-chain. In the worst case this is 20-25 transactions and may require watchtower design to be easy enough for users to fully rely on. In a correctly built implementation this is exceptionally rare because the incorrect party (trivially established) is guaranteed to pay all the fees (up to its reserve), and lose money.
 
@@ -577,16 +578,15 @@ What sealing does not provide is availability: a seal commits to a root, not to 
 In this scenario, Alice's withdrawal statement must then show that its root is sealed: a light-client/SPV proof inside the guest, a chain of block headers from a checkpoint to the block carrying the seal, with its Merkle path, and some confirmations after it. The checkpoint is a block hash pinned in the contract when it opens, checked as an input word like the memo; since
 every withdrawal falls before $\Tc$, the chain a proof covers is bounded by the contract's lifetime, and a contract shorter than a difficulty period (2016 blocks) crosses at most one retarget, so the guest can bound each header's target by the checkpoint's within the protocol's factor of four.
 
-\underline{The cost is surprisingly small}: a header is about three SHA-256 compressions, which RISC Zero accelerates, so a thousand headers are a few hundred thousand cycles, against the 5.9 million of today's statement.
-The comparison is not like for like: today's statement uses no
-acceleration (almost all its cycles are the sequencer's signature,
-checked in plain software), while the headers' figure assumes RISC
-Zero's SHA-256 circuit, 68 cycles a block~\cite{risc0accel}. Accelerated,
-the statement itself should fall under a million cycles
-(Section~\ref{sec:costs}), so a thousand headers would add perhaps a
-quarter or a third to it; hashed in plain software, at a few thousand
-cycles a compression, they would cost around ten million, more than
-today's whole statement. The dispute is unchanged. In the cooperative case the hub checks seals with its own node.
+\underline{The cost is surprisingly small}: a header is about three SHA-256 compressions, which RISC Zero accelerates, so a thousand headers are a few hundred thousand cycles, against the
+446,000 of today's statement (Section~\ref{sec:costs}). The comparison
+is like for like: the statement already uses RISC Zero's accelerators
+for its hashes and the sequencer's signature, and the headers' figure
+assumes the same SHA-256 circuit, 68 cycles a block~\cite{risc0accel}.
+So a thousand headers would roughly double the statement, still
+under a million cycles; hashed in plain software, at a few thousand
+cycles a compression, they would cost around ten million, some twenty
+times today's whole statement. The dispute is unchanged. In the cooperative case the hub checks seals with its own node.
 
 Forgery then becomes a matter of mining a fork in Bitcoin itself. In current Bridge designs, like Union~\cite{union}, a challenger answers the claimant's chain with a
 heavier one, which the claimant may dispute in turn, in a second BitVMX
@@ -634,6 +634,76 @@ would make each move hundreds of times larger than today's. With
 
 It seems like this 3rd option is the clear winner, though it might involve various finesses around the idea of ``doing Lichen in Lightning''. It's also slightly concerning that this per-user solution for watchtower-ing never really took off in Lightning itself (but at least here it is ephemeral and not usually needed \ldots).
 
+\section{Scaling with multiple hubs}
+\label{sec:multihub}
+
+As per most of the second half of this paper, starting above with considerations for watchtowers, all of the rough edges occur around the dispute: from the cost imposed on the user, to the fees paid on the blockchain in the worst case. All of this points to the worst failure mode, which while difficult for an attacker to carry out, would be very bad indeed: \underline{mass exit}. As we know even in Lightning there is the idea that, if the number of users is high enough, mass publication of old/invalid states could lead to an excessive reliance on prompt confirmation on a blockchain where space is a scarce resource.
+
+Now imagine lichen similarly, but with that much worse feature: a single mega-hub hosting, let's say, 60,000 users. There, since each disputed withdrawal can require 20 or more transactions worst-case, and a few of those transactions are very large, it's clearly the case that a malicious hub can trigger a very large block space demand and, with a lot of difficulty to be fair, \emph{could} steal from many honest users at once depending on the order in which transactions get confirmed. The same attack exists in reverse: if a user-attack generates a ton of Sybil contracts with one hub, they could trigger mass exit with fraudulent exit requests.
+
+It is worth mentioning that the more likely failure mode --- that is of hub infrastructure failure leading to offlineness --- does not impose nearly the same burden on blockchain space, and is thus less likely to cause harm to users (though it will certainly cause harm to the hub, which does lose money in cases where it loses liveness for meaningful lengths of time).
+
+\paragraph{How many users can exit?} Table~\ref{tab:exits} counts exits
+by their bytes alone, from the sizes in Section~\ref{sec:costs}. When one
+side is hostile a different limit binds. To make an honest party miss a
+move, the attacker must outbid it in every block of that move's window
+of $w$ blocks; that costs about the same whether one defender is shut out
+or many, so it pays only when the moves due in one window could not all
+fit in it anyway: $N s > w \cdot 1\,\mathrm{MvB}$, for $N$ contracts
+whose heaviest move in a window is $s$. This is Flood \&
+Loot~\cite{floodloot} in lichen's form. Table~\ref{tab:flood} gives the
+largest $N$ for which the attack does not pay assuming the attacker-crafted worst case: every contract's heaviest move is due in the same window.
+
+\begin{table}[!htp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{50mm}rrL}
+\toprule
+exit & per user & per block & per day, per month, at a quarter of each block \\
+\midrule
+hub present: a fold & ${\sim}0.3$~kvB & 3,300 & 120,000; 3.6M \\
+hub gone: escalate, \tx{inputs}, the hub's timeout, the payout & ${\sim}23$~kvB & 43 & 1,600; 47,000 \\
+hub disputes a true claim to the end & 123~kvB & 8 & 290; 8,800 \\
+the hub disproves a user's read lie & 187~kvB & 5 & 190; 5,800 \\
+\bottomrule
+\end{tabularx}
+\caption{Exits by bytes alone: a day is 144 blocks, a month 4,320. The
+fold was 193~vB on Mutinynet and the absent-hub exit 23,051~vB; the
+disputes are as measured on regtest (Section~\ref{sec:costs}). With the
+hub gone, each exit has until its contract's $\Tc$, so staggered
+expiries spread the load.}
+\label{tab:exits}
+\end{table}
+
+\begin{table}[!htp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{50mm}LL}
+\toprule
+ & a hostile hub, against honest users & hostile users (read lies), against an honest hub \\
+\midrule
+the defender's heaviest move in one window, $s$ & Alice's proof of the last step, 25.1~kvB (her heaviest otherwise: \tx{inputs}, 8.0) & the hub's \tx{combine\_8}, up to 93~kvB \\
+contracts safe at $w = 12$ (two hours) & 480 & 130 \\
+at $w = 144$ (a day) & 5,700 & 1,550 \\
+at $w = 1{,}008$ (a week) & 40,000 & 10,800 \\
+the window needed for 3,000 contracts & 75 blocks (13 hours) & 280 blocks (2 days) \\
+for 60,000 & 1,510 blocks (10 days) & 5,580 blocks (39 days) \\
+\bottomrule
+\end{tabularx}
+\caption{Contracts a hub can hold before congesting the chain pays,
+$N \le w \cdot 1\,\mathrm{MvB} / s$, with whole blocks and every
+defender's move due in the same window: hostile users choose when to
+escalate, and a hostile hub can delay each of its replies by up to $w$
+to bunch them. The escalation (11.6~kvB) is not counted, since it runs
+against $\Tc$ rather than a window.}
+\label{tab:flood}
+\end{table}
+
+We can improve this on \emph{some} axes by having multiple hubs. If we had 20 distinct hubs of 3000 users and not 1 hub of 60,000 it would reduce some risk for users in particular. Which leads to the question:
+
+\paragraph{ Can you pay users in a different hub?} Certainly you can, with some infrastructure. There's more than one way to do it, but for brevity we describe the simplest: if Hub 1 and Hub 2 exist, with their own distinct ledgers, Alice on Hub 1 can pay Bob on Hub 2, in bitcoin, if Hub 2 has a contract on Hub 1 with inbound capacity. She simply pays Hub2's address on Hub 1's ledger, contingent on an atomic swap set up with the payment to Bob on Hub 2's ledger. There could also be routing, but the principle is clear.
+
+\paragraph{Different ledgers?} It seems natural in this multi-hub world to allow users to use a Hub whose ledger rules (e.g. does it use shielded transactions or smart contracts or ..) can be distinct and whose consensus establishing mechanisms are distinct. Alternatively they could all rely on the same finality and proof of validity, in one ledger, as distinct assets.
 
 \section{Scenarios in which a fault occurs}
 
@@ -675,7 +745,7 @@ can impose on-chain costs on the other by disputing. The difference, here, is th
 \toprule
 item & measured (proof of concept) \\
 \midrule
-proving the withdrawal (STARK) & 5.9M cycles unaccelerated (the sequencer's signature in plain software), 6 segments: 28 min on a 12-core x86 laptop (9.6~GB peak), 6 min on an Apple-silicon Mac; under 1M expected with RISC Zero's accelerators \\
+proving the withdrawal (STARK) & 446k cycles with RISC Zero's accelerators, one segment: 2~min 24~s on a 12-core x86 laptop (4.8~GB peak), 30~s on an Apple-silicon Mac (M4 Pro, CPU); without the accelerators, 5.9M cycles, almost all the sequencer's signature \\
 the Groth16 wrap & 109~s (x86 only) \\
 the verifier on the 172-byte input & 478,100,841 steps; 58~s in BitVMX's emulator \\
 the same proof checked natively (the pairing, RISC Zero's claim digest) & 1.5~ms \\
@@ -727,15 +797,13 @@ Further reductions:
 two computations from Alice, neither of them urgent (only $\Tc$ bounds
 a withdrawal), and none at all in the cooperative case, where the hub
 reads the layer 2 directly. First, a proof of her withdrawal. As built,
-the statement costs 5.9 million zkVM cycles, almost all of them in the
-sequencer's signature checked in plain software; RISC Zero's
+the statement costs 446,000 zkVM cycles, one segment, using RISC Zero's
 accelerators (about 10 cycles for a 256-bit modular multiplication, 68
-for a SHA-256 block~\cite{risc0accel}) should bring it under a million.
-RISC Zero's published figures put a million cycles at roughly a minute
-on a laptop's CPU and around ten seconds on a laptop GPU, with about
-7.5~GB of memory, less with smaller segments~\cite{risc0data}; those
-figures are from 2023, and the prover has become several times faster
-since. The Groth16 wrap is a fixed cost of a few minutes, today on x86
+for a SHA-256 block~\cite{risc0accel}); without them it was 5.9
+million, almost all of them in the sequencer's signature. Proving it
+takes 30~s on an Apple-silicon laptop's CPU and 2~min 24~s on a
+12-core x86 laptop, with 4.8~GB of memory at peak, which smaller
+segments reduce~\cite{risc0data}; a CUDA GPU would be faster still. The Groth16 wrap is a fixed cost of a few minutes, today on x86
 only; it can be delegated, since the wrapper sees only the receipt and
 its public journal. Second, her side of the search: one run of the
 verifier with the trace hashed, a few minutes of CPU on a laptop. That
@@ -897,6 +965,8 @@ The code is not feature complete, in particular in regard to the L2 itself which
 \bibitem{risc0} RISC Zero. The RISC Zero zkVM and its Groth16 receipts. \url{https://dev.risczero.com}
 
 \bibitem{bitvmxinnov} S.~D.~Lerner. Latest innovations in BitVMX (trace Merkle tree, authenticated skiplist and jumplist), June 2024. \url{https://bitvmx.org/knowledge/latest-innovations-in-bitvmx}
+
+\bibitem{floodloot} J.~Harris and A.~Zohar. Flood \& Loot: a systemic attack on the Lightning Network. AFT 2020. \url{https://arxiv.org/abs/2006.08513}
 
 \bibitem{toddseals} P.~Todd. Preventing consensus fraud with commitments and single-use-seals, 2016. \url{https://petertodd.org/2016/commitments-and-single-use-seals}
 
