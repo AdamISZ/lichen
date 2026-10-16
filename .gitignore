@@ -5,3 +5,10 @@ target/
 /*.json
 /*.d/
 /*.hex
+# LaTeX's build files beside the paper (the PDF is kept)
+papers/*.aux
+papers/*.out
+papers/*.toc
+papers/*.fls
+papers/*.fdb_latexmk
+papers/*.synctex.gz
