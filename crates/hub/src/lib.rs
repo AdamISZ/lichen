@@ -4,9 +4,10 @@
 //! HTTP (JSON): `GET /info`, `POST /open` ([`OpenRequest`] to
 //! [`OpenOffer`]), `POST /accept` ([`Accept`] to [`Opened`]), `POST /fold`
 //! ([`FoldRequest`] to [`Folded`]: the cooperative withdrawal, once the
-//! hub has seen Alice's return sealed on the L2). A watcher mints each
-//! contract's deposit once its funding confirms, and after `T_close`
-//! broadcasts the default of any contract still open.
+//! hub has seen Alice's return sealed on the L2). An offer mints the
+//! deposit to a key Alice can spend only once the funding is broadcast
+//! (see `lichen_proto`); a watcher broadcasts, after `T_close`, the
+//! default of any contract still open.
 
 mod dispute;
 
@@ -16,11 +17,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
+use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
 use bitcoin::{Amount, OutPoint, Sequence, TxOut};
+use lngap_btc::adaptor::{adaptor_complete, adaptor_verify, AdaptorSig};
 use lichen_chain::Chain;
 use lichen_ledger::{note, xonly, Mint, Tx};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_proto::{all_moves, check_funding, deposit_timeout, deposit_tree, tail_keys, contributions, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{all_moves, broadcast_deadline, check_funding, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, tail_keys, contributions, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
 use lichen_l2::Client;
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
@@ -68,6 +71,13 @@ pub(crate) fn deposit_key(seed: &str, cid: u32) -> bitcoin::key::Keypair {
     contract_keys(seed, cid).seed().keypair("deposit")
 }
 
+/// The adaptor secret `t` of a funding transaction: the hub's own, and a
+/// different one for every funding offered (retries included), so that
+/// the one funding that can confirm reveals the `t` of its own mint only.
+pub(crate) fn mint_adaptor(seed: &str, cid: u32, l2_address: &lichen_ledger::Hash, funding: &bitcoin::Txid) -> SecretKey {
+    Seed::from_label(&format!("{seed}/contract/{cid}/mint/{}/{funding}", hex::encode(l2_address))).keypair("adaptor").secret_key()
+}
+
 /// The hub's move keys for depth `d` of contract `cid`, one per field.
 pub fn move_secrets(seed: &str, cid: u32, program: &Program, d: u32) -> Vec<WotsSecret> {
     let at = |f: usize, n: u32| WotsSecret::from_entropy(WotsParams::for_bytes(n), Seed::from_label(&format!("{seed}/contract/{cid}/move/{d}/{f}")).derive_bytes("wots"));
@@ -84,16 +94,32 @@ pub fn path_secrets(seed: &str, cid: u32, program: &Program) -> Vec<Vec<WotsSecr
     (0..lngap_ladder::tail::CHUNKS).map(|c| lngap_ladder::tail::chunk_fields(c).into_iter().enumerate().map(|(f, n)| at(c, f, n)).collect()).collect()
 }
 
+/// For tests: a fault in the opening, at the hub's end.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OpeningFault {
+    #[default]
+    None,
+    /// Broadcast the funding, then fail to answer (Alice reads `t` from
+    /// the chain).
+    DropAnswer,
+    /// Take Alice's pre-signature and never fund (she refunds; her mint
+    /// stays locked).
+    NeverFund,
+    /// Mint a sat less than the deposit (Alice refuses the offer).
+    ShortMint,
+}
+
 struct Pending {
     req: OpenRequest,
     offer: OpenOffer,
     record: Record,
+    /// The adaptor secret of the funding offered.
+    t: SecretKey,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Open {
     pub(crate) record: Record,
-    minted: bool,
     /// How it ended: the fold's or the default's txid.
     #[serde(default)]
     pub(crate) closed: Option<bitcoin::Txid>,
@@ -116,6 +142,8 @@ pub(crate) struct Inner {
     dispute_true_claims: AtomicBool,
     /// For tests: forge a hash in every path the hub posts.
     forge_paths: AtomicBool,
+    /// For tests: a fault in each opening.
+    opening_fault: Mutex<OpeningFault>,
     log: Mutex<Vec<String>>,
     /// The most the links' floors and anchors take from the hub's reserve
     /// on a dispute it loses (the statement's, found at the first opening).
@@ -161,7 +189,7 @@ impl Hub {
         let (cfg_refuse, cfg_dispute) = (cfg.refuse_folds, cfg.dispute_true_claims);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), log: Mutex::new(vec![]), floors: std::sync::OnceLock::new() });
+        let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: std::sync::OnceLock::new() });
         let stop = Arc::new(AtomicBool::new(false));
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
@@ -179,9 +207,6 @@ impl Hub {
         let (i2, s2) = (inner.clone(), stop.clone());
         let watcher = std::thread::spawn(move || {
             while !s2.load(Ordering::Relaxed) {
-                if let Err(e) = i2.mint_confirmed() {
-                    eprintln!("hub: {e:#}");
-                }
                 if let Err(e) = i2.default_expired() {
                     eprintln!("hub: {e:#}");
                 }
@@ -214,6 +239,10 @@ impl Hub {
     /// challenge that hop, and the hub fail to reveal it).
     pub fn set_forge_paths(&self, on: bool) {
         self.inner.forge_paths.store(on, Ordering::Relaxed);
+    }
+    /// For tests: a fault in each opening from now on.
+    pub fn set_opening_fault(&self, f: OpeningFault) {
+        *self.inner.opening_fault.lock().unwrap() = f;
     }
     pub fn set_dispute_true_claims(&self, on: bool) {
         self.inner.dispute_true_claims.store(on, Ordering::Relaxed);
@@ -292,6 +321,8 @@ impl Inner {
         ensure!(on_chain.as_ref() == Some(dep_out), "no such deposit on chain");
         ensure!(self.chain.confirmations(&dep_op.txid)? >= 1, "the deposit is not confirmed");
         ensure!(self.chain.unspent(dep_op)?, "the deposit is spent");
+        let deadline = broadcast_deadline(self.deposit_confirmed_at(dep_op)?, deposit_timeout(self.cfg.network));
+        ensure!(self.chain.height()? < deadline, "the deposit's refund matures too soon to open on it (refund it and deposit again)");
         let keys = contract_keys(&self.cfg.seed, cid);
         let mut hub = keys.public();
         hub.payout_spk = self.chain.new_spk()?;
@@ -351,8 +382,16 @@ impl Inner {
         record.funding = OutPoint { txid: funding.compute_txid(), vout: 0 };
         let set = c.presign(record.funding)?;
         record.hub_sigs = sign_all(&set, &keys.payment)?;
-        let offer = OpenOffer { cid, t_close, reserve_hub, hub, moves: hub_moves, path, funding, hub_coins, hub_sigs: record.hub_sigs.clone() };
-        self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record });
+        // D, minted now to a key Alice can spend once this funding is out
+        let t = mint_adaptor(&self.cfg.seed, cid, &req.l2_address, &record.funding.txid);
+        let mint_point = PublicKey::from_secret_key(SECP256K1, &t);
+        let fault = *self.opening_fault.lock().unwrap();
+        let d = u64::from(record.terms.deposit) - u64::from(fault == OpeningFault::ShortMint);
+        let owner = mint_owner(&req.l2_address, &mint_point)?;
+        let mint_index = self.seq.submit(&Tx::Mint(Mint::new(&self.cfg.l2_key, vec![note(owner, d, 0)])))?[0];
+        self.note(format!("contract {cid}: offered; minted {d} sats to the user, locked to the funding"));
+        let offer = OpenOffer { cid, t_close, reserve_hub, hub, moves: hub_moves, path, funding, hub_coins, hub_sigs: record.hub_sigs.clone(), mint_point, mint_index };
+        self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t });
         Ok(offer)
     }
 
@@ -366,20 +405,33 @@ impl Inner {
         let prevouts: Vec<(OutPoint, TxOut)> = std::iter::once(&p.req.deposit_coin).chain(&p.offer.hub_coins).cloned().collect();
         let outs: Vec<TxOut> = prevouts.iter().map(|c| c.1.clone()).collect();
         let mut funding = p.offer.funding.clone();
-        let dep = funding.input.iter().position(|i| i.previous_output == p.req.deposit_coin.0).context("the deposit input")?;
         let tree = self.deposit_tree(a.cid)?;
         let leaf = tree.leaf(DEPOSIT_OPEN)?;
+        // Alice's pre-signature, locked to this funding's T: completing it
+        // (the only way to spend her deposit) puts t on chain
+        let alice = *self.deposits.lock().unwrap().get(&a.cid).context("no deposit asked for this contract")?;
+        let (dep, msg) = deposit_open_msg(&funding, &p.req.deposit_coin.0, &prevouts, &tree)?;
+        let presig = AdaptorSig::from(&a.deposit_presig);
+        ensure!(adaptor_verify(&alice, &msg, &p.offer.mint_point, &presig), "Alice's pre-signature is not locked to this funding's adaptor point");
+        ensure!(*self.opening_fault.lock().unwrap() != OpeningFault::NeverFund, "not funding contract {} (a test's fault)", a.cid);
+        let alice_sig = adaptor_complete(&presig, &p.t);
+        SECP256K1.verify_schnorr(&alice_sig, &msg, &alice).context("the completed signature")?;
+        // nothing but the funding can spend the deposit until its refund
+        // matures: broadcast only with time to confirm before then
+        let deadline = broadcast_deadline(self.deposit_confirmed_at(&p.req.deposit_coin.0)?, deposit_timeout(self.cfg.network));
+        ensure!(self.chain.height()? < deadline, "the deposit's refund matures too soon to broadcast the funding (height {deadline} was the last)");
         let hub_sig = lngap_btc::sighash::sign_tapscript(&deposit_key(&self.cfg.seed, a.cid), &funding, dep, &outs, &leaf.script)?;
-        funding.input[dep].witness = lngap_btc::witness::tapscript_witness(&[a.deposit_sig.clone(), hub_sig.as_ref().to_vec()], &leaf.script, &tree.control_block(DEPOSIT_OPEN)?);
+        funding.input[dep].witness = lngap_btc::witness::tapscript_witness(&[alice_sig.as_ref().to_vec(), hub_sig.as_ref().to_vec()], &leaf.script, &tree.control_block(DEPOSIT_OPEN)?);
         let signed = self.chain.sign_mine(&funding, &prevouts)?;
         let txid = self.chain.broadcast(&signed).context("broadcasting the funding")?;
         self.note(format!("contract {}: opened (deposit {} sats, cap {} sats); funding broadcast", a.cid, record.terms.deposit, record.terms.v_max().to_sat()));
-        let o = Open { record, minted: false, closed: None };
+        let o = Open { record, closed: None };
         self.save(&o)?;
         self.open.lock().unwrap().insert(a.cid, o);
         self.deposits.lock().unwrap().remove(&a.cid);
         let _ = std::fs::remove_file(self.cfg.dir.join("deposits").join(format!("{}.json", a.cid)));
-        Ok(Opened { txid })
+        ensure!(*self.opening_fault.lock().unwrap() != OpeningFault::DropAnswer, "funding {txid} broadcast, the answer dropped (a test's fault)");
+        Ok(Opened { txid, t: p.t })
     }
 
     fn save(&self, o: &Open) -> Result<()> {
@@ -437,20 +489,10 @@ impl Inner {
         Ok(())
     }
 
-    /// Mint each newly confirmed contract's deposit to its user.
-    fn mint_confirmed(&self) -> Result<()> {
-        let due: Vec<Open> = self.open.lock().unwrap().values().filter(|o| !o.minted).cloned().collect();
-        for mut o in due {
-            if self.chain.confirmations(&o.record.funding.txid)? == 0 {
-                continue;
-            }
-            let d = u64::from(o.record.terms.deposit);
-            self.seq.submit(&Tx::Mint(Mint::new(&self.cfg.l2_key, vec![note(o.record.l2_address, d, 0)])))?;
-            self.note(format!("contract {}: funding confirmed; minted {d} sats to the user", o.record.cid()));
-            o.minted = true;
-            self.save(&o)?;
-            self.open.lock().unwrap().insert(o.record.cid(), o);
-        }
-        Ok(())
+    /// The height at which the deposit `op` confirmed.
+    fn deposit_confirmed_at(&self, op: &OutPoint) -> Result<u32> {
+        let n = self.chain.confirmations(&op.txid)?;
+        ensure!(n >= 1, "the deposit is not confirmed");
+        Ok(self.chain.height()? + 1 - n)
     }
 }

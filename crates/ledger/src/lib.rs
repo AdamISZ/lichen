@@ -140,6 +140,38 @@ pub fn verify(owner: &Hash, msg: &Hash, sig: &[u8]) -> Result<()> {
     key.verify_raw(msg, &sig).context("bad signature")
 }
 
+/// The key a deposit's tokens are minted to before the contract is
+/// funded: Alice's L2 key `A` (x-only, lifted to even y) and the hub's
+/// adaptor point `T` (compressed), as `P = H(A ‖ T)·A + T`, x-only. Only
+/// Alice can spend it, and only once she knows `t`, which the funding
+/// transaction reveals. The coefficient keeps Alice from choosing `A`
+/// against a `T` she has seen (`A = Y − T` would make `P = Y` hers alone).
+pub fn mint_key(alice: &Hash, t_point: &[u8; 33]) -> Result<Hash> {
+    use k256::elliptic_curve::point::AffineCoordinates;
+    let a = VerifyingKey::from_bytes(alice).context("Alice's key")?;
+    let t = k256::PublicKey::from_sec1_bytes(t_point).context("the adaptor point")?;
+    let p = k256::ProjectivePoint::from(*a.as_affine()) * mint_coefficient(alice, t_point) + t.to_projective();
+    ensure!(p != k256::ProjectivePoint::IDENTITY, "the mint key is the point at infinity");
+    Ok(p.to_affine().x().into())
+}
+
+/// The key that spends a note owned by [`mint_key`]: `H(A ‖ T)·a + t`,
+/// with `a` Alice's secret for the even-y `A` (k256 keeps it so) and `t`
+/// the adaptor secret.
+pub fn mint_secret(alice: &SigningKey, t: &Hash) -> Result<SigningKey> {
+    use k256::elliptic_curve::sec1::ToEncodedPoint;
+    let t = k256::NonZeroScalar::try_from(&t[..]).context("the adaptor secret")?;
+    let t_point: [u8; 33] = k256::PublicKey::from_secret_scalar(&t).to_encoded_point(true).as_bytes().try_into().expect("33 bytes compressed");
+    let p = mint_coefficient(&xonly(alice), &t_point) * **alice.as_nonzero_scalar() + *t;
+    let p = Option::<k256::NonZeroScalar>::from(k256::NonZeroScalar::new(p)).context("the mint secret is zero")?;
+    Ok(SigningKey::from(p))
+}
+
+fn mint_coefficient(alice: &Hash, t_point: &[u8; 33]) -> k256::Scalar {
+    use k256::elliptic_curve::ops::Reduce;
+    <k256::Scalar as Reduce<k256::U256>>::reduce_bytes(&sha256(&[b"lichen/mint-key", alice, t_point]).into())
+}
+
 /// A fresh random `rho`.
 pub fn fresh_rho() -> Hash {
     let mut r = [0u8; 32];
@@ -495,5 +527,28 @@ mod tests {
         assert_eq!(journal[8..], Deployment::toy().id());
         // a note that isn't the hub's is no return
         assert!(l.withdraw_input(idx[0]).is_err());
+    }
+
+    #[test]
+    fn a_mint_key_is_spent_by_alice_with_t() {
+        use k256::elliptic_curve::sec1::ToEncodedPoint;
+        let msg = sha256(&[b"a transfer"]);
+        // 64 draws: every combination of the parities of Alice's point, T
+        // and the sum, all but certainly
+        for _ in 0..64 {
+            let (alice, t) = (fresh_key(), fresh_key());
+            let t_point: [u8; 33] = k256::PublicKey::from_secret_scalar(t.as_nonzero_scalar()).to_encoded_point(true).as_bytes().try_into().unwrap();
+            let p = mint_key(&xonly(&alice), &t_point).unwrap();
+            let k = mint_secret(&alice, &t.to_bytes().into()).unwrap();
+            assert_eq!(xonly(&k), p);
+            verify(&p, &msg, &sign(&k, &msg)).unwrap();
+            // Alice alone, or t alone, is not the key
+            assert_ne!(xonly(&alice), p);
+            assert_ne!(xonly(&t), p);
+        }
+        // another Alice, the same T: another key
+        let (a, b, t) = (fresh_key(), fresh_key(), fresh_key());
+        let t_point: [u8; 33] = k256::PublicKey::from_secret_scalar(t.as_nonzero_scalar()).to_encoded_point(true).as_bytes().try_into().unwrap();
+        assert_ne!(mint_key(&xonly(&a), &t_point).unwrap(), mint_key(&xonly(&b), &t_point).unwrap());
     }
 }

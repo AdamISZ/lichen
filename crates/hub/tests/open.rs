@@ -2,10 +2,12 @@
 //! bitcoind wallet each for Alice and the hub, the sequencer, the hub
 //! daemon, and Alice's wallet. Alice asks; the hub offers the contract,
 //! the funding transaction and its signatures on the whole pre-signed set;
-//! Alice checks it all, signs, funds; the hub broadcasts; once it
-//! confirms, the hub mints her deposit on the L2.
+//! the deposit already minted to her, locked to the funding; Alice checks
+//! it all, signs (an adaptor pre-signature on the funding's deposit
+//! input); the hub completes it, broadcasts, and answers with `t`, which
+//! unlocks her deposit on the L2.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use bitcoin::Amount;
 use lichen_chain::Chain;
@@ -70,15 +72,11 @@ fn open_a_contract_and_receive_the_deposit() {
     let set = r.presigned(&r.contract(&mock(), &program).unwrap()).unwrap();
     println!("LICHEN both parties hold {} pre-signed transactions, each signature checked", set.len());
 
-    // the hub mints the deposit once the funding confirms
-    let start = Instant::now();
-    while alice.balance().unwrap() < deposit {
-        assert!(start.elapsed() < Duration::from_secs(20), "the deposit never arrived");
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    // the deposit is hers already, claimed with t
+    assert!(held.mint.as_ref().unwrap().claimed);
     alice.sequencer.seal().unwrap();
     assert_eq!(alice.balance().unwrap(), deposit);
-    println!("LICHEN the hub minted {deposit} sats to Alice on the L2");
+    println!("LICHEN the hub minted {deposit} sats to Alice on the L2, hers once the funding was out");
     // a restarted wallet still has its contract
     let again = Wallet::open(&dir.join("alice.json"), &seq.url).unwrap();
     assert_eq!(again.contracts.len(), 1);

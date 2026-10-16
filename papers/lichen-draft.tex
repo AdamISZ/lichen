@@ -124,6 +124,24 @@ $\Tc$ & the contract's end: with no withdrawal by then, the hub takes it \\
 Every token is a liability of the hub, collateralised by the contract of whoever holds it, within that holder's cap; within $\vmax$ and before $\Tc$, Alice trusts the hub for nothing, not even to be online: a withdrawal it does not answer is paid by timeout. The hub's provided liquidity is the sum of its users'
 $\vmax - D + r_H$.
 
+\paragraph{Opening is a swap.} Alice's $D$ goes into the contract and her
+$D$ tokens onto the L2, and neither may come without the other: a hub
+that took the funding and never minted would leave her nothing to
+return, and the default at $\Tc$ would hand it her $D$; a hub that
+minted first could be left with tokens backed by no contract. Alice
+first pays a deposit output, the hub's key and hers together, or hers
+alone after a timeout. The hub then mints $D$ to the key
+$P = H(A \,\|\, T)\cdot A + T$, where $A$ is Alice's L2 key and $T = t\cdot G$
+a point of the funding transaction's own (the coefficient keeps Alice
+from choosing $A$ against $T$), and Alice, once she sees that mint
+sealed, signs the funding's deposit input as an adaptor pre-signature
+locked to $T$. The hub can spend the deposit only by completing it,
+which publishes $t$ and so unlocks her tokens. The hub's side needs no
+refund: if it never broadcasts, Alice refunds the deposit, and the
+locked tokens, which cost nothing to print, stay where they are. Its one
+risk is timing: $t$ is public once the funding is in the mempool, so it
+broadcasts only well before the deposit's refund matures.
+
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[
@@ -634,6 +652,7 @@ Alice probes: a false claim, abandoned when the hub answers & she loses by timeo
 a proof of another program, or another contract's memo & the hub's input-word check takes the contract \\
 Alice signs two values of $b$ & the hub takes the bit outputs with \tx{equiv\_b} \\
 Alice disappears until $\Tc$ & the default; her reserve returned; her tokens remain as credit \\
+the hub takes the funding and never mints, or mints and is never funded & cannot happen: the mint comes first, locked to the funding's adaptor point; broadcasting the funding unlocks it, and without the funding no one can spend it \\
 either party force-closes the channel while the contract is open & nothing moves; the channel is lost \\
 either party forces the search on chain to cause trouble & the outcome is unchanged; each side pays the fees of its own moves, and the loser's reserve covers the winner's \\
 the escalating party replays one of its own moves altered & the other shows two signatures under one key (\tx{equiv\_d}) and takes everything \\

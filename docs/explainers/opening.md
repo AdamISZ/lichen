@@ -5,7 +5,8 @@ A walkthrough of how Alice opened contract 1001 on Mutinynet
 [hub-absent.md](hub-absent.md). Opening takes four requests to the hub
 and two Bitcoin transactions. Between them, Alice and the hub sign every
 transaction any ending of the contract could need, before the contract
-holds a single sat.
+holds a single sat. (Since this walkthrough, the hub mints Alice's
+tokens with its offer, locked to the funding: see [the mint](#the-mint).)
 
 | transaction | block | size | fee | paid by |
 |---|---|---|---|---|
@@ -176,10 +177,52 @@ receive more on the L2 than she deposited, and still withdraw it.
 
 ## The mint
 
-When the funding confirms, the hub issues `D` = 30,000 tokens to Alice's
-L2 address, through the sequencer. For 1001 and 1002 that took about a
-minute from the deposit's confirmation. The contract is now open. Its
-endings are:
+When the funding confirmed, the hub issued `D` = 30,000 tokens to
+Alice's L2 address, through the sequencer. For 1001 and 1002 that took
+about a minute from the deposit's confirmation.
+
+**That order had a hole, since closed.** Nothing made the hub mint. A
+hub that took the funding and never minted left Alice with no tokens to
+return, so no way to withdraw, and at `T_close` the default paid the hub
+everything but her reserve, her `D` included. Minting first doesn't fix
+it: Alice could then refuse to sign the funding, refund her deposit, and
+keep tokens no contract of hers backs. It is an exchange, and either
+side going first could be cheated.
+
+Openings now make the funding and the mint one swap:
+
+1. **The offer mints first, locked.** The hub picks a secret `t` for this
+   funding transaction (it derives it from its seed, the contract, Alice's
+   L2 key and the funding's txid, so every offer has its own) and mints
+   `D` to the key `P = H(A ‖ T)·A + T`, where `A` is Alice's L2 key and
+   `T = t·G`. Spending it takes Alice's secret and `t`. The offer carries
+   `T` and where the note is.
+2. **Alice checks the mint, sealed,** before she signs anything:
+   `D`, to `P`, memo 0.
+3. **Alice's deposit signature is an adaptor pre-signature,** locked to
+   `T`. It is not yet a valid signature; adding `t` makes it one.
+4. **The hub completes it to broadcast the funding.** It can't spend the
+   deposit any other way: `deposit_open` needs Alice's signature, and
+   only `t` makes one from her pre-signature. The completed signature
+   is in the funding's witness, and it, less her pre-signature, is `t`.
+   The hub also sends `t` in its answer.
+5. **Alice spends the locked note to her own key** with her secret and
+   `t`.
+
+If the hub never broadcasts, Alice refunds her deposit after the
+timeout, and the locked note stays where it is: tokens that no one can
+spend, which cost the hub nothing to print. That is what makes this
+simpler than a usual swap: the hub's side needs no refund and no
+timeout. If its answer is lost, Alice's wallet reads `t` from the
+funding on chain (`lichen claim-mint`).
+
+The hub carries the one timing risk. `t` is public once the funding
+reaches the mempool, and if the funding were still unconfirmed when the
+deposit's refund matures, Alice could take both. So the hub broadcasts
+only in the first half of the timeout, and its change output lets it
+bump the funding's fee without Alice.
+
+Once the funding is out, the contract is open. Its endings are:
 
 - a cooperative fold ([cooperative.md](cooperative.md));
 - a dispute ([hub-absent.md](hub-absent.md),
@@ -199,7 +242,11 @@ endings are:
   signature on the deposit input commits to the whole funding: its
   outputs, and every coin it spends.
 - **The hub risks nothing before it broadcasts.** It checks all 169 of
-  Alice's signatures before adding its own to the funding.
+  Alice's signatures before adding its own to the funding. The tokens it
+  minted with its offer are locked until it does.
+- **The funding and Alice's tokens come together.** Broadcasting the
+  funding reveals `t`, which unlocks her `D`; without the funding, no one
+  can spend it.
 
 ## What it costs
 

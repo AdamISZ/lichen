@@ -78,7 +78,17 @@ impl Demo {
         if *owner == HUB_KEY {
             return "the hub".into();
         }
-        self.users.iter().find(|u| u.address == *owner).map(|u| u.name.to_string()).unwrap_or_else(|| hex::encode(&owner[..4]))
+        self.users.iter().find(|u| u.address == *owner).map(|u| u.name.to_string()).or_else(|| self.locked_for(owner).map(|n| format!("{n}, locked to the contract's funding"))).unwrap_or_else(|| hex::encode(&owner[..4]))
+    }
+    /// Whose deposit `owner` is the locked mint of (the key only she can
+    /// spend, once her contract's funding is out). A wallet busy opening
+    /// or disputing isn't waited for.
+    fn locked_for(&self, owner: &Hash) -> Option<&'static str> {
+        self.users.iter().find_map(|u| {
+            let w = u.wallet.try_lock().ok()?;
+            let mut locked = w.contracts.iter().filter_map(|h| h.mint.as_ref()).chain(w.deposits.iter().filter_map(|d| d.offered.as_ref().map(|o| &o.1)));
+            locked.any(|l| lichen_proto::mint_owner(&u.address, &l.point).ok() == Some(*owner)).then_some(u.name)
+        })
     }
 }
 
@@ -202,6 +212,10 @@ fn state(d: &Demo) -> Result<Value> {
         .map(|(n, e)| {
             let (kind, text) = match e {
                 Event::Mint { to } => ("mint", to.iter().map(|(o, v)| format!("the hub issued {v} sats to {}", d.name_of(o))).collect::<Vec<_>>().join("; ")),
+                Event::Transfer { from, to } if d.locked_for(&from[0]).is_some() => {
+                    let who = d.locked_for(&from[0]).expect("checked");
+                    ("mint", format!("{who} claimed {} sats: the funding's t unlocked them", to.iter().map(|t| t.1).sum::<u64>()))
+                }
                 Event::Transfer { from, to } => {
                     let who = d.name_of(&from[0]);
                     let parts: Vec<String> = to

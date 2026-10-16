@@ -6,22 +6,33 @@
 //!    input-word keys), her deposit `D`, cap and reserve, the coins she
 //!    funds with and her change;
 //! 2. [`OpenOffer`]: the contract's number (its memo `c`), `T_close`, the
-//!    hub's reserve and keys, the funding transaction (unsigned) and the
-//!    hub's signatures on the whole pre-signed set;
-//! 3. [`Accept`]: having checked the offer and every signature in it,
-//!    Alice's signatures on the set and her inputs of the funding
-//!    transaction signed; the hub checks hers, signs its inputs and
-//!    broadcasts. Neither side signs the funding before holding the
-//!    other's pre-signed set.
+//!    hub's reserve and keys, the funding transaction (unsigned), the
+//!    hub's signatures on the whole pre-signed set, and `D` already minted
+//!    on the L2 to the [`mint_owner`] of Alice's L2 key and an adaptor
+//!    point `T` that is the funding transaction's own;
+//! 3. [`Accept`]: having checked the offer, every signature in it and the
+//!    mint (sealed), Alice's signatures on the set and an adaptor
+//!    pre-signature on the funding's deposit input, locked to `T`; the hub
+//!    completes it with `t`, signs its inputs and broadcasts, and answers
+//!    with `t` ([`Opened`]). Neither side signs the funding before holding
+//!    the other's pre-signed set.
 //!
-//! Then, once the funding confirms, the hub mints `D` to Alice's L2
-//! address. Amounts are in sats.
+//! The funding and the mint are a swap: the hub can't spend the deposit
+//! without completing Alice's pre-signature, and completing it puts `t`
+//! in the funding's witness, which unlocks her `D` (it is in [`Opened`]
+//! too; the witness is for a hub that doesn't answer). Until the deposit's
+//! refund matures, nothing but the funding can spend the deposit, so the
+//! hub broadcasts only well before then ([`broadcast_deadline`]). An
+//! opening that never completes leaves its mint stranded: tokens no one
+//! can spend, which cost the hub nothing. Amounts are in sats.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
+use bitcoin::secp256k1::{schnorr, Message, PublicKey, SecretKey, XOnlyPublicKey};
 use bitcoin::{Amount, OutPoint, Transaction, TxOut, Txid};
+use lngap_btc::adaptor::AdaptorSig;
 use lngap_channel::{ChannelParams, PartyPubKeys};
 use lngap_lamport::winternitz::WotsPublic;
 use lngap_sessions::contract::{Check, Contract, Presign, Program, Signed, Spec};
@@ -59,10 +70,13 @@ pub fn params(net: Net) -> ChannelParams {
 
 /// How long a deposit waits before Alice may take it back alone (CSV,
 /// blocks from its confirmation): about a day; a hub that never funds the
-/// contract costs her that wait, never the coins.
+/// contract costs her that wait, never the coins. The hub broadcasts the
+/// funding only in the first half of it ([`broadcast_deadline`]); on
+/// regtest, 1,000 blocks leave time to open with blocks every 150 ms (the
+/// dispute tests) or every second (the demo).
 pub fn deposit_timeout(net: Net) -> u16 {
     match net {
-        Net::Regtest => 20,
+        Net::Regtest => 1_000,
         Net::Mutinynet => 2_880,
         Net::Signet | Net::Testnet4 => 144,
     }
@@ -325,20 +339,79 @@ pub struct OpenOffer {
     /// The prevouts of the hub's inputs.
     pub hub_coins: Vec<(OutPoint, TxOut)>,
     pub hub_sigs: HashMap<String, Vec<u8>>,
+    /// `T`, the adaptor point of this funding transaction.
+    pub mint_point: PublicKey,
+    /// The note minting `D` to [`mint_owner`]`(l2_address, T)`.
+    pub mint_index: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Accept {
     pub cid: u32,
     pub alice_sigs: HashMap<String, Vec<u8>>,
-    /// Alice's signature on the funding transaction's deposit input (the
-    /// `deposit_open` leaf; the hub adds its own).
-    pub deposit_sig: Vec<u8>,
+    /// Alice's pre-signature on the funding transaction's deposit input
+    /// (the `deposit_open` leaf), locked to `T`: the hub completes it with
+    /// `t` and adds its own.
+    pub deposit_presig: Presig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Opened {
     pub txid: Txid,
+    /// The adaptor secret, once the funding is broadcast.
+    pub t: SecretKey,
+}
+
+/// An adaptor pre-signature on the wire ([`lngap_btc::adaptor::AdaptorSig`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Presig {
+    pub r_final: XOnlyPublicKey,
+    pub r: PublicKey,
+    pub s_prime: SecretKey,
+}
+
+impl From<AdaptorSig> for Presig {
+    fn from(a: AdaptorSig) -> Presig {
+        Presig { r_final: a.r_final, r: a.r, s_prime: a.s_prime }
+    }
+}
+
+impl From<&Presig> for AdaptorSig {
+    fn from(p: &Presig) -> AdaptorSig {
+        AdaptorSig { r_final: p.r_final, r: p.r, s_prime: p.s_prime }
+    }
+}
+
+/// Who a deposit's `D` is minted to before the funding: Alice's L2 key
+/// and the funding's adaptor point ([`lichen_ledger::mint_key`]).
+pub fn mint_owner(l2_address: &Hash, mint_point: &PublicKey) -> Result<Hash> {
+    lichen_ledger::mint_key(l2_address, &mint_point.serialize())
+}
+
+/// The message a signature on the funding's deposit input commits to
+/// (SIGHASH_DEFAULT, the `deposit_open` leaf), and that input's index.
+/// `coins`: the prevouts of every input of the funding.
+pub fn deposit_open_msg(funding: &Transaction, deposit: &OutPoint, coins: &[(OutPoint, TxOut)], tree: &lngap_btc::taptree::TapTree) -> Result<(usize, Message)> {
+    let prevouts: Vec<TxOut> = funding.input.iter().map(|i| coins.iter().find(|k| k.0 == i.previous_output).map(|k| k.1.clone()).context("an input of the funding not offered")).collect::<Result<_>>()?;
+    let dep = funding.input.iter().position(|i| i.previous_output == *deposit).context("the deposit input")?;
+    Ok((dep, lngap_btc::sighash::tapscript_sighash(funding, dep, &prevouts, &tree.leaf(DEPOSIT_OPEN)?.script)?))
+}
+
+/// Alice's signature in a funding transaction's deposit input, as
+/// broadcast: the first witness item (`deposit_open` pops the hub's, then
+/// hers).
+pub fn deposit_sig_in(funding: &Transaction, deposit: &OutPoint) -> Option<schnorr::Signature> {
+    let input = funding.input.iter().find(|i| i.previous_output == *deposit)?;
+    schnorr::Signature::from_slice(input.witness.nth(0)?).ok()
+}
+
+/// The last height at which the hub may broadcast a funding transaction:
+/// half the refund's timeout before the refund matures, so that the
+/// funding confirms (fee-bumped by the hub's change if need be) while
+/// nothing else can spend the deposit. `confirmed`: the deposit's
+/// confirmation height.
+pub fn broadcast_deadline(confirmed: u32, timeout: u16) -> u32 {
+    confirmed + u32::from(timeout) - u32::from(timeout) / 2
 }
 
 /// The cooperative close's fee, from the hub's share.

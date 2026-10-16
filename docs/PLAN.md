@@ -20,7 +20,9 @@ transfers; sealed, signed heights; the statement's input for a return),
   for fast tests) and its input layout (`b`'s word, the checks for memo
   `c`); the opening messages; the contract record both sides keep.
 - `hub` (`lichen-hub`): `/info`, `/open`, `/accept`; mints each deposit
-  once its funding confirms. The wallet's `lichen open`, `lichen contracts`.
+  with its offer, locked to the funding (since 2026-10-16; until then,
+  once the funding confirmed, which let a hub keep a deposit by never
+  minting). The wallet's `lichen open`, `lichen contracts`.
 - Opening: Alice sends her keys (move keys for the odd depths, input-word
   keys), `D`, cap and reserve, coins and change; the hub answers with the
   contract's number (memo `c`), `T_close`, its reserve and keys, the
@@ -49,7 +51,18 @@ transfers; sealed, signed heights; the statement's input for a return),
   cooperative close first); for now a 2-of-2 fold leaf (M3).
 - Test (`crates/hub/tests/open.rs`): opening on the mock statement in
   about 6 s (debug): 47 pre-signed transactions, every signature checked
-  by both; the hub mints the deposit on confirmation.
+  by both; the deposit minted with the offer, claimed with `t`.
+- The mint as a swap (2026-10-16): the offer mints `D` to
+  `H(A ‖ T)·A + T` (`ledger::mint_key`), `T` the funding's adaptor
+  point (`t` from the hub's seed, the contract, `A` and the funding's
+  txid, so retries never share one); Alice checks it sealed and signs
+  the deposit input as an adaptor pre-signature (ln-gap's
+  `lngap_btc::adaptor`); the hub completes it to broadcast, which puts
+  `t` on chain, and answers with `t`. The hub broadcasts only in the
+  first half of the deposit's refund timeout (`broadcast_deadline`).
+  `lichen claim-mint` reads `t` from the chain for a hub that didn't
+  answer. Test (`crates/hub/tests/mint.rs`): the answer lost, never
+  funded, a short mint, resumed too late.
 
 ## M3: the cooperative withdrawal (done)
 

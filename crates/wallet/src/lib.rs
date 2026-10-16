@@ -12,10 +12,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_ledger::{fresh_rho, note, sign, xonly, Deployment, Hash, Note, Spend, Transfer, Tx, WithdrawInput};
+use lichen_ledger::{fresh_rho, mint_secret, note, sign, xonly, Deployment, Hash, Note, Spend, Transfer, Tx, WithdrawInput};
 use lichen_chain::{Chain, KeyFees};
-use lichen_proto::{all_moves, check_deposit_funding, deposit_tree, fee_budget_of, tail_keys, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, DEPOSIT_OPEN, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
+use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
+use lichen_proto::{all_moves, check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, mint_owner, Presig, fee_budget_of, tail_keys, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
 use lichen_l2::{Client, State};
+use lngap_btc::adaptor::{adaptor_extract, adaptor_sign, AdaptorSig};
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
 use lngap_lamport::winternitz::{WotsParams, WotsSecret};
@@ -54,6 +56,28 @@ pub struct Deposit {
     pub timeout: u16,
     /// Where a refund goes.
     pub payout: bitcoin::ScriptBuf,
+    /// The offer accepted, and its mint, kept before the hub is told: if
+    /// its answer is lost, the funding on chain opens the contract all the
+    /// same, and reveals `t` ([`Wallet::claim_mint`]).
+    #[serde(default)]
+    pub offered: Option<(Record, Locked)>,
+}
+
+/// A contract's `D`, minted before its funding to [`mint_owner`] of our
+/// address and the funding's adaptor point: ours once we know `t`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Locked {
+    /// The note.
+    pub index: u32,
+    /// `T`.
+    pub point: PublicKey,
+    /// Our pre-signature on the funding's deposit input, and the deposit:
+    /// the funding's completed signature, less it, is `t`.
+    pub presig: Presig,
+    pub deposit: bitcoin::OutPoint,
+    /// Moved to our own key.
+    #[serde(default)]
+    pub claimed: bool,
 }
 
 /// A contract the wallet holds.
@@ -71,6 +95,10 @@ pub struct Held {
     pub claim: Option<(u32, String)>,
     #[serde(default)]
     pub payout: Option<dispute::Outcome>,
+    /// Its `D`, minted before the funding (none for a contract opened when
+    /// the hub minted after it).
+    #[serde(default)]
+    pub mint: Option<Locked>,
 }
 
 pub struct Wallet {
@@ -260,8 +288,9 @@ impl Wallet {
     /// the hub gives a deposit address, which `pay` is asked to pay (from
     /// anywhere: a wallet, a faucet), and every payout goes to `payout`.
     /// Waits for the deposit to confirm, then checks the hub's offer and
-    /// every signature in it before signing anything; returns once the
-    /// funding is broadcast. The hub mints the deposit when it confirms.
+    /// every signature in it, and the deposit minted to us (locked to the
+    /// funding), before signing anything; returns once the funding is
+    /// broadcast and the deposit is ours on the L2.
     /// The deposit is kept from before it is paid ([`Wallet::refund`]).
     pub fn open_contract(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, ask: Ask, payout: bitcoin::ScriptBuf, pay: &dyn Fn(&bitcoin::Address, bitcoin::Amount) -> Result<()>) -> Result<Held> {
         let info: Info = hub_call(&format!("{hub}/info"), None)?;
@@ -279,7 +308,7 @@ impl Wallet {
         let nonce = hex::encode(fresh_rho());
         let dep_kp = self.deposit_key(&nonce);
         let offer: DepositOffer = hub_call(&format!("{hub}/deposit"), Some(serde_json::to_string(&DepositRequest { alice: dep_kp.x_only_public_key().0 })?))?;
-        let dep = Deposit { nonce: nonce.clone(), cid: offer.cid, hub: offer.hub, timeout: offer.timeout, payout: payout.clone() };
+        let dep = Deposit { nonce: nonce.clone(), cid: offer.cid, hub: offer.hub, timeout: offer.timeout, payout: payout.clone(), offered: None };
         self.deposits.push(dep.clone());
         self.save()?;
         let dep_spk = deposit_tree(&dep_kp.x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();
@@ -296,6 +325,11 @@ impl Wallet {
     /// them). Its payout address is the deposit's.
     pub fn resume_open(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, ask: Ask, cid: u32) -> Result<Held> {
         let dep = self.deposits.iter().find(|d| d.cid == cid).cloned().with_context(|| format!("no deposit for contract {cid}"))?;
+        // an offer accepted whose funding is out: the contract is open
+        if dep.offered.as_ref().is_some_and(|(r, _)| chain.get_tx(&r.funding.txid).is_some()) {
+            self.claim_mint(chain, cid)?;
+            return self.contracts.iter().find(|h| h.record.cid() == cid).cloned().context("the contract");
+        }
         let info: Info = hub_call(&format!("{hub}/info"), None)?;
         ensure!(info.network == chain.network, "the hub is on {}, this wallet's coins on {}", info.network, chain.network);
         let program = statement.program(dir)?;
@@ -355,20 +389,88 @@ impl Wallet {
             }
         }
         record.alice_sigs = sign_all(&set, &keys.payment)?;
-        // our signature on the funding's deposit input (taproot signs every
-        // input's prevout: ours and the hub's coins)
+        // D, minted already to a key we can spend once this funding is out:
+        // there, and sealed, before we sign the funding
+        self.wait_mint(offer.mint_index, &mint_owner(&self.address(), &offer.mint_point)?, u64::from(t.deposit))?;
+        // our pre-signature on the funding's deposit input, locked to T
+        // (taproot signs every input's prevout: ours and the hub's coins)
         let known: Vec<(bitcoin::OutPoint, bitcoin::TxOut)> = std::iter::once(coin.clone()).chain(offer.hub_coins.iter().cloned()).collect();
-        let prevouts: Vec<bitcoin::TxOut> = offer.funding.input.iter().map(|i| known.iter().find(|k| k.0 == i.previous_output).map(|k| k.1.clone()).context("an input of the funding not offered")).collect::<Result<_>>()?;
-        let dep_in = offer.funding.input.iter().position(|i| i.previous_output == coin.0).context("the deposit input")?;
-        let deposit_sig = lngap_btc::sighash::sign_tapscript(&dep_kp, &offer.funding, dep_in, &prevouts, &dep_tree.leaf(DEPOSIT_OPEN)?.script)?.as_ref().to_vec();
+        let (_, msg) = deposit_open_msg(&offer.funding, &coin.0, &known, &dep_tree)?;
+        let locked = Locked { index: offer.mint_index, point: offer.mint_point, presig: adaptor_sign(&dep_kp, &msg, &offer.mint_point).into(), deposit: coin.0, claimed: false };
+        if let Some(d) = self.deposits.iter_mut().find(|d| d.cid == dep.cid) {
+            d.offered = Some((record.clone(), locked.clone()));
+        }
+        self.save()?;
         chain.watch(&fees.spk())?;
-        let accept = Accept { cid: offer.cid, alice_sigs: record.alice_sigs.clone(), deposit_sig };
-        let _: Opened = hub_call(&format!("{hub}/accept"), Some(serde_json::to_string(&accept)?))?;
-        let held = Held { nonce, record, closed: None, claim: None, payout: None };
-        self.contracts.push(held.clone());
+        let accept = Accept { cid: offer.cid, alice_sigs: record.alice_sigs.clone(), deposit_presig: locked.presig.clone() };
+        let opened: Opened = hub_call(&format!("{hub}/accept"), Some(serde_json::to_string(&accept)?))?;
+        self.contracts.push(Held { nonce, record, closed: None, claim: None, payout: None, mint: Some(locked) });
         self.deposits.retain(|x| x.cid != dep.cid);
         self.save()?;
-        Ok(held)
+        self.claim_mint_with(dep.cid, &opened.t)?;
+        self.contracts.iter().find(|h| h.record.cid() == dep.cid).cloned().context("the contract")
+    }
+
+    /// Wait until note `index` is `value` to `owner` (memo 0), unspent and
+    /// sealed: a contract's mint, before we sign its funding.
+    fn wait_mint(&self, index: u32, owner: &Hash, value: u64) -> Result<()> {
+        let start = std::time::Instant::now();
+        loop {
+            let state = self.sequencer.state()?;
+            if let Some(n) = state.notes.get(index as usize) {
+                ensure!((n.owner, n.value, n.memo) == (*owner, value, 0), "note {index} is not the deposit minted to us, locked to the funding");
+                ensure!(!state.is_spent(n), "the deposit minted to us is spent");
+                if state.sealed.iter().any(|s| s.size > index) {
+                    return Ok(());
+                }
+                let _ = self.sequencer.seal();
+            }
+            ensure!(start.elapsed() < std::time::Duration::from_secs(120), "the deposit minted to us was never sealed");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    /// Move contract `cid`'s deposit, minted before its funding, to our own
+    /// key, with `t` taken from the funding on chain (our completed
+    /// signature in it): for a hub that didn't answer. Opens the contract
+    /// first if its opening's answer was lost but its funding is out.
+    pub fn claim_mint(&mut self, chain: &Chain, cid: u32) -> Result<()> {
+        if !self.contracts.iter().any(|h| h.record.cid() == cid) {
+            let dep = self.deposits.iter().find(|d| d.cid == cid).cloned().with_context(|| format!("no contract or deposit {cid}"))?;
+            let (record, locked) = dep.offered.clone().with_context(|| format!("no offer accepted for contract {cid}"))?;
+            ensure!(chain.get_tx(&record.funding.txid).is_some(), "contract {cid}'s funding is not out: if the hub never broadcasts it, refund the deposit after its timeout");
+            self.contracts.push(Held { nonce: dep.nonce, record, closed: None, claim: None, payout: None, mint: Some(locked) });
+            self.deposits.retain(|d| d.cid != cid);
+            self.save()?;
+        }
+        let h = self.contracts.iter().find(|h| h.record.cid() == cid).cloned().context("the contract")?;
+        let locked = h.mint.with_context(|| format!("contract {cid}'s deposit was minted after its funding: nothing to claim"))?;
+        if locked.claimed {
+            return Ok(());
+        }
+        let funding = chain.get_tx(&h.record.funding.txid).context("the funding is not out")?;
+        let sig = deposit_sig_in(&funding, &locked.deposit).context("no signature of ours in the funding's deposit input")?;
+        let t = adaptor_extract(&AdaptorSig::from(&locked.presig), &sig).context("the funding's signature doesn't complete our pre-signature")?;
+        self.claim_mint_with(cid, &t)
+    }
+
+    /// Move contract `cid`'s locked deposit to our own key, `t` in hand.
+    fn claim_mint_with(&mut self, cid: u32, t: &SecretKey) -> Result<()> {
+        let k = self.contracts.iter().position(|h| h.record.cid() == cid).context("the contract")?;
+        let locked = self.contracts[k].mint.clone().context("no locked deposit")?;
+        ensure!(PublicKey::from_secret_key(SECP256K1, t) == locked.point, "not the adaptor point's secret");
+        let key = mint_secret(&self.key, &t.secret_bytes())?;
+        let state = self.sequencer.state()?;
+        let n = *state.notes.get(locked.index as usize).context("the deposit minted to us is gone")?;
+        ensure!(n.owner == xonly(&key), "the deposit minted is not ours to claim");
+        if !state.is_spent(&n) {
+            let spends = vec![Spend { note: n, index: locked.index }];
+            let outputs = vec![note(self.address(), n.value, 0)];
+            let digest = Transfer::digest(&spends, &outputs);
+            self.sequencer.submit(&Tx::Transfer(Transfer { sigs: vec![sign(&key, &digest)], spends, outputs }))?;
+        }
+        self.contracts[k].mint.as_mut().expect("checked").claimed = true;
+        self.save()
     }
 
     /// Send what is left of contract `cid`'s fee budget to its payout

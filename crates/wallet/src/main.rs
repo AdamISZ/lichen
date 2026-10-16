@@ -91,6 +91,11 @@ enum Cmd {
         #[arg(long, default_value_t = 500)]
         fee: u64,
     },
+    /// Claim a contract's deposit, minted before its funding, when the hub
+    /// broadcast the funding but didn't answer: `t` is read from the
+    /// funding on chain. Also opens a contract whose opening's answer was
+    /// lost.
+    ClaimMint { contract: u32 },
     /// The contracts this wallet holds.
     Contracts,
     /// Withdraw `amount` sats from a contract cooperatively.
@@ -181,6 +186,10 @@ fn main() -> Result<()> {
         Cmd::SweepFees { contract, fee, force } => {
             let txid = w.sweep_fees(&chain(&a)?, contract, bitcoin::Amount::from_sat(fee), force)?;
             println!("swept contract {contract}'s fee budget: {txid}");
+        }
+        Cmd::ClaimMint { contract } => {
+            w.claim_mint(&chain(&a)?, contract)?;
+            println!("contract {contract}'s deposit is ours on the L2");
         }
         Cmd::Refund { contract, fee } => {
             let txid = w.refund(&chain(&a)?, contract, bitcoin::Amount::from_sat(fee))?;
