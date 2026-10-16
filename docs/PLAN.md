@@ -63,6 +63,10 @@ transfers; sealed, signed heights; the statement's input for a return),
   `lichen claim-mint` reads `t` from the chain for a hub that didn't
   answer. Test (`crates/hub/tests/mint.rs`): the answer lost, never
   funded, a short mint, resumed too late.
+- TODO: fee-bump a funding that stalls (CPFP through the hub's change
+  output, which needs nothing from Alice): until then the broadcast
+  deadline is the only guard against a funding still unconfirmed when
+  the deposit's refund matures, with `t` already public.
 
 ## M3: the cooperative withdrawal (done)
 
