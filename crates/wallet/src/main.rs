@@ -117,6 +117,34 @@ enum Cmd {
         #[arg(long, hide = true)]
         lie: Option<PathBuf>,
     },
+    /// Write the package a tower needs to play a contract's dispute (once
+    /// the withdrawal is returned on the L2 and the hub has refused it):
+    /// the contract and its one-time secrets, never the wallet's key.
+    ExportDispute {
+        contract: u32,
+        /// Where to write it.
+        #[arg(long)]
+        out: PathBuf,
+        /// The claim's input, hex, if made already (a proof's, for
+        /// groth16); the tower builds the mock's.
+        #[arg(long)]
+        input: Option<PathBuf>,
+    },
+    /// Play a contract's dispute from a package (`export-dispute`) to its
+    /// end, its state beside the package; needs no wallet. Run again to
+    /// resume. A win ends at the payout: the wallet sweeps it
+    /// (`sweep-dispute`).
+    Tower {
+        #[arg(long)]
+        package: PathBuf,
+    },
+    /// Sweep what a tower's dispute won (its state file, beside its
+    /// package) to the contract's payout address.
+    SweepDispute {
+        contract: u32,
+        #[arg(long)]
+        tower_state: PathBuf,
+    },
 }
 
 /// The chain: a node if `--rpc-url` is given, else Esplora.
@@ -136,6 +164,17 @@ fn main() -> Result<()> {
     if let Cmd::Init = a.cmd {
         let w = Wallet::create(&a.wallet, &a.sequencer)?;
         println!("{}", hex::encode(w.address()));
+        return Ok(());
+    }
+    if let Cmd::Tower { ref package } = a.cmd {
+        let chain = chain(&a)?;
+        let progress: std::sync::Arc<dyn Fn(String) + Send + Sync> = std::sync::Arc::new(|m: String| println!("{m}"));
+        let opts = lichen_wallet::engine::Options { progress: Some(progress), ..Default::default() };
+        let outcome = lichen_wallet::tower::run(&chain, &a.statement, package, &package.with_extension("d"), opts)?;
+        match outcome.payout() {
+            Some(txid) => println!("{outcome:?}: the payout is {txid}; sweep it with the wallet: lichen sweep-dispute <contract> --tower-state {}", package.with_extension("state.json").display()),
+            None => println!("{outcome:?}"),
+        }
         return Ok(());
     }
     let mut w = Wallet::open(&a.wallet, &a.sequencer)?;
@@ -216,6 +255,22 @@ fn main() -> Result<()> {
             }
             w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
             let (outcome, swept) = w.dispute(&chain, &a.statement, &a.wallet.with_extension("d"), contract, amount, &input)?;
+            println!("{outcome:?}; swept {swept:?}");
+        }
+        Cmd::Tower { .. } => unreachable!(),
+        Cmd::ExportDispute { contract, ref out, ref input } => {
+            let program = a.statement.program(&a.wallet.with_extension("d"))?;
+            let claim = input.as_ref().map(|p| -> Result<Vec<u8>> { Ok(hex::decode(std::fs::read_to_string(p)?.trim())?) }).transpose()?;
+            let p = w.export_dispute(&a.statement, &program, contract, claim.as_deref())?;
+            std::fs::write(out, serde_json::to_vec_pretty(&p)?)?;
+            println!("wrote {}: contract {contract}'s dispute (a claim of {} sats) for a tower; it holds this contract's one-time secrets", out.display(), p.b);
+        }
+        Cmd::SweepDispute { contract, ref tower_state } => {
+            let s: lichen_wallet::tower::TowerState = serde_json::from_slice(&std::fs::read(tower_state)?).context("a tower's state")?;
+            let (b, _) = s.claim.context("the tower made no claim")?;
+            let outcome = s.payout.context("the tower's dispute has no payout")?;
+            w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
+            let (outcome, swept) = w.sweep_dispute(&chain(&a)?, &a.statement, &a.wallet.with_extension("d"), contract, b, outcome)?;
             println!("{outcome:?}; swept {swept:?}");
         }
         Cmd::Withdraw { contract, amount } => {

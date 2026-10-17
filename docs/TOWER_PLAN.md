@@ -138,7 +138,19 @@ the chain: the escalation, after which every instance reads it.
 
 ## Phases
 
-1. **A headless dispute from a package, with a ready claim.**
+1. **Done (2026-10-17).** The dispute loop is now an engine
+   (`lichen_wallet::engine`) over a `Signer` (the wallet's derived
+   secrets, or a package's) and a `Store` (the wallet's contract, or a
+   state file beside the package); `Wallet::dispute` drives it and
+   sweeps a win. `lichen export-dispute <cid> --out <file>`, `lichen tower
+   --package <file>` (no wallet), `lichen sweep-dispute <cid>
+   --tower-state <file>`. Test `crates/hub/tests/tower.rs`: refused,
+   exported (no payment key, no key for `b`'s word), the tower plays a
+   whole search at its floors and proves, resumes to the payout, the
+   wallet sweeps. The package is 2.3 MB on the mock, nearly all of it the
+   record's pre-signed signatures.
+
+   The plan as written: **a headless dispute from a package, with a ready claim.**
    `lichen export-dispute <cid>` and `lichen tower <package>`: the
    wallet's dispute loop without the wallet. Test on regtest (mock
    statement): the wallet returns `b` and is refused, exports, stops;

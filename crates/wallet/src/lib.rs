@@ -7,6 +7,8 @@
 //! withdrawal's input itself, checked against the statement.
 
 pub mod dispute;
+pub mod engine;
+pub mod tower;
 
 use std::path::{Path, PathBuf};
 
@@ -18,10 +20,10 @@ use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
 use lichen_proto::{all_moves, check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, mint_owner, Presig, fee_budget_of, tail_keys, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
 use lichen_l2::{Client, State};
 use lngap_btc::adaptor::{adaptor_extract, adaptor_sign, AdaptorSig};
-use lngap_btc::keys::Seed;
-use lngap_channel::{PartyKeys, Role};
-use lngap_lamport::winternitz::{WotsParams, WotsSecret};
+use lngap_channel::PartyKeys;
+use lngap_lamport::winternitz::WotsSecret;
 use lngap_sessions::contract::{sign_all, Program};
+use crate::engine::ContractSecrets;
 use serde::{Deserialize, Serialize};
 
 /// What the wallet keeps on disk.
@@ -241,31 +243,30 @@ fn hub_call<T: for<'de> Deserialize<'de>>(url: &str, body: Option<String>) -> Re
 }
 
 impl Wallet {
-    /// The seed of the contract with `nonce`.
-    fn contract_seed(&self, nonce: &str) -> String {
-        format!("{}/contract/{nonce}", hex::encode(self.key.to_bytes()))
+    /// The secrets of the contract with `nonce`.
+    pub fn secrets(&self, nonce: &str) -> ContractSecrets {
+        ContractSecrets::new(&self.key.to_bytes()[..], nonce)
     }
     /// Alice's keys for a contract.
     pub fn contract_keys(&self, nonce: &str) -> PartyKeys {
-        PartyKeys::from_seed(Role::User, Seed::from_label(&self.contract_seed(nonce)))
+        self.secrets(nonce).keys()
     }
     /// Alice's move keys for depth `d` of a contract, one per field.
     pub fn move_secrets(&self, nonce: &str, program: &Program, d: u32) -> Vec<WotsSecret> {
-        let at = |f: usize, n: u32| WotsSecret::from_entropy(WotsParams::for_bytes(n), Seed::from_label(&format!("{}/move/{d}/{f}", self.contract_seed(nonce))).derive_bytes("wots"));
-        program.field_bytes(d).into_iter().enumerate().map(|(f, n)| at(f, n)).collect()
+        self.secrets(nonce).move_secrets(program, d)
     }
     /// Alice's key for her choice of hop against the hub's path of `k`
     /// chunks (under a jump list).
     pub fn hop_secret(&self, nonce: &str, k: usize) -> WotsSecret {
-        WotsSecret::from_entropy(WotsParams::for_bytes(1), Seed::from_label(&format!("{}/hop/{k}", self.contract_seed(nonce))).derive_bytes("wots"))
+        self.secrets(nonce).hop_secret(k)
     }
     /// Alice's key in a contract's deposit tree.
     pub fn deposit_key(&self, nonce: &str) -> bitcoin::key::Keypair {
-        Seed::from_label(&self.contract_seed(nonce)).keypair("deposit")
+        self.secrets(nonce).deposit_key()
     }
     /// A contract's fee budget, on `net`: one key's coins.
     pub fn fees(&self, nonce: &str, net: lichen_chain::Net) -> KeyFees {
-        KeyFees { keypair: Seed::from_label(&self.contract_seed(nonce)).keypair("fee"), feerate: lichen_proto::feerate(net) }
+        self.secrets(nonce).fees(net)
     }
     /// The fee budget of contract `cid`.
     pub fn fees_for(&self, cid: u32) -> Result<KeyFees> {
@@ -274,7 +275,7 @@ impl Wallet {
     }
     /// Alice's key for input word `j` of a contract.
     pub fn input_secret(&self, nonce: &str, j: usize) -> WotsSecret {
-        WotsSecret::from_entropy(lngap_zk::final_d60::input_key_params(), Seed::from_label(&format!("{}/input/{j}", self.contract_seed(nonce))).derive_bytes("wots"))
+        self.secrets(nonce).input_secret(j)
     }
 
     /// The amount a deposit for `ask` on `net` must carry: `D + r_A`, the
