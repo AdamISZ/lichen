@@ -1,0 +1,33 @@
+#cloud-config
+# A turnkey tower on a fresh x86_64 VPS (docs/RUN_A_TOWER.md): paste this
+# as the machine's user data. It installs Docker, builds the tower's image
+# from lichen's master (and ln-gap at lichen's LNGAP_REV), then waits for
+# the package: copy it to /srv/lichen-tower/package.json and the tower
+# starts. Logs: `docker logs -f lichen-tower-tower-1`; its state, to sweep
+# with afterwards: /srv/lichen-tower/lichen/deploy/tower/data/package.state.json.
+# Settings below.
+package_update: true
+packages: [docker.io, docker-compose-v2, git, curl]
+write_files:
+  - path: /srv/lichen-tower/tower.env
+    content: |
+      NETWORK=mutinynet
+      ESPLORA=https://mutinynet.com/api,https://mutinynet.com/api
+      STATEMENT=groth16
+      R0WORK=/srv/lichen-tower/r0work
+  - path: /srv/lichen-tower/start.sh
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      # wait for the package, then run the tower beside it
+      set -eu
+      cd /srv/lichen-tower
+      until [ -f package.json ]; do sleep 10; done
+      mkdir -p r0work lichen/deploy/tower/data
+      cp package.json lichen/deploy/tower/data/package.json
+      cp tower.env lichen/deploy/tower/.env
+      docker compose -f lichen/deploy/tower/docker-compose.yml up -d
+runcmd:
+  - [sh, -c, "cd /srv/lichen-tower && git clone https://github.com/AdamISZ/lichen && git clone https://github.com/AdamISZ/ln-gap && git -C ln-gap checkout $(cat lichen/LNGAP_REV)"]
+  - [sh, -c, "cd /srv/lichen-tower/lichen && deploy/tower/build.sh > /srv/lichen-tower/build.log 2>&1"]
+  - [sh, -c, "nohup /srv/lichen-tower/start.sh > /srv/lichen-tower/start.log 2>&1 &"]

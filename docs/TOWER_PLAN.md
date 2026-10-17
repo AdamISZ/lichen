@@ -183,7 +183,15 @@ the chain: the escalation, after which every instance reads it.
    The plan as written: **two Esplora endpoints** with the rules above. Test: a stub endpoint
    serving a move the hub signed but didn't broadcast is ignored;
    endpoints that disagree raise the alarm.
-4. **The image and the one-click launch;** a Mutinynet trial: the laptop
+4. **Written, not yet run (2026-10-17).** `deploy/tower/` (Dockerfile:
+   the wallet, the verifier ELF, `lngap-r0` and r0vm 3.0.6; the wrap
+   through the host's Docker socket, its work dir at one path on both
+   sides, `RISC0_WORK_DIR`), `build.sh`, `docker-compose.yml`,
+   `cloud-init.yaml` (a fresh VPS builds, waits for the package, starts);
+   the guide `docs/RUN_A_TOWER.md`. To do: build it on x86 and the
+   Mutinynet trial.
+
+   The plan as written: **the image and the one-click launch;** a Mutinynet trial: the laptop
    is refused, exports and closes, a VPS proves and plays to the end.
 5. Later: the separate anchor key (the TODO above); the BIP157 client;
    the business side (insurance, a contingent fee: the notes).

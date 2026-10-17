@@ -1,0 +1,22 @@
+# A turnkey tower: one dispute, played from deploy/tower/data/package.json
+# (docs/TOWER_PLAN.md). Settings: deploy/tower/.env.
+#   deploy/tower/build.sh && docker compose -f deploy/tower/docker-compose.yml up -d
+name: lichen-tower
+services:
+  tower:
+    image: lichen-tower:latest
+    platform: linux/amd64
+    environment:
+      NETWORK: ${NETWORK:?set NETWORK in deploy/tower/.env}
+      ESPLORA: ${ESPLORA:-}
+      STATEMENT: ${STATEMENT:-groth16}
+      # the wrap's working files, at the same path on the host and here:
+      # RISC Zero's prover runs as a sibling container, which sees the
+      # host's paths
+      RISC0_WORK_DIR: ${R0WORK:?set R0WORK in deploy/tower/.env (an absolute host path)}
+    volumes:
+      - ./data:/tower
+      - ${R0WORK}:${R0WORK}
+      - /var/run/docker.sock:/var/run/docker.sock
+    # done when the dispute is: a restart resumes it
+    restart: on-failure
