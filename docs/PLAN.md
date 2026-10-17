@@ -253,8 +253,9 @@ couldn't.
 - A hub sets its own (`lichen-hub --windows <user>,<hub>,<path>`, `WINDOWS`
   in `deploy/hub/.env`), sized by its contract count; it refuses at start
   windows that fail `check` or give the user less than the network's.
-- TODO: the paper: the dispute's duration (`11(w+1)` blocks) and Table 2
-  with the windows by obligation.
+- The paper names them `w_A`, `w_H`, `w_P` (the dispute chain's
+  "Windows by obligation", the Costs section's durations, the watchtower
+  section, Table 2's caption).
 
 ## The paper: figures still from before the deployment keys
 
@@ -270,5 +271,5 @@ couldn't.
 
 ## Later
 
-Watchtowers (open problem: the paper's Watchtowers section, papers/lichen-v0.1.pdf); several hubs
+Watchtowers (open problem: the paper's Watchtowers section, papers/lichen-v0.1.1.pdf); several hubs
 (colours, clearing lines); shielded notes; a GUI.

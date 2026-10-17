@@ -359,11 +359,23 @@ with an 8-ary search over the verifier's $2^{29}$ steps, ten rounds and
 21 moves. On the dispute chain each move is a transaction spending the previous
 one. Each of the chain's outputs has two pre-signed spends: the
 \emph{post}, by which the next mover publishes its signed move and
-creates the next output, and the \emph{timeout}, valid $w$ blocks later,
-which settles the dispute against the party that failed to move. Each
+creates the next output, and the \emph{timeout}, valid once the next
+mover's window has passed, which settles the dispute against the party
+that failed to move. Each
 output also carries the other side's rules on the move just made (a
 choice out of range, Alice's; the final record's challenges, the hub's),
 and the last step is proved in Script.
+
+\paragraph{Windows by obligation.} The windows differ by what is owed,
+since a move's size, not its mover, decides how long it may need to get
+into a block when blocks are full (Section~\ref{sec:multihub}). Alice
+has $w_A$ for each of her moves (her input, her rounds of hashes, her
+final record) and for her proof of the last step; the hub has $w_H$ for
+each of its choices, a few hundred bytes; and $w_P$ for its heavy moves:
+its answer at the final step and, under the jump list below, its path
+and its verdict. Each contract records its three windows, offered by the
+hub; a wallet refuses a $w_A$ shorter than it is willing to keep up
+with.
 
 \paragraph{A move.} A move is its mover's one-time signatures on what it
 posts, one key per field: Alice's round of seven hashes, about 7.5~kvB;
@@ -602,8 +614,8 @@ that stays well below the reward of the blocks a fork must replace, the attack r
 \section{Watchtowers}
 \label{sec:watch}
 
-A dispute runs for a day or more (about 140 blocks at $w = 12$, as built), and Alice must
-answer each of the hub's moves within $w$ blocks. A laptop that sleeps
+A dispute runs for a day or more (Section~\ref{sec:costs}), and Alice must
+answer each of the hub's moves within her window $w_A$. A laptop that sleeps
 or travels will miss one, and a missed move loses the dispute and her
 reserve. The natural answer is Lightning's: a \emph{watchtower}, a
 service that plays her side of the search while she is away. Its moves
@@ -653,6 +665,10 @@ fit in it anyway: $N s > w \cdot 1\,\mathrm{MvB}$, for $N$ contracts
 whose heaviest move in a window is $s$. This is Flood \&
 Loot~\cite{floodloot} in lichen's form. Table~\ref{tab:flood} gives the
 largest $N$ for which the attack does not pay assuming the attacker-crafted worst case: every contract's heaviest move is due in the same window.
+Each window has to hold only its own moves, so only the two heavy ones
+grow with $N$: Alice's $w_A$ (her proof) and the hub's $w_P$ (its path).
+The hub's choices, 0.3~kvB each, keep a short $w_H$, and that is the
+window a vanished hub's users wait (Section~\ref{sec:ladder}).
 
 \begin{table}[!htp]
 \centering
@@ -692,9 +708,10 @@ for 60,000 & 1,510 blocks (10 days) & 5,580 blocks (39 days) \\
 \end{tabularx}
 \caption{Contracts a hub can hold before congesting the chain pays,
 $N \le w \cdot 1\,\mathrm{MvB} / s$, with whole blocks and every
-defender's move due in the same window: hostile users choose when to
-escalate, and a hostile hub can delay each of its replies by up to $w$
-to bunch them. The escalation (11.6~kvB) is not counted, since it runs
+defender's move due in the same window; $w$ is that move's window,
+Alice's $w_A$ against a hostile hub and the hub's $w_P$ against hostile
+users. Hostile users choose when to escalate, and a hostile hub can
+delay each of its replies by up to $w_H$ to bunch them. The escalation (11.6~kvB) is not counted, since it runs
 against $\Tc$ rather than a window.}
 \label{tab:flood}
 \end{table}
@@ -773,17 +790,25 @@ for. lichen's hub and wallet played these disputes against each other
 on the Groth16 verifier, a valid claim proved in 725~s and a false one
 disproved in 540~s on regtest; an honest hub that checks the proof
 natively concedes a true claim without playing at all. On mainnet the
-time is set by the move windows: with each side using its whole window,
-a dispute takes about $11(w+1)$ blocks, some 140 at $w = 12$.
+time is set by the windows. A hub that stalls on every move stretches a
+dispute to about $10 w_H + w_P$ blocks, and a block a move besides; a
+user who stalls, to about $11 w_A$, her own money waiting. The window a
+user is most likely to wait out is $w_H$: when the hub has vanished, her
+escalation and input are followed by the hub's first window and then her
+timeout. With $w_A = 144$, $w_H = 12$ and $w_P = 288$ (a day, two hours,
+two days: by Table~\ref{tab:flood}, enough for some 3,000 contracts
+against either kind of attacker), a hostile hub can stretch a dispute to
+about 430 blocks, three days, while a vanished hub's users wait two
+hours.
 Further reductions:
 \begin{itemize}[leftmargin=1.5em]
 \item \emph{a shorter jump list}: Lerner's tighter long-jump function
   (about $\log_2 n + 3\log_2\log_2 n$ hops, some 45 instead of 86), or a
   counter that moves over a step number's set bits only, would shrink a
   read's combine about in proportion;
-\item \emph{a chess clock}: each move's timeout waits a fixed $w$
-  blocks, so a party that stalls on every move stretches the dispute to
-  the $11(w+1)$ blocks above. Union~\cite{union} instead gives each
+\item \emph{a chess clock}: each move's timeout waits that move's
+  window, so a party that stalls on every move stretches the dispute to
+  the bounds above. Union~\cite{union} instead gives each
   party a budget for all its moves together: while one party is due to
   move, the other publishes timelocked transactions marking the blocks
   that pass, and the mover's next transaction commits to the time it
