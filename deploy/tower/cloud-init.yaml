@@ -1,4 +1,6 @@
 #cloud-config
+# UNTESTED, and it builds master: the manual route in docs/RUN_A_TOWER.md
+# is the one that has been run.
 # A turnkey tower on a fresh x86_64 VPS (docs/RUN_A_TOWER.md): paste this
 # as the machine's user data. It installs Docker, builds the tower's image
 # from lichen's master (and ln-gap at lichen's LNGAP_REV), then waits for

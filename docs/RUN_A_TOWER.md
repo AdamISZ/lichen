@@ -8,10 +8,72 @@ this contract's one-time secrets and its fee budget's key, never your
 wallet's key: at worst it can lose this one dispute (which is the hub's
 gain), not take your money.
 
-You need an x86_64 Linux machine with Docker, 16 GB of memory and about
-20 GB of disk (the Groth16 wrap runs RISC Zero's prover image, x86 only).
+This is the manual route, on a machine outside your own network (a VPS).
+It has been run on Mutinynet from a GCE `n2-highmem-4`.
 
-## 1. Your wallet: refused, then export
+## The machine
+
+| | needed | measured (4 vCPUs) |
+|---|---|---|
+| CPU | x86_64 (the Groth16 wrap is x86 only); 4 vCPUs will do | proof 349 s, wrap 263 s, the traced run about 2 min: escalated about 12 minutes after start |
+| memory | 16 GB | the wrap at 7.8 GB or more; the proof less |
+| disk | 15 GB | the images 6 GB (the tower's 0.8 GB, RISC Zero's prover 5.2 GB); the build's cache 6 GB more; the dispute's working files 0.5 GB |
+| network | outbound only: GitHub, Docker Hub, RISC Zero's installer, the Esplora servers | |
+
+Everything but the proving is waiting on blocks. Proving and the wrap
+take all the cores for about 10 minutes, so other services on a shared
+machine slow down meanwhile.
+
+### Docker
+
+The machine needs Docker with compose v2, and your user in the `docker`
+group:
+
+```sh
+uname -m                                      # x86_64
+curl -fsSL https://get.docker.com | sudo sh   # if Docker is not installed (Debian's own packages are older)
+sudo usermod -aG docker "$USER"               # then log out and in again
+docker ps                                     # works without sudo
+```
+
+The new group reaches new logins only. A tmux (or screen) server that
+was already running keeps the groups it started with, and so do the
+shells inside it, even in a session made after you logged in again:
+`tmux kill-server` and start afresh, or `newgrp docker` in that shell.
+
+## 1. The image
+
+On the machine (the build takes 30 minutes or more on 4 vCPUs, so run it
+in tmux):
+
+```sh
+git clone https://github.com/AdamISZ/lichen && git clone https://github.com/AdamISZ/ln-gap
+git -C lichen checkout tower              # until the tower is merged
+git -C ln-gap checkout "$(cat lichen/LNGAP_REV)"
+cd lichen
+deploy/tower/build.sh
+cp deploy/tower/.env.example deploy/tower/.env
+mkdir -p deploy/tower/data
+```
+
+`build.sh` also pulls RISC Zero's Groth16 prover image, by its digest:
+the wrap runs it as a container of its own. The build's
+cache can be deleted once the image is built (`docker builder prune`).
+
+The settings, `deploy/tower/.env`:
+
+| setting | what |
+|---|---|
+| `NETWORK` | the contract's network |
+| `ESPLORA` | two Esplora servers, comma-separated. A move is answered only once both report it confirmed, in the same block, with the same witness; a disagreement is logged as `chain: ALARM`. On Mutinynet, `https://mutinynet.com/api` twice will do for a trial |
+| `STATEMENT` | `groth16` (the tower proves) or `mock` |
+| `R0WORK` | an absolute path on the machine for the wrap's working files, such as `/home/<you>/r0work` |
+
+`R0WORK` is mounted at the same path in the tower's container because
+the prover's container is started through the machine's Docker, which
+reads the path as the machine's.
+
+## 2. Your wallet: refused, then export
 
 On your own device, once the hub has refused a cooperative withdrawal
 (`lichen withdraw <contract> <amount>` returned the amount on the L2 and
@@ -20,69 +82,85 @@ then failed):
 ```sh
 lichen --network mutinynet --wallet alice.json --statement groth16 \
   export-dispute <contract> --out package.json
+scp package.json <you>@<machine>:lichen/deploy/tower/data/package.json
 ```
 
-`package.json` holds the contract and its one-time secrets. Treat it as a
-secret for this contract: whoever has it can play (or throw) this one
-dispute.
+`package.json` (a few MB) holds the contract and its one-time secrets.
+Treat it as a secret for this contract: whoever has it can play (or
+throw) this one dispute. Copy it straight to your own user on the
+machine, not through another account.
 
-The package names your wallet's sequencer: the tower fetches the
-return's note and path from it while it proves. If that URL is local to
-your device (`http://127.0.0.1:18300`), open a tunnel to the machine for
-the proving's first minutes:
-`ssh -N -R 18300:127.0.0.1:18300 <the machine>` (the tower runs on the
-machine's own network, so its 127.0.0.1 is the tunnel's).
+Nothing forces you to export at once: the dispute has to be under way
+well before the contract closes (on Mutinynet a week after it opened),
+so get the machine ready first.
 
-To try a tower against your own hub on a test network, start the hub
-with `HOSTILE=1` (deploy/hub/.env): it then refuses every withdrawal and
-disputes every claim, so the tower plays the whole search.
+### Your sequencer
 
-## 2. The machine
-
-By hand, on a fresh x86 Linux box with Docker:
+The tower fetches the return's note and its path from the sequencer
+named in the package while it proves (the first few minutes; not
+after). A public sequencer needs nothing. If the package names one on
+your own device (`http://127.0.0.1:18300`), open a tunnel to the machine
+from your device before you start the tower, and keep it open until the
+log says `wrapped in Groth16`:
 
 ```sh
-git clone https://github.com/AdamISZ/lichen && git clone https://github.com/AdamISZ/ln-gap
-git -C lichen checkout tower              # until the tower is merged
-git -C ln-gap checkout "$(cat lichen/LNGAP_REV)"
-cd lichen
-deploy/tower/build.sh                      # 20 minutes or more the first time
-cp deploy/tower/.env.example deploy/tower/.env   # NETWORK, ESPLORA, R0WORK
-sudo mkdir -p /srv/lichen-tower/r0work && sudo chown "$USER" /srv/lichen-tower/r0work
-mkdir -p deploy/tower/data && cp ~/package.json deploy/tower/data/package.json
+ssh -N -R 18300:127.0.0.1:18300 <you>@<machine>
+```
+
+The tower runs on the machine's own network, so its 127.0.0.1 is the
+tunnel's end.
+
+## 3. Start
+
+```sh
 docker compose -f deploy/tower/docker-compose.yml up -d
 docker compose -f deploy/tower/docker-compose.yml logs -f tower
 ```
 
-Or in one go at the VPS provider: paste `deploy/tower/cloud-init.yaml`
-as the machine's user data. It installs Docker, builds the image and
-waits for `/srv/lichen-tower/package.json`; copy the package there
-(`scp package.json root@<host>:/srv/lichen-tower/`) and it starts.
+The log, from the Mutinynet run:
 
-The settings (`deploy/tower/.env`):
+```
+proving the withdrawal of 22000 sats (note 21) with lngap-r0
+proved in 348.9s (444648 user cycles, 1 segments)
+wrapped in Groth16 in 262.7s
+/tower/package.d/proof/claim.hex: the claim's input for the BitVMX verifier, 204 bytes
+escalating: the claim of 22000 sats and move 1 of 21, <txid>
+escalated, confirmed at <height>
+publishing the rest of the claim's input, <txid>
+published, confirmed at <height>
+waiting for the hub's move 2: its window ends at block <height>
+the hub chose a segment (move 2)
+move 3: the trace's hashes at the seven boundaries inside that segment
+...
+```
 
-| setting | what |
-|---|---|
-| `NETWORK` | the contract's network |
-| `ESPLORA` | two Esplora servers, comma-separated. A move is answered only once both report it confirmed, in the same block, with the same witness; a disagreement is logged as `chain: ALARM`. On Mutinynet, `https://mutinynet.com/api` twice will do for a trial |
-| `STATEMENT` | `groth16` (the tower proves) or `mock` |
-| `R0WORK` | an absolute path on the machine for the wrap's working files, mounted at the same path in the container |
+and so on to the payout. It survives a restart (`restart: on-failure`;
+its state is `deploy/tower/data/package.state.json`, its working files
+`deploy/tower/data/package.d/`). It posts each of your links at its
+floor of 1 sat/vB (fee bumps need a separate anchor key: not yet).
 
-The tower logs each step: the proof, the escalation, each move. It
-survives a restart (`restart: on-failure`; its state is
-`deploy/tower/data/package.state.json`). It posts each of your links at
-its floor of 1 sat/vB (fee bumps need a separate anchor key: not yet).
+### A trial against your own hub
 
-## 3. After: sweep on your own device
+On a test network, start your hub with `HOSTILE=1` in `deploy/hub/.env`
+(rebuild its image first, `deploy/hub/build.sh`): it then refuses every
+withdrawal and disputes every claim, so the tower plays the whole
+search. The hub is the tower's other side, so keep it and its node
+running throughout (on a Mac, `caffeinate -i`); what is tested is that
+your wallet stays idle.
+
+## 4. After: sweep on your own device
 
 The tower stops at the payout: your bit outputs and the reserves wait
-for your own key. Copy its state back (from `lichen/deploy/tower/data/` where you cloned
-it; under `/srv/lichen-tower/` with cloud-init) and sweep:
+for your own key. Copy its state back and sweep:
 
 ```sh
-scp <host>:lichen/deploy/tower/data/package.state.json .
+scp <you>@<machine>:lichen/deploy/tower/data/package.state.json .
 lichen --network mutinynet --wallet alice.json --statement groth16 \
   sweep-dispute <contract> --tower-state package.state.json
 ```
 
-Then delete the machine.
+Then delete the package and its working files from the machine
+(`deploy/tower/data/`, `R0WORK`), or the machine itself.
+
+`deploy/tower/cloud-init.yaml` sketches a one-step launch on a fresh
+VPS: untested, and it builds `master`.
