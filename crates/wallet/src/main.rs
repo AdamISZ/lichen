@@ -166,6 +166,37 @@ fn chain(a: &Args) -> Result<lichen_chain::Chain> {
     }
 }
 
+/// What to do once a withdrawal's return is on the L2 and the hub hasn't
+/// folded it: the dispute, before `T_close` (after it the hub may
+/// broadcast the contract's default, her reserve and not `b`).
+fn escalate_note(a: &Args, cid: u32, b: u64, t_close: u32, height: Option<u32>) -> String {
+    let secs = match a.network {
+        lichen_chain::Net::Mutinynet => Some(30),
+        lichen_chain::Net::Signet | lichen_chain::Net::Testnet4 => Some(600),
+        lichen_chain::Net::Regtest => None,
+    };
+    let when = match height {
+        Some(h) if h >= t_close => format!("T_close, block {t_close}, has passed (now {h}): the hub may broadcast the contract's default at any block, which pays you your reserve and not the withdrawal. Escalate at once: it is valid while the contract's funding is unspent."),
+        Some(h) => {
+            let left = t_close - h;
+            let about = secs.map(|s| format!(", about {:.1} hours", f64::from(left) * f64::from(s) / 3600.0)).unwrap_or_default();
+            format!("Escalate so that it confirms by block {t_close}, the contract's T_close (now {h}: {left} blocks left{about}). After it the hub may broadcast the contract's default instead, which pays you your reserve and not the withdrawal.")
+        }
+        None => format!("Escalate so that it confirms by block {t_close}, the contract's T_close. After it the hub may broadcast the contract's default instead, which pays you your reserve and not the withdrawal."),
+    };
+    let (proving, yourself) = if a.statement.mock_input(0, cid).is_some() {
+        ("The escalation has to confirm", format!("  yourself:\n    lichen dispute {cid} {b}"))
+    } else {
+        (
+            "Proving takes 10 to 15 minutes on 4 x86 cores, and the escalation has to confirm",
+            format!("  yourself, proving on x86 Linux with Docker (the README, \"Disputes on the real statement\"):\n    lichen withdraw-input {cid} > withdraw-input.json\n    lngap-r0 claim withdraw-input.json claim.hex\n    lichen dispute {cid} {b} --input claim.hex"),
+        )
+    };
+    format!(
+        "contract {cid}: your {b} sats are returned to the hub on the L2 and not folded, so only a dispute on Bitcoin gets them back (if the hub was only unreachable, `withdraw` again asks with the same return).\n{when} {proving}: don't leave it to the last blocks.\nWith this command's --network, --wallet and --statement:\n{yourself}\n  or with a tower, which proves and plays it while you are away (docs/RUN_A_TOWER.md):\n    lichen export-dispute {cid} --out package.json"
+    )
+}
+
 fn main() -> Result<()> {
     let a = Args::parse();
     if let Cmd::Init = a.cmd {
@@ -280,10 +311,36 @@ fn main() -> Result<()> {
             let (outcome, swept) = w.sweep_dispute(&chain(&a)?, &a.statement, &a.wallet.with_extension("d"), contract, b, outcome)?;
             println!("{outcome:?}; swept {swept:?}");
         }
-        Cmd::Withdraw { contract, amount } => {
-            let txid = w.withdraw(&a.hub, &a.statement, &a.wallet.with_extension("d"), contract, amount)?;
-            println!("withdrew {amount} sats from contract {contract}: the fold is {txid}");
-        }
+        Cmd::Withdraw { contract, amount } => match w.withdraw(&a.hub, &a.statement, &a.wallet.with_extension("d"), contract, amount) {
+            Ok(txid) => println!("withdrew {amount} sats from contract {contract}: the fold is {txid}"),
+            Err(e) => {
+                let open = w.contracts.iter().find(|h| h.record.cid() == contract && h.closed.is_none());
+                let (Some(h), Some(_)) = (open, w.returned(contract)) else { return Err(e) };
+                let height = chain(&a).and_then(|c| c.height()).ok();
+                eprintln!("Error: {e:#}\n\n{}", escalate_note(&a, contract, amount, h.record.terms.t_close, height));
+                std::process::exit(1);
+            }
+        },
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escalate_note_names_the_deadline_and_both_routes() {
+        let a = Args::parse_from(["lichen", "--network", "mutinynet", "--statement", "groth16:v.yaml", "contracts"]);
+        let n = escalate_note(&a, 1006, 22_000, 3_519_000, Some(3_514_050));
+        println!("{n}");
+        assert!(n.contains("by block 3519000") && n.contains("4950 blocks left, about 41.2 hours"));
+        assert!(n.contains("lngap-r0 claim") && n.contains("dispute 1006 22000 --input claim.hex") && n.contains("export-dispute 1006"));
+        let late = escalate_note(&a, 1006, 22_000, 3_519_000, Some(3_519_001));
+        assert!(late.contains("has passed") && late.contains("at once"));
+        let mock = Args::parse_from(["lichen", "--network", "regtest", "contracts"]);
+        let n = escalate_note(&mock, 7, 100, 50, None);
+        println!("{n}");
+        assert!(n.contains("lichen dispute 7 100\n") && !n.contains("--input") && !n.contains("Proving"));
+    }
 }

@@ -102,6 +102,12 @@ fn a_tower_plays_the_dispute_from_a_package() {
     }
     let refused = w.withdraw(&hub.url, &statement(), &wdir, cid, u64::from(B)).unwrap_err();
     println!("LICHEN contract {cid}: Alice returned {B} on the L2; the hub refused to fold ({refused:#})");
+    // asked again, the same return: no second one
+    let before = w.balance().unwrap();
+    assert!(w.withdraw(&hub.url, &statement(), &wdir, cid, u64::from(B)).is_err(), "refused again");
+    assert_eq!(w.balance().unwrap(), before, "no second return");
+    assert!(w.withdraw(&hub.url, &statement(), &wdir, cid, u64::from(B) - 1).unwrap_err().to_string().contains("has a return of"), "another amount is refused before any return");
+    assert_eq!(w.balance().unwrap(), before);
 
     // the package: this contract's one-time secrets, not her payment key
     // nor b's key

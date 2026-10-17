@@ -209,6 +209,12 @@ impl Wallet {
         self.save()?;
         Ok(idx)
     }
+    /// Our return to the hub with memo `cid` (its note's index), if a
+    /// withdrawal from that contract got that far: once the contract is
+    /// closed, the fold took it.
+    pub fn returned(&self, cid: u32) -> Option<u32> {
+        self.returns.iter().rev().find(|r| r.0 == cid).map(|r| r.1)
+    }
     /// The withdrawal statement's input for our return with memo `c`, once
     /// it is sealed.
     pub fn withdraw_input(&self, c: u32) -> Result<WithdrawInput> {
@@ -536,13 +542,22 @@ impl Wallet {
     /// Withdraw `b` sats from contract `cid` cooperatively: return `b` to
     /// the hub on the L2 with the contract's memo, wait until a sealed
     /// height includes it, then sign the fold (Alice `b + r_A`, the hub the
-    /// rest) and ask the hub to close. Returns the fold's txid.
+    /// rest) and ask the hub to close. Returns the fold's txid. Run again
+    /// after a failed fold, it asks again with the same return (never a
+    /// second one).
     pub fn withdraw(&mut self, hub: &str, statement: &Statement, dir: &Path, cid: u32, b: u64) -> Result<bitcoin::Txid> {
         let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
         let held = self.contracts[k].clone();
         ensure!(held.closed.is_none(), "contract {cid} is closed");
         ensure!(bitcoin::Amount::from_sat(b) <= held.record.terms.v_max(), "{b} sats is above the cap");
-        let index = self.return_to_hub(b, cid)?;
+        let index = match self.returned(cid) {
+            Some(index) => {
+                let v = self.sequencer.state()?.notes.get(index as usize).with_context(|| format!("no note {index}"))?.value;
+                ensure!(v == b, "contract {cid} has a return of {v} sats already, not folded: withdraw {v}, or dispute it");
+                index
+            }
+            None => self.return_to_hub(b, cid)?,
+        };
         let start = std::time::Instant::now();
         while self.sequencer.state()?.withdraw_input(index, &self.sequencer.deployment).is_err() {
             ensure!(start.elapsed() < std::time::Duration::from_secs(120), "the return was never sealed");
