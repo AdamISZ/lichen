@@ -96,6 +96,10 @@ and data, and its own guide:
   reaches the sequencer by URL. The guide also covers setting the two up
   together, and what testers need.
 
+A user whose withdrawal is refused can hand the dispute to a machine she
+rents, a tower that proves and plays it while she is away:
+[Running a tower](docs/RUN_A_TOWER.md).
+
 [deploy/README.md](deploy/README.md) lays out the files.
 
 ## Try it

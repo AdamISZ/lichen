@@ -7,6 +7,7 @@ with its own image, compose project, settings and data:
 |---|---|---|
 | the sequencer | [docs/RUN_A_SEQUENCER.md](../docs/RUN_A_SEQUENCER.md) | `sequencer/` |
 | the hub, with its node | [docs/RUN_A_HUB.md](../docs/RUN_A_HUB.md) | `hub/` |
+| a user's tower, for one dispute | [docs/RUN_A_TOWER.md](../docs/RUN_A_TOWER.md) | `tower/` |
 
 Testers run only the `lichen` wallet, with no node (RUN_A_HUB.md,
 "Testers").
