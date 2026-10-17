@@ -120,15 +120,29 @@ fn a_tower_plays_the_dispute_from_a_package() {
     assert_eq!(reloaded.cid(), cid);
     println!("LICHEN the package: {} bytes", text.len());
 
+    // proving, for a statement without a mock: the tower builds the input
+    // from the sequencer as the wallet would, and hands it to the prover
+    // (here a stub that keeps what it was given and answers a claim)
+    assert_eq!(serde_json::to_value(tower::withdraw_input(&pkg).unwrap()).unwrap(), serde_json::to_value(w.withdraw_input(cid).unwrap()).unwrap(), "the input the wallet would print");
+    let stub = dir.join("stub-prover.sh");
+    std::fs::write(&stub, format!("#!/bin/sh\n[ \"$1\" = claim ] || exit 2\ncp \"$2\" {}\necho c1a1 > \"$3\"\n", dir.join("seen.json").display())).unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let claim = tower::prove(&pkg, &dir.join("proof"), &stub).unwrap();
+    assert_eq!(claim, vec![0xc1, 0xa1], "the prover's claim, read back");
+    let seen: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("seen.json")).unwrap()).unwrap();
+    assert_eq!(seen, serde_json::to_value(w.withdraw_input(cid).unwrap()).unwrap(), "the prover was given the withdrawal's input");
+    assert!(tower::prove(&pkg, &dir.join("proof"), std::path::Path::new("/usr/bin/false")).is_err(), "a failing prover is an error");
+
     // the tower, with a chain of its own, plays the dispute to its end
     let tch = chain("tower");
     let progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(|m: String| println!("LICHEN tower: {m}"));
     let t = Instant::now();
-    let outcome = tower::run(&tch, &statement(), &path, &dir.join("tower").join("work"), Options { progress: Some(progress), ..Default::default() }).unwrap();
+    let no_prover = std::path::Path::new("/nonexistent/prover");
+    let outcome = tower::run(&tch, &statement(), &path, &dir.join("tower").join("work"), no_prover, Options { progress: Some(progress), ..Default::default() }).unwrap();
     println!("LICHEN tower: {outcome:?} in {:.1?}", t.elapsed());
     assert!(matches!(outcome, Outcome::Proved(_)), "the tower proves the last step: {outcome:?}");
     // run again: the payout is kept, nothing is posted
-    let again = tower::run(&tch, &statement(), &path, &dir.join("tower").join("work"), Options::default()).unwrap();
+    let again = tower::run(&tch, &statement(), &path, &dir.join("tower").join("work"), no_prover, Options::default()).unwrap();
     assert_eq!(again, outcome, "a resumed tower stops at the payout");
     // its links went at their floors: no anchor of hers was spent
     // the wallet sweeps what the tower won

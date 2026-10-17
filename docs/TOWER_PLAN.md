@@ -155,7 +155,18 @@ the chain: the escalation, after which every instance reads it.
    wallet's dispute loop without the wallet. Test on regtest (mock
    statement): the wallet returns `b` and is refused, exports, stops;
    the tower escalates and plays to the payout; the wallet sweeps.
-2. **Proving in the tower:** the input from the sequencer, `lngap-r0
+2. **Done but for a real run (2026-10-17).** A package without a claim
+   (and a statement without a mock) is proved by the tower: the input
+   from the sequencer (`tower::withdraw_input`: its deployment, the
+   note's memo and amount checked against the contract), then an external
+   `prover claim <input.json> <claim.hex>` (`--prover`, default
+   `lngap-r0`: ln-gap's host, so lichen takes on no RISC Zero), the claim
+   kept in the state so a resumed tower doesn't prove again. Test
+   (tower.rs): the input equals the wallet's `withdraw-input`, a stub
+   prover's claim is read back, a failing prover is an error. To do: the
+   Groth16 statement end to end on an x86 box (the wrap).
+
+   The plan as written: **proving in the tower:** the input from the sequencer, `lngap-r0
    claim` (the STARK and the wrap), on x86. Test: the Groth16 statement
    end to end on a Linux box, from the package alone.
 3. **Done (2026-10-17).** `Chain::esploras(&[urls])` (`lichen_chain::

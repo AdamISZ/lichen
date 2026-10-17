@@ -139,6 +139,10 @@ enum Cmd {
     Tower {
         #[arg(long)]
         package: PathBuf,
+        /// The prover, for a package without a claim (ln-gap's `lngap-r0`:
+        /// `claim <input.json> <out.hex>`, the STARK and the Groth16 wrap).
+        #[arg(long, default_value = "lngap-r0")]
+        prover: PathBuf,
     },
     /// Sweep what a tower's dispute won (its state file, beside its
     /// package) to the contract's payout address.
@@ -169,11 +173,11 @@ fn main() -> Result<()> {
         println!("{}", hex::encode(w.address()));
         return Ok(());
     }
-    if let Cmd::Tower { ref package } = a.cmd {
+    if let Cmd::Tower { ref package, ref prover } = a.cmd {
         let chain = chain(&a)?;
         let progress: std::sync::Arc<dyn Fn(String) + Send + Sync> = std::sync::Arc::new(|m: String| println!("{m}"));
         let opts = lichen_wallet::engine::Options { progress: Some(progress), ..Default::default() };
-        let outcome = lichen_wallet::tower::run(&chain, &a.statement, package, &package.with_extension("d"), opts)?;
+        let outcome = lichen_wallet::tower::run(&chain, &a.statement, package, &package.with_extension("d"), prover, opts)?;
         match outcome.payout() {
             Some(txid) => println!("{outcome:?}: the payout is {txid}; sweep it with the wallet: lichen sweep-dispute <contract> --tower-state {}", package.with_extension("state.json").display()),
             None => println!("{outcome:?}"),

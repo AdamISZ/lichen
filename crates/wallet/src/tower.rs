@@ -73,13 +73,45 @@ impl Package {
         ensure!(p.version == VERSION, "a package of version {}, this tower reads {VERSION}", p.version);
         Ok(p)
     }
-    /// The claim's input: as exported, or the mock's.
-    pub fn input(&self, statement: &Statement) -> Result<Vec<u8>> {
-        match &self.claim {
-            Some(h) => Ok(hex::decode(h)?),
-            None => statement.mock_input(self.b, self.cid()).context("the package has no claim (a proof's, for groth16)"),
-        }
+}
+
+/// The withdrawal statement's input for the package's return, from the
+/// sequencer's public state: the note, its path, the signed root. Checked
+/// against the contract (its deployment, the note's memo and amount).
+pub fn withdraw_input(p: &Package) -> Result<lichen_ledger::WithdrawInput> {
+    let seq = lichen_l2::Client::new(&p.sequencer)?;
+    ensure!(seq.deployment.id() == p.record.deployment, "the sequencer at {} serves another deployment than the contract's", p.sequencer);
+    let input = seq.state()?.withdraw_input(p.note, &seq.deployment)?;
+    ensure!(input.note.memo == p.cid() && input.note.value == u64::from(p.b), "note {} is not a return of {} with memo {}", p.note, p.b, p.cid());
+    Ok(input)
+}
+
+/// Prove the package's withdrawal and wrap the proof: the statement's
+/// input from the sequencer, then `prover claim <input.json> <claim.hex>`
+/// (ln-gap's `lngap-r0`: the STARK and the Groth16 wrap, x86 for the
+/// wrap), in `work`. The claim's input, the verifier's.
+pub fn prove(p: &Package, work: &Path, prover: &Path) -> Result<Vec<u8>> {
+    std::fs::create_dir_all(work)?;
+    let (json, out) = (work.join("withdraw-input.json"), work.join("claim.hex"));
+    std::fs::write(&json, serde_json::to_vec_pretty(&withdraw_input(p)?)?)?;
+    let status = std::process::Command::new(prover).arg("claim").arg(&json).arg(&out).status().with_context(|| format!("running the prover {}", prover.display()))?;
+    ensure!(status.success(), "the prover {} failed: {status}", prover.display());
+    Ok(hex::decode(std::fs::read_to_string(&out)?.trim())?)
+}
+
+/// The claim's input: as exported, or as made before (a resumed tower),
+/// or the mock's, or proved.
+fn claim_input(p: &Package, statement: &Statement, kept: Option<&(u32, String)>, work: &Path, prover: &Path) -> Result<Vec<u8>> {
+    if let Some(h) = &p.claim {
+        return Ok(hex::decode(h)?);
     }
+    if let Some((_, h)) = kept {
+        return Ok(hex::decode(h)?);
+    }
+    if let Some(i) = statement.mock_input(p.b, p.cid()) {
+        return Ok(i);
+    }
+    prove(p, work, prover)
 }
 
 /// A package as a dispute's signer.
@@ -170,17 +202,23 @@ impl Store for StateFile {
 }
 
 /// Play the dispute of the package at `package` to its end (the payout,
-/// for a win), its state beside it, its work in `dir`. Resumable.
-pub fn run(chain: &Chain, statement: &Statement, package: &Path, dir: &Path, opts: Options) -> Result<Outcome> {
+/// for a win), its state beside it, its work in `dir`; with no claim in
+/// the package, prove it first with `prover`. Resumable.
+pub fn run(chain: &Chain, statement: &Statement, package: &Path, dir: &Path, prover: &Path, opts: Options) -> Result<Outcome> {
     let p = Package::load(package)?;
     ensure!(chain.network == p.network(), "the package is for {}, the chain {}", p.network(), chain.network);
-    let input = p.input(statement)?;
-    let (record, b) = (p.record.clone(), p.b);
-    let signer = PackageSigner::new(p, statement)?;
     let mut store = StateFile::beside(package)?;
     if let Some(txid) = store.state.lost {
         return Ok(Outcome::Lost).inspect(|_| eprintln!("the claim lost: {txid}"));
     }
+    if store.state.claim.is_none() && p.claim.is_none() && statement.mock_input(p.b, p.cid()).is_none() {
+        if let Some(f) = &opts.progress {
+            f(format!("proving the withdrawal of {} sats (note {}) with {}", p.b, p.note, prover.display()));
+        }
+    }
+    let input = claim_input(&p, statement, store.state.claim.as_ref(), &dir.join("proof"), prover)?;
+    let (record, b) = (p.record.clone(), p.b);
+    let signer = PackageSigner::new(p, statement)?;
     Engine { signer: &signer, store: &mut store, opts }.run(chain, &record, statement, dir, b, &input)
 }
 
