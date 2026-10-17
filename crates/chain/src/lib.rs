@@ -38,6 +38,17 @@ pub enum Net {
     Testnet4,
 }
 
+impl Net {
+    /// A test network: its coins are worth nothing. A hub's misbehaviour
+    /// switches (`--hostile`, the tests' faults) are refused on any other.
+    /// No wildcard: a network added here must be classed explicitly.
+    pub fn is_test(self) -> bool {
+        match self {
+            Net::Regtest | Net::Mutinynet | Net::Signet | Net::Testnet4 => true,
+        }
+    }
+}
+
 impl std::str::FromStr for Net {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Net> {

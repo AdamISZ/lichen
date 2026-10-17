@@ -58,6 +58,11 @@ struct Args {
     /// ones by the contracts the hub will hold.
     #[arg(long, value_parser = parse_windows)]
     windows: Option<Windows>,
+    /// For trials, on test networks only: refuse every cooperative
+    /// withdrawal and dispute every claim, true ones too, so that each
+    /// withdrawal is played to its end on chain.
+    #[arg(long)]
+    hostile: bool,
 }
 
 fn parse_windows(s: &str) -> Result<Windows, String> {
@@ -82,6 +87,10 @@ fn main() -> Result<()> {
         println!("{}", hex::encode(xonly(&l2_key)));
         return Ok(());
     }
+    if a.hostile {
+        anyhow::ensure!(a.network.is_test(), "--hostile is for test networks only, not {}", a.network);
+        println!("hostile: refusing every cooperative withdrawal and disputing every claim");
+    }
     let hub = Hub::start(Config {
         network: a.network,
         listen: a.listen,
@@ -97,8 +106,8 @@ fn main() -> Result<()> {
         max_bits: a.max_bits,
         duration: a.duration.unwrap_or(lichen_proto::default_duration(a.network)),
         windows: a.windows,
-        refuse_folds: false,
-        dispute_true_claims: false,
+        refuse_folds: a.hostile,
+        dispute_true_claims: a.hostile,
         first_cid: 1000,
     })?;
     println!("lichen hub at {}", hub.url);

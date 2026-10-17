@@ -204,6 +204,7 @@ impl Hub {
         }
         let next = open.keys().chain(deposits.keys()).max().map_or(cfg.first_cid, |m| m + 1);
         let (cfg_refuse, cfg_dispute) = (cfg.refuse_folds, cfg.dispute_true_claims);
+        ensure!(!(cfg_refuse || cfg_dispute) || cfg.network.is_test(), "a hub refuses withdrawals or disputes true claims on test networks only, not {}", cfg.network);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: std::sync::OnceLock::new() });
@@ -247,26 +248,36 @@ impl Hub {
     pub fn log(&self) -> Vec<String> {
         self.inner.log.lock().unwrap().clone()
     }
+    /// The misbehaviour switches are for test networks only.
+    fn misbehave(&self) {
+        let net = self.inner.cfg.network;
+        assert!(net.is_test(), "a hub misbehaves on test networks only, not {net}");
+    }
     /// The misbehaviour switches: refuse every cooperative withdrawal;
     /// dispute claims that are true.
     pub fn set_refuse_folds(&self, on: bool) {
+        self.misbehave();
         self.inner.refuse_folds.store(on, Ordering::Relaxed);
     }
     /// For tests: forge a hash in each path the hub posts (Alice should
     /// challenge that hop, and the hub fail to reveal it).
     pub fn set_forge_paths(&self, on: bool) {
+        self.misbehave();
         self.inner.forge_paths.store(on, Ordering::Relaxed);
     }
     /// For tests: close a dispute the user won without collecting the
     /// hub's bit outputs, as hubs did before they collected them.
     pub fn set_leave_bits(&self, on: bool) {
+        self.misbehave();
         self.inner.leave_bits.store(on, Ordering::Relaxed);
     }
     /// For tests: a fault in each opening from now on.
     pub fn set_opening_fault(&self, f: OpeningFault) {
+        self.misbehave();
         *self.inner.opening_fault.lock().unwrap() = f;
     }
     pub fn set_dispute_true_claims(&self, on: bool) {
+        self.misbehave();
         self.inner.dispute_true_claims.store(on, Ordering::Relaxed);
     }
     pub fn switches(&self) -> (bool, bool) {

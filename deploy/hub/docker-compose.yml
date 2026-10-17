@@ -40,6 +40,7 @@ services:
       MAX_BITS: ${MAX_BITS:-24}
       DURATION: ${DURATION:-}
       WINDOWS: ${WINDOWS:-}
+      HOSTILE: ${HOSTILE:-}
     volumes:
       - ./data/${NETWORK}/hub:/hub
       - ./data/${NETWORK}/bitcoind:/bitcoind:ro
