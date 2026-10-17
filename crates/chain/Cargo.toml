@@ -15,3 +15,5 @@ serde_json.workspace = true
 
 [dev-dependencies]
 lngap-btc.workspace = true
+tiny_http.workspace = true
+ureq.workspace = true

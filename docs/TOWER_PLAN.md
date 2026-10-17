@@ -158,7 +158,18 @@ the chain: the escalation, after which every instance reads it.
 2. **Proving in the tower:** the input from the sequencer, `lngap-r0
    claim` (the STARK and the wrap), on x86. Test: the Groth16 statement
    end to end on a Linux box, from the package alone.
-3. **Two Esplora endpoints** with the rules above. Test: a stub endpoint
+3. **Done (2026-10-17).** `Chain::esploras(&[urls])` (`lichen_chain::
+   Endpoints`), the wallet's `--esplora a,b`: confirmed only when every
+   server says so in the same block (else an error), a transaction read
+   only if every server that has it gives the same wtxid (else none, and
+   an alarm), spent only when all agree, the highest height, broadcast to
+   all; disagreements printed as `chain: ALARM`. Test (`chain/tests/
+   esplora.rs`, two_servers_neither_trusted_alone): a proxy in front of
+   electrs serving a funding with another witness (read as unknown), or
+   placing it in another block (confirmation refused). Not yet: outspends
+   to find a spender (the engine still infers "spent, not by the link").
+
+   The plan as written: **two Esplora endpoints** with the rules above. Test: a stub endpoint
    serving a move the hub signed but didn't broadcast is ignored;
    endpoints that disagree raise the alarm.
 4. **The image and the one-click launch;** a Mutinynet trial: the laptop

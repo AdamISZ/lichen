@@ -21,8 +21,10 @@ struct Args {
     /// The hub.
     #[arg(long, default_value = "http://127.0.0.1:18310")]
     hub: String,
-    /// An Esplora server (the network's public one by default: mempool.space
-    /// or mutinynet.com).
+    /// Esplora servers, comma-separated (the network's public one by
+    /// default: mempool.space or mutinynet.com). With two or more, none is
+    /// trusted alone: a move is answered only once all report it confirmed
+    /// in the same block with the same witness.
     #[arg(long)]
     esplora: Option<String>,
     /// Instead of Esplora: a node's RPC URL and cookie file.
@@ -153,8 +155,9 @@ fn chain(a: &Args) -> Result<lichen_chain::Chain> {
         (Some(url), Some(cookie)) => lichen_chain::Chain::connect_on(url, cookie, &a.chain_wallet, a.network),
         (Some(_), None) => anyhow::bail!("--rpc-url needs --cookie"),
         _ => {
-            let url = a.esplora.as_deref().or(a.network.default_esplora()).context("--esplora: no public Esplora for this network")?;
-            lichen_chain::Chain::esplora(url, a.network)
+            let urls = a.esplora.as_deref().or(a.network.default_esplora()).context("--esplora: no public Esplora for this network")?;
+            let urls: Vec<&str> = urls.split(',').map(str::trim).filter(|u| !u.is_empty()).collect();
+            lichen_chain::Chain::esploras(&urls, a.network)
         }
     }
 }

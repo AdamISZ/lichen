@@ -144,7 +144,110 @@ impl Stall {
 
 enum Backend {
     Rpc { rpc: Client, wallet: String, url: String, cookie: std::path::PathBuf },
-    Esplora(BlockingClient),
+    /// One or more Esplora servers, read under [`Endpoints`]' rules.
+    Esplora(Endpoints),
+}
+
+/// Several Esplora servers, none of them trusted alone. A transaction is
+/// confirmed only when every server says so, in the same block; a
+/// transaction is read only if every server that has it gives the same
+/// bytes, witness and all (a link's txid doesn't commit to the move in its
+/// witness, so one lying server could otherwise show a move never
+/// broadcast); an output is spent only when all agree; the height is the
+/// highest any reports; a broadcast goes to all. Disagreement is printed
+/// as an alarm. With one server, its answers as they are.
+pub struct Endpoints {
+    clients: Vec<(String, BlockingClient)>,
+}
+
+impl Endpoints {
+    fn alarm(&self, what: String) {
+        eprintln!("chain: ALARM: the Esplora servers disagree: {what}");
+    }
+    /// The first server's answer that isn't an error (or the last error).
+    fn first<T>(&self, f: impl Fn(&BlockingClient) -> Result<T>) -> Result<T> {
+        let mut err = None;
+        for (_, c) in &self.clients {
+            match f(c) {
+                Ok(v) => return Ok(v),
+                Err(e) => err = Some(e),
+            }
+        }
+        Err(err.expect("at least one server"))
+    }
+    fn height(&self) -> Result<u32> {
+        let hs: Vec<u32> = self.clients.iter().filter_map(|(_, c)| c.get_height().ok()).collect();
+        let (lo, hi) = (hs.iter().min().copied(), hs.iter().max().copied());
+        match (lo, hi) {
+            (Some(lo), Some(hi)) => {
+                if hi > lo + 3 {
+                    self.alarm(format!("heights {hs:?}"));
+                }
+                Ok(hi)
+            }
+            _ => bail!("no Esplora server answers"),
+        }
+    }
+    fn broadcast(&self, tx: &Transaction) -> Result<Txid> {
+        let mut err = None;
+        let mut ok = None;
+        for (_, c) in &self.clients {
+            match c.broadcast(tx) {
+                Ok(t) => ok = Some(t),
+                Err(e) => err = Some(e),
+            }
+        }
+        match (ok, err) {
+            (Some(t), _) => Ok(t),
+            (None, Some(e)) => Err(e.into()),
+            (None, None) => unreachable!(),
+        }
+    }
+    /// The block every server confirms `txid` in (its height), or none if
+    /// any hasn't; an error if they name different blocks.
+    fn confirmed_in(&self, txid: &Txid) -> Result<Option<u32>> {
+        let mut at: Option<(bitcoin::BlockHash, u32)> = None;
+        for (url, c) in &self.clients {
+            match c.get_tx_status(txid)? {
+                esplora_client::TxStatus { confirmed: true, block_height: Some(h), block_hash: Some(b), .. } => match at {
+                    None => at = Some((b, h)),
+                    Some((b0, _)) if b0 == b => {}
+                    Some((b0, _)) => {
+                        self.alarm(format!("{txid} confirmed in {b0} and, says {url}, in {b}"));
+                        bail!("the Esplora servers disagree on {txid}'s block");
+                    }
+                },
+                _ => return Ok(None),
+            }
+        }
+        Ok(at.map(|a| a.1))
+    }
+    fn get_tx(&self, txid: &Txid) -> Option<Transaction> {
+        let mut seen: Option<Transaction> = None;
+        for (url, c) in &self.clients {
+            if let Ok(Some(tx)) = c.get_tx(txid) {
+                match &seen {
+                    None => seen = Some(tx),
+                    Some(s) if s.compute_wtxid() == tx.compute_wtxid() => {}
+                    Some(s) => {
+                        self.alarm(format!("{txid}: witness {} and, says {url}, {}", s.compute_wtxid(), tx.compute_wtxid()));
+                        return None;
+                    }
+                }
+            }
+        }
+        seen
+    }
+    fn unspent(&self, op: &OutPoint) -> Result<bool> {
+        let tx = self.first(|c| Ok(c.get_tx(&op.txid)?))?;
+        ensure!(tx.is_some_and(|t| t.output.len() > op.vout as usize), "no output {op}");
+        let spent: Vec<bool> = self.clients.iter().filter_map(|(_, c)| c.get_output_status(&op.txid, u64::from(op.vout)).ok().map(|s| s.is_some_and(|s| s.spent))).collect();
+        ensure!(!spent.is_empty(), "no Esplora server answers");
+        if spent.iter().any(|s| *s) && !spent.iter().all(|s| *s) {
+            self.alarm(format!("{op} spent by some, not by others"));
+        }
+        Ok(!spent.iter().all(|s| *s))
+    }
 }
 
 pub struct Chain {
@@ -318,9 +421,18 @@ impl Chain {
     /// An Esplora server at `url` (e.g. `https://mutinynet.com/api`), on
     /// `network`. No wallet: fees come from a [`Fees`] of the caller's.
     pub fn esplora(url: &str, network: Net) -> Result<Chain> {
-        let client = esplora_client::Builder::new(url.trim_end_matches('/')).build_blocking();
-        client.get_height().with_context(|| format!("no Esplora answering at {url}"))?;
-        Ok(Chain { backend: Backend::Esplora(client), network })
+        Chain::esploras(&[url], network)
+    }
+    /// Several Esplora servers, none trusted alone ([`Endpoints`]).
+    pub fn esploras(urls: &[&str], network: Net) -> Result<Chain> {
+        ensure!(!urls.is_empty(), "no Esplora server");
+        let mut clients = vec![];
+        for url in urls {
+            let client = esplora_client::Builder::new(url.trim_end_matches('/')).build_blocking();
+            client.get_height().with_context(|| format!("no Esplora answering at {url}"))?;
+            clients.push((url.to_string(), client));
+        }
+        Ok(Chain { backend: Backend::Esplora(Endpoints { clients }), network })
     }
 
     fn rpc(&self) -> Result<&Client> {
@@ -341,13 +453,13 @@ impl Chain {
     pub fn height(&self) -> Result<u32> {
         match &self.backend {
             Backend::Rpc { rpc, .. } => Ok(rpc.get_block_count()? as u32),
-            Backend::Esplora(e) => Ok(e.get_height()?),
+            Backend::Esplora(e) => e.height(),
         }
     }
     pub fn broadcast(&self, tx: &Transaction) -> Result<Txid> {
         match &self.backend {
             Backend::Rpc { rpc, .. } => Ok(rpc.send_raw_transaction(tx)?),
-            Backend::Esplora(e) => Ok(e.broadcast(tx)?),
+            Backend::Esplora(e) => e.broadcast(tx),
         }
     }
     /// How many blocks have confirmed `txid` (0 if unconfirmed or unknown).
@@ -366,9 +478,9 @@ impl Chain {
                 };
                 Ok(v.get("confirmations").and_then(|c| c.as_u64()).unwrap_or(0) as u32)
             }
-            Backend::Esplora(e) => match e.get_tx_status(txid)? {
-                esplora_client::TxStatus { confirmed: true, block_height: Some(h), .. } => Ok(self.height()? + 1 - h),
-                _ => Ok(0),
+            Backend::Esplora(e) => match e.confirmed_in(txid)? {
+                Some(h) => Ok(self.height()? + 1 - h),
+                None => Ok(0),
             },
         }
     }
@@ -380,17 +492,14 @@ impl Chain {
                 index_caught_up(rpc);
                 rpc.get_raw_transaction(txid, None).ok()
             }),
-            Backend::Esplora(e) => e.get_tx(txid).ok().flatten(),
+            Backend::Esplora(e) => e.get_tx(txid),
         }
     }
     /// Whether an outpoint is still unspent (in the chain or the mempool).
     pub fn unspent(&self, op: &OutPoint) -> Result<bool> {
         match &self.backend {
             Backend::Rpc { rpc, .. } => Ok(rpc.get_tx_out(&op.txid, op.vout, Some(true))?.is_some()),
-            Backend::Esplora(e) => {
-                ensure!(e.get_tx(&op.txid)?.is_some_and(|t| t.output.len() > op.vout as usize), "no output {op}");
-                Ok(!e.get_output_status(&op.txid, u64::from(op.vout))?.is_some_and(|s| s.spent))
-            }
+            Backend::Esplora(e) => e.unspent(op),
         }
     }
     /// The node's watch-only wallet (RPC): the scripts [`Chain::watch`]
@@ -431,7 +540,7 @@ impl Chain {
                     .collect())
             }
             Backend::Esplora(e) => Ok(e
-                .get_scripthash_utxos(spk)?
+                .first(|c| Ok(c.get_scripthash_utxos(spk)?))?
                 .into_iter()
                 .map(|u| (OutPoint { txid: u.txid, vout: u.vout }, TxOut { value: u.value, script_pubkey: spk.to_owned() }, u.status.block_height.filter(|_| u.status.confirmed)))
                 .collect()),
@@ -464,7 +573,7 @@ impl Chain {
             Backend::Esplora(e) => {
                 let mut coins = vec![];
                 for spk in spks {
-                    for u in e.get_scripthash_utxos(spk)? {
+                    for u in e.first(|c| Ok(c.get_scripthash_utxos(spk)?))? {
                         if let Some(h) = u.status.block_height.filter(|_| u.status.confirmed) {
                             coins.push((OutPoint { txid: u.txid, vout: u.vout }, TxOut { value: u.value, script_pubkey: spk.clone() }, h));
                         }
