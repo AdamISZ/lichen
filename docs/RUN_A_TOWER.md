@@ -26,12 +26,24 @@ lichen --network mutinynet --wallet alice.json --statement groth16 \
 secret for this contract: whoever has it can play (or throw) this one
 dispute.
 
+The package names your wallet's sequencer: the tower fetches the
+return's note and path from it while it proves. If that URL is local to
+your device (`http://127.0.0.1:18300`), open a tunnel to the machine for
+the proving's first minutes:
+`ssh -N -R 18300:127.0.0.1:18300 <the machine>` (the tower runs on the
+machine's own network, so its 127.0.0.1 is the tunnel's).
+
+To try a tower against your own hub on a test network, start the hub
+with `HOSTILE=1` (deploy/hub/.env): it then refuses every withdrawal and
+disputes every claim, so the tower plays the whole search.
+
 ## 2. The machine
 
 By hand, on a fresh x86 Linux box with Docker:
 
 ```sh
 git clone https://github.com/AdamISZ/lichen && git clone https://github.com/AdamISZ/ln-gap
+git -C lichen checkout tower              # until the tower is merged
 git -C ln-gap checkout "$(cat lichen/LNGAP_REV)"
 cd lichen
 deploy/tower/build.sh                      # 20 minutes or more the first time
@@ -64,10 +76,11 @@ its floor of 1 sat/vB (fee bumps need a separate anchor key: not yet).
 ## 3. After: sweep on your own device
 
 The tower stops at the payout: your bit outputs and the reserves wait
-for your own key. Copy its state back and sweep:
+for your own key. Copy its state back (from `lichen/deploy/tower/data/` where you cloned
+it; under `/srv/lichen-tower/` with cloud-init) and sweep:
 
 ```sh
-scp root@<host>:/srv/lichen-tower/lichen/deploy/tower/data/package.state.json .
+scp <host>:lichen/deploy/tower/data/package.state.json .
 lichen --network mutinynet --wallet alice.json --statement groth16 \
   sweep-dispute <contract> --tower-state package.state.json
 ```

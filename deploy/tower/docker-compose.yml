@@ -18,5 +18,9 @@ services:
       - ./data:/tower
       - ${R0WORK}:${R0WORK}
       - /var/run/docker.sock:/var/run/docker.sock
+    # the machine's own network: the tower only calls out (the Esplora
+    # servers, the sequencer while it proves), and a sequencer reached
+    # through a tunnel to this machine's 127.0.0.1 is reached from here too
+    network_mode: host
     # done when the dispute is: a restart resumes it
     restart: on-failure
