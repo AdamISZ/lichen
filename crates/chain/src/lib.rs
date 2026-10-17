@@ -438,6 +438,43 @@ impl Chain {
         }
     }
 
+    /// The confirmed unspent coins of any of `spks`, found in the UTXO set
+    /// (on RPC, `scantxoutset`: no wallet and no rescan, so coins paid
+    /// before anyone watched are found too), with the height each
+    /// confirmed at.
+    pub fn scan_utxos(&self, spks: &[ScriptBuf]) -> Result<Vec<(OutPoint, TxOut, u32)>> {
+        match &self.backend {
+            Backend::Rpc { rpc, .. } => {
+                let descs: Vec<String> = spks.iter().map(|s| format!("raw({})", s.to_hex_string())).collect();
+                let r: serde_json::Value = rpc.call("scantxoutset", &[serde_json::json!("start"), serde_json::json!(descs)])?;
+                ensure!(r["success"].as_bool() == Some(true), "scantxoutset: {r}");
+                r["unspents"]
+                    .as_array()
+                    .context("scantxoutset's unspents")?
+                    .iter()
+                    .map(|u| {
+                        let txid: Txid = u["txid"].as_str().context("txid")?.parse()?;
+                        let spk = ScriptBuf::from_hex(u["scriptPubKey"].as_str().context("scriptPubKey")?)?;
+                        let value = Amount::from_btc(u["amount"].as_f64().context("amount")?)?;
+                        let vout = u["vout"].as_u64().context("vout")? as u32;
+                        Ok((OutPoint { txid, vout }, TxOut { value, script_pubkey: spk }, u["height"].as_u64().context("height")? as u32))
+                    })
+                    .collect()
+            }
+            Backend::Esplora(e) => {
+                let mut coins = vec![];
+                for spk in spks {
+                    for u in e.get_scripthash_utxos(spk)? {
+                        if let Some(h) = u.status.block_height.filter(|_| u.status.confirmed) {
+                            coins.push((OutPoint { txid: u.txid, vout: u.vout }, TxOut { value: u.value, script_pubkey: spk.clone() }, h));
+                        }
+                    }
+                }
+                Ok(coins)
+            }
+        }
+    }
+
     // ----- a bitcoind wallet's coins: RPC only -----
 
     /// A fresh address of this wallet, as a script.

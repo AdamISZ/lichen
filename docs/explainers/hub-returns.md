@@ -176,9 +176,10 @@ mattered against a false claim.
   - the timeout's fee coin is now 600 sats, not 2,000;
   - one sweep empties everything of Alice's.
 - **Still to do:**
-  - the hub never collects its own bit outputs. 1002's 35,328 sit
-    unspent, as do 1001's 30,208. It needs a sweep of its `hub_bit_i`
-    leaves once a dispute settles.
+  - the hub never collected its own bit outputs. 1002's 35,328 sat
+    unspent, as did 1001's 30,208. Since 2026-10-17 the hub sweeps its
+    `hub_bit_i` leaves once a dispute settles, and on upgrading collects
+    what its earlier disputes left.
   - the contract output's leaves could be weighted, so that the fold, the
     common case, always gets the top of the tree.
 

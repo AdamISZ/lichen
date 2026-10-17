@@ -99,7 +99,15 @@ transfers; sealed, signed heights; the statement's input for a return),
 - Hub (watcher): reads the escalation; applies the input-word checks
   (memo, image id); runs its verifier on the claim: a true claim it
   concedes (an honest hub), a false one it plays and disproves; times out
-  an absent Alice. Test switches: `refuse_folds`, `dispute_true_claims`.
+  an absent Alice. When she wins, it sweeps its bit outputs (the bits
+  clear in `b`, by `hub_bit_i` with her signature on `b` from the
+  escalation) once the payout confirms, found by `scantxoutset`, then
+  closes (since 2026-10-17; a hub from before collects what its closed
+  disputes left, once). Test switches: `refuse_folds`,
+  `dispute_true_claims`, `leave_bits`.
+- TODO: `scantxoutset` reads the whole UTXO set: seconds on the test
+  networks, minutes on mainnet, on the watcher's thread. Before mainnet,
+  watch the bit outputs' scripts from the escalation instead.
 - Fees: every link broadcast alone at its floor, then the poster's child
   spending its anchor (the contract's payment key signs that input, the
   bitcoind wallet its coin); terminal transactions with a fee coin.

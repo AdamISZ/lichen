@@ -117,6 +117,8 @@ fn disputes_on_the_mock_statement() {
             println!("LICHEN M: the wallet refuses the claim ({e:#}); escalated anyway:");
             w.unchecked_claims = true;
         }
+        // A: a hub as they were before they collected their bit outputs
+        hub.set_leave_bits(label == "A");
         let t = Instant::now();
         let (outcome, swept) = w.dispute(&ch, &statement(), &wdir, cid, B, &input).unwrap();
         println!("LICHEN {label}: {outcome:?} in {:.1?}; swept {swept:?}", t.elapsed());
@@ -152,6 +154,30 @@ fn disputes_on_the_mock_statement() {
             assert_eq!(w.fees_for(cid).unwrap().balance(&ch).unwrap(), Amount::ZERO, "{label}: the fee budget emptied");
             let won = swept - extra;
             assert!(won <= paid && won > paid - Amount::from_sat(20_000), "{label}: swept {won} of {paid}, and {extra} besides");
+            // the hub collects its bit outputs, those of the bits clear in b
+            let mine: Vec<u32> = (t.low_bits..t.bits).filter(|i| (B >> i) & 1 == 0).collect();
+            let bit_out = |i: &u32| bitcoin::OutPoint { txid: payout.compute_txid(), vout: i - t.low_bits };
+            if label == "A" {
+                // closed and left; once the hub collects, its first tick
+                // takes what the dispute left
+                let start = Instant::now();
+                while hub.contracts().iter().all(|(r, closed)| r.cid() != cid || closed.is_none()) {
+                    assert!(start.elapsed() < Duration::from_secs(30), "A: the hub closes the contract");
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                assert!(mine.iter().all(|i| ch.unspent(&bit_out(i)).unwrap()), "A: the bit outputs left");
+                hub.set_leave_bits(false);
+            }
+            let start = Instant::now();
+            while !mine.iter().all(|i| !ch.unspent(&bit_out(i)).unwrap()) {
+                assert!(start.elapsed() < Duration::from_secs(30), "{label}: the hub collects its bit outputs");
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let note = hub.log().into_iter().find(|l| l.contains(&format!("contract {cid}: collected the hub's {} bit outputs", mine.len())));
+            assert!(note.is_some(), "{label}: the hub notes its {} bit outputs collected", mine.len());
+            let note = note.unwrap();
+            assert_eq!(note.contains("left from its dispute"), label == "A", "{label}: {note}");
+            println!("LICHEN {label}: {note}");
         } else {
             assert!(label == "C" || label == "M");
         }

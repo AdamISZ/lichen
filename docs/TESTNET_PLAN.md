@@ -329,9 +329,17 @@ Found along the way:
 
 - **Fixed:** a hub's first opening at a small cap (61ad4a0, with
   `open --resume`).
-- **Not fixed:** the hub never collects its own bit outputs after a
-  dispute (`hub_bit_i`). 1001's and 1002's sit unspent, 30,208 and
-  35,328 sats.
+- **Fixed (2026-10-17):** the hub never collected its own bit outputs
+  after a dispute (`hub_bit_i`); 1001's and 1002's sat unspent, 30,208
+  and 35,328 sats. It now sweeps them once the payout confirms, before it
+  closes the contract; a hub upgraded from before collects what its
+  closed disputes left on its first tick (both in `dispute.rs`'s test).
+
+2026-10-17: the split deployment checked again on regtest at e37e154,
+after the locked mint changed the opening: both images built, a hub and
+a sequencer as two compose projects, `deploy/hub/smoke.sh` passed (open
+with the mint as a swap, the mint, a fold, the payout). The Mutinynet
+hub's saved contracts (1000-1004) load under the new code.
 
 Next: a VPS with other testers, and T4 (the wrap service) if Mac
 testers' claims are the friction.

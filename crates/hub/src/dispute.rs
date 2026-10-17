@@ -18,7 +18,7 @@
 
 use lichen_chain::NodeWallet;
 use anyhow::{Context, Result};
-use bitcoin::{Amount, OutPoint, Transaction, TxOut, Txid};
+use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use emulator::decision::challenge::ForceCondition;
 use lichen_proto::{anchor_vout, input_from_words, link_name, sign_anchor, sign_fields, sign_move, Disputed};
 use lngap_btc::sighash::sign_tapscript;
@@ -28,6 +28,7 @@ use lngap_btc::witness::tapscript_witness;
 use lngap_ladder::ladder::TailOut;
 use lngap_ladder::tail::{chunk_fields, Path};
 use lngap_sessions::play::{read_move, read_words, word_wires, PathKind, Verdict, Verifier};
+use lngap_sessions::session::bit_tree;
 
 use crate::{contract_keys, move_secrets, path_secrets, Inner};
 
@@ -47,7 +48,21 @@ pub(crate) enum State {
     /// chunks confirmed at `at`); Alice may challenge a hop, else the
     /// verdict `name` (its witness `pre_y`) takes the output.
     Path(Box<Posted>),
+    /// The user won and the payout is posted, spending the output of
+    /// `link` (first seen spent at `since`): the hub collects its bit
+    /// outputs, those of the bits clear in `b`, then closes.
+    Collect { link: Txid, since: u32 },
     Done,
+}
+
+/// The hub's bit outputs of a payout.
+enum Bits {
+    /// Every bit of the claim is set: none are the hub's.
+    None,
+    /// Not on chain (the payout unconfirmed, or already swept).
+    NotYet,
+    /// Swept: the transaction, how many, their value less the fee.
+    Swept(Txid, usize, Amount),
 }
 
 /// A posted path, and what answering it takes.
@@ -69,6 +84,18 @@ fn confirmed_at(inner: &Inner, txid: &Txid) -> Result<Option<u32>> {
 impl Inner {
     /// Advance every dispute by what the chain shows now.
     pub(crate) fn disputes_tick(&self) -> Result<()> {
+        // contracts closed before the hub collected its bit outputs, once
+        let leave = self.leave_bits.load(std::sync::atomic::Ordering::Relaxed);
+        let uncollected: Vec<_> = self.open.lock().unwrap().values().filter(|o| o.closed.is_some() && !o.collected && !leave).map(|o| o.record.clone()).collect();
+        for record in uncollected {
+            // (never at the expense of the disputes in play: tried again next tick)
+            if let Err(e) = self.collect_closed(&record) {
+                let once = format!("contract {}: collecting what its dispute left failed: {e:#}", record.cid());
+                if !self.log.lock().unwrap().contains(&once) {
+                    self.note(once);
+                }
+            }
+        }
         let open: Vec<_> = self.open.lock().unwrap().values().filter(|o| o.closed.is_none()).map(|o| o.record.clone()).collect();
         for record in open {
             let cid = record.cid();
@@ -80,6 +107,7 @@ impl Inner {
                 Some(State::Proved { last }) => self.settled_by_user(&record, Some(last))?,
                 Some(State::Waiting { d, at }) => self.wait_timeout(cid, *d, at)?,
                 Some(State::Path(p)) => self.path_tick(cid, *p)?,
+                Some(State::Collect { link, since }) => self.collect(&record, link, since)?,
                 Some(s) => Some(s),
             };
             if let Some(s) = next {
@@ -187,8 +215,8 @@ impl Inner {
 
     /// A dispute the user settles: conceded (her timeout pays her, from the
     /// ladder output after move 1) or proved (her proof, from the output
-    /// after her last move, `proved`). Once that output is spent, the
-    /// contract is closed.
+    /// after her last move, `proved`). Once that output is spent, the hub
+    /// collects its bit outputs from the payout, then closes.
     fn settled_by_user(&self, record: &lichen_proto::Record, proved: Option<u32>) -> Result<Option<State>> {
         let cid = record.cid();
         let d = Disputed::new(record, &self.cfg.statement, &self.cfg.dir)?;
@@ -201,13 +229,97 @@ impl Inner {
         if self.chain.get_tx(&op.txid).is_some() && !self.chain.unspent(&op)? {
             let how = if proved.is_some() { "the user proved the last step" } else { "the user's timeout paid the claim" };
             self.note(format!("contract {cid}: settled: {how}"));
-            self.close(cid, op.txid)?;
-            return Ok(Some(State::Done));
+            return Ok(Some(State::Collect { link: op.txid, since: self.chain.height()? }));
         }
         Ok(Some(match proved {
             Some(last) => State::Proved { last },
             None => State::Conceded,
         }))
+    }
+
+    /// The payout of a dispute the user won (spending `link`'s output):
+    /// sweep the hub's bit outputs once it confirms. They appear only
+    /// then, so until they do the hub waits, for a while, before closing
+    /// with nothing collected.
+    fn collect(&self, record: &lichen_proto::Record, link: Txid, since: u32) -> Result<Option<State>> {
+        let cid = record.cid();
+        if self.leave_bits.load(std::sync::atomic::Ordering::Relaxed) {
+            self.close(cid, link)?;
+            self.set_collected(cid, false)?;
+            return Ok(Some(State::Done));
+        }
+        let d = Disputed::new(record, &self.cfg.statement, &self.cfg.dir)?;
+        match self.sweep_bits(&d, cid)? {
+            Bits::None => self.note(format!("contract {cid}: no bit outputs of the hub's (every bit of the claim is set)")),
+            Bits::Swept(txid, n, value) => self.note(format!("contract {cid}: collected the hub's {n} bit outputs, {} sats: {txid}", value.to_sat())),
+            Bits::NotYet if self.chain.height()? < since + 4 * self.cfg.network.patience_blocks() => return Ok(Some(State::Collect { link, since })),
+            Bits::NotYet => self.note(format!("contract {cid}: no bit outputs of the hub's appeared; closed without collecting")),
+        }
+        self.close(cid, link)?;
+        Ok(Some(State::Done))
+    }
+
+    /// A contract closed before the hub collected its bit outputs: if a
+    /// dispute the user won is what closed it, sweep them now. Looked at
+    /// once.
+    fn collect_closed(&self, record: &lichen_proto::Record) -> Result<()> {
+        let cid = record.cid();
+        let d = Disputed::new(record, &self.cfg.statement, &self.cfg.dir)?;
+        if self.chain.get_tx(&d.txid("escalate")).is_some() {
+            if let Bits::Swept(txid, n, value) = self.sweep_bits(&d, cid)? {
+                self.note(format!("contract {cid}: collected the hub's {n} bit outputs left from its dispute, {} sats: {txid}", value.to_sat()));
+            }
+        }
+        self.set_collected(cid, true)
+    }
+
+    /// Sweep to the hub's wallet its bit outputs of a payout: for each bit
+    /// clear in Alice's signed `b`, the output of `u 2^i`, by its leaf
+    /// `hub_bit_i` (her signature on `b`, read from the escalation, and the
+    /// hub's).
+    fn sweep_bits(&self, d: &Disputed, cid: u32) -> Result<Bits> {
+        let esc = self.chain.get_tx(&d.txid("escalate")).context("the escalation")?;
+        let claim = d.contract.claim_words();
+        let keys: Vec<_> = claim.iter().map(|&j| d.contract.spec.inputs[j].clone()).collect();
+        let at = claim.iter().position(|&j| j == d.contract.spec.b_word).context("b is not in the claim")?;
+        let b = read_words(&esc, &keys, Some(d.key(1)))?[at];
+        let b_wire = word_wires(&esc, &keys, Some(d.key(1)))?.swap_remove(at);
+        let (t, ctx, b_key) = (&d.contract.spec.terms, d.contract.ctx(), d.contract.b_key());
+        let mut trees = vec![];
+        for i in (t.low_bits..t.bits).filter(|i| (b >> i) & 1 == 0) {
+            let tree = bit_tree(&ctx, i, b_key)?;
+            trees.push((tree.script_pubkey(), tree, format!("hub_bit_{i}")));
+        }
+        if trees.is_empty() {
+            return Ok(Bits::None);
+        }
+        let spks: Vec<_> = trees.iter().map(|t| t.0.clone()).collect();
+        let coins = self.chain.scan_utxos(&spks)?;
+        if coins.is_empty() {
+            return Ok(Bits::NotYet);
+        }
+        let ins: Vec<_> = coins.iter().map(|(op, out, _)| (*op, out.clone(), trees.iter().find(|t| t.0 == out.script_pubkey).expect("a scanned script"))).collect();
+        let kp = crate::contract_keys(&self.cfg.seed, cid).payment;
+        let to = self.chain.new_spk()?;
+        let total: Amount = ins.iter().map(|i| i.1.value).sum();
+        let prevouts: Vec<TxOut> = ins.iter().map(|i| i.1.clone()).collect();
+        let seqs: Vec<(OutPoint, Sequence)> = ins.iter().map(|i| (i.0, Sequence::ENABLE_RBF_NO_LOCKTIME)).collect();
+        let build = |fee: Amount| -> Result<Transaction> {
+            let out = TxOut { value: total.checked_sub(fee).context("the bit outputs can't pay the sweep's fee")?, script_pubkey: to.clone() };
+            let mut sweep = lngap_btc::tx::build_tx(&seqs, vec![out], bitcoin::absolute::LockTime::ZERO);
+            for (n, (_, _, (_, tree, name))) in ins.iter().enumerate() {
+                let leaf = tree.leaf(name)?;
+                let mut w = b_wire.clone();
+                w.push(sign_tapscript(&kp, &sweep, n, &prevouts, &leaf.script)?.as_ref().to_vec());
+                sweep.input[n].witness = tapscript_witness(&w, &leaf.script, &tree.control_block(name)?);
+            }
+            Ok(sweep)
+        };
+        // sized once at no fee, then paid
+        let vsize = build(Amount::ZERO)?.vsize() as u64;
+        let fee = Amount::from_sat((vsize + 2) * lichen_proto::feerate(self.cfg.network));
+        let txid = self.chain.broadcast(&build(fee)?).context("sweeping the hub's bit outputs")?;
+        Ok(Bits::Swept(txid, ins.len(), total - fee))
     }
 
     /// Take the contract with the check `name` on the ladder output after
@@ -309,8 +421,10 @@ impl Inner {
         let verdict = v.verdict(&signed, &proves)?;
         let op = OutPoint { txid: id, vout: 0 };
         if !self.chain.unspent(&op)? && self.chain.get_tx(&d.txid("path_split")).is_none() {
+            // before a restart: by her proof (the hub's bit outputs to
+            // collect) or by its disprove (nothing to collect)
             self.note(format!("contract {cid}: the last step is already settled"));
-            return Ok(Some(State::Done));
+            return Ok(Some(State::Collect { link: id, since: self.chain.height()? }));
         }
         match verdict {
             Verdict::Proved => {
@@ -459,6 +573,7 @@ impl State {
             State::Proved { .. } => "the user's last step is valid: the user proves it".into(),
             State::Waiting { .. } => "no rule applies: waiting for the hub's timeout".into(),
             State::Path(p) => format!("the hub's path is posted ({}, {} chunks): the user's window to challenge a hop", p.name, p.k),
+            State::Collect { .. } => "the user won: collecting the hub's bit outputs".into(),
             State::Done => "settled".into(),
         }
     }
