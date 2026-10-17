@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::{bail, ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use lichen_chain::{Chain, Fees};
-use lichen_proto::{anchor_vout, link_name, sign_anchor, sign_move, Disputed, Patience, Stall, Statement};
+use lichen_proto::{anchor_vout, link_name, sign_anchor, sign_move, Disputed, Patience, Site, Stall, Statement};
 use lngap_btc::taptree::TapTree;
 use lngap_channel::Role;
 use lngap_sessions::contract::anchor_tree_for;
@@ -157,7 +157,7 @@ impl Wallet {
             return self.won(chain, &d, k, b, o);
         }
         let (m, p) = (d.contract.m(), d.contract.spec.params);
-        let w = u32::from(p.delta + p.delta_prime);
+        let lock = |site| u32::from(d.contract.lock(site));
         let word_wire = |js: &[usize]| -> Result<Vec<Vec<u8>>> {
             let mut wire = vec![];
             for &j in js.iter().rev() {
@@ -189,6 +189,7 @@ impl Wallet {
         }
         // the search: the hub moves at even depths
         for j in (2..m).step_by(2) {
+            let w = lock(Site::Next(j - 1));
             self.step(format!("waiting for the hub's move {j}: its window ends at block {}", last + w));
             let tx = match wait_link(chain, &d.txid(&link_name(j)), &OutPoint { txid: last_id, vout: 0 }, last + w)? {
                 Next::Link(tx) => tx,
@@ -221,7 +222,7 @@ impl Wallet {
         // path against it (at once); if neither comes in her window, she
         // proves it
         let last_op = OutPoint { txid: last_id, vout: 0 };
-        while chain.unspent(&last_op)? && chain.height()? < last + w {
+        while chain.unspent(&last_op)? && chain.height()? < last + lock(Site::ProveAfter) {
             std::thread::sleep(Duration::from_millis(100));
         }
         if !chain.unspent(&last_op)? {
@@ -249,8 +250,7 @@ impl Wallet {
     /// takes the output, unless it never posts it. If the hub never
     /// finishes posting the path, her timeout pays her.
     fn answer_path(&mut self, chain: &Chain, d: &Disputed, k: usize, b: u32, prover: &Prover) -> Result<(Outcome, Swept)> {
-        let p = d.contract.spec.params;
-        let w = u32::from(p.delta + p.delta_prime);
+        let lock = |site| u32::from(d.contract.lock(site));
         let nonce = self.contracts[k].nonce.clone();
         let split_at = wait_confirmed(chain, &d.txid("path_split"))?;
         self.step("the hub is posting a path against the last step".into());
@@ -263,7 +263,7 @@ impl Wallet {
                 let at = wait_confirmed(chain, &id)?;
                 break (n, chain.get_tx(&id).context("the combine")?, at);
             }
-            if chain.unspent(&carrier)? && chain.height()? >= split_at + w + u32::from(p.delta_prime) {
+            if chain.unspent(&carrier)? && chain.height()? >= split_at + lock(Site::Carrier) {
                 self.step("the hub never finished its path: the user's timeout pays".into());
                 let txid = self.terminal(chain, d, "timeout_path_split", vec![])?;
                 return self.paid(chain, d, k, b, Outcome::HubTimedOut(txid));
@@ -281,7 +281,7 @@ impl Wallet {
                 let wire = wots_wire(&self.hop_secret(&nonce, n).sign(&[i as u8])?);
                 let hop_at = self.post(chain, d, &nonce, &hop, wire)?;
                 let h_op = OutPoint { txid: d.txid(&hop), vout: 0 };
-                while chain.unspent(&h_op)? && chain.height()? < hop_at + w {
+                while chain.unspent(&h_op)? && chain.height()? < hop_at + lock(Site::HopTimeout) {
                     std::thread::sleep(Duration::from_millis(100));
                 }
                 if !chain.unspent(&h_op)? {
@@ -297,7 +297,7 @@ impl Wallet {
             }
             None => {
                 self.step("the hub's path is genuine: its verdict will take the output".into());
-                while chain.unspent(&p_op)? && chain.height()? < comb_at + w + u32::from(p.delta_prime) {
+                while chain.unspent(&p_op)? && chain.height()? < comb_at + lock(Site::PathTimeout) {
                     std::thread::sleep(Duration::from_millis(100));
                 }
                 if !chain.unspent(&p_op)? {

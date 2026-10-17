@@ -20,7 +20,7 @@ use lichen_chain::NodeWallet;
 use anyhow::{Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use emulator::decision::challenge::ForceCondition;
-use lichen_proto::{anchor_vout, input_from_words, link_name, sign_anchor, sign_fields, sign_move, Disputed};
+use lichen_proto::{anchor_vout, input_from_words, link_name, sign_anchor, sign_fields, sign_move, Disputed, Site};
 use lngap_btc::sighash::sign_tapscript;
 use lngap_btc::taptree::TapTree;
 use lngap_btc::tx::build_spend;
@@ -153,8 +153,7 @@ impl Inner {
             if confirmed_at(self, &id)?.is_none() {
                 // the rest of the input is due within the window, or the hub's timeout
                 let at = confirmed_at(self, &esc_id)?.unwrap();
-                let p = d.contract.spec.params;
-                if self.chain.height()? >= at + u32::from(p.delta + p.delta_prime) {
+                if self.chain.height()? >= at + u32::from(d.contract.lock(Site::Claimed)) {
                     let txid = self.terminal(&d, "timeout_inputs")?;
                     self.note(format!("contract {cid}: the input never came; timeout {txid}"));
                     self.close(cid, txid)?;
@@ -389,7 +388,8 @@ impl Inner {
     /// One step of a dispute in play.
     fn play(&self, cid: u32, d: Disputed, mut v: Verifier, awaiting: u32, last: u32) -> Result<Option<State>> {
         let (m, p) = (d.contract.m(), d.contract.spec.params);
-        let w = u32::from(p.delta + p.delta_prime);
+        // her window for move `awaiting`, from the hub's last move
+        let w = u32::from(d.contract.lock(Site::Next(awaiting - 1)));
         let id = d.txid(&link_name(awaiting));
         let ours = OutPoint { txid: d.txid(&link_name(awaiting - 1)), vout: 0 };
         let Some(at) = confirmed_at(self, &id)? else {
@@ -476,15 +476,14 @@ impl Inner {
     /// No rule applied: once her window passes, the last ladder output
     /// times out to the hub.
     fn wait_timeout(&self, cid: u32, d: Disputed, at: u32) -> Result<Option<State>> {
-        let (m, p) = (d.contract.m(), d.contract.spec.params);
+        let m = d.contract.m();
         let op = OutPoint { txid: d.txid(&link_name(m)), vout: 0 };
         if !self.chain.unspent(&op)? {
             self.note(format!("contract {cid}: settled: the user's last step"));
             self.close(cid, op.txid)?;
             return Ok(Some(State::Done));
         }
-        let w = u32::from(p.delta + p.delta_prime);
-        if self.chain.height()? < at + w + u32::from(p.delta_prime) {
+        if self.chain.height()? < at + u32::from(d.contract.lock(Site::FinalTimeout)) {
             return Ok(Some(State::Waiting { d: Box::new(d), at }));
         }
         let name = format!("timeout_{m}");
@@ -549,7 +548,7 @@ impl Inner {
             self.close(cid, p_op.txid)?;
             return Ok(Some(State::Done));
         }
-        if self.chain.height()? < at + u32::from(p.delta + p.delta_prime) {
+        if self.chain.height()? < at + u32::from(d.contract.lock(Site::VerdictAfter)) {
             return Ok(Some(State::Path(Box::new(s))));
         }
         // no challenge in her window: the verdict

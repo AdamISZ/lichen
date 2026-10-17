@@ -209,24 +209,52 @@ fatal in any shared test. Now:
   people ask questions). Proving live instead needs the wrap on x86
   (a remote box) and, to be quick, the accelerated guest.
 
-## Windows per move (decided 2026-10-16)
+## Windows per move (decided 2026-10-16, done 2026-10-17)
 
-- TODO: give each kind of move its own window instead of one `w` for
-  all. Long where the honest side's move is heavy: Alice's `inputs`, her
-  rounds of hashes, the final record and the last step's proof (25 kvB),
-  and the hub's read-lie path (`combine_k`, up to 93 kvB, and the
-  verdict). Short where it is light: the hub's choices (0.3 kvB).
+Each kind of obligation has its own window (ln-gap's `ladder::Windows`,
+branch `per-move-windows` in both repos), instead of one `w = δ + δ′`
+for every move:
+
+- `user`: Alice, for each of her moves (`inputs`, her rounds, her final
+  record, her choice of a hop) and her proof of the last step;
+- `hub`: the hub, for each of its choices (0.3 kvB);
+- `path`: the hub's heavy moves: at the final step (a disprove or its
+  path's split), the combine (up to 93 kvB), its verdict, a hop's reveal.
+
+Every timeout's lock comes from one place (`ladder::Spec::lock(Site)`,
+`Contract::lock` in sessions): after Alice's move the hub's window, after
+its choice hers; at the last depth her proofs after `path`, the hub's
+timeout after `path + user`; in the tail the carrier's timeout after
+`path`, the verdict after `user` (her window to choose a hop), her
+timeout after `user + path`, a hop's reveal within `path`. `check` refuses
+windows a disprove (after δ) couldn't fit in, or a hub window `post`
+couldn't.
+
 - Why: congestion safety needs contracts × heaviest move ≤ window × block
   (the paper's Table 2), so the heavy windows must grow with the hub's
   contract count (75 blocks for 3,000 contracts against a hostile hub,
   280 against hostile users with read lies). With one `w`, a vanished
-  hub's users would wait that long too; with per-move windows they wait
-  only the hub's short reply window. Disputes stay as long as before, and
-  `Tc` must still leave room for the longest.
-- Where: the ladder's pre-signed timeouts (ln-gap), the contract terms
-  (one window per kind, in the `OpenOffer`), the hub and wallet's
-  deadlines, and the paper (the dispute's duration, `11(w+1)` blocks, and
-  Table 2).
+  hub's users waited that long too; now they wait the hub's short window
+  (an absent hub fails its first choice). Disputes stay as long, and
+  `Tc` must leave room for the longest.
+- Contracts record their windows (`Record::windows`, stated by the hub in
+  `OpenOffer::windows`); one saved without (`None`) rebuilds exactly as
+  before, so open contracts and the Mutinynet hub's keep their txids.
+  The wallet refuses a hub giving her moves less than the network's
+  window.
+- Per network (`lichen_proto::windows`): regtest 14/10/16 (distinct, so a
+  deadline read from the wrong window fails the tests), Mutinynet 80/20/80
+  (40 min, 10 min, 40 min: an absent hub's users wait 10 minutes, not 40),
+  signet 12/6/12, testnet4 72/18/72.
+- Tests: ln-gap `sessions/tests/contract.rs` (every lock with and without
+  windows, in the trees too, and bad windows refused); lichen's dispute,
+  tail and resume tests run under the regtest windows, and `dispute.rs`'s
+  second hub under its own (`--windows`-style config: 16/8/20).
+- A hub sets its own (`lichen-hub --windows <user>,<hub>,<path>`, `WINDOWS`
+  in `deploy/hub/.env`), sized by its contract count; it refuses at start
+  windows that fail `check` or give the user less than the network's.
+- TODO: the paper: the dispute's duration (`11(w+1)` blocks) and Table 2
+  with the windows by obligation.
 
 ## The paper: figures still from before the deployment keys
 

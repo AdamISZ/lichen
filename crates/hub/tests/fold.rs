@@ -69,6 +69,7 @@ fn fold_and_default() {
         refuse_folds: false,
         dispute_true_claims: false,
         first_cid: 1000,
+        windows: None,
     })
     .unwrap();
     let ask = |deposit| Ask { deposit, bits: 21, reserve: 20_000 };

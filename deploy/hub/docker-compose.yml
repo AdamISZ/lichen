@@ -39,6 +39,7 @@ services:
       RESERVE_PPM: ${RESERVE_PPM:-20000}
       MAX_BITS: ${MAX_BITS:-24}
       DURATION: ${DURATION:-}
+      WINDOWS: ${WINDOWS:-}
     volumes:
       - ./data/${NETWORK}/hub:/hub
       - ./data/${NETWORK}/bitcoind:/bitcoind:ro

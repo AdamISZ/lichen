@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use lichen_hub::{Config, Hub};
 use lichen_ledger::{fresh_rho, load_or_create_key, regtest_hub, xonly};
-use lichen_proto::Statement;
+use lichen_proto::{Statement, Windows};
 
 #[derive(Parser)]
 #[command(about = "A lichen hub")]
@@ -52,6 +52,18 @@ struct Args {
     /// Mutinynet).
     #[arg(long)]
     duration: Option<u32>,
+    /// The dispute's windows, in blocks, `<user>,<hub>,<path>`: the user's
+    /// for each of her moves, the hub's for its choices, the hub's for its
+    /// heavy moves (the network's default if not given). Size the heavy
+    /// ones by the contracts the hub will hold.
+    #[arg(long, value_parser = parse_windows)]
+    windows: Option<Windows>,
+}
+
+fn parse_windows(s: &str) -> Result<Windows, String> {
+    let n: Vec<u16> = s.split(',').map(|x| x.trim().parse::<u16>().map_err(|e| format!("{x}: {e}"))).collect::<Result<_, _>>()?;
+    let [user, hub, path] = n[..] else { return Err("three windows, <user>,<hub>,<path>".into()) };
+    Ok(Windows { user, hub, path })
 }
 
 fn main() -> Result<()> {
@@ -84,6 +96,7 @@ fn main() -> Result<()> {
         reserve_ppm: a.reserve_ppm,
         max_bits: a.max_bits,
         duration: a.duration.unwrap_or(lichen_proto::default_duration(a.network)),
+        windows: a.windows,
         refuse_folds: false,
         dispute_true_claims: false,
         first_cid: 1000,

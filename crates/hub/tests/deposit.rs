@@ -79,6 +79,7 @@ fn a_user_with_no_wallet() {
         refuse_folds: refuse,
         dispute_true_claims: refuse,
         first_cid: 1000,
+        windows: None,
     };
     for name in ["hub-e", "hub-d", "hub-s"] {
         rt.fund(&node(name).new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();

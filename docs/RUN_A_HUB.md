@@ -74,6 +74,7 @@ In `deploy/hub/.env`:
 | `SEQUENCER_URL` | the sequencer, as the hub's container reaches it. If the sequencer is on this same machine: `http://host.docker.internal:<its port>` |
 | `STATEMENT` | what disputes run: `groth16` (the real statement) or `mock` |
 | `RESERVE_PPM`, `MAX_BITS`, `DURATION` | the hub's terms: its reserve (ppm of the cap), the largest cap (2^bits − 1 sats), a contract's life in blocks (empty: the network's default) |
+| `WINDOWS` | the dispute's windows in blocks, `<user>,<hub>,<path>`: the user's for each of her moves, the hub's for its choices, the hub's for its heavy moves (empty: the network's default; wallets refuse a user window under it). The heavy ones bound how many contracts the hub can hold safely when blocks are full (the paper's congestion table) |
 | `HUB_PORT` | the published port (default 18310) |
 | `MINE_EVERY` | regtest only: seconds between the miner's blocks |
 

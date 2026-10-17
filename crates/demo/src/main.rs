@@ -133,6 +133,7 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
         refuse_folds: false,
         dispute_true_claims: false,
         first_cid: FIRST_CID,
+        windows: None,
     })?;
     let mut users = vec![];
     for name in ["Alice", "Bob"] {

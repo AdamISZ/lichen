@@ -67,6 +67,7 @@ fn a_dispute_resumes_after_restarts() {
         refuse_folds: true,
         dispute_true_claims: true,
         first_cid: 1000,
+        windows: None,
     };
     let hub = Hub::start(config()).unwrap();
     let miner = {

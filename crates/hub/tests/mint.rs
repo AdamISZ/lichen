@@ -55,6 +55,7 @@ fn the_mint_is_alices_only_once_the_funding_is_out() {
         refuse_folds: false,
         dispute_true_claims: false,
         first_cid: 1000,
+        windows: None,
     })
     .unwrap();
     let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };

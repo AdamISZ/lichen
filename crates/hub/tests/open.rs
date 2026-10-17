@@ -49,6 +49,7 @@ fn open_a_contract_and_receive_the_deposit() {
         refuse_folds: false,
         dispute_true_claims: false,
         first_cid: 1000,
+        windows: None,
     })
     .unwrap();
 

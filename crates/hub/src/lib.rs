@@ -23,7 +23,7 @@ use lngap_btc::adaptor::{adaptor_complete, adaptor_verify, AdaptorSig};
 use lichen_chain::Chain;
 use lichen_ledger::{note, xonly, Mint, Tx};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_proto::{all_moves, broadcast_deadline, check_funding, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, tail_keys, contributions, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{all_moves, broadcast_deadline, check_funding, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, tail_keys, contributions, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, Windows, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
 use lichen_l2::Client;
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
@@ -53,6 +53,10 @@ pub struct Config {
     pub reserve_ppm: u64,
     pub max_bits: u32,
     pub duration: u32,
+    /// The dispute's windows it offers (none: the network's,
+    /// `lichen_proto::windows`): longer heavy windows for a hub with many
+    /// contracts (the paper's congestion table).
+    pub windows: Option<Windows>,
     /// Misbehaviour, for tests: refuse every cooperative withdrawal, and
     /// dispute claims that are true.
     pub refuse_folds: bool,
@@ -168,6 +172,11 @@ pub struct Hub {
 
 impl Hub {
     pub fn start(cfg: Config) -> Result<Hub> {
+        if let Some(w) = cfg.windows {
+            w.check(lichen_proto::params(cfg.network).delta, lngap_sessions::contract::POST_CSV).map_err(|e| anyhow!(e))?;
+            let least = lichen_proto::windows(cfg.network).user;
+            ensure!(w.user >= least, "windows {w:?}: wallets refuse fewer than {least} blocks for each of the user's moves");
+        }
         std::fs::create_dir_all(cfg.dir.join("contracts"))?;
         let program = cfg.statement.program(&cfg.dir)?;
         let chain = Chain::connect_on(&cfg.rpc_url, &cfg.cookie, &cfg.wallet, cfg.network)?;
@@ -360,6 +369,7 @@ impl Inner {
             funding: OutPoint::null(),
             hub_sigs: HashMap::new(),
             alice_sigs: HashMap::new(),
+            windows: Some(self.cfg.windows.unwrap_or(lichen_proto::windows(self.cfg.network))),
         };
         // the hub's reserve: its share of the cap, and at least what the
         // floors of a dispute it loses take from it
@@ -403,7 +413,7 @@ impl Inner {
         let owner = mint_owner(&req.l2_address, &mint_point)?;
         let mint_index = self.seq.submit(&Tx::Mint(Mint::new(&self.cfg.l2_key, vec![note(owner, d, 0)])))?[0];
         self.note(format!("contract {cid}: offered; minted {d} sats to the user, locked to the funding"));
-        let offer = OpenOffer { cid, t_close, reserve_hub, hub, moves: hub_moves, path, funding, hub_coins, hub_sigs: record.hub_sigs.clone(), mint_point, mint_index };
+        let offer = OpenOffer { cid, t_close, reserve_hub, hub, moves: hub_moves, path, funding, hub_coins, hub_sigs: record.hub_sigs.clone(), mint_point, mint_index, windows: record.windows };
         self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t });
         Ok(offer)
     }

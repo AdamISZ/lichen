@@ -363,6 +363,12 @@ impl Wallet {
         ensure!(offer.cid == dep.cid, "the offer is for contract {}, the deposit for {}", offer.cid, dep.cid);
         let t = terms(offer.cid, &req, offer.t_close, offer.reserve_hub)?;
         ensure!(offer.t_close > chain.height()?, "T_close is past");
+        // the hub's windows: never less time for her moves than the
+        // network's (longer ones only slow a dispute)
+        if let Some(w) = offer.windows {
+            let least = lichen_proto::windows(net).user;
+            ensure!(w.user >= least, "the hub offers {} blocks for each of the user's moves, under the network's {least}", w.user);
+        }
         let mut record = Record {
             statement: statement.id().to_string(),
             network: net,
@@ -376,6 +382,7 @@ impl Wallet {
             funding: bitcoin::OutPoint { txid: offer.funding.compute_txid(), vout: 0 },
             hub_sigs: offer.hub_sigs.clone(),
             alice_sigs: Default::default(),
+            windows: offer.windows,
         };
         let c = record.contract(statement, program)?;
         let fee_out = bitcoin::TxOut { value: fee_budget_of(coin.1.value, &t)?, script_pubkey: fees.spk() };

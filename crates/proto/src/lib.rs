@@ -36,6 +36,7 @@ use lngap_btc::adaptor::AdaptorSig;
 use lngap_channel::{ChannelParams, PartyPubKeys};
 use lngap_lamport::winternitz::WotsPublic;
 use lngap_sessions::contract::{Check, Contract, Presign, Program, Signed, Spec};
+pub use lngap_sessions::contract::{Site, Windows};
 use lngap_sessions::session::Terms;
 pub use lichen_ledger::{Deployment, Hash, JOURNAL_LEN};
 use serde::{Deserialize, Serialize};
@@ -51,10 +52,12 @@ pub const IMAGE_ID: &str = "e0cd81a7ada6a59415be2e4a4e0cea04b6a616cc0efeeb7443e4
 pub use lichen_chain::{Net, Patience, Stall};
 
 /// The contracts' timing on a network, in blocks: escalating waits
-/// `to_self_delay` after the funding; each move's window is δ, and the
-/// prover's extra δ′. Windows leave time for a person, or a restart, at
-/// the network's block time; on testnet4, whose blocks come in bursts,
-/// wide in blocks so that a burst doesn't use one up.
+/// `to_self_delay` after the funding; a disprove waits δ (an equivocation
+/// first). The windows are [`windows`]'; a contract made before them has
+/// one window for every move, δ + δ′, and its races at the end δ′.
+/// Windows leave time for a person, or a restart, at the network's block
+/// time; on testnet4, whose blocks come in bursts, wide in blocks so that
+/// a burst doesn't use one up.
 pub fn params(net: Net) -> ChannelParams {
     let p = ChannelParams::regtest(Amount::from_sat(0));
     match net {
@@ -65,6 +68,27 @@ pub fn params(net: Net) -> ChannelParams {
         Net::Signet => ChannelParams { to_self_delay: 3, delta: 6, delta_prime: 6, deadline_margin: 3, ..p },
         // nominally 10 min, in bursts: 6 h windows
         Net::Testnet4 => ChannelParams { to_self_delay: 6, delta: 36, delta_prime: 36, deadline_margin: 12, ..p },
+    }
+}
+
+/// The dispute's windows by obligation on a network, in blocks
+/// (lngap-ladder's `Windows`): Alice's for each of her moves and her
+/// proof, the window [`params`] gives each move; the hub's for its choices,
+/// shorter (a reply of a few hundred bytes, and what users wait when the
+/// hub is gone); its heavy moves' (at the final step, its path) as
+/// Alice's. A hub sized for many contracts would offer longer heavy
+/// windows (the paper's congestion table).
+pub fn windows(net: Net) -> Windows {
+    match net {
+        // blocks every 150 ms in the dispute tests: distinct, so that a
+        // deadline read from the wrong window shows
+        Net::Regtest => Windows { user: 14, hub: 10, path: 16 },
+        // 30 s blocks: 40 min, 10 min, 40 min
+        Net::Mutinynet => Windows { user: 80, hub: 20, path: 80 },
+        // 10 min blocks: 2 h, 1 h, 2 h
+        Net::Signet => Windows { user: 12, hub: 6, path: 12 },
+        // nominally 10 min, in bursts: 12 h, 3 h, 12 h
+        Net::Testnet4 => Windows { user: 72, hub: 18, path: 72 },
     }
 }
 
@@ -343,6 +367,10 @@ pub struct OpenOffer {
     pub mint_point: PublicKey,
     /// The note minting `D` to [`mint_owner`]`(l2_address, T)`.
     pub mint_index: u32,
+    /// The dispute's windows (none from a hub from before them: the
+    /// single window).
+    #[serde(default)]
+    pub windows: Option<Windows>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -490,6 +518,10 @@ pub struct Record {
     pub funding: OutPoint,
     pub hub_sigs: HashMap<String, Vec<u8>>,
     pub alice_sigs: HashMap<String, Vec<u8>>,
+    /// The dispute's windows by obligation; none for a contract made
+    /// before them, which keeps the single window `δ + δ′`.
+    #[serde(default)]
+    pub windows: Option<Windows>,
 }
 
 impl Record {
@@ -498,7 +530,7 @@ impl Record {
     }
     pub fn spec(&self, statement: &Statement) -> Spec {
         let (b_word, checks) = statement.layout(self.terms.id, &self.deployment);
-        Spec { terms: self.terms, cid: self.terms.id, params: params(self.network), pubs: self.pubs.clone(), b_word, checks, moves: self.moves.clone(), inputs: self.inputs.clone(), tail: self.tail.clone() }
+        Spec { terms: self.terms, cid: self.terms.id, params: params(self.network), pubs: self.pubs.clone(), b_word, checks, moves: self.moves.clone(), inputs: self.inputs.clone(), tail: self.tail.clone(), windows: self.windows }
     }
     pub fn contract(&self, statement: &Statement, program: &Program) -> Result<Contract> {
         ensure!(statement.id() == self.statement, "the contract runs {}, not {}", self.statement, statement.id());
@@ -747,6 +779,13 @@ mod tests {
         // the windows are in blocks: wider where blocks come faster or in bursts
         assert!(params(Net::Mutinynet).delta > params(Net::Signet).delta);
         assert!(params(Net::Testnet4).delta > params(Net::Signet).delta);
+        // the windows by obligation fit the disprove delay; Alice's moves
+        // keep the window they had, the hub's choices are quicker
+        for net in [Net::Regtest, Net::Mutinynet, Net::Signet, Net::Testnet4] {
+            let (w, p) = (windows(net), params(net));
+            w.check(p.delta, lngap_sessions::contract::POST_CSV).unwrap();
+            assert!(w.user >= p.delta + p.delta_prime && w.hub < w.user, "{net:?}: {w:?}");
+        }
     }
 
     /// The Groth16 layout checks the journal `b ‖ c ‖ D`: a claim in this

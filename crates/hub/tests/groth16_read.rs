@@ -114,6 +114,7 @@ fn a_read_lie_on_the_groth16_verifier() {
         refuse_folds: true,
         dispute_true_claims: false,
         first_cid: 42,
+        windows: None,
     })
     .unwrap();
     let ch = chain("alice");

@@ -119,6 +119,7 @@ fn the_read_and_jump_challenges_on_the_mock_statement() {
         refuse_folds: true,
         dispute_true_claims: false,
         first_cid: 1000,
+        windows: None,
     })
     .unwrap();
     let miner = {

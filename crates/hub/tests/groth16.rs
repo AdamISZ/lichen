@@ -88,6 +88,7 @@ fn disputes_on_the_groth16_verifier() {
             refuse_folds: true,
             dispute_true_claims,
             first_cid: 42,
+            windows: None,
         })
         .unwrap();
         let user = format!("alice-{label}");
