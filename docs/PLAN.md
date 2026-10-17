@@ -271,5 +271,5 @@ couldn't.
 
 ## Later
 
-Watchtowers (open problem: the paper's Watchtowers section, papers/lichen-v0.1.1.pdf); several hubs
+Watchtowers: a turnkey tower, planned in [TOWER_PLAN.md](TOWER_PLAN.md) (the paper's Watchtowers section, papers/lichen-v0.1.1.pdf); several hubs
 (colours, clearing lines); shielded notes; a GUI.
