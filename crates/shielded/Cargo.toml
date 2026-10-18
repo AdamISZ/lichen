@@ -8,4 +8,4 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false, features = ["compress"] }

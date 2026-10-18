@@ -236,12 +236,22 @@ impl Tree {
     }
 }
 
-/// The nullifier set. Its root is a hash over the sorted set (the
-/// withdrawal statement takes it as opaque); the empty set's is the toy
-/// L2's.
+/// The nullifier set. Its root is the sparse Merkle tree's
+/// ([`shielded::smt`]), so that a nullifier can be shown unspent and
+/// added (a block guest's job); the withdrawal statement takes it as
+/// opaque. (Until 2026-10-18 a hash over the sorted set: heights sealed
+/// before keep that root.)
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Nullifiers {
     set: BTreeSet<Hash>,
+    #[serde(skip)]
+    root: std::sync::OnceLock<Hash>,
+}
+
+/// The empty subtrees of the nullifier tree, computed once.
+fn empties() -> &'static [Hash] {
+    static E: std::sync::OnceLock<Vec<Hash>> = std::sync::OnceLock::new();
+    E.get_or_init(shielded::smt::empties)
 }
 
 impl Nullifiers {
@@ -249,18 +259,15 @@ impl Nullifiers {
         self.set.contains(nf)
     }
     pub fn insert(&mut self, nf: Hash) -> bool {
+        self.root = std::sync::OnceLock::new();
         self.set.insert(nf)
     }
     pub fn root(&self) -> Hash {
-        if self.set.is_empty() {
-            return sha256(&[b"lngap/nullifiers/empty"]);
-        }
-        let mut h = Sha256::new();
-        h.update(b"lngap/nullifiers");
-        for nf in &self.set {
-            h.update(nf);
-        }
-        h.finalize().into()
+        *self.root.get_or_init(|| shielded::smt::root(&self.set.iter().copied().collect::<Vec<_>>(), empties()))
+    }
+    /// The path of `nf` in the tree (unspent: a proof that it is).
+    pub fn proof(&self, nf: &Hash) -> shielded::smt::Proof {
+        shielded::smt::proof(&self.set.iter().copied().collect::<Vec<_>>(), nf, empties())
     }
     pub fn iter(&self) -> impl Iterator<Item = &Hash> {
         self.set.iter()
@@ -738,6 +745,27 @@ mod tests {
         let d = t.digest().unwrap();
         t.t_sigs = t.t_spends.iter().map(|_| sign(signer.unwrap(), &d)).collect();
         Tx::Shielded(t)
+    }
+
+    #[test]
+    fn the_nullifier_root_follows_each_spend() {
+        // each spend's nullifier shown unspent under the root before, the
+        // root after: what a block guest will check
+        let (hub, seq) = (regtest_hub(), regtest_sequencer());
+        let alice = key_from_label("test/alice");
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub) });
+        let empty = l.nullifiers.root();
+        assert_eq!(empty, shielded::smt::empties()[shielded::smt::DEPTH]);
+        let n0 = note(xonly(&alice), 10, 0);
+        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![n0]))).unwrap()[0];
+        let nf = nullifier(&n0);
+        let p = l.nullifiers.proof(&nf);
+        l.apply(&transfer(vec![(Spend { note: n0, index: i0 }, &alice)], vec![note(xonly(&alice), 10, 0)])).unwrap();
+        assert_eq!(shielded::smt::insert(&empty, &nf, &p, &shielded::smt::empties()), Some(l.nullifiers.root()));
+        assert_ne!(l.seal(&seq).nullifiers, empty);
+        // kept and read back: the same root
+        let back: Ledger = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+        assert_eq!(back.nullifiers.root(), l.nullifiers.root());
     }
 
     #[test]
