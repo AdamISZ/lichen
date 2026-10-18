@@ -144,7 +144,8 @@ floor of 1 sat/vB (fee bumps need a separate anchor key: not yet).
 On a test network, start your hub with `HOSTILE=1` in `deploy/hub/.env`
 (rebuild its image first, `deploy/hub/build.sh`): it then refuses every
 withdrawal and disputes every claim, so the tower plays the whole
-search. The hub is the tower's other side, so keep it and its node
+search, and it takes the output by its timeout if the tower's proof of
+the last step comes late. The hub is the tower's other side, so keep it and its node
 running throughout (on a Mac, `caffeinate -i`); what is tested is that
 your wallet stays idle.
 

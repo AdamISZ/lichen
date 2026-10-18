@@ -42,8 +42,10 @@ pub(crate) enum State {
     /// Her last move (`last`) is valid: she proves it.
     Proved { last: u32 },
     /// No rule applies, yet her step doesn't prove: the hub's timeout,
-    /// after her final move (confirmed at `at`).
-    Waiting { d: Box<Disputed>, at: u32 },
+    /// after her final move (confirmed at `at`). Or, `proved`, her step is
+    /// valid and the hub disputes true claims: its timeout races her
+    /// proof.
+    Waiting { d: Box<Disputed>, at: u32, proved: bool },
     /// Under a jump list: the hub's path is posted (its combine of `k`
     /// chunks confirmed at `at`); Alice may challenge a hop, else the
     /// verdict `name` (its witness `pre_y`) takes the output.
@@ -105,7 +107,7 @@ impl Inner {
                 Some(State::Playing { d, v, awaiting, last }) => self.play(cid, *d, *v, awaiting, last)?,
                 Some(State::Conceded) => self.settled_by_user(&record, None)?,
                 Some(State::Proved { last }) => self.settled_by_user(&record, Some(last))?,
-                Some(State::Waiting { d, at }) => self.wait_timeout(cid, *d, at)?,
+                Some(State::Waiting { d, at, proved }) => self.wait_timeout(cid, *d, at, proved)?,
                 Some(State::Path(p)) => self.path_tick(cid, *p)?,
                 Some(State::Collect { link, since }) => self.collect(&record, link, since)?,
                 Some(s) => Some(s),
@@ -427,13 +429,17 @@ impl Inner {
             return Ok(Some(State::Collect { link: id, since: self.chain.height()? }));
         }
         match verdict {
+            Verdict::Proved if self.dispute_true_claims.load(std::sync::atomic::Ordering::Relaxed) => {
+                self.note(format!("contract {cid}: the user's last step is valid; the hub's timeout races her proof"));
+                Ok(Some(State::Waiting { d: Box::new(d), at, proved: true }))
+            }
             Verdict::Proved => {
                 self.note(format!("contract {cid}: the user's last step is valid; the user proves it"));
                 Ok(Some(State::Proved { last: m }))
             }
             Verdict::Wait => {
                 self.note(format!("contract {cid}: no rule applies, yet the user's step doesn't prove: waiting for the hub's timeout"));
-                Ok(Some(State::Waiting { d: Box::new(d), at }))
+                Ok(Some(State::Waiting { d: Box::new(d), at, proved: false }))
             }
             Verdict::ReadChallenge => anyhow::bail!("contract {cid}: a read challenge, and the statement has no jump list to settle it"),
             Verdict::Disprove(name, wit) => {
@@ -473,22 +479,41 @@ impl Inner {
         }
     }
 
-    /// No rule applied: once her window passes, the last ladder output
-    /// times out to the hub.
-    fn wait_timeout(&self, cid: u32, d: Disputed, at: u32) -> Result<Option<State>> {
+    /// No rule applied (or, `proved`, her step is valid and the hub races
+    /// her proof): once her window passes, the last ladder output times
+    /// out to the hub.
+    fn wait_timeout(&self, cid: u32, d: Disputed, at: u32, proved: bool) -> Result<Option<State>> {
         let m = d.contract.m();
         let op = OutPoint { txid: d.txid(&link_name(m)), vout: 0 };
         if !self.chain.unspent(&op)? {
+            if proved {
+                self.note(format!("contract {cid}: settled: the user proved the last step before the hub's timeout"));
+                return Ok(Some(State::Collect { link: op.txid, since: self.chain.height()? }));
+            }
             self.note(format!("contract {cid}: settled: the user's last step"));
             self.close(cid, op.txid)?;
             return Ok(Some(State::Done));
         }
         if self.chain.height()? < at + u32::from(d.contract.lock(Site::FinalTimeout)) {
-            return Ok(Some(State::Waiting { d: Box::new(d), at }));
+            return Ok(Some(State::Waiting { d: Box::new(d), at, proved }));
         }
         let name = format!("timeout_{m}");
-        let txid = self.terminal(&d, &name)?;
-        self.note(format!("contract {cid}: the user's step neither proved nor was disproved; timeout {txid}"));
+        let txid = match self.terminal(&d, &name) {
+            Ok(txid) => txid,
+            // her proof first, in the mempool: whichever confirms settles it
+            // (if hers, the hub collects its bit outputs)
+            Err(e) if proved => {
+                let once = format!("contract {cid}: the hub's timeout of the user's valid last step didn't broadcast");
+                if !self.log.lock().unwrap().contains(&once) {
+                    self.note(once);
+                    eprintln!("hub: ({e:#})");
+                }
+                return Ok(Some(State::Waiting { d: Box::new(d), at, proved }));
+            }
+            Err(e) => return Err(e),
+        };
+        let how = if proved { "the user's last step was valid, but no proof came in her window" } else { "the user's step neither proved nor was disproved" };
+        self.note(format!("contract {cid}: {how}; timeout {txid}"));
         self.close(cid, txid)?;
         Ok(Some(State::Done))
     }
@@ -570,7 +595,8 @@ impl State {
             State::Conceded => "the claim is true: conceded".into(),
             State::Playing { awaiting, .. } => format!("disputing: awaiting the user's move {awaiting}"),
             State::Proved { .. } => "the user's last step is valid: the user proves it".into(),
-            State::Waiting { .. } => "no rule applies: waiting for the hub's timeout".into(),
+            State::Waiting { proved: false, .. } => "no rule applies: waiting for the hub's timeout".into(),
+            State::Waiting { proved: true, .. } => "the user's last step is valid: the hub's timeout races her proof".into(),
             State::Path(p) => format!("the hub's path is posted ({}, {} chunks): the user's window to challenge a hop", p.name, p.k),
             State::Collect { .. } => "the user won: collecting the hub's bit outputs".into(),
             State::Done => "settled".into(),

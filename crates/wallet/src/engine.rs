@@ -217,7 +217,8 @@ fn wait_link(chain: &Chain, txid: &Txid, ours: &OutPoint, deadline: u32) -> Resu
 pub struct Options {
     /// Progress, one line a step.
     pub progress: Option<Arc<dyn Fn(String) + Send + Sync>>,
-    /// For tests: stop after posting this move (a resume picks it up).
+    /// For tests: stop after posting this move, the last too, before its
+    /// proof (a resume picks it up).
     pub pause_after: Option<u32>,
     /// For tests: escalate a claim that breaks a check.
     pub unchecked_claims: bool,
@@ -371,7 +372,7 @@ impl Engine<'_> {
             last = self.post(chain, &d, &link_name(j + 1), wire)?;
             last_id = d.txid(&link_name(j + 1));
             self.step(if j + 1 == m { format!("move {m}: the record of the disputed step") } else { format!("move {}: the trace's hashes at the seven boundaries inside that segment", j + 1) });
-            if pause.is_some_and(|p| j + 1 >= p) && j + 1 < m {
+            if pause.is_some_and(|p| j + 1 >= p) {
                 return Ok(Outcome::Paused);
             }
         }
@@ -379,6 +380,7 @@ impl Engine<'_> {
         // path against it (at once); if neither comes in its window, she
         // proves it
         let last_op = OutPoint { txid: last_id, vout: 0 };
+        self.step(format!("waiting for a disprove or a path against the last step: the hub's window ends at block {}", last + lock(Site::ProveAfter)));
         while chain.unspent(&last_op)? && chain.height()? < last + lock(Site::ProveAfter) {
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -386,7 +388,7 @@ impl Engine<'_> {
             if chain.get_tx(&d.txid("path_split")).is_some() {
                 return self.answer_path(chain, &d, &prover);
             }
-            self.step("the hub disproved the last step: the claim lost".into());
+            self.step("the hub took the last step's output (a disprove, or its timeout after her window to prove): the claim lost".into());
             return self.lost(last_id);
         }
         let rec = lngap_ladder::moves::View { s: &d.program.schedule, msgs: &prover.msgs }.record();

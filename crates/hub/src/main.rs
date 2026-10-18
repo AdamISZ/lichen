@@ -60,7 +60,8 @@ struct Args {
     windows: Option<Windows>,
     /// For trials, on test networks only: refuse every cooperative
     /// withdrawal and dispute every claim, true ones too, so that each
-    /// withdrawal is played to its end on chain.
+    /// withdrawal is played to its end on chain; a valid last step not
+    /// proved in the user's window is taken by the hub's timeout.
     #[arg(long)]
     hostile: bool,
 }
