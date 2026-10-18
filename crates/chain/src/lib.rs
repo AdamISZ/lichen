@@ -304,6 +304,11 @@ impl Fees for NodeWallet {
     }
 }
 
+/// The split's size (a key-path input, two P2TR outputs: 154 vB) and its
+/// change's least value.
+const SPLIT_VBYTES: u64 = 160;
+const SPLIT_DUST: u64 = 330;
+
 /// Fees from coins of one key, as a single-key P2TR output (key path,
 /// no scripts): the user's fee budget for a contract. Its coins are found
 /// by script ([`Chain::coins_of`]), so a chain of children each spending
@@ -315,6 +320,12 @@ pub struct KeyFees {
 }
 
 impl KeyFees {
+    /// What the split [`Fees::exact_coin`] makes costs beyond its amount:
+    /// its fee at `feerate` and the change's dust floor. The budget needs
+    /// one coin of at least the amount and this.
+    pub fn split_cost(feerate: u64) -> Amount {
+        Amount::from_sat(SPLIT_VBYTES * feerate + SPLIT_DUST)
+    }
     pub fn spk(&self) -> ScriptBuf {
         ScriptBuf::new_p2tr(&bitcoin::secp256k1::Secp256k1::verification_only(), self.keypair.x_only_public_key().0, None)
     }
@@ -342,9 +353,8 @@ impl Fees for KeyFees {
     }
     fn exact_coin(&self, chain: &Chain, amount: Amount) -> Result<(OutPoint, TxOut)> {
         // split a coin: `amount` and the change, both back to the budget
-        let fee = Amount::from_sat(160 * self.feerate);
-        let dust = Amount::from_sat(330);
-        let (op, out) = self.coin(chain, amount + fee + dust)?;
+        let fee = Amount::from_sat(SPLIT_VBYTES * self.feerate);
+        let (op, out) = self.coin(chain, amount + KeyFees::split_cost(self.feerate))?;
         let spk = self.spk();
         let split = Transaction {
             version: bitcoin::transaction::Version::TWO,

@@ -177,8 +177,12 @@ key, its coins found by script, waiting out an index's lag).
 Sizing found by the tests: a child's fee credits its link's own floor,
 and the target feerate is per network (`proto::feerate`: 1, so no
 children, on Mutinynet and signet; 2 on regtest and testnet4), as is the
-budget (`proto::fee_budget`: 20k sats where there are no children, 150k
+budget (`proto::fee_budget`: 30k sats where there are no children, 150k
 where there are; the mock dispute's children took 79k at 2 sat/vB).
+(20k until 2026-10-18: the tower's trial on Mutinynet found it short of
+the last step's proof, a 25.2 kvB terminal; on Groth16 the heaviest of
+Alice's terminals needs 26,793 at 1 sat/vB, `proto::terminal_need`,
+which the wallet now checks at opening.)
 `hub/tests/deposit.rs`: E1 open and fold through Esplora, E2 a whole
 dispute through Esplora (40 s, blocks every second) and the budget's
 rest swept, R a refund after the opening fails. `groth16.rs` on the

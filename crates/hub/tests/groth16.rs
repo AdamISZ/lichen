@@ -99,6 +99,17 @@ fn disputes_on_the_groth16_verifier() {
         let held = w.open_contract(&hub.url, &ch, &statement, &dir.join(&user), ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
         assert_eq!(held.record.cid(), 42);
         println!("LICHEN {label}: contract 42 on the Groth16 verifier opened in {:.1?}", t.elapsed());
+        if label == "G1" {
+            // the test networks' budgets pay for the heaviest of her
+            // terminals on this statement (the sizes are the statement's)
+            let c = held.record.contract(&statement, &statement.program(&dir.join(&user)).unwrap()).unwrap();
+            let set = c.presign(held.record.funding).unwrap();
+            for net in [lichen_proto::Net::Mutinynet, lichen_proto::Net::Signet] {
+                let need = lichen_proto::terminal_need(&c, &set, net).unwrap();
+                println!("LICHEN {label}: on {net} the heaviest terminal needs {need} of the fee budget's {}", lichen_proto::fee_budget(net));
+                assert!(need <= lichen_proto::fee_budget(net), "{net}: {need}");
+            }
+        }
         let b = lngap_zk::final_d60::input_words(input)[41];
         let t = Instant::now();
         let (o, swept) = w.dispute(&ch, &statement, &dir.join(&user), 42, b, input).unwrap();

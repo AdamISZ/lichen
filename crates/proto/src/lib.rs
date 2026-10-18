@@ -109,12 +109,14 @@ pub fn deposit_timeout(net: Net) -> u16 {
 /// What a deposit carries beyond the contract's `D + r_A` and the funding
 /// fee's share: Alice's fee budget for a dispute. Where the target
 /// feerate is the links' own floor (1 sat/vB) no child is needed, and
-/// the budget covers the coins terminal transactions add; above it, each
-/// of her links' children pays about `vsize · (feerate − 1)` (her links
-/// are ~90 kvB in the deepest Groth16 dispute).
+/// the budget covers the one terminal transaction she posts: on Groth16
+/// her heaviest, a last step's proof, needs 26,793 sats at 1 sat/vB
+/// ([`terminal_need`]; the wallet checks it at opening). Above the floor,
+/// each of her links' children pays about `vsize · (feerate − 1)` too
+/// (her links are ~90 kvB in the deepest Groth16 dispute).
 pub fn fee_budget(net: Net) -> Amount {
     match net {
-        Net::Mutinynet | Net::Signet => Amount::from_sat(20_000),
+        Net::Mutinynet | Net::Signet => Amount::from_sat(30_000),
         Net::Regtest | Net::Testnet4 => Amount::from_sat(150_000),
     }
 }
@@ -623,6 +625,32 @@ pub fn feerate(net: Net) -> u64 {
 /// input (a key-path spend, 58 vB), at the network's feerate.
 pub fn terminal_fee(tx: &Transaction, net: Net) -> Amount {
     Amount::from_sat((tx.vsize() as u64 + 60) * feerate(net))
+}
+
+/// What the heaviest of Alice's terminal transactions in contract `c`
+/// (its pre-signed `set`) needs from her fee budget on `net`: its fee
+/// ([`terminal_fee`]) and the split that makes a coin of exactly that.
+/// Hers are the last step's proofs (`prove_<class>`, the heaviest: about
+/// 25 kvB on Groth16) and her timeouts; each message a proof reveals is
+/// sized at its full length, as the links' floors are.
+pub fn terminal_need(c: &Contract, set: &[Presign], net: Net) -> Result<Amount> {
+    let ctx = c.ctx();
+    let spec = c.ladder_spec(&ctx);
+    let full = |k: &WotsPublic| (0..k.params.total_digits()).flat_map(|_| [vec![0u8; 20], vec![15u8]]).collect::<Vec<_>>();
+    let mut most = Amount::ZERO;
+    for p in set.iter().filter(|p| !p.link) {
+        let wire = if p.name.starts_with("prove_") {
+            let rule = c.rule(c.m(), &p.name)?;
+            let reveals: Vec<_> = rule.msgs.iter().map(|m| full(&spec.key(*m))).collect();
+            lngap_ladder::script::rule_wire(&[], &reveals)
+        } else if p.name.starts_with("timeout_") {
+            vec![]
+        } else {
+            continue;
+        };
+        most = most.max(terminal_fee(&p.finish(wire, &[0; 64], &[0; 64]), net));
+    }
+    Ok(most + lichen_chain::KeyFees::split_cost(feerate(net)))
 }
 
 /// The link that carries move `j` (`escalate` for move 1).

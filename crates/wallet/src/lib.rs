@@ -402,6 +402,11 @@ impl Wallet {
                 p.verify_input(&record.pubs[1].payment, i, s)?;
             }
         }
+        // the budget pays for her heaviest terminal (a guard: the
+        // network's budget is sized for the statement's, and the deposit
+        // is paid already)
+        let need = lichen_proto::terminal_need(&c, &set, net)?;
+        ensure!(fee_out.value >= need, "the fee budget, {}, can't pay for the heaviest transaction a dispute may need of the user, {need}", fee_out.value);
         record.alice_sigs = sign_all(&set, &keys.payment)?;
         // D, minted already to a key we can spend once this funding is out:
         // there, and sealed, before we sign the funding
