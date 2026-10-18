@@ -33,13 +33,22 @@ root (Mac, Docker, 8 cores; succinct receipts):
 
 | height | block | user cycles | proved |
 |---|---|---|---|
-| 1 | a mint (genesis before it) | 1,087,122 (2 segments) | 167 s |
-| 2 | Alice shields (a signature, a receipt) | 1,536,107 | 274 s |
-| 3 | Alice pays Bob, shielded (a receipt) | 1,216,926 | 220 s |
-| 4 | Bob returns to the hub (a receipt) | 1,215,463 | 221 s |
+| 1 | a mint (genesis before it) | 384,061 (1 segment) | 65 s |
+| 2 | Alice shields (a signature, a receipt) | 740,441 | 148 s |
+| 3 | Alice pays Bob, shielded (a receipt) | 421,446 | 92 s |
+| 4 | Bob returns to the hub (a receipt) | 419,568 | 92 s |
 
-Slower than the estimate below: ~1.1M cycles a block before its
-transactions, which a profile should explain. Next: step 4, the
+396 s for the four. The first build took 874 s (1.1–1.5M cycles a
+height, two segments each): a profile (`lichen-r0 exec-chain`,
+RISC0_PPROF_OUT) showed the nullifier tree's 257 empty roots recomputed
+in every block (62% of a one-mint block), and each node ~1,300 cycles
+for one ~93-cycle compression (byte copies of unaligned blocks). The
+empty roots are now a table computed at compile time (`smt::EMPTIES`,
+a `const fn` SHA-256 compression), and a node compresses a word-aligned
+block: a nullifier insert 751k → 306k cycles. What's left is mostly the
+BIP340 signatures (~260k each) and the receipts' resolution.
+
+Next: step 4, the
 withdrawal guest.
 
 ## The aim

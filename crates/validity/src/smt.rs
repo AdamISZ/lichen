@@ -17,18 +17,31 @@ const IV: [u32; 8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f
 /// A node: one SHA-256 compression of `left ‖ right` from the initial
 /// state, no padding (every input is 64 bytes): half the commitment
 /// tree's `node`, and in the guest RISC Zero's accelerated compression
-/// alone. (`generic-array` 0.14.9 deprecates its own type, which
+/// alone. The block is word-aligned, so the guest's compression reads it
+/// in place. (`generic-array` 0.14.9 deprecates its own type, which
 /// `sha2` 0.10's `compress256` takes, RISC Zero's fork too.)
 #[allow(deprecated)]
 pub fn node(left: &Hash, right: &Hash) -> Hash {
-    let mut block = [0u8; 64];
-    block[..32].copy_from_slice(left);
-    block[32..].copy_from_slice(right);
+    #[repr(C, align(4))]
+    struct Block([u8; 64]);
+    let mut b = Block([0; 64]);
+    b.0[..32].copy_from_slice(left);
+    b.0[32..].copy_from_slice(right);
     let mut st = IV;
-    sha2::compress256(&mut st, &[sha2::digest::generic_array::GenericArray::clone_from_slice(&block)]);
+    sha2::compress256(&mut st, core::slice::from_ref(sha2::digest::generic_array::GenericArray::from_slice(&b.0)));
+    words_be(&st)
+}
+
+const fn words_be(st: &[u32; 8]) -> Hash {
     let mut out = [0u8; 32];
-    for (o, w) in out.chunks_mut(4).zip(st) {
-        o.copy_from_slice(&w.to_be_bytes());
+    let mut i = 0;
+    while i < 8 {
+        let w = st[i].to_be_bytes();
+        out[4 * i] = w[0];
+        out[4 * i + 1] = w[1];
+        out[4 * i + 2] = w[2];
+        out[4 * i + 3] = w[3];
+        i += 1;
     }
     out
 }
@@ -39,15 +52,61 @@ pub fn spent() -> Hash {
 }
 
 /// `empties()[h]`: the root of an empty subtree of height `h`
-/// (`h = 0`: an unspent leaf).
-pub fn empties() -> Vec<Hash> {
-    let mut e = Vec::with_capacity(DEPTH + 1);
-    e.push([0u8; 32]);
-    for h in 0..DEPTH {
-        let x = node(&e[h], &e[h]);
-        e.push(x);
+/// (`h = 0`: an unspent leaf). A table built when compiling ([`EMPTIES`]):
+/// in the guest, 256 compressions every block otherwise.
+pub fn empties() -> &'static [Hash] {
+    &EMPTIES
+}
+
+/// The empty subtrees' roots, computed at compile time with
+/// [`const_node`].
+pub static EMPTIES: [Hash; DEPTH + 1] = {
+    let mut e = [[0u8; 32]; DEPTH + 1];
+    let mut h = 0;
+    while h < DEPTH {
+        e[h + 1] = const_node(&e[h], &e[h]);
+        h += 1;
     }
     e
+};
+
+/// [`node`], as a `const fn`: SHA-256's compression in plain Rust (FIPS
+/// 180-4), for [`EMPTIES`].
+pub const fn const_node(left: &Hash, right: &Hash) -> Hash {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ];
+    let mut w = [0u32; 64];
+    let mut i = 0;
+    while i < 16 {
+        let b = if i < 8 { left } else { right };
+        let j = (i % 8) * 4;
+        w[i] = u32::from_be_bytes([b[j], b[j + 1], b[j + 2], b[j + 3]]);
+        i += 1;
+    }
+    while i < 64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+        i += 1;
+    }
+    let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = IV;
+    i = 0;
+    while i < 64 {
+        let t1 = h.wrapping_add(e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25)).wrapping_add((e & f) ^ (!e & g)).wrapping_add(K[i]).wrapping_add(w[i]);
+        let t2 = (a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22)).wrapping_add((a & b) ^ (a & c) ^ (b & c));
+        h = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(t1);
+        d = c;
+        c = b;
+        b = a;
+        a = t1.wrapping_add(t2);
+        i += 1;
+    }
+    let st = [IV[0].wrapping_add(a), IV[1].wrapping_add(b), IV[2].wrapping_add(c), IV[3].wrapping_add(d), IV[4].wrapping_add(e), IV[5].wrapping_add(f), IV[6].wrapping_add(g), IV[7].wrapping_add(h)];
+    words_be(&st)
 }
 
 /// Bit `d` of `key`, counted from the root (the most significant
@@ -152,6 +211,20 @@ mod tests {
         let n = node(&[0; 32], &[0; 32]);
         assert_ne!(n, lichen_shielded::node(&[0; 32], &[0; 32]));
         assert_eq!(hex_of(&n), "da5698be17b9b46962335799779fbeca8ce5d491c0d26243bafef9ea1837a9d8");
+    }
+
+    #[test]
+    fn the_empty_roots_are_the_runtime_nodes() {
+        let mut x = [0u8; 32];
+        for (h, e) in EMPTIES.iter().enumerate() {
+            assert_eq!(*e, x, "height {h}");
+            assert_eq!(const_node(&x, &h_bytes(h)), node(&x, &h_bytes(h)));
+            x = node(&x, &x);
+        }
+    }
+
+    fn h_bytes(h: usize) -> Hash {
+        core::array::from_fn(|i| (h * 31 + i * 7) as u8)
     }
 
     #[test]

@@ -254,10 +254,9 @@ pub struct Nullifiers {
     root: std::sync::OnceLock<Hash>,
 }
 
-/// The empty subtrees of the nullifier tree, computed once.
+/// The empty subtrees of the nullifier tree.
 fn empties() -> &'static [Hash] {
-    static E: std::sync::OnceLock<Vec<Hash>> = std::sync::OnceLock::new();
-    E.get_or_init(lichen_validity::smt::empties)
+    lichen_validity::smt::empties()
 }
 
 impl Nullifiers {
@@ -894,7 +893,7 @@ mod tests {
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub) });
         l.native_proofs = true;
         let z = v::tree_empties();
-        let genesis = (v::state_root(0, &z[TREE_DEPTH], &lichen_validity::smt::empties()[lichen_validity::smt::DEPTH]), v::recent_hash(&[]));
+        let genesis = (v::state_root(0, &z[TREE_DEPTH], &lichen_validity::smt::EMPTIES[lichen_validity::smt::DEPTH]), v::recent_hash(&[]));
 
         // block 1: two mints, and a transfer of one of them within the block
         let (m0, m1) = (note(xonly(&alice), 20, 0), note(xonly(&alice), 7, 0));
@@ -965,7 +964,7 @@ mod tests {
         let nf = nullifier(&n0);
         let p = l.nullifiers.proof(&nf);
         l.apply(&transfer(vec![(Spend { note: n0, index: i0 }, &alice)], vec![note(xonly(&alice), 10, 0)])).unwrap();
-        assert_eq!(lichen_validity::smt::insert(&empty, &nf, &p, &lichen_validity::smt::empties()), Some(l.nullifiers.root()));
+        assert_eq!(lichen_validity::smt::insert(&empty, &nf, &p, lichen_validity::smt::empties()), Some(l.nullifiers.root()));
         assert_ne!(l.seal(&seq).nullifiers, empty);
         // kept and read back: the same root
         let back: Ledger = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();

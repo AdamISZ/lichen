@@ -16,7 +16,13 @@ is its image id (`lichen-r0 image-id <g>` recomputes it from the file;
 | guest | built by | image id |
 |---|---|---|
 | **spend**, the statement of `crates/shielded` (docs/SHIELDED_PLAN.md), 2026-10-18: **the current file** | x86 Linux (GCE `n2-highmem-4`), `build-guest.sh elf`, natively; packed on a Mac (`build-guest.sh pack`). ELF SHA-256 `ca07debb0114ea3b20bc0a1d19f0cb0bd79c61ecf6260e1ece74778cc3ce343c` (rebuilt from the tree after the phase 2 changes: the same); `spend.bin` 324,260 bytes, SHA-256 `1af60862e368598a6e30423cd2f5ba1b15bb329fd853ebb705da6e7109ce82e7` | **`bd46ebb2d918063416513fdd093daf6f0cdb2550056e91805187544d587d5e75`** |
-| **chain**, the statement of `crates/validity`, holding the spend guest above, 2026-10-18: **the current file** | the same way (`build-guest.sh elf chain`, `pack chain`). ELF SHA-256 `a2c56188b4fcd6019773beb1c4567a31a1a8b7f14ec99aa55f35be32c6ff7ea2`; `chain.bin` 429,668 bytes, SHA-256 `de5444c0f0f6849e9fbeea7c45b274826980af4ab74b3615d80f7010821b699b` | **`1c0a9bd4625433d02201bde38f0de5d85726e556800f730450e085fdeba1b791`** |
+| **chain**, the statement of `crates/validity`, holding the spend guest above, 2026-10-18: **the current file** | the same way (`build-guest.sh elf chain`, `pack chain`). ELF SHA-256 `190bb2395555f202fd8432acb958ab401389dbebf76dda023df6e0c19cff4a76`; `chain.bin` 436,700 bytes, SHA-256 `112a56fcf0802a78aa5d328623da1cfb93195c51229d731ca4fbf7a68b5c67d6` | **`f6d7255f4afcf9f3ea8a50bc0cccf9ac9e89ec26c6b37ad762c5f51b8f188a51`** |
+| chain, its first build (`78a5f7d`): the empty subtrees computed in every block | as above. ELF SHA-256 `a2c56188…` | `1c0a9bd4625433d02201bde38f0de5d85726e556800f730450e085fdeba1b791` |
+
+Measured with the chain guest (`lichen-r0 exec-chain`, RISC0_PPROF_OUT
+for a profile): a block of one mint, 383k user cycles (1,087k in its
+first build); a mint and a transfer, 993k (2,140k). A BIP340 signature
+is ~260k, a nullifier insert ~306k.
 
 Measured with the spend guest (Mac, Docker, 8 cores; composite
 receipts): shielding 10,163 user cycles, 6.4 s; a payment (1 in, 2 out)

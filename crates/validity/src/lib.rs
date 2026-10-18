@@ -228,7 +228,7 @@ fn check_sig(key: &Hash, msg: &Hash, sig: &[u8; 64]) -> Result<(), Reject> {
 struct State<'a> {
     input: &'a BlockInput,
     z: [Hash; TREE_DEPTH + 1],
-    e: Vec<Hash>,
+    e: &'static [Hash],
     t_i: Hash,
     tree: Frontier,
     nullifiers: Hash,
@@ -241,7 +241,7 @@ struct State<'a> {
 impl State<'_> {
     fn spend_nf(&mut self, nf: &Hash) -> Result<(), Reject> {
         let p = self.nf_proofs.next().ok_or(Reject::Shape)?;
-        self.nullifiers = smt::insert(&self.nullifiers, nf, p, &self.e).ok_or(Reject::Spent)?;
+        self.nullifiers = smt::insert(&self.nullifiers, nf, p, self.e).ok_or(Reject::Spent)?;
         Ok(())
     }
     /// A transparent note at `index`: under `T_i` (a path), or made
@@ -389,7 +389,7 @@ pub struct ChainJournal {
 pub fn chain(chain_id: &Hash, input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<ChainJournal, Reject> {
     let j = check(input, verify_spend)?;
     if input.height == 0 {
-        let empty = smt::empties()[smt::DEPTH];
+        let empty = smt::EMPTIES[smt::DEPTH];
         if input.tree.size != 0 || input.nullifiers != empty || !input.recent.is_empty() {
             return Err(Reject::Genesis);
         }
