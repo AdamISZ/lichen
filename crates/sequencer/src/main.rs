@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use lichen_ledger::{load_or_create_key, regtest_sequencer, Hash, HUB_KEY};
 use lichen_l2::Client;
-use lichen_sequencer::Sequencer;
+use lichen_sequencer::{Options, Sequencer};
 
 #[derive(Parser)]
 #[command(about = "The lichen L2's sequencer")]
@@ -34,6 +34,10 @@ struct Args {
     /// Seal a height every this many seconds (0: only on request).
     #[arg(long, default_value_t = 5)]
     seal_every: u64,
+    /// Accept native proofs of shielded spends, which carry the sender's
+    /// private input in the clear: tests and demos only.
+    #[arg(long)]
+    native_proofs: bool,
 }
 
 fn main() -> Result<()> {
@@ -47,7 +51,7 @@ fn main() -> Result<()> {
         (true, Some(_)) => bail!("--toy and --issuer: one or the other"),
         (false, None) => bail!("name the hub with --issuer <its L2 key> (or run the toy deployment with --toy)"),
     };
-    let s = Sequencer::start(&a.listen, Some(a.ledger), key, issuer)?;
+    let s = Sequencer::start_with(&a.listen, Some(a.ledger), key, issuer, Options { native_proofs: a.native_proofs })?;
     let client = Client::new(&s.url)?;
     let d = client.deployment;
     println!("lichen sequencer at {}: sequencer {}, hub {}, deployment {}", s.url, hex::encode(d.sequencer), hex::encode(d.hub), hex::encode(d.id()));

@@ -231,7 +231,7 @@ impl Wallet {
         let h = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
         ensure!(h.closed.is_none(), "contract {cid} is closed");
         let &(_, note) = self.returns.iter().rev().find(|(memo, _)| *memo == cid).with_context(|| format!("no return to the hub with memo {cid}: return the withdrawal first"))?;
-        let b = self.sequencer.state()?.notes.get(note as usize).with_context(|| format!("no note {note}"))?.value;
+        let b = self.sequencer.state()?.note(note).with_context(|| format!("no note {note}"))?.value;
         let b = u32::try_from(b).context("b fits in a u32")?;
         let s = self.secrets(&h.nonce);
         let spec = h.record.spec(statement);

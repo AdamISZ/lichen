@@ -28,6 +28,8 @@ lngap-lamport.workspace = true
 lngap-zk.workspace = true
 emulator.workspace = true
 lngap-ladder.workspace = true
+sha2.workspace = true
+chacha20poly1305 = "0.10"
 
 [dev-dependencies]
 lichen-sequencer.workspace = true

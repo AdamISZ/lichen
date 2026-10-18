@@ -173,7 +173,7 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
 /// Everything the page shows.
 fn state(d: &Demo) -> Result<Value> {
     let st = d.seq.state()?;
-    let l2 = |a: &Hash| -> u64 { st.notes.iter().filter(|n| n.owner == *a && !st.is_spent(n)).map(|n| n.value).sum() };
+    let l2 = |a: &Hash| -> u64 { st.transparent().filter(|(_, n)| n.owner == *a && !st.is_spent(n)).map(|(_, n)| n.value).sum() };
     let contracts = d.hub.contracts();
     let disputes = d.hub.disputes();
     let contract_view = |cid: u32| -> Value {
@@ -224,6 +224,14 @@ fn state(d: &Demo) -> Result<Value> {
                         .filter(|(o, _, _)| *o != from[0])
                         .map(|(o, v, memo)| if *o == HUB_KEY { format!("{who} returned {v} sats to the hub (memo {memo}): a withdrawal") } else { format!("{who} paid {v} sats to {}", d.name_of(o)) })
                         .collect();
+                    (if to.iter().any(|t| t.0 == HUB_KEY) { "return" } else { "transfer" }, parts.join("; "))
+                }
+                Event::Shielded { from, spent, made, to } => {
+                    let mut parts: Vec<String> = from.iter().map(|o| format!("{} shielded a note", d.name_of(o))).collect();
+                    if spent > 0 || made > 0 {
+                        parts.push(format!("a shielded transaction: {spent} notes spent, {made} made"));
+                    }
+                    parts.extend(to.iter().map(|(o, v, memo)| if *o == HUB_KEY { format!("{v} sats returned to the hub (memo {memo}): a withdrawal") } else { format!("{v} sats to {}", d.name_of(o)) }));
                     (if to.iter().any(|t| t.0 == HUB_KEY) { "return" } else { "transfer" }, parts.join("; "))
                 }
                 Event::Sealed { height, notes, root } => ("sealed", format!("height {height} sealed and signed: {notes} notes, root {}…", &hex::encode(root)[..12])),

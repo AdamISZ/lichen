@@ -1,0 +1,12 @@
+[package]
+name = "lichen-shielded"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# no_std: the spend guest builds it too (guests/spend)
+[dependencies]
+sha2 = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+lngap-r0-core.workspace = true

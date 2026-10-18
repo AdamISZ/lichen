@@ -1,0 +1,182 @@
+# Shielded transfers, then validity proofs: plan
+
+2026-10-18, branch `shielded` (from `tower`). Background: ln-gap's
+`docs/planning/VALIDITY_PROOFS.md` (2026-10-13) and
+`docs/planning/research/shielded-pool-costs.md` (the measurements behind
+this plan; local notes).
+
+## The aim
+
+Show that lichen is possible with private payments and with dispute
+proofs that are validity proofs. Not to re-engineer what rollups and
+Zcash have already solved:
+
+- **a.** a user sends a shielded payment in reasonable time on a laptop
+  (measured: ~14 s to prove, Mac, Docker);
+- **b.** a sequencer sustains some throughput (one machine: ~120
+  transactions an hour, estimated);
+- **c.** the withdrawal proof judged in the Bitcoin dispute attests that
+  the root it uses ends a proven valid history. The dispute game itself
+  is unchanged: it judges a Groth16 receipt against an image id the
+  contract pins.
+
+c is the goal; a and b only have to be good enough to show it.
+
+Phase 1 is shielded transfers; phase 2, once phase 1 works, validity.
+
+## What stays fixed
+
+The withdrawal statement (`lngap-r0-core`, the committed guest and its
+image id) is unchanged in phase 1:
+
+- returns to the hub stay transparent notes (owner the hub, value `b`,
+  memo `c`), in the same commitment tree (depth 16, nodes
+  `SHA256(left ‖ right)`), under the same state root
+  `SHA256("lngap/root" ‖ height ‖ T ‖ N)`;
+- the nullifier set's root `N` is opaque to the statement, so phase 2
+  can change how it's built;
+- mints stay transparent: the deposit `D` is public on Bitcoin anyway.
+
+So the contracts, the hub's checks and the dispute don't change in
+phase 1, and every test of them should still pass.
+
+## Phase 1: shielded transfers
+
+### The notes
+
+A shielded note `(value, owner, rho)`:
+- `owner = SHA256("lichen/owner" ‖ nk)`, `nk` the owner's nullifier key;
+- its commitment `cm = SHA256("lichen/snote" ‖ owner ‖ value ‖ rho)`, a
+  leaf of the same tree as transparent notes (domain-separated);
+- its nullifier `nf = SHA256("lichen/snf" ‖ nk ‖ rho)`, in the same set
+  as transparent ones (`SHA256("lngap/nf" ‖ cm)`): unlinkable to `cm`
+  without `nk`;
+- `rho` of a transaction's i-th new note is
+  `SHA256("lichen/rho" ‖ nf_0 ‖ i)`, `nf_0` the transaction's first
+  nullifier: unique, so a sender can't give two notes one nullifier (the
+  "faerie gold" attack). The recipient recomputes it when scanning.
+
+Spend authority is knowing `nk`, checked inside the proof: no signature
+(two BIP340 checks would put a transaction back at 2^20 cycles).
+
+A shielded address is `owner ‖ E`, `E` an x-only secp256k1 key for note
+encryption. A new note's opening goes to its recipient encrypted (ECDH
+with `E`, ChaCha20-Poly1305), outside the proof, as in Sapling.
+
+### The transaction
+
+`Tx::Shielded`, any of:
+- **shielded spends:** proved, revealing only nullifiers;
+- **transparent spends:** notes (mints, returns made earlier) spent as
+  today, each owner's BIP340 signature checked by the sequencer, over
+  the whole transaction;
+- **shielded outputs:** commitments and ciphertexts;
+- **transparent outputs:** openings (a return to the hub).
+
+The proof (the spend guest, RISC Zero) shows: each shielded spend's note
+is in the tree under the anchor (a sealed tree root) and its owner's
+`nk` is known; the nullifiers are theirs; the new notes' `rho`s are
+derived; and
+`Σ shielded in + Σ transparent in = Σ shielded out + Σ transparent out`.
+Its journal, which the sequencer recomputes from the transaction:
+the anchor, the transparent spends' nullifiers and total, the shielded
+nullifiers, the new shielded commitments, the transparent outputs'
+commitments.
+
+The sequencer checks: the anchor is a sealed root's tree; no nullifier
+is spent; the transparent signatures; the receipt against the spend
+guest's image id and that journal. Then it appends the new notes and
+records the transparent openings, as now.
+
+A shielded payment is shielded spends to shielded outputs; shielding
+spends a transparent note (the deposit's mint) to shielded outputs; a
+return spends shielded notes to a transparent note of the hub's. Up to 4
+spends and 4 outputs, so every block is cheap to prove.
+
+### The proof
+
+- The spend guest in `guests/spend/`, its logic in `crates/shielded`
+  (`no_std`, shared with the sequencer and the wallet). Built in RISC
+  Zero's guest builder (Docker), the ELF committed, its image id derived
+  from it, as ln-gap does for the withdrawal guest.
+- The input read raw (`env::read_slice` of words), each tree node one
+  SHA-256 over 64 bytes: the shape the benchmark measured (34.6k user
+  cycles, 2^17, at depth 32).
+- The wallet proves with a prover command (`--prover`), as the tower
+  does: in Docker on a Mac (RISC Zero's in-process prover needs Xcode's
+  Metal compiler), natively on Linux. It uploads the composite receipt;
+  the sequencer verifies it as it is.
+- Zero-knowledge: RISC Zero targets perfect zero-knowledge but hasn't
+  proved it (its security model, checked 2026-10-18); composite receipts
+  leak the execution length, which, with every transaction the same
+  shape, says nothing. Fine for a demo; say so.
+- For tests, a native proof: the private input itself, checked with the
+  same code by the sequencer. Accepted only where the sequencer is told
+  to (regtest), like the mock statement.
+
+### The wallet
+
+- `nk` and the encryption key derived from the wallet's key; a shielded
+  address alongside the transparent one.
+- Scanning: the sequencer's state carries each shielded output's
+  commitment and ciphertext; the wallet trial-decrypts them, keeps its
+  notes and their tree positions, and builds paths itself (asking for a
+  path would tell the sequencer which note is yours).
+- Commands: `shield`, `send` to a shielded address, `return` from
+  shielded notes; `balance` shows both kinds.
+
+### Tests
+
+1. `crates/shielded`: the statement natively (balance, membership,
+   a spent note, a forged `nk`, the derived `rho`s).
+2. The ledger: `Tx::Shielded` with native proofs, alongside mints and
+   transfers.
+3. End to end on regtest, native proofs: Alice shields her deposit,
+   pays Bob, Bob pays Alice, Alice returns to the hub and withdraws
+   cooperatively; then the same return refused and disputed (the
+   withdrawal statement unchanged).
+4. One payment with a real receipt (opt-in: the prover image).
+5. Mutinynet: the demo with real receipts.
+
+### Known gaps in phase 1
+
+- **Validity.** With shielding, nobody but the sequencer can check the
+  ledger: a sequencer could insert a note no spend paid for, invisibly,
+  return it to the hub and withdraw against its collateral. Today's
+  transparent ledger lets anyone audit. So phase 1 leaves the hub more
+  exposed to the sequencer than today; phase 2 closes it. A demo, not a
+  deployment, until then.
+- Amounts that touch Bitcoin are public: deposits and returns.
+- The sequencer sees timing and which receipts arrive when.
+- Hardware signers (a signature checked outside the proof, as Sapling's
+  spend authorisation) are not covered.
+
+## Phase 2: validity proofs
+
+After phase 1 is demonstrated, in this order:
+
+1. **The nullifier set as a sparse Merkle tree**, so a block guest can
+   prove non-membership (`N` changes; the withdrawal statement doesn't
+   read it).
+2. **The block guest**, one per sealed height: verifies each spend
+   receipt by composition, checks mints and transparent spends directly,
+   updates both trees, commits `(i, SR_i, SR_{i+1})`. The sequencer runs
+   it in the executor before sealing and refuses to seal on a mismatch.
+3. **The chain guest**: "valid up to i" and block i's proof to "valid up
+   to i+1", journal `(i+1, SR_{i+1}, CHAIN_ID)`; genesis pinned by the
+   deployment.
+4. **The withdrawal guest** with `env::verify(CHAIN_ID, (n, SR_n))`
+   before its inclusion path. Its journal stays `b ‖ c ‖ D`; on chain
+   only the image id changes. Then the Groth16 dispute test (G2) and a
+   Mutinynet trial with the tower.
+
+Costs (estimates): ~23 s of sequencer proving per transaction on one
+8-core machine (compressing a receipt 9 s, resolving it 14 s), plus the
+tree updates (~8 s) and ~15–30 s per block; a withdrawal waits for its
+block to be proven, and resolving the chain assumption adds one
+recursion step (~14 s) before the wrap.
+
+Out of scope: the tail proof, data availability, folding, GPUs, seals
+(the sequencer's signature stays in the withdrawal guest, for
+canonicity), Poseidon2 (its user ecall executes but doesn't prove in
+RISC Zero 3.0.x).

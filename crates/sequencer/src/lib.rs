@@ -22,15 +22,27 @@ pub struct Sequencer {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+/// How a sequencer runs.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Options {
+    /// Accept native proofs of shielded spends: the sender's private input
+    /// in the clear (tests and demos).
+    pub native_proofs: bool,
+}
+
 impl Sequencer {
     /// Serve on `addr` (e.g. "127.0.0.1:0"), the ledger kept in `path` if
     /// given, signing with `key`, the hub's key `issuer` minting.
     pub fn start(addr: &str, path: Option<PathBuf>, key: SigningKey, issuer: Hash) -> Result<Sequencer> {
+        Sequencer::start_with(addr, path, key, issuer, Options::default())
+    }
+    pub fn start_with(addr: &str, path: Option<PathBuf>, key: SigningKey, issuer: Hash, opts: Options) -> Result<Sequencer> {
         let deployment = Deployment { sequencer: xonly(&key), hub: issuer };
-        let ledger: Ledger = match &path {
+        let mut ledger: Ledger = match &path {
             Some(p) if p.exists() => serde_json::from_slice(&std::fs::read(p)?).context("the ledger file")?,
             _ => Ledger::new(deployment),
         };
+        ledger.native_proofs = opts.native_proofs;
         anyhow::ensure!(ledger.deployment == deployment, "the ledger file is another deployment's (sequencer {}, hub {})", hex::encode(ledger.deployment.sequencer), hex::encode(ledger.deployment.hub));
         let server = Arc::new(Server::http(addr).map_err(|e| anyhow!("listen on {addr}: {e}"))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();

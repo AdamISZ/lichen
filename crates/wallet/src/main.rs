@@ -38,6 +38,12 @@ struct Args {
     /// or `groth16:<path to the verifier's program definition>`.
     #[arg(long, default_value = "mock")]
     statement: lichen_proto::Statement,
+    /// The prover of shielded spends: a command run as `<cmd> spend <input
+    /// file> <receipt file>`. Without it, spends carry native proofs (the
+    /// private input in the clear), which only a sequencer started with
+    /// --native-proofs accepts.
+    #[arg(long)]
+    spend_prover: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -46,12 +52,18 @@ struct Args {
 enum Cmd {
     /// Create a wallet with a fresh key.
     Init,
-    /// The wallet's L2 address.
-    Address,
-    /// The balance on the L2.
+    /// The wallet's L2 address (transparent), or its shielded address.
+    Address {
+        #[arg(long)]
+        shielded: bool,
+    },
+    /// The balance on the L2: transparent and shielded notes.
     Balance,
-    /// Pay an L2 address.
+    /// Pay an L2 address: a transparent one (32 bytes, hex) from
+    /// transparent notes, a shielded one (64 bytes) from shielded notes.
     Send { to: String, amount: u64 },
+    /// Move `amount` of transparent notes into a shielded note.
+    Shield { amount: u64 },
     /// Return `amount` to the hub with the contract's memo: a withdrawal's
     /// first step.
     Return { amount: u64, memo: u32 },
@@ -222,14 +234,26 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let mut w = Wallet::open(&a.wallet, &a.sequencer)?;
+    if let Some(p) = &a.spend_prover {
+        w.spend_prover = lichen_wallet::shielded::SpendProver::Command(p.clone());
+    }
     match a.cmd {
         Cmd::Init => unreachable!(),
-        Cmd::Address => println!("{}", hex::encode(w.address())),
-        Cmd::Balance => println!("{}", w.balance()?),
+        Cmd::Address { shielded: false } => println!("{}", hex::encode(w.address())),
+        Cmd::Address { shielded: true } => println!("{}", w.shielded_address()),
+        Cmd::Balance => {
+            let (t, s) = w.balances()?;
+            println!("{} (transparent {t}, shielded {s})", t + s);
+        }
+        Cmd::Send { to, amount } if to.len() == 128 => {
+            let to: lichen_wallet::shielded::SAddress = to.parse()?;
+            println!("sent: note {}", w.send_shielded(&to, amount)?[0]);
+        }
         Cmd::Send { to, amount } => {
-            let to: [u8; 32] = hex::decode(&to)?.try_into().ok().context("an address is 32 bytes, hex")?;
+            let to: [u8; 32] = hex::decode(&to)?.try_into().ok().context("an address is 32 bytes (transparent) or 64 (shielded), hex")?;
             println!("sent: note {}", w.send(to, amount, 0)?[0]);
         }
+        Cmd::Shield { amount } => println!("shielded: note {}", w.shield(amount)?[0]),
         Cmd::Return { amount, memo } => println!("returned: note {}", w.return_to_hub(amount, memo)?),
         Cmd::WithdrawInput { memo } => println!("{}", serde_json::to_string_pretty(&w.withdraw_input(memo)?)?),
         Cmd::Open { deposit, bits, reserve, ref payout, resume } => {

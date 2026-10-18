@@ -122,5 +122,5 @@ fn the_mint_is_alices_only_once_the_funding_is_out() {
 }
 
 fn seq_note(w: &Wallet, index: u32) -> lichen_ledger::Note {
-    w.sequencer.state().unwrap().notes[index as usize]
+    *w.sequencer.state().unwrap().note(index).unwrap()
 }

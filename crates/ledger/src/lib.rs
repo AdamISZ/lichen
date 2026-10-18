@@ -6,13 +6,17 @@
 //! statement's own (`lngap-r0-core`), so a return recorded here is exactly
 //! what the proof checks: [`Ledger::withdraw_input`] is the prover's input.
 //!
-//! Two kinds of transaction:
+//! Three kinds of transaction:
 //! - a [`Mint`]: the hub issues notes (it may issue as many as it likes;
 //!   every redemption is against its own collateral, capped per user);
 //! - a [`Transfer`]: spends notes, each authorised by its owner's BIP340
 //!   signature over the transfer, and creates notes of equal total value.
 //!   A withdrawal starts with a transfer to the hub carrying the
 //!   contract's memo `c`: a return.
+//! - a [`Shielded`] transaction (docs/SHIELDED_PLAN.md): spends shielded
+//!   notes (`lichen-shielded`) and transparent ones, and creates both,
+//!   with a proof of the spend statement; the tree holds both kinds of
+//!   leaf ([`Leaf`]).
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -23,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub use lngap_r0_core::{check, deployment_id, node, root_from_path, state_root, Note, Reject, WithdrawInput, HUB_KEY, JOURNAL_LEN, SEQUENCER_KEY, TREE_DEPTH};
+pub use lichen_shielded as shielded;
 
 pub type Hash = [u8; 32];
 
@@ -318,10 +323,124 @@ impl Transfer {
     }
 }
 
+/// A new shielded note: its commitment, and its opening encrypted to its
+/// recipient (the wallet's business; the ledger only keeps it).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SOut {
+    #[serde(with = "hex32")]
+    pub cm: Hash,
+    #[serde(with = "hexvec")]
+    pub ciphertext: Vec<u8>,
+}
+
+/// A proof of the spend statement.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Proof {
+    /// For tests: the statement's input itself (no privacy), checked by
+    /// the sequencer with the statement's own code, if it accepts these.
+    Native(#[serde(with = "hexvec")] Vec<u8>),
+    /// A RISC Zero receipt of the spend guest.
+    Risc0(#[serde(with = "hexvec")] Vec<u8>),
+}
+
+/// Spends shielded and transparent notes and creates both kinds, with a
+/// proof of the spend statement over its public part
+/// ([`Shielded::journal`]). Each transparent spend's owner signs
+/// [`Shielded::digest`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Shielded {
+    /// A sealed root of the commitment tree.
+    #[serde(with = "hex32")]
+    pub anchor: Hash,
+    pub t_spends: Vec<Spend>,
+    pub t_sigs: Vec<Vec<u8>>,
+    /// The shielded spends' nullifiers.
+    pub nfs: Vec<Hash>,
+    pub outputs: Vec<SOut>,
+    pub t_outputs: Vec<Note>,
+    pub proof: Proof,
+}
+
+impl Shielded {
+    /// The statement's journal, as this transaction must prove it.
+    pub fn journal(&self) -> Result<shielded::Journal> {
+        let t_total = self.t_spends.iter().try_fold(0u64, |a, s| a.checked_add(s.note.value)).context("the transparent spends overflow")?;
+        Ok(shielded::Journal {
+            anchor: self.anchor,
+            t_nfs: self.t_spends.iter().map(|s| nullifier(&s.note)).collect(),
+            t_total,
+            nfs: self.nfs.clone(),
+            cms: self.outputs.iter().map(|o| o.cm).collect(),
+            t_cms: self.t_outputs.iter().map(|n| n.commitment()).collect(),
+        })
+    }
+    /// What each transparent spend's owner signs: the journal and the
+    /// ciphertexts.
+    pub fn digest(&self) -> Result<Hash> {
+        let mut h = Sha256::new();
+        h.update(b"lichen/shielded");
+        h.update(self.journal()?.to_bytes());
+        for o in &self.outputs {
+            h.update((o.ciphertext.len() as u32).to_be_bytes());
+            h.update(&o.ciphertext);
+        }
+        Ok(h.finalize().into())
+    }
+}
+
+/// Bytes as hex in JSON.
+pub mod hexvec {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(b: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(b))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        hex::decode(String::deserialize(d)?).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Tx {
     Mint(Mint),
     Transfer(Transfer),
+    Shielded(Shielded),
+}
+
+/// A leaf of the commitment tree: a transparent note's opening, or a
+/// shielded note's commitment, its ciphertext, and what its `rho` comes
+/// from (its transaction's first nullifier and its place among the new
+/// shielded notes), for the recipient to check. Untagged in JSON, so
+/// ledgers kept before shielded notes read as they were.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Leaf {
+    Note(Note),
+    Shielded {
+        #[serde(with = "hex32")]
+        cm: Hash,
+        #[serde(with = "hexvec")]
+        ciphertext: Vec<u8>,
+        #[serde(with = "hex32")]
+        nf0: Hash,
+        i: u32,
+    },
+}
+
+impl Leaf {
+    pub fn commitment(&self) -> Hash {
+        match self {
+            Leaf::Note(n) => n.commitment(),
+            Leaf::Shielded { cm, .. } => *cm,
+        }
+    }
+    /// The transparent note, if this is one.
+    pub fn note(&self) -> Option<&Note> {
+        match self {
+            Leaf::Note(n) => Some(n),
+            Leaf::Shielded { .. } => None,
+        }
+    }
 }
 
 /// A sealed height: the tree's size then, and the sequencer's signature on
@@ -349,13 +468,17 @@ impl SignedRoot {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Ledger {
     pub tree: Tree,
-    /// Every note's opening, by index (the ledger is transparent).
-    pub notes: Vec<Note>,
+    /// Every leaf, by index: a transparent note's opening, or a shielded
+    /// note's commitment and ciphertext.
+    pub notes: Vec<Leaf>,
     pub nullifiers: Nullifiers,
     commitments: HashSet<Hash>,
     pub sealed: Vec<SignedRoot>,
     /// Who seals and who may mint.
     pub deployment: Deployment,
+    /// Whether [`Proof::Native`] is accepted (tests only).
+    #[serde(skip)]
+    pub native_proofs: bool,
 }
 
 impl Ledger {
@@ -364,19 +487,45 @@ impl Ledger {
     }
 
     fn append(&mut self, outputs: &[Note]) -> Result<Vec<u32>> {
+        let leaves: Vec<Leaf> = outputs.iter().map(|n| Leaf::Note(*n)).collect();
+        self.append_leaves(&leaves)
+    }
+
+    fn append_leaves(&mut self, leaves: &[Leaf]) -> Result<Vec<u32>> {
         let mut seen = HashSet::new();
-        for n in outputs {
-            let cm = n.commitment();
+        for l in leaves {
+            let cm = l.commitment();
             ensure!(!self.commitments.contains(&cm) && seen.insert(cm), "a note that already exists");
-            ensure!(n.value > 0, "an empty note");
+            if let Leaf::Note(n) = l {
+                ensure!(n.value > 0, "an empty note");
+            }
         }
         let mut idx = vec![];
-        for n in outputs {
-            idx.push(self.tree.append(n.commitment())?);
-            self.commitments.insert(n.commitment());
-            self.notes.push(*n);
+        for l in leaves {
+            idx.push(self.tree.append(l.commitment())?);
+            self.commitments.insert(l.commitment());
+            self.notes.push(l.clone());
         }
         Ok(idx)
+    }
+
+    /// The transparent note at `index`, if it is one.
+    pub fn note(&self, index: u32) -> Option<&Note> {
+        self.notes.get(index as usize).and_then(Leaf::note)
+    }
+
+    /// Check a proof of the spend statement with journal `journal`.
+    fn verify_proof(&self, journal: &shielded::Journal, proof: &Proof) -> Result<()> {
+        match proof {
+            Proof::Native(input) => {
+                ensure!(self.native_proofs, "this sequencer accepts no native proofs (tests only)");
+                let input = shielded::SpendInput::from_bytes(input).map_err(|r| anyhow::anyhow!("the native proof: {r:?}"))?;
+                let j = shielded::check(&input).map_err(|r| anyhow::anyhow!("the statement rejects the spend: {r:?}"))?;
+                ensure!(j == *journal, "the native proof is of another transaction");
+                Ok(())
+            }
+            Proof::Risc0(_) => bail!("this sequencer can't verify RISC Zero receipts yet"),
+        }
     }
 
     /// Check and apply a transaction; the indices of its new notes.
@@ -392,7 +541,7 @@ impl Ledger {
                 let digest = Transfer::digest(&t.spends, &t.outputs);
                 let mut nfs = HashSet::new();
                 for (s, sig) in t.spends.iter().zip(&t.sigs) {
-                    ensure!(self.tree.leaf(s.index) == Some(s.note.commitment()), "spending a note not at index {}", s.index);
+                    ensure!(self.note(s.index) == Some(&s.note), "spending a note not at index {}", s.index);
                     let nf = nullifier(&s.note);
                     ensure!(!self.nullifiers.contains(&nf) && nfs.insert(nf), "the note at {} is already spent", s.index);
                     verify(&s.note.owner, &digest, sig).with_context(|| format!("the spend of note {}", s.index))?;
@@ -401,6 +550,29 @@ impl Ledger {
                 let vout = t.outputs.iter().try_fold(0u64, |a, n| a.checked_add(n.value));
                 ensure!(vin.is_some() && vin == vout, "values don't balance");
                 let idx = self.append(&t.outputs)?;
+                for nf in nfs {
+                    self.nullifiers.insert(nf);
+                }
+                Ok(idx)
+            }
+            Tx::Shielded(t) => {
+                ensure!(self.sealed.iter().any(|s| s.tree == t.anchor), "the anchor is no sealed root of the tree");
+                ensure!(t.t_sigs.len() == t.t_spends.len(), "one signature per transparent spend");
+                let journal = t.journal()?;
+                let digest = t.digest()?;
+                for (s, sig) in t.t_spends.iter().zip(&t.t_sigs) {
+                    ensure!(self.note(s.index) == Some(&s.note), "spending a note not at index {}", s.index);
+                    verify(&s.note.owner, &digest, sig).with_context(|| format!("the spend of note {}", s.index))?;
+                }
+                let mut nfs = HashSet::new();
+                for nf in journal.t_nfs.iter().chain(&journal.nfs) {
+                    ensure!(!self.nullifiers.contains(nf) && nfs.insert(*nf), "a note already spent");
+                }
+                self.verify_proof(&journal, &t.proof)?;
+                let nf0 = *journal.nf0().context("a transaction that spends nothing")?;
+                let mut leaves: Vec<Leaf> = t.outputs.iter().enumerate().map(|(i, o)| Leaf::Shielded { cm: o.cm, ciphertext: o.ciphertext.clone(), nf0, i: i as u32 }).collect();
+                leaves.extend(t.t_outputs.iter().map(|n| Leaf::Note(*n)));
+                let idx = self.append_leaves(&leaves)?;
                 for nf in nfs {
                     self.nullifiers.insert(nf);
                 }
@@ -429,7 +601,7 @@ impl Ledger {
     /// owned by the hub, its memo the contract's `c`): under the first
     /// sealed root that includes it.
     pub fn withdraw_input(&self, index: u32) -> Result<WithdrawInput> {
-        let note = *self.notes.get(index as usize).context("no such note")?;
+        let note = *self.note(index).context("no such note")?;
         let s = self.sealed_with(index).context("the return is not sealed yet")?;
         let d = self.deployment;
         let input = WithdrawInput { height: s.height, nullifiers: s.nullifiers, signature: s.signature.clone(), note, index, path: self.tree.path_at(index, s.size), sequencer: d.sequencer, hub: d.hub };
@@ -527,6 +699,97 @@ mod tests {
         assert_eq!(journal[8..], Deployment::toy().id());
         // a note that isn't the hub's is no return
         assert!(l.withdraw_input(idx[0]).is_err());
+    }
+
+    /// The spend statement's input for spending shielded notes (value,
+    /// rho, index) of `nk` under the last sealed root, with `t_spends`
+    /// beside them.
+    fn spend_input(l: &Ledger, t_spends: &[Spend], nk: &Hash, notes: &[(u64, Hash, u32)], outputs: Vec<(u64, Hash)>, t_outputs: Vec<shielded::TOut>) -> shielded::SpendInput {
+        let s = l.sealed.last().unwrap();
+        let spends = notes.iter().map(|&(value, rho, index)| shielded::Spend { value, rho, nk: *nk, index, path: l.tree.path_at(index, s.size) }).collect();
+        let t_total = t_spends.iter().map(|s| s.note.value).sum();
+        shielded::SpendInput { anchor: s.tree, t_nfs: t_spends.iter().map(|s| nullifier(&s.note)).collect(), t_total, spends, outputs, t_outputs }
+    }
+
+    /// The transaction for `input`, with a native proof, each transparent
+    /// spend signed by `signer`.
+    fn shielded_tx(input: &shielded::SpendInput, t_spends: Vec<Spend>, t_outputs: Vec<Note>, signer: Option<&SigningKey>) -> Tx {
+        let j = shielded::check(input).unwrap();
+        let outputs = j.cms.iter().map(|cm| SOut { cm: *cm, ciphertext: vec![7; 8] }).collect();
+        let mut t = Shielded { anchor: input.anchor, t_spends, t_sigs: vec![], nfs: j.nfs.clone(), outputs, t_outputs, proof: Proof::Native(input.to_bytes()) };
+        let d = t.digest().unwrap();
+        t.t_sigs = t.t_spends.iter().map(|_| sign(signer.unwrap(), &d)).collect();
+        Tx::Shielded(t)
+    }
+
+    #[test]
+    fn shield_pay_and_return_under_the_same_statement() {
+        let (hub, seq) = (regtest_hub(), regtest_sequencer());
+        let alice = key_from_label("test/alice");
+        let (alice_nk, bob_nk) = (sha256(&[b"alice nk"]), sha256(&[b"bob nk"]));
+        let (a_owner, b_owner) = (shielded::owner(&alice_nk), shielded::owner(&bob_nk));
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub) });
+        l.native_proofs = true;
+        let minted = note(xonly(&alice), 20, 0);
+        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![minted]))).unwrap()[0];
+        l.seal(&seq);
+
+        // Alice shields her 20: notes of 15 and 5 of her own
+        let t_spends = vec![Spend { note: minted, index: i0 }];
+        let input = spend_input(&l, &t_spends, &alice_nk, &[], vec![(15, a_owner), (5, a_owner)], vec![]);
+        let tx = shielded_tx(&input, t_spends.clone(), vec![], Some(&alice));
+        // not without native proofs accepted, nor signed by another
+        let mut strict = l.clone();
+        strict.native_proofs = false;
+        assert!(strict.apply(&tx).unwrap_err().to_string().contains("no native proofs"));
+        assert!(l.apply(&shielded_tx(&input, t_spends.clone(), vec![], Some(&regtest_hub()))).is_err(), "not Alice's signature");
+        let idx = l.apply(&tx).unwrap();
+        assert!(matches!(l.notes[idx[0] as usize], Leaf::Shielded { .. }));
+        assert!(l.apply(&tx).is_err(), "the mint is spent");
+        let nf0 = nullifier(&minted);
+        let rho15 = shielded::rho(&nf0, 0);
+        assert_eq!(l.tree.leaf(idx[0]), Some(shielded::SNote { value: 15, owner: a_owner, rho: rho15 }.commitment()));
+        // not yet sealed: no anchor reaches it
+        let early = spend_input(&l, &[], &alice_nk, &[(15, rho15, idx[0])], vec![(15, b_owner)], vec![]);
+        assert!(shielded::check(&early).is_err(), "the last sealed root doesn't hold it");
+        l.seal(&seq);
+
+        // Alice pays Bob 12 from her 15, keeps 3
+        let input = spend_input(&l, &[], &alice_nk, &[(15, rho15, idx[0])], vec![(12, b_owner), (3, a_owner)], vec![]);
+        let pay = shielded_tx(&input, vec![], vec![], None);
+        let paid = l.apply(&pay).unwrap();
+        assert!(l.apply(&pay).is_err(), "spent twice");
+        // a native proof of another transaction
+        let other = spend_input(&l, &[], &alice_nk, &[(5, shielded::rho(&nf0, 1), idx[1])], vec![(5, b_owner)], vec![]);
+        if let Tx::Shielded(mut t) = shielded_tx(&other, vec![], vec![], None) {
+            t.proof = Proof::Native(input.to_bytes());
+            assert!(l.apply(&Tx::Shielded(t)).unwrap_err().to_string().contains("another transaction"));
+        }
+        // an anchor that was never sealed
+        if let Tx::Shielded(mut t) = shielded_tx(&other, vec![], vec![], None) {
+            t.anchor = [9; 32];
+            assert!(l.apply(&Tx::Shielded(t)).unwrap_err().to_string().contains("anchor"));
+        }
+        l.seal(&seq);
+
+        // Bob returns 12 to the hub, memo 42: a transparent note, the
+        // withdrawal statement's as ever
+        let nf_pay = *shielded::check(&input).unwrap().nf0().unwrap();
+        let ret = shielded::TOut { owner: HUB_KEY, value: 12, memo: 42, rho: fresh_rho() };
+        let input = spend_input(&l, &[], &bob_nk, &[(12, shielded::rho(&nf_pay, 0), paid[0])], vec![], vec![ret]);
+        let ret_note = Note { owner: ret.owner, value: ret.value, memo: ret.memo, rho: ret.rho };
+        let r = l.apply(&shielded_tx(&input, vec![], vec![ret_note], None)).unwrap()[0];
+        l.seal(&seq);
+        let journal = check(&l.withdraw_input(r).unwrap()).unwrap();
+        assert_eq!(journal[..8], [12, 0, 0, 0, 42, 0, 0, 0]);
+        // a shielded leaf is no return
+        assert!(l.withdraw_input(paid[1]).is_err());
+        // a ledger kept before shielded notes reads as it was
+        let old = format!(r#"{{"tree":{{"leaves":[]}},"notes":[{}],"nullifiers":{{"set":[]}},"commitments":[],"sealed":[],"deployment":{}}}"#, serde_json::to_string(&minted).unwrap(), serde_json::to_string(&l.deployment).unwrap());
+        let back: Ledger = serde_json::from_str(&old).unwrap();
+        assert_eq!(back.notes, vec![Leaf::Note(minted)]);
+        let again: Ledger = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+        assert_eq!(again.notes, l.notes);
     }
 
     #[test]

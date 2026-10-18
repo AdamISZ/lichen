@@ -269,7 +269,15 @@ couldn't.
 - TODO: re-measure the Groth16 wrap (109 s was on the six-segment,
   unaccelerated proof; the proof is now one segment).
 
+## Shielded transfers, then validity proofs (branch `shielded`, 2026-10-18)
+
+Planned in [SHIELDED_PLAN.md](SHIELDED_PLAN.md): shielded notes in the
+same tree, each sender proving their spend in RISC Zero, returns and
+mints transparent so the withdrawal statement is unchanged; then the
+validity chain, so the withdrawal proof judged in a dispute attests a
+proven valid history.
+
 ## Later
 
 Watchtowers: a turnkey tower, planned in [TOWER_PLAN.md](TOWER_PLAN.md) (the paper's Watchtowers section, papers/lichen-v0.1.1.pdf); several hubs
-(colours, clearing lines); shielded notes; a GUI.
+(colours, clearing lines); a GUI.

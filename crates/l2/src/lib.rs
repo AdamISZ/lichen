@@ -6,8 +6,9 @@
 //!   reason it was refused ([`Refused`]);
 //! - `POST /seal`: seal a height, if anything changed since the last;
 //!   its [`SignedRoot`];
-//! - `GET /state`: every note's opening, the nullifiers, the sealed
-//!   heights ([`State`]; the ledger is transparent; fine at this scale);
+//! - `GET /state`: every leaf (a transparent note's opening, or a
+//!   shielded note's commitment and ciphertext), the nullifiers, the
+//!   sealed heights ([`State`]; fine at this scale);
 //! - `GET /info`: the deployment, the sequencer's and the hub's keys (a
 //!   client pins it on first contact: [`Client::new`]);
 //! - `GET /events?since=<n>`: what happened, in order, from event `n`
@@ -19,13 +20,13 @@
 //! statement.
 
 use anyhow::{anyhow, Context, Result};
-use lichen_ledger::{Deployment, Hash, Ledger, Note, SignedRoot, Tree, Tx, WithdrawInput};
+use lichen_ledger::{Deployment, Hash, Leaf, Ledger, Note, SignedRoot, Tree, Tx, WithdrawInput};
 use serde::{Deserialize, Serialize};
 
 /// What `GET /state` returns.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
-    pub notes: Vec<Note>,
+    pub notes: Vec<Leaf>,
     pub nullifiers: Vec<Hash>,
     pub sealed: Vec<SignedRoot>,
 }
@@ -35,13 +36,21 @@ impl State {
     pub fn of(l: &Ledger) -> State {
         State { notes: l.notes.clone(), nullifiers: l.nullifiers.iter().copied().collect(), sealed: l.sealed.clone() }
     }
-    /// The commitment tree, rebuilt from the notes.
+    /// The commitment tree, rebuilt from the leaves.
     pub fn tree(&self) -> Tree {
         let mut t = Tree::default();
-        for n in &self.notes {
-            t.append(n.commitment()).expect("the sequencer's tree fits");
+        for l in &self.notes {
+            t.append(l.commitment()).expect("the sequencer's tree fits");
         }
         t
+    }
+    /// The transparent note at `index`, if it is one.
+    pub fn note(&self, index: u32) -> Option<&Note> {
+        self.notes.get(index as usize).and_then(Leaf::note)
+    }
+    /// The transparent notes, with their indices.
+    pub fn transparent(&self) -> impl Iterator<Item = (u32, &Note)> {
+        self.notes.iter().enumerate().filter_map(|(i, l)| l.note().map(|n| (i as u32, n)))
     }
     /// Check every sealed root's signature (the sequencer's key) and that
     /// the notes reach it.
@@ -59,7 +68,7 @@ impl State {
     /// The withdrawal statement's input for the return at `index` in
     /// deployment `d`, built and checked locally.
     pub fn withdraw_input(&self, index: u32, d: &Deployment) -> Result<WithdrawInput> {
-        let note = *self.notes.get(index as usize).context("no such note")?;
+        let note = *self.note(index).context("no such note")?;
         let s = self.sealed.iter().find(|s| s.size > index).context("the return is not sealed yet")?;
         let input = WithdrawInput { height: s.height, nullifiers: s.nullifiers, signature: s.signature.clone(), note, index, path: self.tree().path_at(index, s.size), sequencer: d.sequencer, hub: d.hub };
         lichen_ledger::check(&input).map_err(|r| anyhow!("the statement would reject this return: {r:?}"))?;
@@ -74,6 +83,10 @@ pub enum Event {
     /// A transfer: the owners of the notes spent, and the new notes
     /// (owner, value, memo).
     Transfer { from: Vec<Hash>, to: Vec<(Hash, u64, u32)> },
+    /// A shielded transaction: the owners of the transparent notes spent,
+    /// how many shielded notes were spent and made, and the transparent
+    /// notes made (owner, value, memo).
+    Shielded { from: Vec<Hash>, spent: usize, made: usize, to: Vec<(Hash, u64, u32)> },
     /// A height sealed: the notes so far, its signed root.
     Sealed { height: u64, notes: u32, root: Hash },
 }
@@ -84,6 +97,7 @@ impl Event {
         match tx {
             Tx::Mint(m) => Event::Mint { to: m.outputs.iter().map(|n| (n.owner, n.value)).collect() },
             Tx::Transfer(t) => Event::Transfer { from: t.spends.iter().map(|s| s.note.owner).collect(), to: t.outputs.iter().map(|n| (n.owner, n.value, n.memo)).collect() },
+            Tx::Shielded(t) => Event::Shielded { from: t.t_spends.iter().map(|s| s.note.owner).collect(), spent: t.nfs.len(), made: t.outputs.len(), to: t.t_outputs.iter().map(|n| (n.owner, n.value, n.memo)).collect() },
         }
     }
 }

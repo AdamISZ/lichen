@@ -8,6 +8,7 @@
 
 pub mod dispute;
 pub mod engine;
+pub mod shielded;
 pub mod tower;
 
 use std::path::{Path, PathBuf};
@@ -115,6 +116,8 @@ pub struct Wallet {
     pub lie: Option<emulator::executor::utils::FailConfiguration>,
     /// Told each step of a dispute, in words (for a front end).
     pub progress: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
+    /// How shielded spends are proved.
+    pub spend_prover: shielded::SpendProver,
     key: SigningKey,
     path: PathBuf,
     returns: Vec<(u32, u32)>,
@@ -138,7 +141,7 @@ impl Wallet {
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
         // the deployment the sequencer announces, kept from now on
-        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, key, path: path.to_path_buf(), returns: vec![], contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: vec![], contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
         w.save()?;
         Ok(w)
     }
@@ -149,7 +152,7 @@ impl Wallet {
             Some(d) => Client::pinned(sequencer, d),
             None => Client::new(sequencer)?,
         };
-        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, deposits: s.deposits, sequencer: client };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, deposits: s.deposits, sequencer: client };
         if s.deployment.is_none() {
             w.save()?;
         }
@@ -170,10 +173,12 @@ impl Wallet {
     /// Our unspent notes.
     pub fn notes(&self, state: &State) -> Vec<Owned> {
         let me = self.address();
-        state.notes.iter().enumerate().filter(|(_, n)| n.owner == me && !state.is_spent(n)).map(|(i, n)| Owned { note: *n, index: i as u32 }).collect()
+        state.transparent().filter(|(_, n)| n.owner == me && !state.is_spent(n)).map(|(i, n)| Owned { note: *n, index: i }).collect()
     }
+    /// What we hold on the L2: transparent and shielded notes.
     pub fn balance(&self) -> Result<u64> {
-        Ok(self.notes(&self.sequencer.state()?).iter().map(|o| o.note.value).sum())
+        let (t, s) = self.balances()?;
+        Ok(t + s)
     }
     /// Pay `amount` to `to` with `memo`; the new notes' indices (the
     /// payment's first, then our change if any).
@@ -203,8 +208,10 @@ impl Wallet {
     }
     /// Return `b` to the hub with the contract's memo `c`: a withdrawal's
     /// first step. The return's note index.
+    /// From shielded notes if they cover it, else transparent ones.
     pub fn return_to_hub(&mut self, b: u64, c: u32) -> Result<u32> {
-        let idx = self.send(self.sequencer.deployment.hub, b, c)?[0];
+        let (_, shielded) = self.balances()?;
+        let idx = if shielded >= b { self.return_shielded(b, c)? } else { self.send(self.sequencer.deployment.hub, b, c)?[0] };
         self.returns.push((c, idx));
         self.save()?;
         Ok(idx)
@@ -436,7 +443,7 @@ impl Wallet {
         let start = std::time::Instant::now();
         loop {
             let state = self.sequencer.state()?;
-            if let Some(n) = state.notes.get(index as usize) {
+            if let Some(n) = state.note(index) {
                 ensure!((n.owner, n.value, n.memo) == (*owner, value, 0), "note {index} is not the deposit minted to us, locked to the funding");
                 ensure!(!state.is_spent(n), "the deposit minted to us is spent");
                 if state.sealed.iter().any(|s| s.size > index) {
@@ -480,7 +487,7 @@ impl Wallet {
         ensure!(PublicKey::from_secret_key(SECP256K1, t) == locked.point, "not the adaptor point's secret");
         let key = mint_secret(&self.key, &t.secret_bytes())?;
         let state = self.sequencer.state()?;
-        let n = *state.notes.get(locked.index as usize).context("the deposit minted to us is gone")?;
+        let n = *state.note(locked.index).context("the deposit minted to us is gone")?;
         ensure!(n.owner == xonly(&key), "the deposit minted is not ours to claim");
         if !state.is_spent(&n) {
             let spends = vec![Spend { note: n, index: locked.index }];
@@ -557,7 +564,7 @@ impl Wallet {
         ensure!(bitcoin::Amount::from_sat(b) <= held.record.terms.v_max(), "{b} sats is above the cap");
         let index = match self.returned(cid) {
             Some(index) => {
-                let v = self.sequencer.state()?.notes.get(index as usize).with_context(|| format!("no note {index}"))?.value;
+                let v = self.sequencer.state()?.note(index).with_context(|| format!("no note {index}"))?.value;
                 ensure!(v == b, "contract {cid} has a return of {v} sats already, not folded: withdraw {v}, or dispute it");
                 index
             }
