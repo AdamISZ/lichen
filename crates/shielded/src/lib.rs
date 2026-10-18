@@ -32,6 +32,9 @@ pub type Hash = [u8; 32];
 
 /// The commitment tree's depth (the withdrawal statement's).
 pub const TREE_DEPTH: usize = 16;
+/// A spend's anchor must be one of the last this many sealed tree roots
+/// (the block statement carries them; docs/SHIELDED_PLAN.md).
+pub const RECENT: usize = 64;
 /// At most this many spends (transparent and shielded) and outputs.
 pub const MAX_SPENDS: usize = 4;
 pub const MAX_OUTPUTS: usize = 4;
@@ -231,7 +234,9 @@ pub mod smt {
     /// A node: one SHA-256 compression of `left ‖ right` from the initial
     /// state, no padding (every input is 64 bytes): half the commitment
     /// tree's `node`, and in the guest RISC Zero's accelerated compression
-    /// alone.
+    /// alone. (`generic-array` 0.14.9 deprecates its own type, which
+    /// `sha2` 0.10's `compress256` takes, RISC Zero's fork too.)
+    #[allow(deprecated)]
     pub fn node(left: &Hash, right: &Hash) -> Hash {
         let mut block = [0u8; 64];
         block[..32].copy_from_slice(left);

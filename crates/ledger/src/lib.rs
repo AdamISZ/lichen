@@ -230,6 +230,12 @@ impl Tree {
         let (levels, zero) = self.levels(size);
         levels[TREE_DEPTH].first().copied().unwrap_or(zero[TREE_DEPTH])
     }
+    /// The node at `level`, position `i`, of the tree's first `size`
+    /// leaves.
+    pub fn node_at(&self, level: usize, i: u32, size: u32) -> Hash {
+        let (levels, zero) = self.levels(size);
+        levels[level].get(i as usize).copied().unwrap_or(zero[level])
+    }
     pub fn path_at(&self, index: u32, size: u32) -> Vec<Hash> {
         let (levels, zero) = self.levels(size);
         (0..TREE_DEPTH).map(|l| levels[l].get(((index >> l) ^ 1) as usize).copied().unwrap_or(zero[l])).collect()
@@ -486,6 +492,10 @@ pub struct Ledger {
     /// Whether [`Proof::Native`] is accepted (tests only).
     #[serde(skip)]
     pub native_proofs: bool,
+    /// The transactions applied since the last seal: the next height's
+    /// block.
+    #[serde(default)]
+    pub pending: Vec<Tx>,
 }
 
 impl Ledger {
@@ -535,8 +545,15 @@ impl Ledger {
         }
     }
 
-    /// Check and apply a transaction; the indices of its new notes.
+    /// Check and apply a transaction; the indices of its new notes. It
+    /// joins the next height's block.
     pub fn apply(&mut self, tx: &Tx) -> Result<Vec<u32>> {
+        let idx = self.apply_tx(tx)?;
+        self.pending.push(tx.clone());
+        Ok(idx)
+    }
+
+    fn apply_tx(&mut self, tx: &Tx) -> Result<Vec<u32>> {
         match tx {
             Tx::Mint(m) => {
                 verify(&self.deployment.hub, &Mint::digest(&m.outputs), &m.sig).context("a mint not signed by the hub")?;
@@ -563,7 +580,7 @@ impl Ledger {
                 Ok(idx)
             }
             Tx::Shielded(t) => {
-                ensure!(self.sealed.iter().any(|s| s.tree == t.anchor), "the anchor is no sealed root of the tree");
+                ensure!(self.sealed.iter().rev().take(shielded::RECENT).any(|s| s.tree == t.anchor), "the anchor is none of the last {} sealed roots of the tree", shielded::RECENT);
                 ensure!(t.t_sigs.len() == t.t_spends.len(), "one signature per transparent spend");
                 let journal = t.journal()?;
                 let digest = t.digest()?;
@@ -590,6 +607,73 @@ impl Ledger {
 
     /// Seal a height: the state now, signed by the sequencer.
     pub fn seal(&mut self, sequencer: &SigningKey) -> SignedRoot {
+        self.seal_block(sequencer).0
+    }
+
+    /// Seal a height; its signed root and its block (the transactions
+    /// since the last seal, in order).
+    pub fn seal_block(&mut self, sequencer: &SigningKey) -> (SignedRoot, Vec<Tx>) {
+        let block = std::mem::take(&mut self.pending);
+        (self.seal_root(sequencer), block)
+    }
+
+    /// The block statement's input for the pending block (call before
+    /// sealing it): the state at the last seal rebuilt (the nullifiers
+    /// less the block's own, the tree's frontier at its size then, the
+    /// recent roots), each nullifier's insert proof in order, each
+    /// transparent spend's path from before the block.
+    pub fn block_input(&self) -> Result<lichen_validity::BlockInput> {
+        use lichen_validity as v;
+        let size0 = self.sealed.last().map_or(0, |s| s.size);
+        let height = self.sealed.last().map_or(0, |s| s.height);
+        let txs: Vec<v::Tx> = self.pending.iter().map(block_tx).collect::<Result<_>>()?;
+        // the block's nullifiers, in the statement's order
+        let mut nfs = vec![];
+        let mut spent_before = vec![];
+        for t in &txs {
+            match t {
+                v::Tx::Mint { .. } => {}
+                v::Tx::Transfer { spends, .. } => {
+                    nfs.extend(spends.iter().map(|s| s.0.nullifier()));
+                    spent_before.extend(spends.iter().map(|s| s.1).filter(|&i| i < size0));
+                }
+                v::Tx::Shielded { t_spends, nfs: s_nfs, .. } => {
+                    nfs.extend(t_spends.iter().map(|s| s.0.nullifier()));
+                    nfs.extend(s_nfs.iter().copied());
+                    spent_before.extend(t_spends.iter().map(|s| s.1).filter(|&i| i < size0));
+                }
+            }
+        }
+        let mut before = self.nullifiers.clone();
+        before.set.retain(|nf| !nfs.contains(nf));
+        before.root = std::sync::OnceLock::new();
+        let nullifiers = before.root();
+        let mut nf_proofs = vec![];
+        for nf in &nfs {
+            nf_proofs.push(before.proof(nf));
+            before.insert(*nf);
+        }
+        // the frontier at size0: at each level whose bit is set, the left
+        // node there
+        let mut branch = vec![[0u8; 32]; TREE_DEPTH];
+        for (l, b) in branch.iter_mut().enumerate() {
+            if size0 >> l & 1 == 1 {
+                *b = self.tree.node_at(l, (size0 >> l) - 1, size0);
+            }
+        }
+        Ok(v::BlockInput {
+            hub: self.deployment.hub,
+            height,
+            tree: v::Frontier { size: size0, branch },
+            nullifiers,
+            recent: self.sealed.iter().rev().take(shielded::RECENT).rev().map(|s| s.tree).collect(),
+            txs,
+            nf_proofs,
+            paths: spent_before.iter().map(|&i| self.tree.path_at(i, size0)).collect(),
+        })
+    }
+
+    fn seal_root(&mut self, sequencer: &SigningKey) -> SignedRoot {
         let height = self.sealed.last().map_or(1, |s| s.height + 1);
         let size = self.tree.len();
         let (tree, nullifiers) = (self.tree.root_at(size), self.nullifiers.root());
@@ -617,6 +701,26 @@ impl Ledger {
         }
         Ok(input)
     }
+}
+
+/// A ledger transaction as the block statement reads it.
+fn block_tx(tx: &Tx) -> Result<lichen_validity::Tx> {
+    use lichen_validity::{TNote, Tx as V};
+    let tn = |n: &Note| TNote { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho };
+    let sig = |s: &Vec<u8>| -> Result<[u8; 64]> { s.as_slice().try_into().context("a signature of 64 bytes") };
+    Ok(match tx {
+        Tx::Mint(m) => V::Mint { outputs: m.outputs.iter().map(tn).collect(), sig: sig(&m.sig)? },
+        Tx::Transfer(t) => V::Transfer { spends: t.spends.iter().map(|s| (tn(&s.note), s.index)).collect(), outputs: t.outputs.iter().map(tn).collect(), sigs: t.sigs.iter().map(sig).collect::<Result<_>>()? },
+        Tx::Shielded(t) => V::Shielded {
+            anchor: t.anchor,
+            t_spends: t.t_spends.iter().map(|s| (tn(&s.note), s.index)).collect(),
+            t_sigs: t.t_sigs.iter().map(sig).collect::<Result<_>>()?,
+            nfs: t.nfs.clone(),
+            cms: t.outputs.iter().map(|o| o.cm).collect(),
+            ciphertexts: t.outputs.iter().map(|o| o.ciphertext.clone()).collect(),
+            t_outputs: t.t_outputs.iter().map(tn).collect(),
+        },
+    })
 }
 
 /// The spend guest's image id (`r0/guests/spend.id`, `lichen-r0 image-id`).
@@ -745,6 +849,86 @@ mod tests {
         let d = t.digest().unwrap();
         t.t_sigs = t.t_spends.iter().map(|_| sign(signer.unwrap(), &d)).collect();
         Tx::Shielded(t)
+    }
+
+    /// Check the pending block with the block statement (receipts: the
+    /// pending shielded transactions' journals), then seal it: the
+    /// statement's journal, which must run from `from` to the new root.
+    fn seal_checked(l: &mut Ledger, seq: &SigningKey, from: (Hash, Hash)) -> lichen_validity::BlockJournal {
+        let input = l.block_input().unwrap();
+        let journals: Vec<Vec<u8>> = l.pending.iter().filter_map(|t| if let Tx::Shielded(s) = t { Some(s.journal().unwrap().to_bytes()) } else { None }).collect();
+        let j = lichen_validity::check(&input, &mut |jb| journals.iter().any(|x| x == jb)).unwrap();
+        let s = l.seal(seq);
+        assert_eq!((j.from, j.recent_from), from, "the block starts where the last ended");
+        assert_eq!((j.height + 1, j.to), (s.height, s.root()), "and ends at the root the sequencer signs");
+        j
+    }
+
+    #[test]
+    fn every_block_is_the_block_statements() {
+        use lichen_validity as v;
+        let (hub, seq) = (regtest_hub(), regtest_sequencer());
+        let alice = key_from_label("test/alice");
+        let (alice_nk, bob_nk) = (sha256(&[b"alice nk"]), sha256(&[b"bob nk"]));
+        let (a_owner, b_owner) = (shielded::owner(&alice_nk), shielded::owner(&bob_nk));
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub) });
+        l.native_proofs = true;
+        let z = v::tree_empties();
+        let genesis = (v::state_root(0, &z[TREE_DEPTH], &shielded::smt::empties()[shielded::smt::DEPTH]), v::recent_hash(&[]));
+
+        // block 1: two mints, and a transfer of one of them within the block
+        let (m0, m1) = (note(xonly(&alice), 20, 0), note(xonly(&alice), 7, 0));
+        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![m0]))).unwrap()[0];
+        l.apply(&Tx::Mint(Mint::new(&hub, vec![m1]))).unwrap();
+        let moved = note(xonly(&alice), 20, 0);
+        let i2 = l.apply(&transfer(vec![(Spend { note: m0, index: i0 }, &alice)], vec![moved])).unwrap()[0];
+        let j1 = seal_checked(&mut l, &seq, genesis);
+
+        // block 2: shield the moved note (from block 1: a path), and the
+        // other mint by transfer
+        let t_spends = vec![Spend { note: moved, index: i2 }];
+        let input = spend_input(&l, &t_spends, &alice_nk, &[], vec![(15, a_owner), (5, a_owner)], vec![]);
+        let idx = l.apply(&shielded_tx(&input, t_spends, vec![], Some(&alice))).unwrap();
+        l.apply(&transfer(vec![(Spend { note: m1, index: 1 }, &alice)], vec![note(xonly(&alice), 3, 0), note(xonly(&alice), 4, 0)])).unwrap();
+        let nf0 = nullifier(&moved);
+        let j2 = seal_checked(&mut l, &seq, (j1.to, j1.recent_to));
+
+        // block 3: Alice pays Bob shielded (Bob's return waits for block
+        // 4: his note must be under a sealed root first)
+        let input = spend_input(&l, &[], &alice_nk, &[(15, shielded::rho(&nf0, 0), idx[0])], vec![(12, b_owner), (3, a_owner)], vec![]);
+        let pay = shielded_tx(&input, vec![], vec![], None);
+        let paid = l.apply(&pay).unwrap();
+        let nf_pay = *shielded::check(&input).unwrap().nf0().unwrap();
+
+        // what the statement refuses, on this block
+        let good = l.block_input().unwrap();
+        let ok = |jb: &[u8]| -> bool { if let Tx::Shielded(t) = &l.pending[0] { t.journal().unwrap().to_bytes() == jb } else { false } };
+        assert!(v::check(&good, &mut |jb| ok(jb)).is_ok());
+        assert_eq!(v::check(&good, &mut |_| false), Err(v::Reject::Receipt), "a receipt that doesn't verify");
+        let mut bad = good.clone();
+        bad.nf_proofs[0].siblings.push([1; 32]);
+        assert_eq!(v::check(&bad, &mut |jb| ok(jb)), Err(v::Reject::Spent), "a bad insert proof");
+        let mut bad = good.clone();
+        bad.recent = vec![[9; 32]];
+        assert_eq!(v::check(&bad, &mut |jb| ok(jb)), Err(v::Reject::Anchor), "an anchor not recent");
+        let mut bad = good.clone();
+        bad.nullifiers = [7; 32];
+        assert_eq!(v::check(&bad, &mut |jb| ok(jb)), Err(v::Reject::Spent), "another nullifier root");
+        let j3 = seal_checked(&mut l, &seq, (j2.to, j2.recent_to));
+
+        // block 4: Bob returns 12 to the hub, a transparent note, and a
+        // forged transparent signature is refused
+        let ret = shielded::TOut { owner: HUB_KEY, value: 12, memo: 42, rho: fresh_rho() };
+        let input = spend_input(&l, &[], &bob_nk, &[(12, shielded::rho(&nf_pay, 0), paid[0])], vec![], vec![ret]);
+        l.apply(&shielded_tx(&input, vec![], vec![Note { owner: ret.owner, value: 12, memo: 42, rho: ret.rho }], None)).unwrap();
+        let mint = Mint::new(&hub, vec![note(xonly(&alice), 1, 0)]);
+        l.apply(&Tx::Mint(mint)).unwrap();
+        let mut bad = l.block_input().unwrap();
+        if let v::Tx::Mint { sig, .. } = &mut bad.txs[1] {
+            sig[0] ^= 1;
+        }
+        assert_eq!(v::check(&bad, &mut |_| true), Err(v::Reject::BadSignature));
+        seal_checked(&mut l, &seq, (j3.to, j3.recent_to));
     }
 
     #[test]

@@ -1,0 +1,13 @@
+[package]
+name = "lichen-validity"
+description = "The block statement: one sealed height's transition, checked"
+# self-contained (not inherited from the workspace): the block guest
+# builds it alone, as the spend guest builds lichen-shielded
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+lichen-shielded = { path = "../shielded" }
+sha2 = { version = "0.10", default-features = false }
+k256 = { version = "0.13", default-features = false, features = ["schnorr"] }

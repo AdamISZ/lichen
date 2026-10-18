@@ -191,6 +191,49 @@ After phase 1 is demonstrated, in this order:
    only the image id changes. Then the Groth16 dispute test (G2) and a
    Mutinynet trial with the tower.
 
+Step 1 is done (`70fecb5`): 256 levels keyed by the nullifier's bits,
+a node one SHA-256 compression of its 64-byte block (no padding: N is
+ours to define); an insert proof is a bitmap of the non-empty siblings
+and those siblings, `smt::insert` checks it against the root before and
+gives the root after. An insert hashes 512 nodes.
+
+### The block statement (step 2): decisions
+
+A block is the transactions applied between two seals, in order. The
+statement, for height `i` to `i+1`:
+
+- **Input:** the state at `i` as its parts (the tree's root and size
+  and its frontier, `N`, the recent roots below), the block's
+  transactions with their receipts as assumptions, and the witnesses:
+  an insert proof per nullifier in order, a path per transparent note
+  spent from before the block.
+- **It checks** what the sequencer checks, in the same code (the
+  rollups' lesson, VALIDITY_PROOFS.md): mints signed by the hub; each
+  transparent spend's note in the tree (under `T_i`, or made earlier in
+  the block) and its owner's BIP340 signature; each shielded
+  transaction's receipt by `env::verify(SPEND_ID, journal)`, its journal
+  recomputed from the transaction, its anchor among the recent roots;
+  every nullifier unspent, inserted in order; the new leaves appended
+  to the frontier.
+- **Journal:** `(i, SR_i, RECENT_i) → (i+1, SR_{i+1}, RECENT_{i+1})`,
+  `SR = state_root(height, T, N)` as the withdrawal statement has it.
+- **Anchors: the last K sealed tree roots** (K = 64), carried beside the
+  state root as `RECENT` (a hash of the list). A spend proved against an
+  older root is refused; at a seal every 5 s that leaves minutes to get
+  a proof in. The state root itself can't carry them: its form is the
+  withdrawal statement's. The ledger applies the same rule, so the
+  sequencer never accepts what the block statement would refuse.
+- **Where blocks are kept:** the sequencer records each height's
+  transactions at its seal, in a file per height beside the ledger
+  (receipts are ~0.3 MB each; the ledger file is rewritten on every
+  change), for its prover.
+- **Code:** `crates/validity` (`no_std`, for the block guest), the
+  statement checked natively in tests with receipts checked by a
+  closure, as `Proof::Native` does for spends.
+- **Genesis:** height 0, the empty ledger, pinned by the deployment.
+  The Mutinynet deployment's earlier heights have the old flat `N`, so
+  phase 2's demo starts a fresh deployment.
+
 Costs (estimates): ~23 s of sequencer proving per transaction on one
 8-core machine (compressing a receipt 9 s, resolving it 14 s), plus the
 tree updates (~8 s) and ~15–30 s per block; a withdrawal waits for its

@@ -1845,6 +1845,7 @@ dependencies = [
  "hex",
  "k256",
  "lichen-shielded",
+ "lichen-validity",
  "lngap-r0-core",
  "risc0-zkvm",
  "serde",
@@ -1888,6 +1889,15 @@ dependencies = [
 name = "lichen-shielded"
 version = "0.1.0"
 dependencies = [
+ "sha2",
+]
+
+[[package]]
+name = "lichen-validity"
+version = "0.1.0"
+dependencies = [
+ "k256",
+ "lichen-shielded",
  "sha2",
 ]
 
