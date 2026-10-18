@@ -1,0 +1,21 @@
+# The spend guest (docs/SHIELDED_PLAN.md): proves the spend statement of
+# crates/shielded. A workspace of its own, built with RISC Zero's guest
+# toolchain in its pinned builder image (r0/build-guest.sh).
+[package]
+name = "spend"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+# the toolchain of risczero/risc0-guest-builder:r0.1.88.0
+rust-version = "1.88"
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+lichen-shielded = { path = "../../crates/shielded" }
+risc0-zkvm = { version = "=3.0.6", default-features = false, features = ["std"] }
+
+# RISC Zero's accelerated SHA-256 (the statement is all hashing)
+[patch.crates-io]
+sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.9-risczero.0" }

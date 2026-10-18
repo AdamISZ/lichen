@@ -357,15 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn the_shared_hashes_are_the_withdrawal_statements() {
-        let n = lngap_r0_core::Note { owner: h(3), value: 77, memo: 42, rho: h(4) };
-        assert_eq!(transparent_commitment(&n.owner, n.value, n.memo, &n.rho), n.commitment());
-        assert_eq!(TOut { owner: h(3), value: 77, memo: 42, rho: h(4) }.commitment(), n.commitment());
-        assert_eq!(node(&h(5), &h(6)), lngap_r0_core::node(&h(5), &h(6)));
-        assert_eq!(TREE_DEPTH, lngap_r0_core::TREE_DEPTH);
-    }
-
-    #[test]
     fn a_payment_and_its_journal() {
         let (input, root) = payment();
         let j = check(&input).unwrap();
@@ -440,7 +431,7 @@ mod tests {
         ret.outputs = vec![(2, owner(&h(1)))];
         ret.t_outputs = vec![hub];
         let j = check(&ret).unwrap();
-        assert_eq!(j.t_cms, vec![lngap_r0_core::Note { owner: h(7), value: 10, memo: 1000, rho: h(12) }.commitment()]);
+        assert_eq!(j.t_cms, vec![transparent_commitment(&h(7), 10, 1000, &h(12))]);
         assert_eq!(j.cms.len(), 1);
     }
 }

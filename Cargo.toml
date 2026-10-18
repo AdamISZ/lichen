@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["r0"]
 members = ["crates/ledger", "crates/shielded", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/demo"]
 
 [workspace.package]

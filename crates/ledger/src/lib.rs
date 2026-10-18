@@ -524,7 +524,7 @@ impl Ledger {
                 ensure!(j == *journal, "the native proof is of another transaction");
                 Ok(())
             }
-            Proof::Risc0(_) => bail!("this sequencer can't verify RISC Zero receipts yet"),
+            Proof::Risc0(r) => verify_receipt(r, &journal.to_bytes()),
         }
     }
 
@@ -610,6 +610,24 @@ impl Ledger {
         }
         Ok(input)
     }
+}
+
+/// The spend guest's image id (`r0/guests/spend.id`, `lichen-r0 image-id`).
+pub const SPEND_IMAGE_ID: &str = include_str!("../../../r0/guests/spend.id");
+
+/// Check a RISC Zero receipt (bincode) of the spend guest with `journal`.
+#[cfg(feature = "risc0")]
+fn verify_receipt(receipt: &[u8], journal: &[u8]) -> Result<()> {
+    let r: risc0_zkvm::Receipt = bincode::deserialize(receipt).context("not a RISC Zero receipt")?;
+    let id: [u8; 32] = hex::decode(SPEND_IMAGE_ID.trim()).ok().and_then(|v| v.try_into().ok()).context("the spend guest's image id")?;
+    r.verify(risc0_zkvm::sha::Digest::from_bytes(id)).context("the receipt doesn't verify against the spend guest")?;
+    ensure!(r.journal.bytes == journal, "the receipt proves another transaction");
+    Ok(())
+}
+
+#[cfg(not(feature = "risc0"))]
+fn verify_receipt(_: &[u8], _: &[u8]) -> Result<()> {
+    bail!("this build can't verify RISC Zero receipts (lichen-ledger's feature risc0: the sequencer's)")
 }
 
 /// A note for `owner`.
@@ -720,6 +738,15 @@ mod tests {
         let d = t.digest().unwrap();
         t.t_sigs = t.t_spends.iter().map(|_| sign(signer.unwrap(), &d)).collect();
         Tx::Shielded(t)
+    }
+
+    #[test]
+    fn the_shielded_crates_hashes_are_the_withdrawal_statements() {
+        let n = Note { owner: [3; 32], value: 77, memo: 42, rho: [4; 32] };
+        assert_eq!(shielded::transparent_commitment(&n.owner, n.value, n.memo, &n.rho), n.commitment());
+        assert_eq!(shielded::TOut { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho }.commitment(), n.commitment());
+        assert_eq!(shielded::node(&[5; 32], &[6; 32]), node(&[5; 32], &[6; 32]));
+        assert_eq!(shielded::TREE_DEPTH, TREE_DEPTH);
     }
 
     #[test]

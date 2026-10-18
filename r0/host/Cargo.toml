@@ -1,0 +1,16 @@
+[package]
+name = "lichen-r0"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+# the in-process prover (on a Mac: in Docker, r0/Dockerfile; RISC Zero's
+# kernels for macOS need Xcode's Metal compiler)
+risc0-zkvm = { version = "=3.0.6", default-features = false, features = ["prove", "std"] }
+risc0-binfmt = "=3.0.5"
+risc0-zkos-v1compat = "=2.2.3"
+lichen-shielded = { path = "../../crates/shielded" }
+anyhow = "1"
+bincode = "1.3"
+hex = "0.4"
