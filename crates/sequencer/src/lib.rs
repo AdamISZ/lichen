@@ -6,13 +6,13 @@
 //! The sequencer is trusted for the L2's finality, inclusion and
 //! availability (the L2's own assumptions), and for nothing else.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
 use lichen_l2::{Applied, Event, Refused, State};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_ledger::{xonly, Deployment, Hash, Ledger, Tx};
+use lichen_ledger::{xonly, Deployment, Hash, Ledger, Proof, Tx};
 use tiny_http::{Header, Method, Response, Server};
 
 /// A running sequencer.
@@ -49,11 +49,12 @@ impl Sequencer {
         let ledger = Arc::new(Mutex::new(ledger));
         let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(vec![]));
         let srv = server.clone();
+        let blocks = path.as_ref().map(|p| blocks_dir(p));
         let thread = std::thread::spawn(move || {
             for mut req in srv.incoming_requests() {
                 let mut body = String::new();
                 let _ = req.as_reader().read_to_string(&mut body);
-                let (code, json) = handle(&ledger, &events, &key, req.method(), req.url(), &body);
+                let (code, json) = handle(&ledger, &events, &key, blocks.as_deref(), req.method(), req.url(), &body);
                 if code == 200 {
                     if let Some(p) = &path {
                         let l = ledger.lock().unwrap();
@@ -77,7 +78,30 @@ impl Drop for Sequencer {
     }
 }
 
-fn handle(ledger: &Mutex<Ledger>, events: &Mutex<Vec<Event>>, key: &SigningKey, method: &Method, url: &str, body: &str) -> (u16, String) {
+/// Where the sequencer records each sealed block, beside the ledger file
+/// `p`: `<p>.blocks/`.
+pub fn blocks_dir(p: &Path) -> PathBuf {
+    let mut d = p.as_os_str().to_owned();
+    d.push(".blocks");
+    PathBuf::from(d)
+}
+
+/// Record the block that seals height `h`, for the chain prover
+/// (r0/chain-prover.sh): the block statement's input (`<h>.input`, its
+/// bytes) and each shielded transaction's receipt, in order
+/// (`<h>.<k>.receipt`).
+fn record(dir: &Path, h: u64, input: &[u8], receipts: &[&[u8]]) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for (k, r) in receipts.iter().enumerate() {
+        std::fs::write(dir.join(format!("{h}.{k}.receipt")), r)?;
+    }
+    // the input last: the prover takes a height once its input is there
+    let tmp = dir.join(format!("{h}.input.tmp"));
+    std::fs::write(&tmp, input)?;
+    std::fs::rename(tmp, dir.join(format!("{h}.input")))
+}
+
+fn handle(ledger: &Mutex<Ledger>, events: &Mutex<Vec<Event>>, key: &SigningKey, blocks: Option<&Path>, method: &Method, url: &str, body: &str) -> (u16, String) {
     let refuse = |code: u16, e: String| (code, serde_json::to_string(&Refused { error: e }).unwrap());
     let mut l = ledger.lock().unwrap();
     if let (Method::Get, Some(q)) = (method, url.strip_prefix("/events?since=")) {
@@ -104,7 +128,21 @@ fn handle(ledger: &Mutex<Ledger>, events: &Mutex<Vec<Event>>, key: &SigningKey, 
                     return (200, serde_json::to_string(last).unwrap());
                 }
             }
+            let input = blocks.map(|_| l.block_input());
+            let receipts: Vec<Vec<u8>> = l.pending.iter().filter_map(|t| match t {
+                Tx::Shielded(s) => match &s.proof {
+                    Proof::Risc0(r) => Some(r.clone()),
+                    Proof::Native(_) => None,
+                },
+                _ => None,
+            }).collect();
             let s = l.seal(key);
+            if let (Some(dir), Some(input)) = (blocks, input) {
+                let r = input.map_err(|e| e.to_string()).and_then(|i| record(dir, s.height, &i.to_bytes(), &receipts.iter().map(Vec::as_slice).collect::<Vec<_>>()).map_err(|e| e.to_string()));
+                if let Err(e) = r {
+                    eprintln!("sequencer: height {}'s block not recorded: {e}", s.height);
+                }
+            }
             events.lock().unwrap().push(Event::Sealed { height: s.height, notes: s.size, root: s.root() });
             (200, serde_json::to_string(&s).unwrap())
         }

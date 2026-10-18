@@ -243,7 +243,7 @@ impl Tree {
 }
 
 /// The nullifier set. Its root is the sparse Merkle tree's
-/// ([`shielded::smt`]), so that a nullifier can be shown unspent and
+/// ([`lichen_validity::smt`]), so that a nullifier can be shown unspent and
 /// added (a block guest's job); the withdrawal statement takes it as
 /// opaque. (Until 2026-10-18 a hash over the sorted set: heights sealed
 /// before keep that root.)
@@ -257,7 +257,7 @@ pub struct Nullifiers {
 /// The empty subtrees of the nullifier tree, computed once.
 fn empties() -> &'static [Hash] {
     static E: std::sync::OnceLock<Vec<Hash>> = std::sync::OnceLock::new();
-    E.get_or_init(shielded::smt::empties)
+    E.get_or_init(lichen_validity::smt::empties)
 }
 
 impl Nullifiers {
@@ -269,11 +269,11 @@ impl Nullifiers {
         self.set.insert(nf)
     }
     pub fn root(&self) -> Hash {
-        *self.root.get_or_init(|| shielded::smt::root(&self.set.iter().copied().collect::<Vec<_>>(), empties()))
+        *self.root.get_or_init(|| lichen_validity::smt::root(&self.set.iter().copied().collect::<Vec<_>>(), empties()))
     }
     /// The path of `nf` in the tree (unspent: a proof that it is).
-    pub fn proof(&self, nf: &Hash) -> shielded::smt::Proof {
-        shielded::smt::proof(&self.set.iter().copied().collect::<Vec<_>>(), nf, empties())
+    pub fn proof(&self, nf: &Hash) -> lichen_validity::smt::Proof {
+        lichen_validity::smt::proof(&self.set.iter().copied().collect::<Vec<_>>(), nf, empties())
     }
     pub fn iter(&self) -> impl Iterator<Item = &Hash> {
         self.set.iter()
@@ -580,7 +580,7 @@ impl Ledger {
                 Ok(idx)
             }
             Tx::Shielded(t) => {
-                ensure!(self.sealed.iter().rev().take(shielded::RECENT).any(|s| s.tree == t.anchor), "the anchor is none of the last {} sealed roots of the tree", shielded::RECENT);
+                ensure!(self.sealed.iter().rev().take(lichen_validity::RECENT).any(|s| s.tree == t.anchor), "the anchor is none of the last {} sealed roots of the tree", lichen_validity::RECENT);
                 ensure!(t.t_sigs.len() == t.t_spends.len(), "one signature per transparent spend");
                 let journal = t.journal()?;
                 let digest = t.digest()?;
@@ -666,7 +666,7 @@ impl Ledger {
             height,
             tree: v::Frontier { size: size0, branch },
             nullifiers,
-            recent: self.sealed.iter().rev().take(shielded::RECENT).rev().map(|s| s.tree).collect(),
+            recent: self.sealed.iter().rev().take(lichen_validity::RECENT).rev().map(|s| s.tree).collect(),
             txs,
             nf_proofs,
             paths: spent_before.iter().map(|&i| self.tree.path_at(i, size0)).collect(),
@@ -858,6 +858,26 @@ mod tests {
         let input = l.block_input().unwrap();
         let journals: Vec<Vec<u8>> = l.pending.iter().filter_map(|t| if let Tx::Shielded(s) = t { Some(s.journal().unwrap().to_bytes()) } else { None }).collect();
         let j = lichen_validity::check(&input, &mut |jb| journals.iter().any(|x| x == jb)).unwrap();
+        assert_eq!(lichen_validity::BlockInput::from_bytes(&input.to_bytes()), Ok(input.clone()), "the guest reads what the sequencer writes");
+        assert_eq!(lichen_validity::BlockJournal::from_bytes(&j.to_bytes()), Ok(j.clone()));
+        // the chain statement: from genesis, or from the chain journal
+        // the last block's ended
+        let id = [0xc4; 32];
+        let prev = lichen_validity::ChainJournal { hub: j.hub, height: j.height, root: from.0, recent: from.1, chain_id: id }.to_bytes();
+        let c = lichen_validity::chain(&id, &input, &mut |jb| journals.iter().any(|x| x == jb), &mut |jb| {
+            assert!(input.height > 0, "genesis needs no receipt");
+            jb == prev
+        })
+        .unwrap();
+        assert_eq!((c.height, c.root, c.recent, c.chain_id), (j.height + 1, j.to, j.recent_to, id));
+        assert_eq!(lichen_validity::ChainJournal::from_bytes(&c.to_bytes()), Ok(c));
+        if input.height == 0 {
+            let mut bad = input.clone();
+            bad.recent = vec![[3; 32]];
+            assert_eq!(lichen_validity::chain(&id, &bad, &mut |_| true, &mut |_| true), Err(lichen_validity::Reject::Genesis), "genesis is the empty ledger");
+        } else {
+            assert_eq!(lichen_validity::chain(&id, &input, &mut |_| true, &mut |_| false), Err(lichen_validity::Reject::Chain));
+        }
         let s = l.seal(seq);
         assert_eq!((j.from, j.recent_from), from, "the block starts where the last ended");
         assert_eq!((j.height + 1, j.to), (s.height, s.root()), "and ends at the root the sequencer signs");
@@ -874,7 +894,7 @@ mod tests {
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub) });
         l.native_proofs = true;
         let z = v::tree_empties();
-        let genesis = (v::state_root(0, &z[TREE_DEPTH], &shielded::smt::empties()[shielded::smt::DEPTH]), v::recent_hash(&[]));
+        let genesis = (v::state_root(0, &z[TREE_DEPTH], &lichen_validity::smt::empties()[lichen_validity::smt::DEPTH]), v::recent_hash(&[]));
 
         // block 1: two mints, and a transfer of one of them within the block
         let (m0, m1) = (note(xonly(&alice), 20, 0), note(xonly(&alice), 7, 0));
@@ -939,13 +959,13 @@ mod tests {
         let alice = key_from_label("test/alice");
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub) });
         let empty = l.nullifiers.root();
-        assert_eq!(empty, shielded::smt::empties()[shielded::smt::DEPTH]);
+        assert_eq!(empty, lichen_validity::smt::empties()[lichen_validity::smt::DEPTH]);
         let n0 = note(xonly(&alice), 10, 0);
         let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![n0]))).unwrap()[0];
         let nf = nullifier(&n0);
         let p = l.nullifiers.proof(&nf);
         l.apply(&transfer(vec![(Spend { note: n0, index: i0 }, &alice)], vec![note(xonly(&alice), 10, 0)])).unwrap();
-        assert_eq!(shielded::smt::insert(&empty, &nf, &p, &shielded::smt::empties()), Some(l.nullifiers.root()));
+        assert_eq!(lichen_validity::smt::insert(&empty, &nf, &p, &lichen_validity::smt::empties()), Some(l.nullifiers.root()));
         assert_ne!(l.seal(&seq).nullifiers, empty);
         // kept and read back: the same root
         let back: Ledger = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();

@@ -21,6 +21,14 @@ proves anything itself. Started with `--native-proofs` (not in the
 compose file), it also accepts native proofs, the sender's private input
 in the clear: tests and demos only.
 
+At each seal it also records the height's block for the chain prover
+(phase 2): `<ledger>.blocks/<h>.input` and the block's receipts,
+`<h>.<k>.receipt`. `r0/chain-prover.sh <that directory>`, in the prover
+image (`docker build -f r0/Dockerfile -t lichen-r0 .`), proves each
+height in order to `<h>.chain`, a succinct receipt that heights 1 to h
+are valid; a separate process, on this machine or another with the
+directory. It needs a ledger started from empty (height 0 is genesis).
+
 ## A machine
 
 Linux, x86-64 or arm64, with Docker (Compose v2). The image compiles a

@@ -1,10 +1,14 @@
-# The spend guest, in RISC Zero's pinned builder image (x86; on Apple
-# silicon, emulated). Context: lichen's root. r0/build-guest.sh runs it.
+# A guest (GUEST_DIR: r0/guest, the spend guest; r0/chain-guest), in RISC
+# Zero's pinned builder image (x86; on Apple silicon, emulated). Context:
+# lichen's root. r0/build-guest.sh runs it.
 FROM --platform=linux/amd64 risczero/risc0-guest-builder:r0.1.88.0
 WORKDIR /src
 COPY crates/shielded crates/shielded
-COPY r0/guest r0/guest
+COPY crates/validity crates/validity
+COPY r0/guests/spend.id r0/guests/spend.id
+ARG GUEST_DIR=r0/guest
+COPY ${GUEST_DIR} ${GUEST_DIR}
 ARG FLAGS
 ENV CARGO_ENCODED_RUSTFLAGS=$FLAGS CARGO_TARGET_DIR=target RISC0_FEATURE_bigint2= CC_riscv32im_risc0_zkvm_elf=/root/.risc0/cpp/bin/riscv32-unknown-elf-gcc CFLAGS_riscv32im_risc0_zkvm_elf="-march=rv32im -nostdlib"
-RUN cargo +risc0 fetch --locked --target riscv32im-risc0-zkvm-elf --manifest-path r0/guest/Cargo.toml
-RUN cargo +risc0 build --release --locked --target riscv32im-risc0-zkvm-elf --manifest-path r0/guest/Cargo.toml
+RUN cargo +risc0 fetch --locked --target riscv32im-risc0-zkvm-elf --manifest-path ${GUEST_DIR}/Cargo.toml
+RUN cargo +risc0 build --release --locked --target riscv32im-risc0-zkvm-elf --manifest-path ${GUEST_DIR}/Cargo.toml

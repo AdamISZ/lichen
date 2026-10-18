@@ -24,7 +24,23 @@ The hub folded contract 1007 (200 vB, Mutinynet block 3,515,985):
 return of several notes crosses into a larger segment: each spend is
 two depth-16 paths of SHA-256 over 64 bytes, ~30k cycles.
 
-Phase 2 next.
+**Phase 2, steps 1–3 done** (2026-10-18): the nullifier tree
+(`70fecb5`), the block statement (`acbd9ee`), and the chain guest, its
+prover, and the sequencer recording each block. The real-receipt test
+(`crates/wallet/tests/shielded_r0.rs`) proves every height it seals,
+each from the last, and checks the last receipt ends at the last sealed
+root (Mac, Docker, 8 cores; succinct receipts):
+
+| height | block | user cycles | proved |
+|---|---|---|---|
+| 1 | a mint (genesis before it) | 1,087,122 (2 segments) | 167 s |
+| 2 | Alice shields (a signature, a receipt) | 1,536,107 | 274 s |
+| 3 | Alice pays Bob, shielded (a receipt) | 1,216,926 | 220 s |
+| 4 | Bob returns to the hub (a receipt) | 1,215,463 | 221 s |
+
+Slower than the estimate below: ~1.1M cycles a block before its
+transactions, which a profile should explain. Next: step 4, the
+withdrawal guest.
 
 ## The aim
 
@@ -185,7 +201,7 @@ After phase 1 is demonstrated, in this order:
    it in the executor before sealing and refuses to seal on a mismatch.
 3. **The chain guest**: "valid up to i" and block i's proof to "valid up
    to i+1", journal `(i+1, SR_{i+1}, CHAIN_ID)`; genesis pinned by the
-   deployment.
+   deployment. (Done as one guest with step 2: below.)
 4. **The withdrawal guest** with `env::verify(CHAIN_ID, (n, SR_n))`
    before its inclusion path. Its journal stays `b ‖ c ‖ D`; on chain
    only the image id changes. Then the Groth16 dispute test (G2) and a
@@ -195,7 +211,15 @@ Step 1 is done (`70fecb5`): 256 levels keyed by the nullifier's bits,
 a node one SHA-256 compression of its 64-byte block (no padding: N is
 ours to define); an insert proof is a bitmap of the non-empty siblings
 and those siblings, `smt::insert` checks it against the root before and
-gives the root after. An insert hashes 512 nodes.
+gives the root after. An insert hashes 512 nodes. It lives in
+`crates/validity` (`smt`), not `crates/shielded`: the spend guest is
+built from `crates/shielded`, and keeping phase 2 out of it keeps the
+committed spend guest reproducible from the tree (its ELF rebuilt from
+HEAD is the committed one, `ca07debb…`) and its image id unchanged.
+
+Steps 2 and 3 are one guest, the **chain guest** (below): each height's
+proof checks its block and verifies the previous height's proof, so one
+recursion step per block, not two.
 
 ### The block statement (step 2): decisions
 
@@ -224,15 +248,41 @@ statement, for height `i` to `i+1`:
   withdrawal statement's. The ledger applies the same rule, so the
   sequencer never accepts what the block statement would refuse.
 - **Where blocks are kept:** the sequencer records each height's
-  transactions at its seal, in a file per height beside the ledger
-  (receipts are ~0.3 MB each; the ledger file is rewritten on every
-  change), for its prover.
-- **Code:** `crates/validity` (`no_std`, for the block guest), the
+  block at its seal, in files per height beside the ledger (receipts
+  are ~0.3 MB each; the ledger file is rewritten on every change), for
+  its prover (below).
+- **Code:** `crates/validity` (`no_std`, for the chain guest), the
   statement checked natively in tests with receipts checked by a
   closure, as `Proof::Native` does for spends.
 - **Genesis:** height 0, the empty ledger, pinned by the deployment.
   The Mutinynet deployment's earlier heights have the old flat `N`, so
   phase 2's demo starts a fresh deployment.
+
+### The chain statement (steps 2–3): decisions
+
+- **One guest per height**, `r0/chain-guest`: the block statement
+  (`lichen_validity::check`), then the state it starts from is either
+  genesis (height 0: the empty tree, the empty nullifier tree, no recent
+  roots) or the end of a previous chain receipt, checked by
+  `env::verify(CHAIN_ID, journal)`. Journal:
+  `hub ‖ height ‖ SR ‖ RECENT ‖ CHAIN_ID` (`ChainJournal`).
+- **Its own image id is an input.** A guest can't contain its own image
+  id; it takes one, verifies the previous receipt against it, and
+  commits it. Whoever checks a chain receipt against `CHAIN_ID` (the
+  withdrawal guest) also checks the journal's `chain_id` is `CHAIN_ID`;
+  by induction every earlier receipt was against it too.
+- **The spend guest's image id is built in** (`include_str!` of
+  `r0/guests/spend.id`): the chain guest is rebuilt after the spend
+  guest.
+- **The prover** (`lichen-r0 chain`): the block's spend receipts
+  (composite, as the senders upload them) and the previous chain receipt
+  as assumptions, proved to a succinct receipt, which compresses and
+  resolves them: the per-receipt cost the plan counts on.
+- **Where blocks are kept:** at each seal, the sequencer writes
+  `<ledger>.blocks/<h>.input` (the block statement's input, bytes) and
+  `<h>.<k>.receipt` (each shielded transaction's receipt). The chain
+  prover (`r0/chain-prover.sh`) proves them in order to `<h>.chain`.
+  Heights sealed with native proofs are recorded but can't be proved.
 
 Costs (estimates): ~23 s of sequencer proving per transaction on one
 8-core machine (compressing a receipt 9 s, resolving it 14 s), plus the

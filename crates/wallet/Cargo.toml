@@ -33,3 +33,4 @@ chacha20poly1305 = "0.10"
 
 [dev-dependencies]
 lichen-sequencer.workspace = true
+lichen-validity.workspace = true

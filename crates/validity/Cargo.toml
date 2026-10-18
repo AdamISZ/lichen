@@ -9,5 +9,5 @@ license = "MIT"
 
 [dependencies]
 lichen-shielded = { path = "../shielded" }
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false, features = ["compress"] }
 k256 = { version = "0.13", default-features = false, features = ["schnorr"] }

@@ -1916,6 +1916,7 @@ dependencies = [
  "lichen-ledger",
  "lichen-proto",
  "lichen-sequencer",
+ "lichen-validity",
  "lngap-btc",
  "lngap-channel",
  "lngap-ladder",

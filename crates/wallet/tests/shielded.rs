@@ -49,5 +49,23 @@ fn shield_pay_and_return() {
     assert_eq!(bob.balances().unwrap(), (0, 40), "the restarted sequencer kept the shielded notes");
     let a = alice.shielded_address();
     assert!(bob.send_shielded(&a, 1).unwrap_err().to_string().contains("no native proofs"));
+
+    // every height's recorded block, checked by the chain statement, runs
+    // on from the last: from genesis to the last sealed root
+    let blocks = lichen_sequencer::blocks_dir(&dir.join("ledger.json"));
+    let id = [0xc4; 32];
+    let mut prev: Option<lichen_validity::ChainJournal> = None;
+    let last = bob.sequencer.state().unwrap();
+    for h in 1.. {
+        let Ok(b) = std::fs::read(blocks.join(format!("{h}.input"))) else { break };
+        let input = lichen_validity::BlockInput::from_bytes(&b).unwrap();
+        let p = prev.as_ref().map(|j| j.to_bytes());
+        let j = lichen_validity::chain(&id, &input, &mut |_| true, &mut |jb| p.as_deref() == Some(jb)).unwrap();
+        assert_eq!(j.height, h);
+        prev = Some(j);
+    }
+    let sealed = last.sealed.last().unwrap();
+    let j = prev.expect("blocks recorded");
+    assert_eq!((j.height, j.root), (sealed.height, sealed.root()), "the chain ends at the last sealed root");
     let _ = std::fs::remove_dir_all(&dir);
 }

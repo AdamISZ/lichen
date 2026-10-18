@@ -2,7 +2,7 @@
 //! height's transition `i -> i+1`, checked as the sequencer checks it.
 //!
 //! The state at a height is the commitment tree (its root `T`, its size,
-//! its frontier), the nullifier tree's root `N` ([`lichen_shielded::smt`])
+//! its frontier), the nullifier tree's root `N` ([`smt`])
 //! and the last [`RECENT`] sealed tree roots, the anchors a spend may use.
 //! The withdrawal statement sees only `SR = state_root(height, T, N)`; the
 //! recent roots travel beside it in the journal ([`BlockJournal`]).
@@ -23,9 +23,14 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use k256::schnorr::{Signature, VerifyingKey};
-use lichen_shielded::{self as sh, smt, Hash, TREE_DEPTH};
-pub use lichen_shielded::RECENT;
+use lichen_shielded::{self as sh, Hash, TREE_DEPTH};
 use sha2::{Digest, Sha256};
+
+pub mod smt;
+
+/// A spend's anchor must be one of the last this many sealed tree roots
+/// (docs/SHIELDED_PLAN.md).
+pub const RECENT: usize = 64;
 
 fn sha256(parts: &[&[u8]]) -> Hash {
     let mut h = Sha256::new();
@@ -208,6 +213,10 @@ pub enum Reject {
     Empty,
     TreeFull,
     Shape,
+    /// Height 0 not the empty ledger.
+    Genesis,
+    /// The previous chain receipt doesn't verify.
+    Chain,
 }
 
 fn check_sig(key: &Hash, msg: &Hash, sig: &[u8; 64]) -> Result<(), Reject> {
@@ -356,4 +365,260 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
         to: state_root(input.height + 1, &t_next, &st.nullifiers),
         recent_to: recent_hash(&recent),
     })
+}
+
+/// What the chain statement shows: the state at `height` (its root `SR`
+/// and its recent roots) ends a valid history from genesis, under the
+/// hub, as proved by the guest of image id `chain_id`. The guest can't
+/// hold its own image id, so it is an input, carried in the journal and
+/// required equal in the previous one: whoever checks a receipt against
+/// `CHAIN_ID` checks the journal's `chain_id` is `CHAIN_ID` too.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainJournal {
+    pub hub: Hash,
+    pub height: u64,
+    pub root: Hash,
+    pub recent: Hash,
+    pub chain_id: Hash,
+}
+
+/// The chain statement: the block in `input` checked ([`check`]), from
+/// the genesis state (height 0: the empty ledger, no recent roots) or
+/// from a state a previous chain receipt ends: `verify_chain` checks one
+/// (`env::verify(chain_id, journal)` in the guest).
+pub fn chain(chain_id: &Hash, input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<ChainJournal, Reject> {
+    let j = check(input, verify_spend)?;
+    if input.height == 0 {
+        let empty = smt::empties()[smt::DEPTH];
+        if input.tree.size != 0 || input.nullifiers != empty || !input.recent.is_empty() {
+            return Err(Reject::Genesis);
+        }
+    } else {
+        let prev = ChainJournal { hub: j.hub, height: j.height, root: j.from, recent: j.recent_from, chain_id: *chain_id };
+        if !verify_chain(&prev.to_bytes()) {
+            return Err(Reject::Chain);
+        }
+    }
+    Ok(ChainJournal { hub: j.hub, height: j.height + 1, root: j.to, recent: j.recent_to, chain_id: *chain_id })
+}
+
+// ----- encodings: what the chain guest reads and commits -----
+//
+// Integers big-endian; a list is its length (u32) and its items.
+
+struct W(Vec<u8>);
+impl W {
+    fn put(&mut self, b: &[u8]) {
+        self.0.extend_from_slice(b);
+    }
+    fn len(&mut self, n: usize) {
+        self.put(&(n as u32).to_be_bytes());
+    }
+    fn hashes(&mut self, hs: &[Hash]) {
+        self.len(hs.len());
+        for h in hs {
+            self.put(h);
+        }
+    }
+    fn note(&mut self, n: &TNote) {
+        self.put(&n.owner);
+        self.put(&n.value.to_be_bytes());
+        self.put(&n.memo.to_be_bytes());
+        self.put(&n.rho);
+    }
+    fn notes(&mut self, ns: &[TNote]) {
+        self.len(ns.len());
+        for n in ns {
+            self.note(n);
+        }
+    }
+    fn spends(&mut self, ss: &[(TNote, u32)]) {
+        self.len(ss.len());
+        for (n, i) in ss {
+            self.note(n);
+            self.put(&i.to_be_bytes());
+        }
+    }
+    fn sigs(&mut self, ss: &[[u8; 64]]) {
+        self.len(ss.len());
+        for s in ss {
+            self.put(s);
+        }
+    }
+}
+
+struct R<'a>(&'a [u8]);
+impl R<'_> {
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], Reject> {
+        if self.0.len() < N {
+            return Err(Reject::Encoding);
+        }
+        let (a, b) = self.0.split_at(N);
+        self.0 = b;
+        Ok(a.try_into().unwrap())
+    }
+    fn u32(&mut self) -> Result<u32, Reject> {
+        Ok(u32::from_be_bytes(self.take()?))
+    }
+    fn u64(&mut self) -> Result<u64, Reject> {
+        Ok(u64::from_be_bytes(self.take()?))
+    }
+    /// A list's length: no more items than bytes left (each takes one at
+    /// least), so a bad length can't make a huge allocation.
+    fn len(&mut self) -> Result<usize, Reject> {
+        let n = self.u32()? as usize;
+        if n > self.0.len() {
+            return Err(Reject::Encoding);
+        }
+        Ok(n)
+    }
+    fn list<T>(&mut self, mut item: impl FnMut(&mut Self) -> Result<T, Reject>) -> Result<Vec<T>, Reject> {
+        let n = self.len()?;
+        (0..n).map(|_| item(self)).collect()
+    }
+    fn hashes(&mut self) -> Result<Vec<Hash>, Reject> {
+        self.list(|r| r.take())
+    }
+    fn note(&mut self) -> Result<TNote, Reject> {
+        Ok(TNote { owner: self.take()?, value: self.u64()?, memo: self.u32()?, rho: self.take()? })
+    }
+    fn notes(&mut self) -> Result<Vec<TNote>, Reject> {
+        self.list(|r| r.note())
+    }
+    fn spends(&mut self) -> Result<Vec<(TNote, u32)>, Reject> {
+        self.list(|r| Ok((r.note()?, r.u32()?)))
+    }
+    fn sigs(&mut self) -> Result<Vec<[u8; 64]>, Reject> {
+        self.list(|r| r.take())
+    }
+    fn end(&self) -> Result<(), Reject> {
+        if self.0.is_empty() { Ok(()) } else { Err(Reject::Encoding) }
+    }
+}
+
+const MINT: u8 = 0;
+const TRANSFER: u8 = 1;
+const SHIELDED: u8 = 2;
+
+impl BlockInput {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut w = W(Vec::new());
+        w.put(&self.hub);
+        w.put(&self.height.to_be_bytes());
+        w.put(&self.tree.size.to_be_bytes());
+        w.hashes(&self.tree.branch);
+        w.put(&self.nullifiers);
+        w.hashes(&self.recent);
+        w.len(self.txs.len());
+        for tx in &self.txs {
+            match tx {
+                Tx::Mint { outputs, sig } => {
+                    w.0.push(MINT);
+                    w.notes(outputs);
+                    w.put(sig);
+                }
+                Tx::Transfer { spends, outputs, sigs } => {
+                    w.0.push(TRANSFER);
+                    w.spends(spends);
+                    w.notes(outputs);
+                    w.sigs(sigs);
+                }
+                Tx::Shielded { anchor, t_spends, t_sigs, nfs, cms, ciphertexts, t_outputs } => {
+                    w.0.push(SHIELDED);
+                    w.put(anchor);
+                    w.spends(t_spends);
+                    w.sigs(t_sigs);
+                    w.hashes(nfs);
+                    w.hashes(cms);
+                    w.len(ciphertexts.len());
+                    for c in ciphertexts {
+                        w.len(c.len());
+                        w.put(c);
+                    }
+                    w.notes(t_outputs);
+                }
+            }
+        }
+        w.len(self.nf_proofs.len());
+        for p in &self.nf_proofs {
+            w.put(&p.bitmap);
+            w.hashes(&p.siblings);
+        }
+        w.len(self.paths.len());
+        for p in &self.paths {
+            w.hashes(p);
+        }
+        w.0
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Result<BlockInput, Reject> {
+        let mut r = R(b);
+        let hub = r.take()?;
+        let height = r.u64()?;
+        let tree = Frontier { size: r.u32()?, branch: r.hashes()? };
+        let nullifiers = r.take()?;
+        let recent = r.hashes()?;
+        let txs = r.list(|r| {
+            Ok(match r.take::<1>()?[0] {
+                MINT => Tx::Mint { outputs: r.notes()?, sig: r.take()? },
+                TRANSFER => Tx::Transfer { spends: r.spends()?, outputs: r.notes()?, sigs: r.sigs()? },
+                SHIELDED => Tx::Shielded {
+                    anchor: r.take()?,
+                    t_spends: r.spends()?,
+                    t_sigs: r.sigs()?,
+                    nfs: r.hashes()?,
+                    cms: r.hashes()?,
+                    ciphertexts: r.list(|r| {
+                        let n = r.len()?;
+                        let (c, rest) = r.0.split_at(n);
+                        r.0 = rest;
+                        Ok(c.to_vec())
+                    })?,
+                    t_outputs: r.notes()?,
+                },
+                _ => return Err(Reject::Encoding),
+            })
+        })?;
+        let nf_proofs = r.list(|r| Ok(smt::Proof { bitmap: r.take()?, siblings: r.hashes()? }))?;
+        let paths = r.list(|r| r.hashes())?;
+        r.end()?;
+        Ok(BlockInput { hub, height, tree, nullifiers, recent, txs, nf_proofs, paths })
+    }
+}
+
+impl BlockJournal {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut w = W(Vec::with_capacity(168));
+        w.put(&self.hub);
+        w.put(&self.height.to_be_bytes());
+        w.put(&self.from);
+        w.put(&self.recent_from);
+        w.put(&self.to);
+        w.put(&self.recent_to);
+        w.0
+    }
+    pub fn from_bytes(b: &[u8]) -> Result<BlockJournal, Reject> {
+        let mut r = R(b);
+        let j = BlockJournal { hub: r.take()?, height: r.u64()?, from: r.take()?, recent_from: r.take()?, to: r.take()?, recent_to: r.take()? };
+        r.end()?;
+        Ok(j)
+    }
+}
+
+impl ChainJournal {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut w = W(Vec::with_capacity(136));
+        w.put(&self.hub);
+        w.put(&self.height.to_be_bytes());
+        w.put(&self.root);
+        w.put(&self.recent);
+        w.put(&self.chain_id);
+        w.0
+    }
+    pub fn from_bytes(b: &[u8]) -> Result<ChainJournal, Reject> {
+        let mut r = R(b);
+        let j = ChainJournal { hub: r.take()?, height: r.u64()?, root: r.take()?, recent: r.take()?, chain_id: r.take()? };
+        r.end()?;
+        Ok(j)
+    }
 }

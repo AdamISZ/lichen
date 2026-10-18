@@ -1,0 +1,10 @@
+# builds whose context is lichen's root (r0/Dockerfile, r0/Dockerfile.guest):
+# send only what they copy. (deploy/*/Dockerfile build from the parent
+# directory, which this file does not cover.)
+*
+!crates/shielded
+!crates/validity
+!r0
+r0/target
+r0/*/target
+r0/guests/*.elf

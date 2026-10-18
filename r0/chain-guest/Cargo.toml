@@ -1,0 +1,26 @@
+# The chain guest (docs/SHIELDED_PLAN.md, phase 2): proves the chain
+# statement of crates/validity, one sealed block checked and the history
+# before it proved. A workspace of its own, built with RISC Zero's guest
+# toolchain in its pinned builder image (r0/build-guest.sh chain).
+[package]
+name = "chain"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+# the toolchain of risczero/risc0-guest-builder:r0.1.88.0
+rust-version = "1.88"
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+lichen-validity = { path = "../../crates/validity" }
+risc0-zkvm = { version = "=3.0.6", default-features = false, features = ["std"] }
+
+# RISC Zero's accelerated crypto: the trees are SHA-256; mints and
+# transparent spends carry BIP340 signatures (428k cycles each with these,
+# 5.9M without: ln-gap's withdrawal guest, measured 2026-10-12)
+[patch.crates-io]
+sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.9-risczero.0" }
+k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256/v0.13.4-risczero.1" }
+crypto-bigint = { git = "https://github.com/risc0/RustCrypto-crypto-bigint", tag = "v0.5.5-risczero.0" }
