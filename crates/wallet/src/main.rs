@@ -210,7 +210,13 @@ fn main() -> Result<()> {
         let opts = lichen_wallet::engine::Options { progress: Some(progress), ..Default::default() };
         let outcome = lichen_wallet::tower::run(&chain, &a.statement, package, &package.with_extension("d"), prover, opts)?;
         match outcome.payout() {
-            Some(txid) => println!("{outcome:?}: the payout is {txid}; sweep it with the wallet: lichen sweep-dispute <contract> --tower-state {}", package.with_extension("state.json").display()),
+            Some(txid) => {
+                let cid = lichen_wallet::tower::Package::load(package)?.cid();
+                let state = package.with_extension("state.json");
+                let name = state.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                println!("{outcome:?}: the payout is {txid}.");
+                println!("Sweep it on your own device, with the wallet that exported the package: the tower has none of its keys. Copy this tower's state there, {} (deploy/tower/data/{name} on a machine running deploy/tower's compose file), then:\n  lichen sweep-dispute {cid} --tower-state {name}", state.display());
+            }
             None => println!("{outcome:?}"),
         }
         return Ok(());
