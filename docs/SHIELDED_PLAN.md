@@ -5,6 +5,27 @@
 `docs/planning/research/shielded-pool-costs.md` (the measurements behind
 this plan; local notes).
 
+## Status
+
+**Phase 1 done** (2026-10-18): shielded notes and transactions
+(`3479996`), the spend guest, its prover and receipts the sequencer
+verifies (`bef672a`). Demonstrated on Mutinynet with real receipts,
+the sequencer and hub on this branch's images (deployment `837ceb56…`):
+
+| step | proved (Mac, Docker) | user cycles |
+|---|---|---|
+| Dave shields 11,000 | 6.0 s | 10,163 (2^16) |
+| Dave pays Carol 4,000, shielded (1 in, 2 out) | 13.1 s | 46,356 (2^17) |
+| Carol shields 10,000, then her contract 1007's deposit of 30,000 | 6.1 s, 6.8 s | 10,163 |
+| Carol withdraws 44,000 from three shielded notes: the return | 31.4 s | 109,210 (2^18) |
+
+The hub folded contract 1007 (200 vB, Mutinynet block 3,515,985):
+64,000 sats to Carol's payout address, her 44,000 and her reserve. A
+return of several notes crosses into a larger segment: each spend is
+two depth-16 paths of SHA-256 over 64 bytes, ~30k cycles.
+
+Phase 2 next.
+
 ## The aim
 
 Show that lichen is possible with private payments and with dispute

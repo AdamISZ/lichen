@@ -14,6 +14,13 @@ It has no chain. It runs no Bitcoin node and holds no coins, and it never
 runs a dispute. It needs one fact from the hub: the hub's L2 key, which
 it treats as the only key allowed to mint.
 
+Shielded transactions (branch `shielded`, [SHIELDED_PLAN.md](SHIELDED_PLAN.md))
+carry a RISC Zero receipt of the spend guest, which the sequencer checks
+against the committed guest's image id (`r0/guests/spend.id`). It never
+proves anything itself. Started with `--native-proofs` (not in the
+compose file), it also accepts native proofs, the sender's private input
+in the clear: tests and demos only.
+
 ## A machine
 
 Linux, x86-64 or arm64, with Docker (Compose v2). The image compiles a
