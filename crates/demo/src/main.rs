@@ -492,7 +492,7 @@ fn reopen(d: &Arc<Demo>, who: Who) -> Result<Value> {
 fn route(d: &Arc<Demo>, method: &Method, url: &str, body: &str) -> Result<(String, &'static str)> {
     let j = |v: Value| Ok((v.to_string(), "application/json"));
     match (method, url) {
-        (Method::Get, "/") => Ok((include_str!("index.html").to_string(), "text/html; charset=utf-8")),
+        (Method::Get, "/" | "/alice" | "/bob" | "/ledger" | "/hub") => Ok((include_str!("index.html").to_string(), "text/html; charset=utf-8")),
         (Method::Get, "/state") => j(state(d)?),
         (Method::Post, "/send") => j(send(d, serde_json::from_str(body)?)?),
         (Method::Post, "/withdraw") => j(withdraw(d, serde_json::from_str(body)?)?),

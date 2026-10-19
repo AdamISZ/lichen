@@ -71,7 +71,8 @@ commitments and proof, with no amounts or parties. Beside it, the chain
 prover proves each sealed height valid from genesis as it goes, a minute
 or two a height, so it runs a little behind (`--no-chain-prover` turns
 it off and leaves the CPU to the payments). The hub's pane has its
-contracts and two switches.
+contracts and two switches. To show it on a screen, open each pane in a
+window of its own, larger: `/alice`, `/bob`, `/ledger` and `/hub`.
 
 Pay each other, withdraw cooperatively, then switch the hub to refuse
 withdrawals and dispute true claims, and withdraw: the dispute plays

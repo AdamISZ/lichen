@@ -53,6 +53,22 @@ th { color: var(--muted); font-weight: normal; }
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .stats div { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
 .stats b { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
+header .views a { color: var(--accent); }
+/* one pane to a window, for showing on a screen in a room: /alice, /bob, /ledger, /hub */
+body.solo { font-size: 18px; }
+body.solo main { grid-template-columns: 1fr; max-width: 1100px; margin: 0 auto; }
+body.solo .pane:not(.shown) { display: none; }
+body.solo header .views { display: none; }
+body.solo .big { font-size: 40px; }
+body.solo .pane h2 { font-size: 22px; }
+body.solo .pane h2 .tag, body.solo .k { font-size: 14px; }
+body.solo .k { min-width: 80px; }
+body.solo li .detail { margin-left: 84px; }
+body.solo .mono { font-size: 14px; }
+body.solo td, body.solo th { font-size: 17px; }
+body.solo .stats b { font-size: 22px; }
+body.solo .log { max-height: 40vh; }
+body.solo #ledger { max-height: 55vh; }
 </style>
 </head>
 <body>
@@ -60,18 +76,19 @@ th { color: var(--muted); font-weight: normal; }
   <h1>lichen</h1>
   <span class="sub">an L2 of bitcoin with shielded payments, each holding within its cap enforceable on Bitcoin · local regtest demo, real proofs</span>
   <span class="sub" id="height"></span>
+  <span class="sub views">· each in its own window: <a href="/alice" target="_blank">alice</a> · <a href="/bob" target="_blank">bob</a> · <a href="/ledger" target="_blank">ledger</a> · <a href="/hub" target="_blank">hub</a></span>
 </header>
 <main>
   <section class="pane" id="pane-Alice"></section>
   <section class="pane" id="pane-Bob"></section>
-  <section class="pane">
+  <section class="pane" id="pane-ledger">
     <h2>The ledger <span class="tag">what anyone sees: the sequencer's transactions, seals and proofs</span></h2>
     <div class="muted" id="validity"></div>
     <ul class="log" id="ledger"></ul>
     <h2 class="next">On Bitcoin <span class="tag">contracts, withdrawals, disputes</span></h2>
     <ul class="log" id="chain"></ul>
   </section>
-  <section class="pane">
+  <section class="pane" id="pane-hub">
     <h2>The hub <span class="tag">issues tokens, holds the contracts</span></h2>
     <div class="stats">
       <div>on chain<b id="hub-onchain"></b></div>
@@ -198,6 +215,12 @@ async function tick() {
 
 userPane('Alice', 'Bob');
 userPane('Bob', 'Alice');
+const solo = { '/alice': 'Alice', '/bob': 'Bob', '/ledger': 'ledger', '/hub': 'hub' }[location.pathname];
+if (solo) {
+  document.body.classList.add('solo');
+  document.getElementById('pane-' + solo).classList.add('shown');
+  document.title = 'lichen · ' + solo.toLowerCase();
+}
 document.getElementById('refuse').onchange = e => post('/switch', { refuse_folds: e.target.checked });
 document.getElementById('disputeall').onchange = e => post('/switch', { dispute_true_claims: e.target.checked });
 tick();
