@@ -4,7 +4,7 @@
 
 ## Introduction
 
-CAVEAT: Do not use with real money. Currently missing a number of features that could bring that within reach, and more importantly, the code is unaudited either by humans or LLMs, all written by one LLM with only peripheral oversight by me.
+CAVEAT: Do not use with real money. Most importantly, the code is unaudited either by humans or LLMs, all written by one LLM with only peripheral oversight by me.
 
 To follow an evolving tradition: the Introduction section here, is written by me. Most of the lower level documentation and instructions are LLM generated.
 
@@ -14,40 +14,37 @@ Choose your adventure:
 
 *Want to run the web demo* - that is, running the stack on regtest locally and playing with it in the browser to see how it operates: go [here](#the-demo).
 
-*Want to understand the mechanics, in more detail than covered in the paper* - look at the growing set of [explainers](./docs/explainers/README.md); these are AI generated and have lots of nice diagrams to take you through the steps of, e.g. the dispute mechanism onchain, the ZKP, etc.
+*Want to understand the mechanics, in more detail than covered in the paper* - look at the growing set of [explainers](./docs/explainers/README.md); these are AI generated and have lots of nice diagrams to take you through the steps of all the component parts. They vary from completely high level with no code/math to the guts of the dispute mechanism, the ZKP generation etc.
 
 ### General concepts in a few words
 
-A layer 2 ledger whose tokens a hub issues, each user's holdings up to a cap collateralised in her own contract with the hub, and withdrawable on Bitcoin without trusting the hub for anything: not its honesty, not its liveness. A withdrawal is a
-return of tokens to the hub on the ledger; the hub pays it out in btc in the contract, on the bitcoin blockchain, cooperatively, and if it refuses (or is gone), the user proves the return (RISC Zero, wrapped in Groth16) and enforces it on Bitcoin by BitVMX's search over a Groth16 verifier. No change to Bitcoin is needed.
+A layer 2 ledger whose tokens a hub issues, each user's holdings up to a cap collateralised in her own contract with the hub, and withdrawable on Bitcoin without trusting the hub for anything: not its honesty, not its liveness. A withdrawal is a return of tokens to the hub on the ledger; the hub pays it out in btc in the contract, on the bitcoin blockchain, cooperatively, and if it refuses (or is gone), the user proves the return (RISC Zero, wrapped in Groth16) and enforces it on Bitcoin by BitVMX's search over a Groth16 verifier. No change to Bitcoin is needed. In case you didn't spot the point: the tokens *are* bitcoin because of the 1-1 backing, permissionlessly claimable.
 
 The contracts and the dispute machinery are in [ln-gap](https://github.com/AdamISZ/ln-gap) (`crates/apps/sessions`); think of that as the backend including both all the bitcoin side and also all the ZKP dispute management side. This repository is the software the parties run.
 
 ### A few operational details that are mostly PoC limitations
 
-Worth mentioning these as idiosyncracies: first, this was built without a user-side bitcoin wallet as that's probably the right choice anyway: you fund an intermediate joint-control address and then from there the contract is funded. Explained in the procedures below. Second: in case you actually want to test *disputes*, and not normal usage, you'll have to create proofs to do withdrawals. The instructions are [here](#disputes-on-the-real-statement), and note that this involves running a proving step on x86 architecture that might take about 5 minutes. Notably, this step is partly delegatable but it will remain a point of interest in making this a usable system.
+Worth mentioning these as idiosyncracies: first, this was built without a user-side bitcoin wallet as that's probably the right choice anyway: you fund an intermediate joint-control address and then from there the contract is funded. Explained in the procedures below. Second: in case you actually want to test *disputes*, and not normal usage, you'll have to create proofs to do withdrawals. The instructions are [here](#disputes-on-the-real-statement), and note that this involves running a proving step on x86 architecture that might take about 5 minutes. Notably, this step is partly delegatable, and that is addressed with the idea of [watchtowers](docs/RUN_A_TOWER.md).
 
 ### Things not implemented yet:
 
-* Any L2 consensus development. No finality through publishing roots on bitcoin; no distribution of the sequencer (just a single entity's key). See the [paper](./papers/lichen-v0.1.1.pdf) for discussion of what could be done here.
-* Any watchtower infrastructure: a turnkey deployment for a VPS (like a docker instance), that a user could deploy at the time when a dispute occurs.
-* Shielded instead of transparent notes on the L2. This is the intended first application of the idea.
+* Any attempt at finality through publishing roots on bitcoin; no distribution of the sequencer (just a single entity's key). See the [paper](./papers/lichen-v0.1.1.pdf) for discussion of what could be done here.
 
 ### High level plan of work to do:
 
-* Completing documentation of all the internal steps for normal operation and dispute, in the Bitcoin contracts
+* Completing documentation of all the internal steps for normal operation and dispute, in the Bitcoin contracts. (Mostly done, but not complete)
 
-* Building extra support functionality - a turnkey watchtower, so there is a realistic path for a constrained user to dispute correctly.
+* Building extra support functionality - a turnkey watchtower, so there is a realistic path for a constrained user to dispute correctly. :white_check_mark:
 
-* Creating a useful feature for the L2: shielded transfers.
+* Creating a useful feature for the L2: shielded transfers. :white_check_mark:
 
-* Making the ZKP prove validity and not only sequencer authorization.
+* Making the ZKP prove validity and not only sequencer authorization. :white_check_mark:
 
 * Creating a commitment mechanism (seals) for the L2 sequencer to gain finality from the Bitcoin chain (on a slower timescale)
 
 * As per the above, but further strengthening against malicious or disruptive sequencer behavior.
 
-* LONG TERM: potential replacement of BitVMX with a BABE-style construction.
+* LONG TERM: potential replacement of BitVMX with a BABE-style construction. (plans [are in place](https://delvingbitcoin.org/t/variable-payout-amounts-for-babe-as-applied-to-lichen/2963); nothing done)
 
 -------
 
