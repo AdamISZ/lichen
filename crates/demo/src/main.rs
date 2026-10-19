@@ -1,16 +1,23 @@
 //! `lichen-demo`: Alice and Bob, each with a contract on a hub, on a
 //! private regtest node, shown in a web page (four panes: Alice, Bob, the
-//! ledger, the hub). They pay each other on the L2 and withdraw; with the
-//! hub refusing, Alice's withdrawal is enforced on Bitcoin, the dispute
-//! playing out move by move.
+//! ledger, the hub). Each deposit is shielded once minted; they pay each
+//! other in shielded notes and withdraw; with the hub refusing, a
+//! withdrawal is enforced on Bitcoin, the dispute playing out move by
+//! move.
 //!
 //! Everything runs here: bitcoind (regtest, its own data directory), the
-//! sequencer, the hub, the two wallets, a block every second. Disputes run
-//! on the mock statement, set so that every claim is true (the contract's
-//! memo check still applies): a stand-in for a proof of the return, which
-//! the real statement checks.
+//! sequencer, the hub, the two wallets, a block every second. Every
+//! shielded spend is proved for real (RISC Zero, r0/spend-prover.sh in the
+//! prover image) and checked by the sequencer; the chain prover proves
+//! each sealed height as it goes (r0/chain-prover.sh; off with
+//! --no-chain-prover). The ledger pane shows what anyone sees: commitments,
+//! nullifiers and proofs, not amounts or parties. Disputes run on the mock
+//! statement, set so that every claim is true (the contract's memo check
+//! still applies): a stand-in for the proof of the return, which the real
+//! statement checks (minutes on x86, too slow to watch).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,6 +31,7 @@ use lichen_ledger::{regtest_sequencer, Hash, HUB_KEY};
 use lichen_proto::Statement;
 use lichen_l2::{Client, Event};
 use lichen_sequencer::Sequencer;
+use lichen_wallet::shielded::{SAddress, SpendProver};
 use lichen_wallet::{Ask, Wallet};
 use lngap_btc::regtest::Regtest;
 use serde::Deserialize;
@@ -44,6 +52,15 @@ struct Args {
     /// Where the demo keeps its state (removed at start).
     #[arg(long, default_value = "/tmp/lichen-demo")]
     dir: PathBuf,
+    /// Don't run the chain prover (each sealed height's validity proof,
+    /// a minute or two each on a laptop, alongside the payments' proofs).
+    #[arg(long)]
+    no_chain_prover: bool,
+}
+
+/// lichen's r0/ (the provers' scripts), from this source tree.
+fn r0() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../r0")
 }
 
 struct User {
@@ -52,12 +69,67 @@ struct User {
     chain: Chain,
     dir: PathBuf,
     address: Hash,
+    saddr: SAddress,
     cid: Mutex<u32>,
     activity: Mutex<String>,
+    /// Proving, opening or withdrawing: one thing at a time.
+    busy: AtomicBool,
+    /// Our shielded notes as last seen (value, leaf), kept for while the
+    /// wallet is busy.
+    notes: Mutex<Vec<(u64, u32)>>,
+}
+
+impl User {
+    fn say(&self, m: String) {
+        *self.activity.lock().unwrap() = m;
+    }
+}
+
+/// Run `f` for `u` in the background, if `u` isn't busy.
+fn task(u: &Arc<User>, f: impl FnOnce(&Arc<User>) + std::marker::Send + 'static) -> Result<()> {
+    if u.busy.swap(true, Ordering::SeqCst) {
+        bail!("{} is busy", u.name);
+    }
+    let u = u.clone();
+    std::thread::spawn(move || {
+        f(&u);
+        u.busy.store(false, Ordering::SeqCst);
+    });
+    Ok(())
+}
+
+/// Shield all of `u`'s transparent notes (a new deposit's), proving it.
+fn shield_all(u: &User) {
+    let mut w = u.wallet.lock().unwrap();
+    let t = match w.balances() {
+        Ok((t, _)) => t,
+        Err(e) => return u.say(format!("the balance: {e:#}")),
+    };
+    if t == 0 {
+        return;
+    }
+    u.say(format!("shielding the deposit, {t} sats: proving the spend (RISC Zero) ..."));
+    let start = Instant::now();
+    match w.shield(t) {
+        Ok(_) => u.say(format!("shielded {t} sats: proved in {:.1} s, checked by the sequencer", start.elapsed().as_secs_f64())),
+        Err(e) => u.say(format!("shielding failed: {e:#}")),
+    }
+}
+
+/// The last height proved valid from genesis (each `<h>.chain` in turn).
+fn proved_height(blocks: &Path) -> u64 {
+    let mut h = 0;
+    while blocks.join(format!("{}.chain", h + 1)).exists() {
+        h += 1;
+    }
+    h
 }
 
 struct Demo {
     seq: Client,
+    /// The sequencer's record of each sealed block, for the chain prover.
+    blocks: PathBuf,
+    chain_prover: bool,
     hub: Hub,
     users: Vec<Arc<User>>,
     statement: Statement,
@@ -102,11 +174,19 @@ fn open_contract(d: &Demo, u: &User) -> Result<u32> {
 }
 
 fn start(args: &Args) -> Result<Arc<Demo>> {
+    let image = std::process::Command::new("docker").args(["image", "inspect", "lichen-r0"]).output();
+    if !image.is_ok_and(|o| o.status.success()) {
+        bail!("no prover image: every shielded spend is proved for real; build it first (docker build -f r0/Dockerfile -t lichen-r0 ., in lichen's root)");
+    }
     let _ = std::fs::remove_dir_all(&args.dir);
     std::fs::create_dir_all(&args.dir)?;
     println!("starting bitcoind (regtest), the sequencer and the hub ...");
     let rt = Regtest::start()?;
-    let seq = Sequencer::start("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY)?;
+    // a ledger file, so that the sequencer records each block for the
+    // chain prover; no native proofs
+    let ledger = args.dir.join("ledger.json");
+    let blocks = lichen_sequencer::blocks_dir(&ledger);
+    let seq = Sequencer::start("127.0.0.1:0", Some(ledger), regtest_sequencer(), HUB_KEY)?;
     let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w);
     // several coins, so the hub can fund more than one contract a block
     let hub_chain = chain("hub")?;
@@ -139,11 +219,28 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
     for name in ["Alice", "Bob"] {
         let ch = chain(&name.to_lowercase())?;
         rt.fund(&ch.new_spk()?, Amount::from_sat(20_000_000))?;
-        let w = Wallet::create(&args.dir.join(format!("{}.json", name.to_lowercase())), &seq.url)?;
-        let address = w.address();
-        users.push(Arc::new(User { name, wallet: Mutex::new(w), chain: ch, dir: args.dir.join(name.to_lowercase()), address, cid: Mutex::new(0), activity: Mutex::new(String::new()) }));
+        let mut w = Wallet::create(&args.dir.join(format!("{}.json", name.to_lowercase())), &seq.url)?;
+        w.spend_prover = SpendProver::Command(r0().join("spend-prover.sh"));
+        let (address, saddr) = (w.address(), w.shielded_address());
+        users.push(Arc::new(User {
+            name,
+            wallet: Mutex::new(w),
+            chain: ch,
+            dir: args.dir.join(name.to_lowercase()),
+            address,
+            saddr,
+            cid: Mutex::new(0),
+            activity: Mutex::new(String::new()),
+            busy: AtomicBool::new(false),
+            notes: Mutex::new(vec![]),
+        }));
     }
-    let d = Arc::new(Demo { seq: Client::new(&seq.url)?, hub, users, statement, chain_log: Mutex::new(vec![]), rt });
+    let d = Arc::new(Demo { seq: Client::new(&seq.url)?, blocks: blocks.clone(), chain_prover: !args.no_chain_prover, hub, users, statement, chain_log: Mutex::new(vec![]), rt });
+    if d.chain_prover {
+        std::fs::create_dir_all(&blocks)?;
+        let log = std::fs::File::create(args.dir.join("chain-prover.log"))?;
+        std::process::Command::new(r0().join("chain-prover.sh")).arg(&blocks).stdout(log.try_clone()?).stderr(log).spawn().context("starting the chain prover")?;
+    }
     // the sequencer seals, and blocks come, in the background
     std::mem::forget(seq); // runs for the demo's life
     let s = d.seq.clone();
@@ -166,6 +263,9 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
             }
             std::thread::sleep(Duration::from_millis(300));
         }
+    }
+    for u in &d.users {
+        task(u, |u| shield_all(u))?;
     }
     Ok(d)
 }
@@ -196,21 +296,33 @@ fn state(d: &Demo) -> Result<Value> {
         .users
         .iter()
         .map(|u| {
+            // our notes need our keys: the wallet's, unless it's busy
+            if let Ok(w) = u.wallet.try_lock() {
+                *u.notes.lock().unwrap() = w.shielded_notes(&st).iter().map(|n| (n.value, n.index)).collect();
+            }
+            let notes = u.notes.lock().unwrap().clone();
             json!({
                 "name": u.name,
-                "address": hex::encode(u.address),
-                "l2": l2(&u.address),
+                "address": u.saddr.to_string(),
+                "shielded": notes.iter().map(|n| n.0).sum::<u64>(),
+                "notes": notes.iter().map(|n| json!({ "value": n.0, "leaf": n.1 })).collect::<Vec<_>>(),
+                "transparent": l2(&u.address),
                 "onchain": u.chain.balance().map(|b| b.to_sat()).unwrap_or(0),
                 "contract": contract_view(*u.cid.lock().unwrap()),
                 "activity": u.activity.lock().unwrap().clone(),
+                "busy": u.busy.load(Ordering::SeqCst),
             })
         })
         .collect();
+    let proved = if d.chain_prover { proved_height(&d.blocks) } else { 0 };
+    let short = |h: &Hash| hex::encode(&h[..4]);
     let ledger: Vec<Value> = d
         .seq
         .events(0)?
         .into_iter()
         .map(|(n, e)| {
+            let mut detail = String::new();
+            let mut height = Value::Null;
             let (kind, text) = match e {
                 Event::Mint { to } => ("mint", to.iter().map(|(o, v)| format!("the hub issued {v} sats to {}", d.name_of(o))).collect::<Vec<_>>().join("; ")),
                 Event::Transfer { from, to } if d.locked_for(&from[0]).is_some() => {
@@ -226,17 +338,28 @@ fn state(d: &Demo) -> Result<Value> {
                         .collect();
                     (if to.iter().any(|t| t.0 == HUB_KEY) { "return" } else { "transfer" }, parts.join("; "))
                 }
-                Event::Shielded { from, spent, made, to } => {
-                    let mut parts: Vec<String> = from.iter().map(|o| format!("{} shielded a note", d.name_of(o))).collect();
-                    if spent > 0 || made > 0 {
-                        parts.push(format!("a shielded transaction: {spent} notes spent, {made} made"));
+                Event::Shielded { from, spent, made, to, t_total, nfs, cms, proof } => {
+                    // what anyone sees: the transparent ends in full, the
+                    // shielded middle as hashes
+                    let mut parts = vec![];
+                    if let Some(o) = from.first() {
+                        let back: u64 = to.iter().filter(|t| t.0 == *o).map(|t| t.1).sum();
+                        parts.push(format!("{} shielded {} sats", d.name_of(o), t_total - back));
+                    } else {
+                        parts.push(format!("{spent} shielded note{} spent, {made} made: amounts and owners hidden", if spent == 1 { "" } else { "s" }));
                     }
-                    parts.extend(to.iter().map(|(o, v, memo)| if *o == HUB_KEY { format!("{v} sats returned to the hub (memo {memo}): a withdrawal") } else { format!("{v} sats to {}", d.name_of(o)) }));
-                    (if to.iter().any(|t| t.0 == HUB_KEY) { "return" } else { "transfer" }, parts.join("; "))
+                    parts.extend(to.iter().filter(|t| t.0 == HUB_KEY).map(|(_, v, memo)| format!("{v} sats returned to the hub (memo {memo}): a withdrawal")));
+                    let list = |hs: &[Hash]| hs.iter().map(short).collect::<Vec<_>>().join(", ");
+                    let spent = if nfs.is_empty() { String::new() } else { format!("nullifiers [{}] → ", list(&nfs)) };
+                    detail = format!("{spent}commitments [{}] · proof {} KB", list(&cms), proof.div_ceil(1024));
+                    (if to.iter().any(|t| t.0 == HUB_KEY) { "return" } else if from.is_empty() { "shielded" } else { "shield" }, parts.join("; "))
                 }
-                Event::Sealed { height, notes, root } => ("sealed", format!("height {height} sealed and signed: {notes} notes, root {}…", &hex::encode(root)[..12])),
+                Event::Sealed { height: h, notes, root } => {
+                    height = json!(h);
+                    ("sealed", format!("height {h} sealed and signed: {notes} notes, root {}…", &hex::encode(root)[..12]))
+                }
             };
-            json!({ "n": n, "kind": kind, "text": text })
+            json!({ "n": n, "kind": kind, "text": text, "detail": detail, "height": height })
         })
         .collect();
     let open: Vec<_> = contracts.iter().filter(|c| c.1.is_none()).collect();
@@ -253,6 +376,7 @@ fn state(d: &Demo) -> Result<Value> {
         "height": d.rt.height()?,
         "users": users,
         "ledger": ledger,
+        "validity": { "running": d.chain_prover, "proved": proved, "sealed": st.sealed.last().map_or(0, |s| s.height) },
         "chain_log": d.chain_log.lock().unwrap().clone(),
         "hub": {
             "onchain": d.hub.balance().map(|b| b.to_sat()).unwrap_or(0),
@@ -290,11 +414,20 @@ struct Who {
     who: String,
 }
 
+/// A shielded payment, proved (in the background; the page follows it).
 fn send(d: &Demo, s: Send) -> Result<Value> {
     let (from, to) = (d.user(&s.from)?, d.user(&s.to)?);
-    let mut w = from.wallet.try_lock().map_err(|_| anyhow::anyhow!("{} is busy", from.name))?;
-    w.send(to.address, s.amount, 0)?;
-    Ok(json!({ "ok": format!("{} paid {} sats to {}", from.name, s.amount, to.name) }))
+    let amount = s.amount;
+    task(&from, move |u| {
+        u.say(format!("paying {} {amount} sats, shielded: proving the spend (RISC Zero) ...", to.name));
+        let start = Instant::now();
+        let r = u.wallet.lock().unwrap().send_shielded(&to.saddr, amount);
+        match r {
+            Ok(_) => u.say(format!("paid {} {amount} sats, shielded: proved in {:.1} s, checked by the sequencer", to.name, start.elapsed().as_secs_f64())),
+            Err(e) => u.say(format!("the payment failed: {e:#}")),
+        }
+    })?;
+    Ok(json!({ "ok": "started" }))
 }
 
 /// A withdrawal: the fold, or, if the hub refuses, the dispute (in the
@@ -302,14 +435,11 @@ fn send(d: &Demo, s: Send) -> Result<Value> {
 fn withdraw(d: &Arc<Demo>, r: Withdraw) -> Result<Value> {
     let u = d.user(&r.who)?;
     let cid = *u.cid.lock().unwrap();
-    if u.wallet.try_lock().is_err() {
-        bail!("{} is busy", u.name);
-    }
-    let (d2, u2) = (d.clone(), u.clone());
-    std::thread::spawn(move || {
-        let set = |m: String| *u2.activity.lock().unwrap() = m;
+    let d2 = d.clone();
+    task(&u, move |u2| {
+        let set = |m: String| u2.say(m);
         let mut w = u2.wallet.lock().unwrap();
-        set(format!("returning {} sats to the hub on the L2 (memo {cid}) ...", r.amount));
+        set(format!("returning {} sats to the hub from shielded notes (memo {cid}): proving the spend (RISC Zero), then the fold ...", r.amount));
         match w.withdraw(&d2.hub.url, &d2.statement, &u2.dir, cid, r.amount) {
             Ok(txid) => {
                 set(format!("withdrawn: the hub folded the contract; {} sats and the reserve are on chain", r.amount));
@@ -331,17 +461,32 @@ fn withdraw(d: &Arc<Demo>, r: Withdraw) -> Result<Value> {
                 w.progress = None;
             }
         }
-    });
+    })?;
     Ok(json!({ "ok": "started" }))
 }
 
+/// A new contract once the last is closed, its deposit then shielded.
 fn reopen(d: &Arc<Demo>, who: Who) -> Result<Value> {
     let u = d.user(&who.who)?;
     if d.hub.contracts().iter().any(|c| c.0.cid() == *u.cid.lock().unwrap() && c.1.is_none()) {
         bail!("{}'s contract is still open", u.name);
     }
-    let cid = open_contract(d, &u)?;
-    Ok(json!({ "ok": format!("contract {cid} opened") }))
+    let d2 = d.clone();
+    task(&u, move |u| {
+        u.say("opening a new contract ...".into());
+        if let Err(e) = open_contract(&d2, u) {
+            return u.say(format!("opening failed: {e:#}"));
+        }
+        let start = Instant::now();
+        while u.wallet.lock().unwrap().balances().map_or(0, |b| b.0) < ASK.deposit {
+            if start.elapsed() > Duration::from_secs(60) {
+                return u.say("the deposit was never minted".into());
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        shield_all(u);
+    })?;
+    Ok(json!({ "ok": "started" }))
 }
 
 fn route(d: &Arc<Demo>, method: &Method, url: &str, body: &str) -> Result<(String, &'static str)> {

@@ -83,10 +83,25 @@ pub enum Event {
     /// A transfer: the owners of the notes spent, and the new notes
     /// (owner, value, memo).
     Transfer { from: Vec<Hash>, to: Vec<(Hash, u64, u32)> },
-    /// A shielded transaction: the owners of the transparent notes spent,
-    /// how many shielded notes were spent and made, and the transparent
-    /// notes made (owner, value, memo).
-    Shielded { from: Vec<Hash>, spent: usize, made: usize, to: Vec<(Hash, u64, u32)> },
+    /// A shielded transaction: the owners of the transparent notes spent
+    /// and their total, how many shielded notes were spent and made, the
+    /// transparent notes made (owner, value, memo); and what else is
+    /// public of it, as an explorer would show it: the nullifiers, the new
+    /// notes' commitments, the proof's size in bytes (0: a native proof).
+    Shielded {
+        from: Vec<Hash>,
+        spent: usize,
+        made: usize,
+        to: Vec<(Hash, u64, u32)>,
+        #[serde(default)]
+        t_total: u64,
+        #[serde(default)]
+        nfs: Vec<Hash>,
+        #[serde(default)]
+        cms: Vec<Hash>,
+        #[serde(default)]
+        proof: usize,
+    },
     /// A height sealed: the notes so far, its signed root.
     Sealed { height: u64, notes: u32, root: Hash },
 }
@@ -97,7 +112,19 @@ impl Event {
         match tx {
             Tx::Mint(m) => Event::Mint { to: m.outputs.iter().map(|n| (n.owner, n.value)).collect() },
             Tx::Transfer(t) => Event::Transfer { from: t.spends.iter().map(|s| s.note.owner).collect(), to: t.outputs.iter().map(|n| (n.owner, n.value, n.memo)).collect() },
-            Tx::Shielded(t) => Event::Shielded { from: t.t_spends.iter().map(|s| s.note.owner).collect(), spent: t.nfs.len(), made: t.outputs.len(), to: t.t_outputs.iter().map(|n| (n.owner, n.value, n.memo)).collect() },
+            Tx::Shielded(t) => Event::Shielded {
+                from: t.t_spends.iter().map(|s| s.note.owner).collect(),
+                spent: t.nfs.len(),
+                made: t.outputs.len(),
+                to: t.t_outputs.iter().map(|n| (n.owner, n.value, n.memo)).collect(),
+                t_total: t.t_spends.iter().map(|s| s.note.value).sum(),
+                nfs: t.nfs.clone(),
+                cms: t.outputs.iter().map(|o| o.cm).collect(),
+                proof: match &t.proof {
+                    lichen_ledger::Proof::Risc0(r) => r.len(),
+                    lichen_ledger::Proof::Native(_) => 0,
+                },
+            },
         }
     }
 }

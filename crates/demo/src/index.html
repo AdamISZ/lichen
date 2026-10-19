@@ -7,11 +7,11 @@
 <style>
 :root {
   --bg: #f4f5f2; --card: #ffffff; --ink: #1d2320; --muted: #6b736e; --line: #dfe3dc;
-  --accent: #3f7d4f; --accent-ink: #ffffff; --warn: #b0592a; --mint: #2f6fa8; --ret: #8a5a9e; --seal: #9aa19c;
+  --accent: #3f7d4f; --accent-ink: #ffffff; --warn: #b0592a; --mint: #2f6fa8; --ret: #8a5a9e; --seal: #9aa19c; --shield: #4a6b8f;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #151816; --card: #1e2320; --ink: #e5e9e4; --muted: #96a09a; --line: #2e3530;
-    --accent: #6fb27f; --accent-ink: #0f1311; --warn: #e08a5a; --mint: #6aa7dc; --ret: #c08fd6; --seal: #5d665f; }
+    --accent: #6fb27f; --accent-ink: #0f1311; --warn: #e08a5a; --mint: #6aa7dc; --ret: #c08fd6; --seal: #5d665f; --shield: #8fb0d6; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -38,7 +38,13 @@ button:disabled { opacity: .5; cursor: default; }
 .log li { padding: 3px 0; border-bottom: 1px dashed var(--line); }
 .k { display: inline-block; min-width: 62px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
 .k.mint { color: var(--mint); } .k.transfer { color: var(--accent); } .k.return { color: var(--ret); } .k.sealed { color: var(--seal); } .k.btc { color: var(--warn); }
+.k.shield, .k.shielded { color: var(--shield); }
 li.sealed { color: var(--seal); }
+#ledger { max-height: 440px; }
+li .detail { display: block; margin-left: 66px; color: var(--muted); }
+.ok { color: var(--accent); }
+.notes { display: flex; flex-wrap: wrap; gap: 6px; }
+.notes span { border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
 table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
 td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); font-size: 13px; }
 th { color: var(--muted); font-weight: normal; }
@@ -52,14 +58,15 @@ th { color: var(--muted); font-weight: normal; }
 <body>
 <header>
   <h1>lichen</h1>
-  <span class="sub">an L2 of bitcoin, each holding within its cap enforceable on Bitcoin · local regtest demo</span>
+  <span class="sub">an L2 of bitcoin with shielded payments, each holding within its cap enforceable on Bitcoin · local regtest demo, real proofs</span>
   <span class="sub" id="height"></span>
 </header>
 <main>
   <section class="pane" id="pane-Alice"></section>
   <section class="pane" id="pane-Bob"></section>
   <section class="pane">
-    <h2>The ledger <span class="tag">what the sequencer ordered and sealed</span></h2>
+    <h2>The ledger <span class="tag">what anyone sees: the sequencer's transactions, seals and proofs</span></h2>
+    <div class="muted" id="validity"></div>
     <ul class="log" id="ledger"></ul>
     <h2 class="next">On Bitcoin <span class="tag">contracts, withdrawals, disputes</span></h2>
     <ul class="log" id="chain"></ul>
@@ -94,14 +101,16 @@ async function post(path, body) {
 function userPane(name, other) {
   const el = document.getElementById('pane-' + name);
   el.innerHTML = `
-    <h2>${name} <button class="ghost" id="${name}-showaddr">show address</button></h2>
+    <h2>${name} <button class="ghost" id="${name}-showaddr">show shielded address</button></h2>
     <div class="mono" id="${name}-addr" hidden></div>
-    <div><span class="big" id="${name}-l2"></span> <span class="muted">on the L2</span></div>
+    <div><span class="big" id="${name}-l2"></span> <span class="muted">shielded on the L2</span> <span class="muted" id="${name}-transparent"></span></div>
+    <div class="muted">${name}'s notes, which only ${name} can see (value · leaf):</div>
+    <div class="notes" id="${name}-notes"></div>
     <div class="muted">on-chain wallet: <span id="${name}-onchain"></span></div>
     <div class="card" id="${name}-contract"></div>
     <div class="row">
       <input type="number" id="${name}-sendamt" min="1" step="10000" value="500000">
-      <button id="${name}-send">send to ${other}</button>
+      <button id="${name}-send">pay ${other}, shielded</button>
     </div>
     <div class="row">
       <input type="number" id="${name}-wdamt" min="1" step="10000" value="1000000">
@@ -135,7 +144,11 @@ function userPane(name, other) {
 function renderUser(u, s) {
   const n = u.name;
   document.getElementById(n + '-addr').textContent = u.address;
-  document.getElementById(n + '-l2').textContent = Number(u.l2).toLocaleString('en-US');
+  document.getElementById(n + '-l2').textContent = Number(u.shielded).toLocaleString('en-US');
+  document.getElementById(n + '-transparent').textContent = u.transparent ? '· ' + sats(u.transparent) + ' transparent' : '';
+  document.getElementById(n + '-notes').innerHTML = u.notes.length
+    ? u.notes.map(x => `<span>${Number(x.value).toLocaleString('en-US')} · ${x.leaf}</span>`).join('')
+    : '<span class="muted">none yet</span>';
   document.getElementById(n + '-onchain').textContent = sats(u.onchain);
   const c = u.contract;
   document.getElementById(n + '-contract').innerHTML = c
@@ -144,16 +157,25 @@ function renderUser(u, s) {
     : '<span class="muted">no contract</span>';
   document.getElementById(n + '-activity').textContent = u.activity;
   const closed = c && c.state === 'closed';
-  document.getElementById(n + '-withdraw').disabled = !c || closed;
+  document.getElementById(n + '-withdraw').disabled = !c || closed || u.busy;
+  document.getElementById(n + '-send').disabled = u.busy || !u.shielded;
   document.getElementById(n + '-open').hidden = !closed;
 }
 
 function render(s) {
   document.getElementById('height').textContent = '· block ' + s.height;
   for (const u of s.users) renderUser(u, s);
+  const v = s.validity;
+  document.getElementById('validity').innerHTML = v.running
+    ? (v.proved ? `<span class="ok">✓</span> ${v.proved === 1 ? 'height 1' : 'heights 1–' + v.proved} proved valid from genesis` : 'no height proved yet')
+      + (v.sealed > v.proved ? ` · the chain prover is on height ${v.proved + 1} of ${v.sealed}` : '')
+    : 'the chain prover is off (--no-chain-prover)';
   const ledger = document.getElementById('ledger');
-  ledger.innerHTML = s.ledger.slice().reverse().map(e =>
-    `<li class="${e.kind}"><span class="k ${e.kind}">${e.kind}</span> ${esc(e.text)}</li>`).join('');
+  ledger.innerHTML = s.ledger.slice().reverse().map(e => {
+    const mark = e.kind === 'sealed' && v.running ? (e.height <= v.proved ? ' <span class="ok">✓ proved</span>' : ' · not yet proved') : '';
+    const detail = e.detail ? `<span class="detail mono">${esc(e.detail)}</span>` : '';
+    return `<li class="${e.kind}"><span class="k ${e.kind}">${e.kind}</span> ${esc(e.text)}${mark}${detail}</li>`;
+  }).join('');
   document.getElementById('chain').innerHTML = s.chain_log.slice().reverse().map(m =>
     `<li><span class="k btc">bitcoin</span> ${esc(m)}</li>`).join('');
   const h = s.hub;

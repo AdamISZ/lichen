@@ -48,38 +48,37 @@ Worth mentioning these as idiosyncracies: first, this was built without a user-s
 
 -------
 
-## Components
-
-| crate | binary | who runs it |
-|---|---|---|
-| `ledger` | | everyone: notes, transfers, mints, signed roots (the withdrawal statement's own data structures) |
-| `sequencer` | `lichen-sequencer` | the L2's sequencer: orders transactions, seals and signs heights |
-| `l2` | | wallet and hub: the sequencer's API and its client |
-| `wallet` | `lichen` | the user |
-| `chain` | | each party: its own bitcoind wallet over RPC |
-| `proto` | | wallet and hub: the opening messages, the contract record |
-| `hub` | `lichen-hub` | the hub: opens contracts, issues tokens, folds withdrawals, answers disputes |
-| `demo` | `lichen-demo` | a local web demo of all of the above |
-
 ## The demo
 
 ```sh
+docker build -f r0/Dockerfile -t lichen-r0 .   # the prover image, once
 cargo build --release -p lichen-demo
 ./target/release/lichen-demo        # then open http://127.0.0.1:18330
 ```
 
 It starts its own regtest bitcoind (`bitcoind` on the PATH, or
 `LNGAP_BITCOIND`), the sequencer, a hub and two wallets, opens a contract
-each for Alice and Bob (2M sats deposited, a cap of about 16.8M
-sats), and mines a block a second. Four panes: Alice and Bob (balances,
-address, send, withdraw), the ledger (what the sequencer ordered and
-sealed, and what happened on Bitcoin), and the hub (its contracts,
-headroom, and two switches). Pay each other, withdraw cooperatively, then
-switch the hub to refuse withdrawals and dispute true claims, and
-withdraw: the dispute plays out move by move (about a minute). Disputes
-run on the mock statement set so that every claim is true (the
-contract's memo check still applies), a stand-in for the proof of the
-return that the real statement checks.
+each for Alice and Bob (2M sats deposited, a cap of about 16.8M sats),
+and mines a block a second. Each deposit, once minted, is shielded.
+Payments between them are shielded too, each proved for real on your
+machine (RISC Zero, in Docker) and checked by the sequencer: 15 to 25
+seconds a payment on a recent Mac.
+
+Four panes. Alice and Bob each see their balance and their own notes.
+The ledger shows what anyone sees: the deposits and withdrawals in full,
+since they touch Bitcoin, and for each payment only its nullifiers,
+commitments and proof, with no amounts or parties. Beside it, the chain
+prover proves each sealed height valid from genesis as it goes, a minute
+or two a height, so it runs a little behind (`--no-chain-prover` turns
+it off and leaves the CPU to the payments). The hub's pane has its
+contracts and two switches.
+
+Pay each other, withdraw cooperatively, then switch the hub to refuse
+withdrawals and dispute true claims, and withdraw: the dispute plays
+out move by move (a minute or two). Disputes run on the mock statement,
+set so that every claim is true (the contract's memo check still
+applies). It stands in for the real withdrawal proof, which takes
+minutes on x86 ([Disputes on the real statement](#disputes-on-the-real-statement)).
 
 ## Running a sequencer or a hub
 
@@ -101,7 +100,8 @@ On branch `shielded` the L2 has private payments, with every block
 proved valid: what is hidden, how long things take and what a dispute
 costs are in [Shielded transfers](docs/SHIELDED.md).
 
-[deploy/README.md](deploy/README.md) lays out the files.
+[deploy/README.md](deploy/README.md) lays out the files;
+[docs/CODE.md](docs/CODE.md) the crates, for working on lichen's code.
 
 ## Try it
 
@@ -163,7 +163,7 @@ lichen --wallet alice.json withdraw-input <memo> > withdraw-input.json
 lichen --wallet alice.json chain-receipt <memo> chain.receipt
 # 2. on x86 Linux with Docker, lichen-r0 (r0/host; or the prover image,
 #    docker build -f r0/Dockerfile -t lichen-r0 ., with r0/withdraw-prover.sh,
-#    which gives it the host's Docker for the wrap). 4 vCPUs, 32 GB: 6 min
+#    which gives it the host's Docker for the wrap). 4 vCPUs, 16 GB: 6 min
 #    to prove, 4.5 to wrap
 lichen-r0 claim withdraw-input.json chain.receipt claim.hex
 #    (on a Mac, r0/withdraw-prover.sh withdraw ... proves the STARK only)
