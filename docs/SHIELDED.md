@@ -112,14 +112,27 @@ a recent state of the ledger (one of the last 64 sealed roots), so a
 slow machine has minutes to get it in, not seconds.
 
 **The sequencer** verifies each spend proof as it arrives (fast), and
-seals as before. Its chain prover runs alongside, one height after
-another, a little behind the seals: on the same Mac, about 1 to 2.5
-minutes a height for small blocks (one or two transactions), roughly
-half a minute more per transaction. Payments don't wait for it. Only a
-disputed withdrawal needs the chain proof at its height. A machine
-proving continuously keeps up with on the order of a hundred
+seals as before: every few seconds it signs the new root. Its chain
+prover runs alongside, one height after another, behind the seals: on
+the same Mac, about 1 to 2.5 minutes a height for small blocks (one or
+two transactions), roughly half a minute more per transaction. A
+machine proving continuously keeps up with on the order of a hundred
 transactions an hour: plenty for a demonstration, far short of a busy
 payment system. Running it: [RUN_A_SEQUENCER.md](RUN_A_SEQUENCER.md).
+
+**What the lag means.** A payment is final when it is sealed, as on
+transparent lichen: you trust the sequencer for that, not the chain
+proof (a proof shows a history is valid, not that it is the only one
+the sequencer signed). So you needn't wait for the prover before
+treating a payment as received. The chain proof guards the hub, and
+through its collateral everyone, against notes nobody paid for. An
+honest sequencer checks every spend before accepting it, so its blocks
+always prove; for it the lag is only a delay. That delay falls on
+withdrawals, cooperative or disputed: each needs the chain proof at its
+return's height, so it waits for the prover to get there. If
+transactions keep arriving faster than one machine proves them, the
+lag grows and so does every withdrawal's wait. The remedy is faster
+proving (a GPU) or more machines, not anything a user does.
 
 **A cooperative withdrawal**: return to the hub, ask it to fold, and it
 pays you on Bitcoin in one transaction. You prove nothing for it. The
