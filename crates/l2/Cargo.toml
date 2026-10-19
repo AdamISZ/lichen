@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ureq.workspace = true

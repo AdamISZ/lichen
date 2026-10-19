@@ -1829,6 +1829,7 @@ name = "lichen-l2"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
  "lichen-ledger",
  "serde",
  "serde_json",
@@ -1846,6 +1847,7 @@ dependencies = [
  "k256",
  "lichen-shielded",
  "lichen-validity",
+ "lichen-withdraw",
  "lngap-r0-core",
  "risc0-zkvm",
  "serde",
@@ -1927,6 +1929,15 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+]
+
+[[package]]
+name = "lichen-withdraw"
+version = "0.1.0"
+dependencies = [
+ "k256",
+ "lichen-validity",
+ "sha2",
 ]
 
 [[package]]

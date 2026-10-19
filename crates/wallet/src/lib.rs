@@ -228,6 +228,18 @@ impl Wallet {
         let &(_, idx) = self.returns.iter().find(|r| r.0 == c).with_context(|| format!("no return with memo {c}"))?;
         self.sequencer.state()?.withdraw_input(idx, &self.sequencer.deployment)
     }
+
+    /// The sequencer's chain receipt at the height of the return's root
+    /// (the withdrawal guest proves that root ends a valid history), for
+    /// the prover: `lichen-r0 claim <withdraw input> <chain receipt> <out>`.
+    pub fn chain_receipt(&self, c: u32) -> Result<Vec<u8>> {
+        chain_receipt(&self.sequencer, self.withdraw_input(c)?.height)
+    }
+}
+
+/// The sequencer's chain receipt at height `h`, or why there's none.
+pub fn chain_receipt(seq: &Client, h: u64) -> Result<Vec<u8>> {
+    seq.chain_receipt(h)?.with_context(|| format!("the sequencer hasn't proved height {h} yet (its chain prover proves each height after it seals): try again in a few minutes"))
 }
 
 /// What Alice asks for in a contract: her deposit `D`, a cap of

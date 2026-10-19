@@ -5,4 +5,4 @@
 set -eu
 [ -f /tower/package.json ] || { echo "no /tower/package.json: put the package from 'lichen export-dispute' there"; exit 1; }
 exec lichen --network "${NETWORK:?}" ${ESPLORA:+--esplora "$ESPLORA"} --statement "${STATEMENT:-groth16}" \
-    tower --package /tower/package.json --prover lngap-r0
+    tower --package /tower/package.json --prover lichen-r0

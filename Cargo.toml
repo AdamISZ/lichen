@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 exclude = ["r0"]
-members = ["crates/ledger", "crates/shielded", "crates/validity", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/demo"]
+members = ["crates/ledger", "crates/shielded", "crates/validity", "crates/withdraw", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/demo"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,6 +28,7 @@ lngap-r0-core = { path = "../ln-gap/crates/apps/sessions/r0/core" }
 lichen-ledger = { path = "crates/ledger" }
 lichen-shielded = { path = "crates/shielded" }
 lichen-validity = { path = "crates/validity" }
+lichen-withdraw = { path = "crates/withdraw" }
 lichen-l2 = { path = "crates/l2" }
 lichen-chain = { path = "crates/chain" }
 lichen-proto = { path = "crates/proto" }

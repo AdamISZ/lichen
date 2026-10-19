@@ -4,6 +4,7 @@
 *
 !crates/shielded
 !crates/validity
+!crates/withdraw
 !r0
 r0/target
 r0/*/target

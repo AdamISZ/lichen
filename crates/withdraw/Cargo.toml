@@ -1,0 +1,13 @@
+[package]
+name = "lichen-withdraw"
+description = "The withdrawal statement, with validity: a return under a root that ends a proven valid history"
+# self-contained (not inherited from the workspace): the withdrawal guest
+# builds it alone, as the chain guest builds lichen-validity
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+lichen-validity = { path = "../validity" }
+sha2 = { version = "0.10", default-features = false }
+k256 = { version = "0.13", default-features = false, features = ["schnorr"] }

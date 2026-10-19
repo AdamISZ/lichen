@@ -50,7 +50,8 @@ fn a_tower_plays_the_dispute_from_a_package() {
     let dir = std::env::temp_dir().join(format!("lichen-tower-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let seq = Sequencer::start("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY).unwrap();
+    let ledger = dir.join("ledger.json");
+    let seq = Sequencer::start("127.0.0.1:0", Some(ledger.clone()), regtest_sequencer(), HUB_KEY).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let url = seq.url.clone();
     let sealer = background(&stop, Duration::from_millis(200), move || {
@@ -128,15 +129,22 @@ fn a_tower_plays_the_dispute_from_a_package() {
 
     // proving, for a statement without a mock: the tower builds the input
     // from the sequencer as the wallet would, and hands it to the prover
+    // and the chain receipt of the withdrawal's height, fetched from the
+    // sequencer (here a stand-in for the chain prover's), to the prover
     // (here a stub that keeps what it was given and answers a claim)
-    assert_eq!(serde_json::to_value(tower::withdraw_input(&pkg).unwrap()).unwrap(), serde_json::to_value(w.withdraw_input(cid).unwrap()).unwrap(), "the input the wallet would print");
+    let input = tower::withdraw_input(&pkg).unwrap();
+    assert_eq!(serde_json::to_value(&input).unwrap(), serde_json::to_value(w.withdraw_input(cid).unwrap()).unwrap(), "the input the wallet would print");
     let stub = dir.join("stub-prover.sh");
-    std::fs::write(&stub, format!("#!/bin/sh\n[ \"$1\" = claim ] || exit 2\ncp \"$2\" {}\necho c1a1 > \"$3\"\n", dir.join("seen.json").display())).unwrap();
+    std::fs::write(&stub, format!("#!/bin/sh\n[ \"$1\" = claim ] || exit 2\ncp \"$2\" {}\ncp \"$3\" {}\necho c1a1 > \"$4\"\n", dir.join("seen.json").display(), dir.join("seen.chain").display())).unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    assert!(tower::prove(&pkg, &dir.join("proof"), &stub).is_err(), "no chain receipt yet");
+    std::fs::create_dir_all(lichen_sequencer::blocks_dir(&ledger)).unwrap();
+    std::fs::write(lichen_sequencer::blocks_dir(&ledger).join(format!("{}.chain", input.height)), [7, 7, 7]).unwrap();
     let claim = tower::prove(&pkg, &dir.join("proof"), &stub).unwrap();
     assert_eq!(claim, vec![0xc1, 0xa1], "the prover's claim, read back");
     let seen: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("seen.json")).unwrap()).unwrap();
     assert_eq!(seen, serde_json::to_value(w.withdraw_input(cid).unwrap()).unwrap(), "the prover was given the withdrawal's input");
+    assert_eq!(std::fs::read(dir.join("seen.chain")).unwrap(), [7, 7, 7], "and the sequencer's chain receipt");
     assert!(tower::prove(&pkg, &dir.join("proof"), std::path::Path::new("/usr/bin/false")).is_err(), "a failing prover is an error");
 
     // the tower, with a chain of its own, plays the dispute to its end

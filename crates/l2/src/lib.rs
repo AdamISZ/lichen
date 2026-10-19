@@ -120,6 +120,13 @@ pub struct Client {
     pub deployment: Deployment,
 }
 
+/// A chain receipt (`GET /chain/<h>`): the chain prover's receipt
+/// (bincode, hex) that heights 1..h are valid from genesis.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChainReceipt {
+    pub receipt: String,
+}
+
 impl Client {
     /// Connect, taking the deployment the sequencer announces (trust on
     /// first use: keep it, and use [`Client::pinned`] after).
@@ -154,6 +161,16 @@ impl Client {
     /// The events from number `since` on, with their numbers.
     pub fn events(&self, since: usize) -> Result<Vec<(usize, Event)>> {
         Ok(ureq::get(&format!("{}/events?since={since}", self.url)).call().map_err(|e| anyhow!("/events: {e}"))?.into_json()?)
+    }
+    /// The chain receipt at height `h` (bincode), if the sequencer has
+    /// proved it. Not checked here: whoever proves a withdrawal with it
+    /// does.
+    pub fn chain_receipt(&self, h: u64) -> Result<Option<Vec<u8>>> {
+        match ureq::get(&format!("{}/chain/{h}", self.url)).call() {
+            Ok(r) => Ok(Some(hex::decode(r.into_json::<ChainReceipt>()?.receipt).context("a chain receipt's hex")?)),
+            Err(ureq::Error::Status(404, _)) => Ok(None),
+            Err(e) => Err(anyhow!("/chain/{h}: {e}")),
+        }
     }
     /// The ledger, its sealed roots checked.
     pub fn state(&self) -> Result<State> {

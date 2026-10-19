@@ -150,14 +150,20 @@ so that a proof made in advance is valid for them.
 ## Disputes on the real statement
 
 A withdrawal the hub refuses is enforced with a proof of the return, made
-with RISC Zero and wrapped in Groth16 (the wrap runs on x86 Linux):
+with RISC Zero and wrapped in Groth16 (the wrap runs on x86 Linux). On
+branch `shielded` the proof also shows that the return's root ends a valid
+history, with the sequencer's chain receipt at its height
+([SHIELDED_PLAN.md](docs/SHIELDED_PLAN.md), phase 2):
 
 ```sh
-# 1. the claim: the return note, its path, the sequencer's signed root
+# 1. the claim: the return note, its path, the sequencer's signed root;
+#    and the chain receipt at that root's height
 lichen --wallet alice.json withdraw-input <memo> > withdraw-input.json
-# 2. on x86 Linux, in ln-gap/crates/apps/sessions/r0 (see WRAP_ON_LINUX.md):
-scripts/linux-claim.sh withdraw-input.json claim.hex
-#    (or on a Mac: lngap-r0 prove-input ... for the STARK, then wrap on Linux)
+lichen --wallet alice.json chain-receipt <memo> chain.receipt
+# 2. on x86 Linux with Docker, lichen-r0 (r0/host; or the prover image,
+#    docker build -f r0/Dockerfile -t lichen-r0 ., with r0/withdraw-prover.sh):
+lichen-r0 claim withdraw-input.json chain.receipt claim.hex
+#    (on a Mac, r0/withdraw-prover.sh withdraw ... proves the STARK only)
 # 3. the dispute, on the Groth16 verifier
 lichen --wallet alice.json --statement groth16 dispute <contract> <amount> --input claim.hex
 ```

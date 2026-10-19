@@ -4,7 +4,10 @@
 //! sequencer that accepts no native proofs; then every height it recorded
 //! proved by the chain prover (r0/chain-prover.sh, in the same image, or
 //! LICHEN_R0 naming lichen-r0), the last receipt ending at the last
-//! sealed root.
+//! sealed root; then Bob's withdrawal proved by the withdrawal guest
+//! (r0/withdraw-prover.sh), under the chain receipt at his return's
+//! height, which the sequencer serves (a succinct receipt: the Groth16
+//! wrap is x86 Linux's, LICHEN_WRAP=1 there).
 
 use lichen_ledger::{check, regtest_hub, regtest_sequencer, Mint, Tx, HUB_KEY};
 use lichen_sequencer::Sequencer;
@@ -58,5 +61,18 @@ fn shield_pay_and_return_with_receipts() {
     let line = String::from_utf8(out.stdout).unwrap();
     println!("LICHEN {line}");
     assert!(line.starts_with(&format!("height {} root {} ", sealed.height, hex::encode(sealed.root()))), "it ends at the last sealed root: {line}");
+
+    // the withdrawal: ln-gap's statement, and the chain receipt at the
+    // return's root
+    let input = bob.withdraw_input(42).unwrap();
+    let (json, chain, receipt) = (dir.join("withdraw-input.json"), dir.join("chain.receipt"), dir.join("withdraw.receipt"));
+    std::fs::write(&json, serde_json::to_vec_pretty(&input).unwrap()).unwrap();
+    std::fs::write(&chain, bob.chain_receipt(42).unwrap()).unwrap();
+    assert_eq!(std::fs::read(&chain).unwrap(), std::fs::read(blocks.join(format!("{}.chain", input.height))).unwrap(), "the sequencer serves its prover's receipt");
+    let t = std::time::Instant::now();
+    let cmd = if std::env::var("LICHEN_WRAP").is_ok() { "claim" } else { "withdraw" };
+    let ok = std::process::Command::new(r0.join("withdraw-prover.sh")).arg(cmd).arg(&json).arg(&chain).arg(&receipt).status().unwrap();
+    assert!(ok.success(), "the withdrawal prover");
+    println!("LICHEN proved Bob's withdrawal ({cmd}) under height {} in {:.1?}", input.height, t.elapsed());
     let _ = std::fs::remove_dir_all(&dir);
 }

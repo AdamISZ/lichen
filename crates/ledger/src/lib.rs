@@ -700,6 +700,31 @@ impl Ledger {
         }
         Ok(input)
     }
+
+    /// The chain journal's `recent` at height `h`: the hash of the last
+    /// [`lichen_validity::RECENT`] sealed tree roots up to it.
+    pub fn recent_at(&self, h: u64) -> Option<Hash> {
+        let upto = self.sealed.get(..usize::try_from(h).ok()?)?;
+        Some(lichen_validity::recent_hash(&upto.iter().rev().take(lichen_validity::RECENT).rev().map(|s| s.tree).collect::<Vec<_>>()))
+    }
+}
+
+/// The withdrawal statement with validity's input (`lichen-withdraw`):
+/// ln-gap's, and the recent roots' hash of the chain receipt at its
+/// height.
+pub fn with_chain(input: &WithdrawInput, recent: Hash) -> Result<lichen_withdraw::WithdrawInput> {
+    let n = &input.note;
+    Ok(lichen_withdraw::WithdrawInput {
+        height: input.height,
+        nullifiers: input.nullifiers,
+        signature: input.signature.as_slice().try_into().context("a signature of 64 bytes")?,
+        note: lichen_validity::TNote { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho },
+        index: input.index,
+        path: input.path.clone(),
+        sequencer: input.sequencer,
+        hub: input.hub,
+        recent,
+    })
 }
 
 /// A ledger transaction as the block statement reads it.
@@ -947,7 +972,23 @@ mod tests {
             sig[0] ^= 1;
         }
         assert_eq!(v::check(&bad, &mut |_| true), Err(v::Reject::BadSignature));
-        seal_checked(&mut l, &seq, (j3.to, j3.recent_to));
+        let j4 = seal_checked(&mut l, &seq, (j3.to, j3.recent_to));
+
+        // Bob's return withdrawn under the root of height 4, a chain
+        // receipt ending there: the journal is ln-gap's statement's
+        let index = (0..l.tree.len() as u32).find(|&i| l.note(i).is_some_and(|n| n.memo == 42)).unwrap();
+        let ln = l.withdraw_input(index).unwrap();
+        assert_eq!(ln.height, 4);
+        assert_eq!(l.recent_at(4), Some(j4.recent_to));
+        let w = with_chain(&ln, l.recent_at(4).unwrap()).unwrap();
+        let id = [0xc4; 32];
+        let ends = v::ChainJournal { hub: j4.hub, height: 4, root: j4.to, recent: j4.recent_to, chain_id: id }.to_bytes();
+        assert_eq!(lichen_withdraw::chain_journal(&w, &id).to_bytes(), ends);
+        let journal = lichen_withdraw::check(&w, &id, &mut |jb| jb == ends).unwrap();
+        assert_eq!(journal, check(&ln).unwrap(), "ln-gap's journal, b ‖ c ‖ D");
+        // under height 3's chain receipt: refused
+        let three = v::ChainJournal { hub: j3.hub, height: 4, root: j3.to, recent: j3.recent_to, chain_id: id }.to_bytes();
+        assert_eq!(lichen_withdraw::check(&w, &id, &mut |jb| jb == three), Err(lichen_withdraw::Reject::Chain));
     }
 
     #[test]

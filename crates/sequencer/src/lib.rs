@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
-use lichen_l2::{Applied, Event, Refused, State};
+use lichen_l2::{Applied, ChainReceipt, Event, Refused, State};
 use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{xonly, Deployment, Hash, Ledger, Proof, Tx};
 use tiny_http::{Header, Method, Response, Server};
@@ -110,6 +110,16 @@ fn handle(ledger: &Mutex<Ledger>, events: &Mutex<Vec<Event>>, key: &SigningKey, 
         let tail: Vec<(usize, Event)> = ev.iter().cloned().enumerate().skip(since).collect();
         return (200, serde_json::to_string(&tail).unwrap());
     }
+    if let (Method::Get, Some(h)) = (method, url.strip_prefix("/chain/")) {
+        // the chain prover's receipt that heights 1..h are valid, if made
+        let Some(file) = h.parse::<u64>().ok().and_then(|h| blocks.map(|d| d.join(format!("{h}.chain")))) else {
+            return refuse(404, format!("no chain receipt {h}"));
+        };
+        return match std::fs::read(&file) {
+            Ok(r) => (200, serde_json::to_string(&ChainReceipt { receipt: hex::encode(r) }).unwrap()),
+            Err(_) => refuse(404, format!("height {h} not proved (yet)")),
+        };
+    }
     match (method, url) {
         (Method::Post, "/tx") => match serde_json::from_str::<Tx>(body) {
             Ok(tx) => match l.apply(&tx) {
@@ -149,5 +159,27 @@ fn handle(ledger: &Mutex<Ledger>, events: &Mutex<Vec<Event>>, key: &SigningKey, 
         (Method::Get, "/info") => (200, serde_json::to_string(&l.deployment).unwrap()),
         (Method::Get, "/state") => (200, serde_json::to_string(&State::of(&l)).unwrap()),
         _ => refuse(404, format!("no {method} {url}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serves_the_chain_provers_receipts() {
+        let dir = std::env::temp_dir().join(format!("lichen-seq-chain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.json");
+        let s = Sequencer::start("127.0.0.1:0", Some(ledger.clone()), lichen_ledger::regtest_sequencer(), lichen_ledger::HUB_KEY).unwrap();
+        let c = lichen_l2::Client::new(&s.url).unwrap();
+        assert_eq!(c.chain_receipt(1).unwrap(), None, "not proved yet");
+        std::fs::create_dir_all(blocks_dir(&ledger)).unwrap();
+        std::fs::write(blocks_dir(&ledger).join("1.chain"), [1, 2, 3]).unwrap();
+        assert_eq!(c.chain_receipt(1).unwrap(), Some(vec![1, 2, 3]));
+        assert_eq!(c.chain_receipt(2).unwrap(), None);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -87,14 +87,17 @@ pub fn withdraw_input(p: &Package) -> Result<lichen_ledger::WithdrawInput> {
 }
 
 /// Prove the package's withdrawal and wrap the proof: the statement's
-/// input from the sequencer, then `prover claim <input.json> <claim.hex>`
-/// (ln-gap's `lngap-r0`: the STARK and the Groth16 wrap, x86 for the
-/// wrap), in `work`. The claim's input, the verifier's.
+/// input and the chain receipt at its root's height from the sequencer,
+/// then `prover claim <input.json> <chain receipt> <claim.hex>`
+/// (`lichen-r0`: the STARK and the Groth16 wrap, x86 for the wrap), in
+/// `work`. The claim's input, the verifier's.
 pub fn prove(p: &Package, work: &Path, prover: &Path) -> Result<Vec<u8>> {
     std::fs::create_dir_all(work)?;
-    let (json, out) = (work.join("withdraw-input.json"), work.join("claim.hex"));
-    std::fs::write(&json, serde_json::to_vec_pretty(&withdraw_input(p)?)?)?;
-    let status = std::process::Command::new(prover).arg("claim").arg(&json).arg(&out).status().with_context(|| format!("running the prover {}", prover.display()))?;
+    let (json, chain, out) = (work.join("withdraw-input.json"), work.join("chain.receipt"), work.join("claim.hex"));
+    let input = withdraw_input(p)?;
+    std::fs::write(&json, serde_json::to_vec_pretty(&input)?)?;
+    std::fs::write(&chain, crate::chain_receipt(&lichen_l2::Client::new(&p.sequencer)?, input.height)?)?;
+    let status = std::process::Command::new(prover).arg("claim").arg(&json).arg(&chain).arg(&out).status().with_context(|| format!("running the prover {}", prover.display()))?;
     ensure!(status.success(), "the prover {} failed: {status}", prover.display());
     Ok(hex::decode(std::fs::read_to_string(&out)?.trim())?)
 }

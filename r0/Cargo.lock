@@ -2015,9 +2015,12 @@ dependencies = [
  "hex",
  "lichen-shielded",
  "lichen-validity",
+ "lichen-withdraw",
  "risc0-binfmt",
  "risc0-zkos-v1compat",
  "risc0-zkvm",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2033,6 +2036,15 @@ version = "0.1.0"
 dependencies = [
  "k256",
  "lichen-shielded",
+ "sha2",
+]
+
+[[package]]
+name = "lichen-withdraw"
+version = "0.1.0"
+dependencies = [
+ "k256",
+ "lichen-validity",
  "sha2",
 ]
 

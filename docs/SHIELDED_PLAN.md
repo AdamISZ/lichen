@@ -48,8 +48,25 @@ a `const fn` SHA-256 compression), and a node compresses a word-aligned
 block: a nullifier insert 751k → 306k cycles. What's left is mostly the
 BIP340 signatures (~260k each) and the receipts' resolution.
 
-Next: step 4, the
-withdrawal guest.
+**Step 4 in progress** (2026-10-18): the withdrawal statement with
+validity (`crates/withdraw`): ln-gap's `check`, unchanged, then a chain
+receipt ending at the signed root, at its height, under the same hub
+(`env::verify(CHAIN_ID, journal)`, `CHAIN_ID` built in from
+`r0/guests/chain.id`). Its journal stays ln-gap's `b ‖ c ‖ D`. Checked
+natively against ln-gap's statement on the four blocks of
+`every_block_is_the_block_statements`: the same journal. The guest
+(`r0/withdraw-guest`), `lichen-r0 withdraw|exec-withdraw|wrap|claim`
+(the claim's input encoded for BitVMX's verifier, ln-gap's encoder), the
+sequencer serving chain receipts (`GET /chain/<h>`), the wallet's
+`chain-receipt` and the tower proving with `lichen-r0` are written. Left:
+the guest's canonical build (x86 Linux), `IMAGE_ID` switched to it,
+the real-receipt test's withdrawal, then the Groth16 dispute test (G2)
+and a Mutinynet trial with the tower.
+
+A withdrawal disputed on Bitcoin now needs the sequencer's chain receipt
+at its return's height, not only the signed root: a sequencer that stops
+proving (or serving receipts) stops dispute withdrawals, as one that
+stopped signing roots would. Data availability stays out of scope.
 
 ## The aim
 

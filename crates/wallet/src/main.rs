@@ -69,6 +69,9 @@ enum Cmd {
     Return { amount: u64, memo: u32 },
     /// Print the withdrawal statement's input for a return (JSON).
     WithdrawInput { memo: u32 },
+    /// Write the sequencer's chain receipt at the height of a return's
+    /// root, which the withdrawal's proof needs.
+    ChainReceipt { memo: u32, out: PathBuf },
     /// Open a contract with the hub: deposit `deposit` sats, a cap of
     /// 2^bits - 1 sats, a reserve of `reserve` sats. Prints a deposit
     /// address and the amount to pay it (from any wallet), and waits.
@@ -151,9 +154,10 @@ enum Cmd {
     Tower {
         #[arg(long)]
         package: PathBuf,
-        /// The prover, for a package without a claim (ln-gap's `lngap-r0`:
-        /// `claim <input.json> <out.hex>`, the STARK and the Groth16 wrap).
-        #[arg(long, default_value = "lngap-r0")]
+        /// The prover, for a package without a claim (`lichen-r0`: `claim
+        /// <input.json> <chain receipt> <out.hex>`, the STARK and the
+        /// Groth16 wrap).
+        #[arg(long, default_value = "lichen-r0")]
         prover: PathBuf,
     },
     /// Sweep what a tower's dispute won (its state file, beside its
@@ -201,7 +205,7 @@ fn escalate_note(a: &Args, cid: u32, b: u64, t_close: u32, height: Option<u32>) 
     } else {
         (
             "Proving takes 10 to 15 minutes on 4 x86 cores, and the escalation has to confirm",
-            format!("  yourself, proving on x86 Linux with Docker (the README, \"Disputes on the real statement\"):\n    lichen withdraw-input {cid} > withdraw-input.json\n    lngap-r0 claim withdraw-input.json claim.hex\n    lichen dispute {cid} {b} --input claim.hex"),
+            format!("  yourself, proving on x86 Linux with Docker (the README, \"Disputes on the real statement\"):\n    lichen withdraw-input {cid} > withdraw-input.json\n    lichen chain-receipt {cid} chain.receipt\n    lichen-r0 claim withdraw-input.json chain.receipt claim.hex\n    lichen dispute {cid} {b} --input claim.hex"),
         )
     };
     format!(
@@ -256,6 +260,10 @@ fn main() -> Result<()> {
         Cmd::Shield { amount } => println!("shielded: note {}", w.shield(amount)?[0]),
         Cmd::Return { amount, memo } => println!("returned: note {}", w.return_to_hub(amount, memo)?),
         Cmd::WithdrawInput { memo } => println!("{}", serde_json::to_string_pretty(&w.withdraw_input(memo)?)?),
+        Cmd::ChainReceipt { memo, ref out } => {
+            std::fs::write(out, w.chain_receipt(memo)?)?;
+            println!("{}: the chain receipt for the return with memo {memo}", out.display());
+        }
         Cmd::Open { deposit, bits, reserve, ref payout, resume } => {
             let chain = chain(&a)?;
             let dir = a.wallet.with_extension("d");
@@ -365,7 +373,7 @@ mod tests {
         let n = escalate_note(&a, 1006, 22_000, 3_519_000, Some(3_514_050));
         println!("{n}");
         assert!(n.contains("by block 3519000") && n.contains("4950 blocks left, about 41.2 hours"));
-        assert!(n.contains("lngap-r0 claim") && n.contains("dispute 1006 22000 --input claim.hex") && n.contains("export-dispute 1006"));
+        assert!(n.contains("lichen chain-receipt 1006 chain.receipt") && n.contains("lichen-r0 claim withdraw-input.json chain.receipt claim.hex") && n.contains("dispute 1006 22000 --input claim.hex") && n.contains("export-dispute 1006"));
         let late = escalate_note(&a, 1006, 22_000, 3_519_000, Some(3_519_001));
         assert!(late.contains("has passed") && late.contains("at once"));
         let mock = Args::parse_from(["lichen", "--network", "regtest", "contracts"]);
