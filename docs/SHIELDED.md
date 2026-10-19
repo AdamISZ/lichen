@@ -131,8 +131,11 @@ always prove; for it the lag is only a delay. That delay falls on
 withdrawals, cooperative or disputed: each needs the chain proof at its
 return's height, so it waits for the prover to get there. If
 transactions keep arriving faster than one machine proves them, the
-lag grows and so does every withdrawal's wait. The remedy is faster
-proving (a GPU) or more machines, not anything a user does.
+lag grows and so does every withdrawal's wait. The remedy is on the
+sequencer's side, not the user's: faster proving (a GPU). Here each
+height is proved from the last in one step, so the work can't yet be
+shared among machines; proving blocks in parallel and chaining them
+after would allow it.
 
 **A cooperative withdrawal**: return to the hub, ask it to fold, and it
 pays you on Bitcoin in one transaction. You prove nothing for it. The
