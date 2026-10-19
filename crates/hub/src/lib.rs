@@ -180,6 +180,8 @@ impl Hub {
         std::fs::create_dir_all(cfg.dir.join("contracts"))?;
         let program = cfg.statement.program(&cfg.dir)?;
         let chain = Chain::connect_on(&cfg.rpc_url, &cfg.cookie, &cfg.wallet, cfg.network)?;
+        // coins locked for offers that didn't survive the restart
+        chain.unlock(&[])?;
         let seq = Client::new(&cfg.sequencer)?;
         ensure!(seq.deployment.hub == xonly(&cfg.l2_key), "the sequencer's issuer is {}, not this hub's key {}", hex::encode(seq.deployment.hub), hex::encode(xonly(&cfg.l2_key)));
         // the sequencer may be another machine's: pin its key on first
@@ -431,6 +433,16 @@ impl Inner {
 
     fn accept(&self, a: Accept) -> Result<Opened> {
         let p = self.pending.lock().unwrap().remove(&a.cid).context("no such offer")?;
+        let coins: Vec<OutPoint> = p.offer.hub_coins.iter().map(|c| c.0).collect();
+        let r = self.fund(a, p);
+        if r.is_err() {
+            // free the coins the offer locked (spent ones: nothing to do)
+            let _ = self.chain.unlock(&coins);
+        }
+        r
+    }
+
+    fn fund(&self, a: Accept, p: Pending) -> Result<Opened> {
         let mut record = p.record;
         record.alice_sigs = a.alice_sigs;
         let c = record.contract(&self.cfg.statement, &self.program)?;

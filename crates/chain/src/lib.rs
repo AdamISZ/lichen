@@ -614,9 +614,13 @@ impl Chain {
     pub fn balance(&self) -> Result<Amount> {
         Ok(self.rpc()?.get_balance(Some(1), None)?)
     }
-    /// Confirmed coins covering `amount`, largest first.
+    /// Confirmed coins covering `amount`, largest first, locked in the
+    /// wallet (not on disk) so that another selection can't take them
+    /// before they are spent: two contracts' fundings, offered at once.
+    /// [`Chain::unlock`] frees them if they never are.
     pub fn select(&self, amount: Amount) -> Result<Vec<(OutPoint, TxOut)>> {
-        let mut coins = self.rpc()?.list_unspent(Some(1), None, None, Some(false), None)?;
+        let rpc = self.rpc()?;
+        let mut coins = rpc.list_unspent(Some(1), None, None, Some(false), None)?;
         coins.sort_by_key(|c| std::cmp::Reverse(c.amount));
         let (mut out, mut total) = (vec![], Amount::ZERO);
         for c in coins {
@@ -629,7 +633,20 @@ impl Chain {
         if total < amount {
             bail!("wallet {} has {total}, short of {amount}", self.wallet_name()?);
         }
+        let ops: Vec<OutPoint> = out.iter().map(|c| c.0).collect();
+        ensure!(rpc.lock_unspent(&ops)?, "locking the coins selected");
         Ok(out)
+    }
+    /// Free coins [`Chain::select`] locked, or with none named, all of
+    /// them (at a start, when no offer survives).
+    pub fn unlock(&self, coins: &[OutPoint]) -> Result<()> {
+        let rpc = self.rpc()?;
+        if coins.is_empty() {
+            rpc.unlock_unspent_all()?;
+        } else {
+            rpc.unlock_unspent(coins)?;
+        }
+        Ok(())
     }
     /// Sign this wallet's inputs of `tx` (whose inputs spend `prevouts`),
     /// leaving the others as they are.
