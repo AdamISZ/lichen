@@ -100,6 +100,10 @@ A user whose withdrawal is refused can hand the dispute to a machine she
 rents, a tower that proves and plays it while she is away:
 [Running a tower](docs/RUN_A_TOWER.md).
 
+On branch `shielded` the L2 has private payments, with every block
+proved valid: what is hidden, how long things take and what a dispute
+costs are in [Shielded transfers](docs/SHIELDED.md).
+
 [deploy/README.md](deploy/README.md) lays out the files.
 
 ## Try it
@@ -153,7 +157,7 @@ A withdrawal the hub refuses is enforced with a proof of the return, made
 with RISC Zero and wrapped in Groth16 (the wrap runs on x86 Linux). On
 branch `shielded` the proof also shows that the return's root ends a valid
 history, with the sequencer's chain receipt at its height
-([SHIELDED_PLAN.md](docs/SHIELDED_PLAN.md), phase 2):
+([Shielded transfers](docs/SHIELDED.md)):
 
 ```sh
 # 1. the claim: the return note, its path, the sequencer's signed root;
