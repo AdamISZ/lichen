@@ -252,10 +252,20 @@ impl Endpoints {
     fn unspent(&self, op: &OutPoint) -> Result<bool> {
         let tx = self.first(|c| Ok(c.get_tx(&op.txid)?))?;
         ensure!(tx.is_some_and(|t| t.output.len() > op.vout as usize), "no output {op}");
-        let spent: Vec<bool> = self.clients.iter().filter_map(|(_, c)| c.get_output_status(&op.txid, u64::from(op.vout)).ok().map(|s| s.is_some_and(|s| s.spent))).collect();
+        let ask = || -> Vec<bool> { self.clients.iter().filter_map(|(_, c)| c.get_output_status(&op.txid, u64::from(op.vout)).ok().map(|s| s.is_some_and(|s| s.spent))).collect() };
+        let split = |s: &[bool]| s.iter().any(|s| *s) && !s.iter().all(|s| *s);
+        let mut spent = ask();
         ensure!(!spent.is_empty(), "no Esplora server answers");
-        if spent.iter().any(|s| *s) && !spent.iter().all(|s| *s) {
-            self.alarm(format!("{op} spent by some, not by others"));
+        if split(&spent) {
+            // the servers are asked in turn, and a spend counts from the
+            // mempool: one reaching it between two answers splits them
+            // (seen on Mutinynet, one server named twice). Ask again.
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            spent = ask();
+            ensure!(!spent.is_empty(), "no Esplora server answers");
+            if split(&spent) {
+                self.alarm(format!("{op} spent by some, not by others"));
+            }
         }
         Ok(!spent.iter().all(|s| *s))
     }
