@@ -70,8 +70,17 @@ through the host's Docker): the toy deployment's return of 60, memo 42,
 is the new canned claim (`crates/proto/tests/data/claim-60-42.hex`) of
 the Groth16 tests: G1 (the hub concedes, 444 s), G2 (the whole search on
 a true claim, Alice proves the last step, 779 s) and G3 (b changed to
-61, disproved, 554 s) pass on it. Left: a Mutinynet trial with the
-tower.
+61, disproved, 554 s) pass on it.
+
+Found writing SHIELDED.md: the hub's fold checked a return against the
+sequencer's state only, so a sequencer's invented note could be folded
+(a dispute couldn't be won with one). Now, on the real statement, the
+hub runs the withdrawal statement natively before folding
+(`lichen_ledger::check_withdrawal`: the chain receipt at the return's
+height verified, then `lichen_withdraw::check`), 50 ms; the wallet's
+`withdraw` waits for that receipt (up to 20 minutes). Tested on the
+real height-4 receipt (`crates/ledger/tests/data`). Left: a Mutinynet
+trial with the tower, which also exercises the fold's check.
 
 A withdrawal disputed on Bitcoin now needs the sequencer's chain receipt
 at its return's height, not only the signed root: a sequencer that stops

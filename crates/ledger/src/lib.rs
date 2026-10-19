@@ -765,6 +765,25 @@ fn verify_receipt(_: &[u8], _: &[u8]) -> Result<()> {
     bail!("this build can't verify RISC Zero receipts (lichen-ledger's feature risc0: the sequencer's)")
 }
 
+/// The chain guest's image id (`r0/guests/chain.id`).
+pub const CHAIN_IMAGE_ID: &str = include_str!("../../../r0/guests/chain.id");
+
+/// The withdrawal statement on `input`, natively, as its guest checks it:
+/// the chain receipt (bincode) at the input's height verified against the
+/// chain guest, then `lichen_withdraw::check`. Its journal `b ‖ c ‖ D`:
+/// what a proof of this withdrawal would commit, so what a dispute would
+/// accept.
+#[cfg(feature = "risc0")]
+pub fn check_withdrawal(input: &WithdrawInput, chain_receipt: &[u8]) -> Result<[u8; lichen_withdraw::JOURNAL_LEN]> {
+    let r: risc0_zkvm::Receipt = bincode::deserialize(chain_receipt).context("not a RISC Zero receipt")?;
+    let id: Hash = hex::decode(CHAIN_IMAGE_ID.trim()).ok().and_then(|v| v.try_into().ok()).context("the chain guest's image id")?;
+    r.verify(risc0_zkvm::sha::Digest::from_bytes(id)).context("the chain receipt doesn't verify against the chain guest")?;
+    let c = lichen_validity::ChainJournal::from_bytes(&r.journal.bytes).map_err(|e| anyhow::anyhow!("not a chain journal: {e:?}"))?;
+    ensure!(c.chain_id == id, "the chain receipt names another chain guest");
+    ensure!(c.height == input.height, "the chain receipt is of height {}, the withdrawal's root of {}", c.height, input.height);
+    lichen_withdraw::check(&with_chain(input, c.recent)?, &id, &mut |j| j == r.journal.bytes.as_slice()).map_err(|e| anyhow::anyhow!("the withdrawal statement rejects it: {e:?}"))
+}
+
 /// A note for `owner`.
 pub fn note(owner: Hash, value: u64, memo: u32) -> Note {
     Note { owner, value, memo, rho: fresh_rho() }
@@ -779,6 +798,29 @@ impl std::fmt::Display for SignedRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hub's check before a fold, on a real chain receipt (the
+    /// real-receipt test's height 4, kept with LICHEN_KEEP=1; remade when
+    /// the chain guest is): the statement's journal for the return of 60
+    /// with memo 42, and refusals for another height and another note.
+    #[cfg(feature = "risc0")]
+    #[test]
+    fn the_withdrawal_checked_with_a_chain_receipt() {
+        let receipt = include_bytes!("../tests/data/chain-4.receipt");
+        let input: WithdrawInput = serde_json::from_str(include_str!("../tests/data/withdraw-60-42.json")).unwrap();
+        let j = check_withdrawal(&input, receipt).unwrap();
+        assert_eq!(j[..8], [60, 0, 0, 0, 42, 0, 0, 0]);
+        assert_eq!(j[..], check(&input).unwrap()[..], "ln-gap's statement's journal");
+        let mut other = input.clone();
+        other.height = 3;
+        assert!(format!("{:#}", check_withdrawal(&other, receipt).unwrap_err()).contains("of height 4"));
+        let mut other = input.clone();
+        other.note.value = 61;
+        assert!(format!("{:#}", check_withdrawal(&other, receipt).unwrap_err()).contains("rejects"));
+        let mut bad = receipt.to_vec();
+        bad[1000] ^= 1;
+        assert!(check_withdrawal(&input, &bad).is_err(), "a damaged receipt");
+    }
 
     fn transfer(spends: Vec<(Spend, &SigningKey)>, outputs: Vec<Note>) -> Tx {
         let s: Vec<Spend> = spends.iter().map(|x| x.0).collect();

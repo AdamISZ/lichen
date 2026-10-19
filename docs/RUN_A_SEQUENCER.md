@@ -28,10 +28,10 @@ image (`docker build -f r0/Dockerfile -t lichen-r0 .`), proves each
 height in order to `<h>.chain`, a succinct receipt that heights 1 to h
 are valid; a separate process, on this machine or another with the
 directory. It needs a ledger started from empty (height 0 is genesis).
-The sequencer serves those receipts, `GET /chain/<h>`, and a withdrawal
-disputed on Bitcoin needs the one at its return's height (the withdrawal
-guest checks its root ends a valid history): run the chain prover
-wherever withdrawals may be disputed.
+The sequencer serves those receipts, `GET /chain/<h>`, and every
+withdrawal needs the one at its return's height: a disputed one's proof
+checks its root ends a valid history, and the hub checks the same before
+it folds. So run the chain prover alongside the sequencer.
 
 ## A machine
 

@@ -476,13 +476,26 @@ impl Inner {
     /// The cooperative withdrawal: Alice's return must be sealed on the
     /// L2, owned by the hub, carry this contract's memo and the amount she
     /// asks for, within the cap; then the hub signs her fold and
-    /// broadcasts it.
+    /// broadcasts it. On the real statement the hub folds only what Alice
+    /// could win by dispute: the withdrawal statement checked natively,
+    /// with the sequencer's chain receipt at the return's height (so the
+    /// return's root ends a valid history, not just a signed one).
     fn fold(&self, f: FoldRequest) -> Result<Folded> {
         ensure!(!self.refuse_folds.load(Ordering::Relaxed), "this hub refuses cooperative withdrawals");
         let o = self.open.lock().unwrap().get(&f.cid).cloned().context("no such contract")?;
         ensure!(o.closed.is_none(), "contract {} is closed", f.cid);
         let input = self.seq.state()?.withdraw_input(f.index, &self.seq.deployment)?;
         ensure!(input.note.memo == f.cid && input.note.value == f.b, "note {} is not a return of {} with memo {}", f.index, f.b, f.cid);
+        if let Statement::Groth16 { .. } = self.cfg.statement {
+            let h = input.height;
+            let chain = self.seq.chain_receipt(h)?.with_context(|| format!("the sequencer hasn't proved height {h} yet (its chain prover proves each height after it seals): try again in a few minutes"))?;
+            let j = lichen_ledger::check_withdrawal(&input, &chain).with_context(|| format!("note {}: the withdrawal statement", f.index))?;
+            // b ‖ c ‖ D (b fits a u32: the statement checked it)
+            let mut want = (f.b as u32).to_le_bytes().to_vec();
+            want.extend(f.cid.to_le_bytes());
+            want.extend(self.seq.deployment.id());
+            ensure!(j[..] == want[..], "note {}: the statement's journal is not this withdrawal's", f.index);
+        }
         let c = o.record.contract(&self.cfg.statement, &self.program)?;
         let p = c.fold(o.record.funding, Amount::from_sat(f.b), FOLD_FEE)?;
         p.verify(&o.record.pubs[0].payment, &f.alice_sig).context("Alice's signature on the fold")?;

@@ -13,7 +13,7 @@ hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tiny_http.workspace = true
-lichen-ledger.workspace = true
+lichen-ledger = { workspace = true, features = ["risc0"] }
 lichen-l2.workspace = true
 lichen-chain.workspace = true
 lichen-proto.workspace = true

@@ -49,7 +49,10 @@ transparent notes anyone can audit the sequencer. With shielded ones
 nobody can, so instead every block is proved valid, each proof
 verifying the one before. A withdrawal disputed on Bitcoin must carry
 the chain proof at its height, so nobody can win a dispute with a note
-that no one paid for, the sequencer included.
+that no one paid for, the sequencer included. The hub holds a
+cooperative withdrawal to the same standard: before folding, it checks
+the withdrawal statement itself, with the chain proof, so it pays out
+only what you could have won by dispute.
 
 ## Privacy
 
@@ -118,8 +121,12 @@ proving continuously keeps up with on the order of a hundred
 transactions an hour: plenty for a demonstration, far short of a busy
 payment system. Running it: [RUN_A_SEQUENCER.md](RUN_A_SEQUENCER.md).
 
-**A cooperative withdrawal** is unchanged by any of this: return to the
-hub, ask it to fold, and it pays you on Bitcoin in one transaction.
+**A cooperative withdrawal**: return to the hub, ask it to fold, and it
+pays you on Bitcoin in one transaction. You prove nothing for it. The
+hub checks the withdrawal statement natively, in milliseconds, against
+the sequencer's chain proof at your return's height. So `withdraw` may
+wait a few minutes for the sequencer to prove that height; it says so
+while it waits.
 
 ## The bad case: a refused withdrawal
 
@@ -160,18 +167,11 @@ What it takes ([RUN_A_TOWER.md](RUN_A_TOWER.md) has the setup):
 
 ## Limits
 
-- **Cooperative withdrawals still trust the sequencer.** Before folding,
-  the hub checks your return against the sequencer's state, not against
-  a chain proof. A dispute can't be won with an invented note, but a hub
-  that folds could be paid out against one: a sequencer could invent a
-  note and return it to the hub, up to a contract's cap. Until the hub checks the chain proof
-  before folding, a careful hub should treat the sequencer as trusted
-  for folds, or refuse folds and let disputes decide.
-- **Liveness.** A disputed withdrawal needs the sequencer's chain proof
-  at its height. A sequencer that stops proving, or stops serving the
-  proofs, stops dispute withdrawals, just as one that stopped signing
-  roots would. The ledger's data lives with the sequencer; data
-  availability is out of scope.
+- **Liveness.** Every withdrawal, cooperative or disputed, needs the
+  sequencer's chain proof at its height. A sequencer that stops
+  proving, or stops serving the proofs, stops withdrawals, just as one
+  that stopped signing roots would. The ledger's data lives with the
+  sequencer; data availability is out of scope.
 - **Hardware signers aren't supported.** The right to spend a shielded
   note is knowledge of a key inside the proof, not a signature a device
   could make.

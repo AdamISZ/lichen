@@ -349,16 +349,19 @@ fn main() -> Result<()> {
             let (outcome, swept) = w.sweep_dispute(&chain(&a)?, &a.statement, &a.wallet.with_extension("d"), contract, b, outcome)?;
             println!("{outcome:?}; swept {swept:?}");
         }
-        Cmd::Withdraw { contract, amount } => match w.withdraw(&a.hub, &a.statement, &a.wallet.with_extension("d"), contract, amount) {
-            Ok(txid) => println!("withdrew {amount} sats from contract {contract}: the fold is {txid}"),
-            Err(e) => {
-                let open = w.contracts.iter().find(|h| h.record.cid() == contract && h.closed.is_none());
-                let (Some(h), Some(_)) = (open, w.returned(contract)) else { return Err(e) };
-                let height = chain(&a).and_then(|c| c.height()).ok();
-                eprintln!("Error: {e:#}\n\n{}", escalate_note(&a, contract, amount, h.record.terms.t_close, height));
-                std::process::exit(1);
+        Cmd::Withdraw { contract, amount } => {
+            w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
+            match w.withdraw(&a.hub, &a.statement, &a.wallet.with_extension("d"), contract, amount) {
+                Ok(txid) => println!("withdrew {amount} sats from contract {contract}: the fold is {txid}"),
+                Err(e) => {
+                    let open = w.contracts.iter().find(|h| h.record.cid() == contract && h.closed.is_none());
+                    let (Some(h), Some(_)) = (open, w.returned(contract)) else { return Err(e) };
+                    let height = chain(&a).and_then(|c| c.height()).ok();
+                    eprintln!("Error: {e:#}\n\n{}", escalate_note(&a, contract, amount, h.record.terms.t_close, height));
+                    std::process::exit(1);
+                }
             }
-        },
+        }
     }
     Ok(())
 }

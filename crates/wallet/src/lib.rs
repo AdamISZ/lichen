@@ -587,6 +587,21 @@ impl Wallet {
             ensure!(start.elapsed() < std::time::Duration::from_secs(120), "the return was never sealed");
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
+        // on the real statement the hub folds only a return whose height
+        // the sequencer has proved (the chain receipt a dispute would need)
+        if let Statement::Groth16 { .. } = statement {
+            let h = self.sequencer.state()?.withdraw_input(index, &self.sequencer.deployment)?.height;
+            let start = std::time::Instant::now();
+            if self.sequencer.chain_receipt(h)?.is_none() {
+                if let Some(p) = &self.progress {
+                    p(format!("waiting for the sequencer to prove height {h}, the return's (a few minutes)"));
+                }
+                while self.sequencer.chain_receipt(h)?.is_none() {
+                    ensure!(start.elapsed() < std::time::Duration::from_secs(1200), "the sequencer hasn't proved height {h} in 20 minutes: is its chain prover running? Withdraw again later");
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                }
+            }
+        }
         let program = statement.program(dir)?;
         let c = held.record.contract(statement, &program)?;
         let fold = c.fold(held.record.funding, bitcoin::Amount::from_sat(b), FOLD_FEE)?;

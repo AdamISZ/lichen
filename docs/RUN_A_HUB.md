@@ -7,6 +7,12 @@ separate party, normally on another machine
 ([RUN_A_SEQUENCER.md](RUN_A_SEQUENCER.md)). The hub reaches it by URL,
 as a wallet does.
 
+On branch `shielded`, with the real statement (`groth16`), the hub
+folds only what the user could win by dispute. It checks the withdrawal
+statement natively, with the sequencer's chain receipt at the return's
+height ([SHIELDED.md](SHIELDED.md)), so the sequencer must run its chain
+prover.
+
 Setting the two up together takes four steps, alternating:
 
 1. **The hub's operator** builds, and makes the hub's key (steps 1–2 here).
