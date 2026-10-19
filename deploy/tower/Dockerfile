@@ -29,8 +29,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=docker:28.5.1-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=build /out/lichen /out/lichen-r0 /usr/local/bin/
 COPY --from=build /out/zkverifier.elf /opt/lichen/zkverifier.elf
-# lichen-r0 reads the committed guests from its source tree's path
+# lichen-r0 reads the committed guests from its source tree's path,
+# r0/host/../guests: r0/host has to exist for that to resolve
 COPY --from=build /src/lichen/r0/guests /src/lichen/r0/guests
+RUN mkdir -p /src/lichen/r0/host
 COPY lichen/deploy/tower/entry.sh /usr/local/bin/tower-entry
 ENV LICHEN_VERIFIER_ELF=/opt/lichen/zkverifier.elf
 ENTRYPOINT ["/usr/local/bin/tower-entry"]
