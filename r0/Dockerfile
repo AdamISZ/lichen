@@ -1,5 +1,8 @@
-# lichen-r0, the spend guest's prover, on Linux (Apple silicon: arm64,
-# native). Context: lichen's root. Run by r0/spend-prover.sh.
+# lichen-r0, the guests' prover, on Linux (Apple silicon: arm64, native).
+# Context: lichen's root. Run by r0/spend-prover.sh, chain-prover.sh and
+# withdraw-prover.sh. The Groth16 wrap (x86_64) runs RISC Zero's prover
+# image as a sibling container, through the host's Docker: hence the
+# docker CLI (static, a current API version), the socket mounted.
 FROM rust:1.96-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends clang && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -9,6 +12,7 @@ COPY crates/withdraw crates/withdraw
 COPY r0/Cargo.toml r0/Cargo.lock r0/
 COPY r0/host r0/host
 RUN cargo build --release --locked --manifest-path r0/Cargo.toml -p lichen-r0
+COPY --from=docker:28.5.1-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY r0/guests r0/guests
 # the committed image id must be the committed binary's
 ARG NO_ID_CHECK=

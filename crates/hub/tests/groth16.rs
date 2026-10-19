@@ -1,15 +1,17 @@
 //! Opt-in (release; about half an hour): disputes on the REAL statement,
 //! BitVMX's Groth16 verifier (8-ary, its trace hashed as a jump list: 21
 //! depths), with a real proof of the
-//! withdrawal guest: ln-gap's test vector, a return of 9 sats with memo
-//! 42 (proved on x86 Linux). Each hub's first contract is number 42.
+//! withdrawal guest (r0/guests/withdraw.bin): the toy deployment's return
+//! of 60 sats with memo 42 (crates/proto/tests/data/claim-60-42.hex, from
+//! the real-receipt test, wrapped on x86 Linux). Each hub's first contract
+//! is number 42.
 //!
 //! - G1: an honest hub checks the claim's proof natively (milliseconds):
-//!   valid, so it concedes; Alice's timeout pays her (9 sats round down to no bit
-//!   output; the reserves);
+//!   valid, so it concedes; Alice's timeout pays her (60 sats round down to no
+//!   bit output; the reserves);
 //! - G2: a hub disputing true claims: the whole search, each side its own
 //!   emulator over the 478M-step verifier; Alice proves the last step;
-//! - G3: the same proof with b changed to 10: the honest hub disputes and
+//! - G3: the same proof with b changed to 61: the honest hub disputes and
 //!   disproves it.
 //!
 //! Blocks come when the mempool has something, else every 15 s, so that
@@ -41,13 +43,12 @@ fn disputes_on_the_groth16_verifier() {
     // BitVMX's verifier, as BitVMX-CPU ships it (GPL, not vendored), from
     // the cargo checkout
     let statement = Statement::groth16().unwrap();
-    // the canned claim: the toy deployment's return of 9 with memo 42,
-    // proved under the committed guest (ln-gap's r0/scripts/linux-withdraw.sh
-    // prints it, on x86 Linux)
-    let canned = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../ln-gap/crates/apps/sessions/tests/data/withdraw-9-42-deployment.hex");
-    let valid = hex::decode(std::fs::read_to_string(canned).unwrap_or_else(|e| panic!("{canned}: {e} (make it with linux-withdraw.sh)")).trim()).unwrap();
+    // the canned claim: the toy deployment's return of 60 with memo 42,
+    // proved under the committed guest (the real-receipt test's withdrawal,
+    // `lichen-r0 claim` on x86 Linux)
+    let valid = hex::decode(include_str!("../../proto/tests/data/claim-60-42.hex").trim()).unwrap();
     let mut tampered = valid.clone();
-    tampered[164] = 10; // b, word 41's low byte
+    tampered[164] = 61; // b, word 41's low byte
     let seq = Sequencer::start("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY).unwrap();
     let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w).unwrap();
     let stop = Arc::new(AtomicBool::new(false));

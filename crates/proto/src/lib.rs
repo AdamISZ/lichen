@@ -45,9 +45,9 @@ use serde::{Deserialize, Serialize};
 pub const FEE_SHARE: Amount = Amount::from_sat(1_000);
 /// On the dispute path, bits below this pay nothing (dust): `2^9` sats.
 pub const LOW_BITS: u32 = 9;
-/// The withdrawal guest's image id (the build committed in ln-gap,
-/// `guests/withdraw.bin`).
-pub const IMAGE_ID: &str = "e0cd81a7ada6a59415be2e4a4e0cea04b6a616cc0efeeb7443e49be38a90298e";
+/// The withdrawal guest's image id, hex (the build committed in
+/// `r0/guests/withdraw.bin`; with the file's newline).
+pub const IMAGE_ID: &str = include_str!("../../../r0/guests/withdraw.id");
 
 pub use lichen_chain::{Net, Patience, Stall};
 
@@ -251,7 +251,7 @@ impl Statement {
         let late = |name: &str, word: usize, value: u32| Check { name: name.to_string(), word, value, in_claim: false };
         match self {
             Statement::Groth16 { .. } => {
-                let id = lngap_zk::final_d60::input_words(&hex::decode(IMAGE_ID).expect("hex"));
+                let id = lngap_zk::final_d60::input_words(&hex::decode(IMAGE_ID.trim()).expect("hex"));
                 let dep = lngap_zk::final_d60::input_words(deployment);
                 let mut checks = vec![check("journal_len", 0, (JOURNAL_LEN / 4) as u32), check("memo", 42, c)];
                 checks.extend((1..9).map(|j| check(&format!("image_{j}"), j, id[j - 1])));
@@ -782,13 +782,13 @@ mod tests {
     /// (and a tampered one not).
     #[test]
     fn the_native_check_on_the_words_read() {
-        let valid = hex::decode(include_str!("../../../../ln-gap/crates/apps/sessions/tests/data/withdraw-9-42-deployment.hex").trim()).unwrap();
+        let valid = hex::decode(include_str!("../tests/data/claim-60-42.hex").trim()).unwrap();
         let g16 = Statement::Groth16 { pdf: PathBuf::from("unused.yaml") };
         let rebuilt = input_from_words(&lngap_zk::final_d60::input_words(&valid));
         assert_eq!(rebuilt, valid);
         assert_eq!(g16.accepts(&rebuilt), Some(true));
         let mut words = lngap_zk::final_d60::input_words(&valid);
-        words[41] = 10;
+        words[41] = 61;
         assert_eq!(g16.accepts(&input_from_words(&words)), Some(false), "b tampered");
         assert_eq!(Statement::Mock { session: 0, returns: vec![] }.accepts(&valid), None);
     }
@@ -828,7 +828,7 @@ mod tests {
         assert_eq!(checks.len(), 1 + 8 + 1 + 8, "the journal's length, the image id, the memo, the deployment");
         let claim = |d: &Deployment| {
             let mut w = vec![(JOURNAL_LEN / 4) as u32];
-            w.extend(lngap_zk::final_d60::input_words(&hex::decode(IMAGE_ID).unwrap()));
+            w.extend(lngap_zk::final_d60::input_words(&hex::decode(IMAGE_ID.trim()).unwrap()));
             w.extend([0; 32]); // the proof
             w.extend([9, 42]);
             w.extend(lngap_zk::final_d60::input_words(&d.id()));
@@ -838,13 +838,13 @@ mod tests {
         assert_eq!(claim(&ours).len(), 51);
         assert!(failing(&claim(&ours)).is_empty());
         assert_eq!(failing(&claim(&theirs)), (1..=8).map(|j| format!("deployment_{j}")).collect::<Vec<_>>());
-        // the real claim (the canonical guest's proof of the toy
-        // deployment's return of 9, memo 42) passes every check
-        let real = hex::decode(include_str!("../../../../ln-gap/crates/apps/sessions/tests/data/withdraw-9-42-deployment.hex").trim()).unwrap();
+        // the real claim (the committed guest's proof of the toy
+        // deployment's return of 60, memo 42) passes every check
+        let real = hex::decode(include_str!("../tests/data/claim-60-42.hex").trim()).unwrap();
         let words = lngap_zk::final_d60::input_words(&real);
         assert_eq!(words.len(), 51);
         assert!(failing(&words).is_empty(), "{:?}", failing(&words));
-        assert_eq!(words[b_word], 9);
+        assert_eq!(words[b_word], 60);
         assert_eq!(g16.accepts(&real), Some(true));
     }
 }

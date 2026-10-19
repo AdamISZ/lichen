@@ -58,10 +58,20 @@ natively against ln-gap's statement on the four blocks of
 (`r0/withdraw-guest`), `lichen-r0 withdraw|exec-withdraw|wrap|claim`
 (the claim's input encoded for BitVMX's verifier, ln-gap's encoder), the
 sequencer serving chain receipts (`GET /chain/<h>`), the wallet's
-`chain-receipt` and the tower proving with `lichen-r0` are written. Left:
-the guest's canonical build (x86 Linux), `IMAGE_ID` switched to it,
-the real-receipt test's withdrawal, then the Groth16 dispute test (G2)
-and a Mutinynet trial with the tower.
+`chain-receipt` and the tower proving with `lichen-r0` are written.
+
+2026-10-19: the guest built on x86 Linux (`r0/guests/withdraw.bin`,
+image id `6607a2bc…5861`) and pinned by the contracts
+(`lichen_proto::IMAGE_ID`, read from `withdraw.id`). The real-receipt
+test (`shielded_r0`) proves Bob's withdrawal under the chain receipt of
+height 4: 332k user cycles, 75 s on the Mac. Wrapped on the GCE
+`n2-highmem-4` (360 s, then 260 s; the wrap's prover image reached
+through the host's Docker): the toy deployment's return of 60, memo 42,
+is the new canned claim (`crates/proto/tests/data/claim-60-42.hex`) of
+the Groth16 tests: G1 (the hub concedes, 444 s), G2 (the whole search on
+a true claim, Alice proves the last step, 779 s) and G3 (b changed to
+61, disproved, 554 s) pass on it. Left: a Mutinynet trial with the
+tower.
 
 A withdrawal disputed on Bitcoin now needs the sequencer's chain receipt
 at its return's height, not only the signed root: a sequencer that stops

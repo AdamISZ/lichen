@@ -161,7 +161,9 @@ history, with the sequencer's chain receipt at its height
 lichen --wallet alice.json withdraw-input <memo> > withdraw-input.json
 lichen --wallet alice.json chain-receipt <memo> chain.receipt
 # 2. on x86 Linux with Docker, lichen-r0 (r0/host; or the prover image,
-#    docker build -f r0/Dockerfile -t lichen-r0 ., with r0/withdraw-prover.sh):
+#    docker build -f r0/Dockerfile -t lichen-r0 ., with r0/withdraw-prover.sh,
+#    which gives it the host's Docker for the wrap). 4 vCPUs, 32 GB: 6 min
+#    to prove, 4.5 to wrap
 lichen-r0 claim withdraw-input.json chain.receipt claim.hex
 #    (on a Mac, r0/withdraw-prover.sh withdraw ... proves the STARK only)
 # 3. the dispute, on the Groth16 verifier

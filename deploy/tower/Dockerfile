@@ -23,7 +23,10 @@ RUN cargo build --release --locked --manifest-path r0/Cargo.toml -p lichen-r0 &&
     && /out/lichen-r0 check-id
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl docker.io && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+# the docker CLI for the wrap (static; bookworm's docker.io speaks an API
+# older than a current daemon's minimum)
+COPY --from=docker:28.5.1-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=build /out/lichen /out/lichen-r0 /usr/local/bin/
 COPY --from=build /out/zkverifier.elf /opt/lichen/zkverifier.elf
 # lichen-r0 reads the committed guests from its source tree's path

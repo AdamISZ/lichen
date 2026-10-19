@@ -1,7 +1,7 @@
 //! Opt-in (release; about half an hour): a read lie on the REAL
 //! statement, BitVMX's Groth16 verifier, as a rehearsal for a trial on a
-//! test network. The claim is ln-gap's test vector with `b` changed to 10
-//! (false, as G3 in groth16.rs). Alice props it up with a lie in a read
+//! test network. The claim is groth16.rs's (the toy deployment's return of
+//! 60, memo 42) with `b` changed to 61 (false, as G3 there). Alice props it up with a lie in a read
 //! near the end of the execution, of a value written long before: the
 //! honest hub's search lands on her step, and the hub posts the jump-list
 //! path to the step that last wrote that address; its `read` verdict
@@ -69,9 +69,8 @@ fn a_read_lie_on_the_groth16_verifier() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let statement = Statement::groth16().unwrap();
-    let canned = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../ln-gap/crates/apps/sessions/tests/data/withdraw-9-42-deployment.hex");
-    let mut input = hex::decode(std::fs::read_to_string(canned).unwrap_or_else(|e| panic!("{canned}: {e} (make it with linux-withdraw.sh)")).trim()).unwrap();
-    input[164] = 10; // b, word 41's low byte: a false claim
+    let mut input = hex::decode(include_str!("../../proto/tests/data/claim-60-42.hex").trim()).unwrap();
+    input[164] = 61; // b, word 41's low byte: a false claim
     let t = Instant::now();
     let (step, hops, lie) = a_late_read_lie(&statement, &input, &dir.join("probe"), 20_000);
     println!("LICHEN R: a read lie at step {step}, a path of {hops} hops, found in {:.0?}", t.elapsed());

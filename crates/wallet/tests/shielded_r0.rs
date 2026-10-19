@@ -7,7 +7,9 @@
 //! sealed root; then Bob's withdrawal proved by the withdrawal guest
 //! (r0/withdraw-prover.sh), under the chain receipt at his return's
 //! height, which the sequencer serves (a succinct receipt: the Groth16
-//! wrap is x86 Linux's, LICHEN_WRAP=1 there).
+//! wrap is x86 Linux's, LICHEN_WRAP=1 there). LICHEN_KEEP=1 keeps the
+//! files: the canned claim of crates/proto/tests/data is `withdraw-prover.sh
+//! claim` on x86 Linux of the withdrawal's input and chain receipt kept so.
 
 use lichen_ledger::{check, regtest_hub, regtest_sequencer, Mint, Tx, HUB_KEY};
 use lichen_sequencer::Sequencer;
@@ -74,5 +76,8 @@ fn shield_pay_and_return_with_receipts() {
     let ok = std::process::Command::new(r0.join("withdraw-prover.sh")).arg(cmd).arg(&json).arg(&chain).arg(&receipt).status().unwrap();
     assert!(ok.success(), "the withdrawal prover");
     println!("LICHEN proved Bob's withdrawal ({cmd}) under height {} in {:.1?}", input.height, t.elapsed());
-    let _ = std::fs::remove_dir_all(&dir);
+    match std::env::var("LICHEN_KEEP") {
+        Ok(_) => println!("LICHEN kept {}", dir.display()),
+        Err(_) => drop(std::fs::remove_dir_all(&dir)),
+    }
 }
