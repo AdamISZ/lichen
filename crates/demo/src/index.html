@@ -104,7 +104,7 @@ function userPane(name, other) {
     <h2>${name} <button class="ghost" id="${name}-showaddr">show shielded address</button></h2>
     <div class="mono" id="${name}-addr" hidden></div>
     <div><span class="big" id="${name}-l2"></span> <span class="muted">shielded on the L2</span> <span class="muted" id="${name}-transparent"></span></div>
-    <div class="muted">${name}'s notes, which only ${name} can see (value · leaf):</div>
+    <div class="muted">${name}'s notes, which only ${name} can see:</div>
     <div class="notes" id="${name}-notes"></div>
     <div class="muted">on-chain wallet: <span id="${name}-onchain"></span></div>
     <div class="card" id="${name}-contract"></div>
@@ -147,7 +147,7 @@ function renderUser(u, s) {
   document.getElementById(n + '-l2').textContent = Number(u.shielded).toLocaleString('en-US');
   document.getElementById(n + '-transparent').textContent = u.transparent ? '· ' + sats(u.transparent) + ' transparent' : '';
   document.getElementById(n + '-notes').innerHTML = u.notes.length
-    ? u.notes.map(x => `<span>${Number(x.value).toLocaleString('en-US')} · ${x.leaf}</span>`).join('')
+    ? u.notes.map(x => `<span>${Number(x.value).toLocaleString('en-US')}</span>`).join('')
     : '<span class="muted">none yet</span>';
   document.getElementById(n + '-onchain').textContent = sats(u.onchain);
   const c = u.contract;
