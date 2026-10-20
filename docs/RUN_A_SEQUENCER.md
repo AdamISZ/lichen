@@ -51,6 +51,19 @@ by default; `--network`), it uses that node's wallet:
 - once it has `--anchor-confirmations` (1 by default), it records the
   anchor on the L2, in the next height's block, for the chain prover.
 
+With the hub's node on the same machine (deploy/hub), the compose file
+`deploy/sequencer/anchor.yml` does it through that node, its wallet
+`sequencer`:
+
+```sh
+deploy/hub/hub.sh cli createwallet sequencer
+deploy/hub/hub.sh cli -rpcwallet=sequencer getnewaddress   # fund it
+docker compose -f deploy/sequencer/docker-compose.yml -f deploy/sequencer/anchor.yml up -d
+```
+
+(`ANCHOR_COOKIE` in `.env` if the node's cookie isn't
+`signet/.cookie`, as on Mutinynet and signet.)
+
 Withdrawals need their return anchored, so keep the wallet funded: a
 few thousand sats a day at most on a test network. The anchor in flight
 is kept beside the ledger (`ledger.anchor.json`), so a restart carries
