@@ -109,3 +109,73 @@ fn heights_anchored_and_recorded() {
 }
 
 use bitcoin::hashes::Hash as _;
+
+/// A sequencer signing two histories (two ledgers under one key and one
+/// genesis seal, as a sequencer forking): both try to anchor, Bitcoin
+/// lets the seal be spent once, so one history is anchored and the other
+/// never is; nor can the other take the winner's anchor as its own.
+#[test]
+fn a_forked_history_is_never_anchored() {
+    let rt = Regtest::start().unwrap();
+    let dir = std::env::temp_dir().join(format!("lichen-fork-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w).unwrap();
+    for w in ["a", "b"] {
+        rt.fund(&chain(w).new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
+    }
+    rt.mine(1).unwrap();
+    let key = regtest_sequencer();
+    let seal = genesis_seal(&chain("a"), &xonly(&key)).unwrap();
+    rt.mine(1).unwrap();
+    let opts = Anchoring { every: Duration::from_millis(100), ..Default::default() };
+    let mut seqs = vec![];
+    for (name, v) in [("a", 5), ("b", 6)] {
+        let ledger = dir.join(format!("{name}.json"));
+        let mut s = Sequencer::start_with("127.0.0.1:0", Some(ledger.clone()), key.clone(), HUB_KEY, Options { seal: Some(seal), ..Default::default() }).unwrap();
+        let c = Client::new(&s.url).unwrap();
+        c.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![lichen_ledger::note([7; 32], v, 0)]))).unwrap();
+        c.seal().unwrap();
+        s.anchor(chain(name), opts.clone()).unwrap();
+        seqs.push((s, c, ledger));
+    }
+    let (ra, rb) = (seqs[0].1.state().unwrap().sealed[0].root(), seqs[1].1.state().unwrap().sealed[0].root());
+    assert_ne!(ra, rb, "two histories at height 1");
+    wait("an anchor in flight", || seqs.iter().any(|s| in_flight_file(&s.2).exists()));
+    std::thread::sleep(Duration::from_millis(1000));
+    rt.mine(1).unwrap();
+    wait("one history's anchor recorded", || seqs.iter().any(|s| s.1.events(0).unwrap().iter().any(|e| matches!(e.1, lichen_l2::Event::Anchored { .. }))));
+    // a few more blocks: the other keeps trying, never anchors
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(500));
+        rt.mine(1).unwrap();
+    }
+    for (_, c, _) in &seqs {
+        c.seal().unwrap();
+    }
+    let anchored: Vec<bool> = seqs.iter().map(|s| !s.1.state().unwrap().anchors.is_empty()).collect();
+    assert_eq!(anchored.iter().filter(|a| **a).count(), 1, "exactly one history anchored: {anchored:?}");
+    let (win, lose) = if anchored[0] { (0, 1) } else { (1, 0) };
+
+    // the winner's anchor, offered to the other as its own: refused, with
+    // the other's own roots or the winner's
+    let a = seqs[win].1.state().unwrap().anchors[0].anchor;
+    let txid = bitcoin::Txid::from_byte_array(a.seal.txid);
+    let mut tx = chain("a").get_tx(&txid).unwrap();
+    for i in &mut tx.input {
+        i.witness = bitcoin::Witness::new();
+    }
+    let block = chain("a").block_of(&txid).unwrap().unwrap();
+    let txids: Vec<[u8; 32]> = chain("a").block_txids(&block).unwrap().iter().map(|t| t.to_byte_array()).collect();
+    let index = txids.iter().position(|t| *t == a.seal.txid).unwrap();
+    let header = chain("a").header(&block).unwrap();
+    for from in [lose, win] {
+        let roots: Vec<[u8; 32]> = seqs[from].1.state().unwrap().sealed[..1].iter().map(|s| s.root()).collect();
+        let rec = v::AnchorRecord { tx: bitcoin::consensus::serialize(&tx), header, index: index as u32, path: lichen_sequencer::anchor::merkle_path(&txids, index), before: [0; 32], roots };
+        let e = seqs[lose].1.submit(&Tx::Anchor(rec.to_bytes())).unwrap_err();
+        assert!(format!("{e:#}").contains("doesn't check"), "{e:#}");
+    }
+    assert!(seqs[lose].1.state().unwrap().anchors.is_empty(), "the other history: never anchored");
+    drop(seqs);
+    let _ = std::fs::remove_dir_all(&dir);
+}
