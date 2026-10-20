@@ -17,9 +17,12 @@
 //! The sequencer is trusted for the L2's finality, inclusion and
 //! availability (the L2's own assumptions), and for nothing else: a
 //! client checks every signed root, and a withdrawal's input against the
-//! statement.
+//! statement. A party that keeps the roots it has seen ([`Seen`]) notices
+//! the sequencer signing two histories ([`Equivocation`]).
 
-use anyhow::{anyhow, Context, Result};
+use std::collections::BTreeMap;
+
+use anyhow::{anyhow, ensure, Context, Result};
 use lichen_ledger::{Deployment, Hash, Leaf, Ledger, Note, SignedRoot, Tree, Tx, WithdrawInput};
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +78,57 @@ impl State {
         Ok(input)
     }
 }
+/// The signed roots a party has seen, by height: a second, different root
+/// at a height already seen is the sequencer signing two histories.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Seen {
+    pub roots: BTreeMap<u64, SignedRoot>,
+}
+
+impl Seen {
+    /// Record `roots`, each already checked against the sequencer's key
+    /// (as [`State::verify`] does): whether any was new, or the first
+    /// conflict with one seen before.
+    pub fn record<'a>(&mut self, roots: impl IntoIterator<Item = &'a SignedRoot>) -> Result<bool, Equivocation> {
+        let mut new = false;
+        for r in roots {
+            match self.roots.get(&r.height) {
+                Some(s) if s.root() != r.root() => return Err(Equivocation { first: s.clone(), second: r.clone() }),
+                Some(_) => {}
+                None => {
+                    self.roots.insert(r.height, r.clone());
+                    new = true;
+                }
+            }
+        }
+        Ok(new)
+    }
+}
+
+/// Two different roots the sequencer signed at one height: proof, which
+/// anyone with its key can check, that it signed two histories.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Equivocation {
+    pub first: SignedRoot,
+    pub second: SignedRoot,
+}
+
+impl Equivocation {
+    pub fn verify(&self, sequencer: &Hash) -> Result<()> {
+        ensure!(self.first.height == self.second.height, "roots at two heights ({} and {})", self.first.height, self.second.height);
+        ensure!(self.first.root() != self.second.root(), "the same root twice");
+        self.first.verify(sequencer).context("the first root's signature")?;
+        self.second.verify(sequencer).context("the second root's signature")?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Equivocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "the sequencer signed two roots at height {}: {} and {}", self.first.height, hex::encode(self.first.root()), hex::encode(self.second.root()))
+    }
+}
+
 /// What the sequencer did, for observers.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Event {

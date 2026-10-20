@@ -140,6 +140,9 @@ pub(crate) struct Inner {
     program: Program,
     chain: Chain,
     seq: Client,
+    /// Every signed root the hub has checked, by height (`seen.json`): a
+    /// second root at one height is the sequencer signing two histories.
+    seen: Mutex<lichen_l2::Seen>,
     pending: Mutex<HashMap<u32, Pending>>,
     /// The deposits asked for, not yet opened: Alice's key in each tree.
     deposits: Mutex<HashMap<u32, bitcoin::XOnlyPublicKey>>,
@@ -204,12 +207,16 @@ impl Hub {
             let (cid, alice): (u32, bitcoin::XOnlyPublicKey) = serde_json::from_slice(&std::fs::read(e.path())?)?;
             deposits.insert(cid, alice);
         }
+        let seen = match std::fs::read(cfg.dir.join("seen.json")) {
+            Ok(b) => serde_json::from_slice(&b).context("seen.json")?,
+            Err(_) => lichen_l2::Seen::default(),
+        };
         let next = open.keys().chain(deposits.keys()).max().map_or(cfg.first_cid, |m| m + 1);
         let (cfg_refuse, cfg_dispute) = (cfg.refuse_folds, cfg.dispute_true_claims);
         ensure!(!(cfg_refuse || cfg_dispute) || cfg.network.is_test(), "a hub refuses withdrawals or disputes true claims on test networks only, not {}", cfg.network);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let inner = Arc::new(Inner { cfg, program, chain, seq, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: std::sync::OnceLock::new() });
+        let inner = Arc::new(Inner { cfg, program, chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: std::sync::OnceLock::new() });
         let stop = Arc::new(AtomicBool::new(false));
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
@@ -485,6 +492,25 @@ impl Inner {
         Ok(())
     }
 
+    /// The sequencer's state, its roots checked and recorded: an error if
+    /// it shows a root at a height seen before other than the one seen
+    /// (the evidence in `equivocation.json`).
+    fn state(&self) -> Result<lichen_l2::State> {
+        let state = self.seq.state()?;
+        let mut seen = self.seen.lock().unwrap();
+        match seen.record(&state.sealed) {
+            Ok(true) => std::fs::write(self.cfg.dir.join("seen.json"), serde_json::to_vec(&*seen)?)?,
+            Ok(false) => {}
+            Err(e) => {
+                let path = self.cfg.dir.join("equivocation.json");
+                std::fs::write(&path, serde_json::to_vec_pretty(&e)?)?;
+                self.note(format!("ALARM: {e}; the evidence: {}", path.display()));
+                bail!("{e}: it signed two histories; the hub folds nothing until this is resolved");
+            }
+        }
+        Ok(state)
+    }
+
     /// The cooperative withdrawal: Alice's return must be sealed on the
     /// L2, owned by the hub, carry this contract's memo and the amount she
     /// asks for, within the cap; then the hub signs her fold and
@@ -496,7 +522,7 @@ impl Inner {
         ensure!(!self.refuse_folds.load(Ordering::Relaxed), "this hub refuses cooperative withdrawals");
         let o = self.open.lock().unwrap().get(&f.cid).cloned().context("no such contract")?;
         ensure!(o.closed.is_none(), "contract {} is closed", f.cid);
-        let input = self.seq.state()?.withdraw_input(f.index, &self.seq.deployment)?;
+        let input = self.state()?.withdraw_input(f.index, &self.seq.deployment)?;
         ensure!(input.note.memo == f.cid && input.note.value == f.b, "note {} is not a return of {} with memo {}", f.index, f.b, f.cid);
         if let Statement::Groth16 { .. } = self.cfg.statement {
             let h = input.height;

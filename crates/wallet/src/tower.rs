@@ -259,7 +259,7 @@ impl Wallet {
         ensure!(h.closed.is_none(), "contract {cid} is closed");
         let b = match &input {
             Some(i) => i.note.value,
-            None => self.sequencer.state()?.note(note).with_context(|| format!("no note {note}"))?.value,
+            None => self.state()?.note(note).with_context(|| format!("no note {note}"))?.value,
         };
         let b = u32::try_from(b).context("b fits in a u32")?;
         let s = self.secrets(&h.nonce);

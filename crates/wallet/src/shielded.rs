@@ -129,7 +129,7 @@ impl Wallet {
     }
     /// What we hold, transparent and shielded.
     pub fn balances(&self) -> Result<(u64, u64)> {
-        let state = self.sequencer.state()?;
+        let state = self.state()?;
         Ok((self.notes(&state).iter().map(|o| o.note.value).sum(), self.shielded_notes(&state).iter().map(|o| o.value).sum()))
     }
 
@@ -138,7 +138,7 @@ impl Wallet {
     fn anchored(&self, size: u32) -> Result<State> {
         let start = std::time::Instant::now();
         loop {
-            let state = self.sequencer.state()?;
+            let state = self.state()?;
             if state.sealed.last().is_some_and(|s| s.size >= size) {
                 return Ok(state);
             }
@@ -216,7 +216,7 @@ impl Wallet {
     /// the change transparent. The new leaves' indices.
     pub fn shield(&mut self, amount: u64) -> Result<Vec<u32>> {
         ensure!(amount > 0, "nothing to shield");
-        let state = self.sequencer.state()?;
+        let state = self.state()?;
         let mut mine = self.notes(&state);
         mine.sort_by_key(|o| std::cmp::Reverse(o.note.value));
         let (mut picked, mut total) = (vec![], 0u64);
@@ -236,7 +236,7 @@ impl Wallet {
     /// to us. The new leaves' indices (the payment's first).
     pub fn send_shielded(&mut self, to: &SAddress, amount: u64) -> Result<Vec<u32>> {
         ensure!(amount > 0, "nothing to send");
-        let (spends, total) = self.select_shielded(&self.sequencer.state()?, amount)?;
+        let (spends, total) = self.select_shielded(&self.state()?, amount)?;
         let mut outputs = vec![(*to, amount)];
         if total > amount {
             outputs.push((self.shielded_address(), total - amount));
@@ -248,7 +248,7 @@ impl Wallet {
     /// return a transparent note, as the withdrawal statement wants; the
     /// change shielded. The return's index.
     pub(crate) fn return_shielded(&mut self, b: u64, c: u32) -> Result<u32> {
-        let (spends, total) = self.select_shielded(&self.sequencer.state()?, b)?;
+        let (spends, total) = self.select_shielded(&self.state()?, b)?;
         let ret = Note { owner: self.sequencer.deployment.hub, value: b, memo: c, rho: fresh_rho() };
         let change = if total > b { vec![(self.shielded_address(), total - b)] } else { vec![] };
         let idx = self.submit_shielded(&spends, &[], &change, &[ret])?;

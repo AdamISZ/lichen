@@ -124,7 +124,14 @@ payment system. Running it: [RUN_A_SEQUENCER.md](RUN_A_SEQUENCER.md).
 transparent lichen: you trust the sequencer for that, not the chain
 proof (a proof shows a history is valid, not that it is the only one
 the sequencer signed). So you needn't wait for the prover before
-treating a payment as received. The chain proof guards the hub, and
+treating a payment as received. Signing two histories can't go unseen,
+though, by anyone who looks: your wallet keeps every root it checks and
+stops, writing the evidence beside itself, if it's ever shown a
+different root at a height it has seen; the hub does the same before
+folding. To compare with others, `lichen roots` prints yours and
+`lichen compare-roots <file or sequencer URL>` checks theirs against
+them; `lichen check-equivocation <file>` checks evidence, which anyone
+with the sequencer's key can do. The chain proof guards the hub, and
 through its collateral everyone, against notes nobody paid for. An
 honest sequencer checks every spend before accepting it, so its blocks
 always prove; for it the lag is only a delay. That delay falls on

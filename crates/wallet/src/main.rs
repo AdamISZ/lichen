@@ -67,6 +67,19 @@ enum Cmd {
     /// Return `amount` to the hub with the contract's memo: a withdrawal's
     /// first step.
     Return { amount: u64, memo: u32 },
+    /// Print every signed root this wallet has checked (JSON), for others
+    /// to compare with theirs: a sequencer that signs two histories can't
+    /// show both to everyone without being caught.
+    Roots,
+    /// Compare signed roots from elsewhere with this wallet's: another
+    /// wallet's `lichen roots`, or a sequencer's URL (a mirror's, or the
+    /// sequencer's seen from another network). Prints how many heights
+    /// agree, or the two conflicting roots, written as evidence.
+    CompareRoots { from: String },
+    /// Check evidence that the sequencer signed two histories (an
+    /// `equivocation.json`): both roots at one height, both signed by this
+    /// wallet's sequencer.
+    CheckEquivocation { file: PathBuf },
     /// Print the withdrawal statement's input for a return (JSON).
     WithdrawInput { memo: u32 },
     /// Write the sequencer's chain receipt at the height of a return's
@@ -258,6 +271,25 @@ fn main() -> Result<()> {
             println!("sent: note {}", w.send(to, amount, 0)?[0]);
         }
         Cmd::Shield { amount } => println!("shielded: note {}", w.shield(amount)?[0]),
+        Cmd::Roots => {
+            w.state()?;
+            println!("{}", serde_json::to_string_pretty(&w.seen().roots.into_values().collect::<Vec<_>>())?);
+        }
+        Cmd::CompareRoots { ref from } => {
+            w.state()?;
+            let roots: Vec<lichen_ledger::SignedRoot> = if from.starts_with("http://") || from.starts_with("https://") {
+                lichen_l2::Client::pinned(from, w.sequencer.deployment).state()?.sealed
+            } else {
+                serde_json::from_slice(&std::fs::read(from)?).context("signed roots (JSON, as `lichen roots` prints)")?
+            };
+            let agree = w.compare_roots(&roots)?;
+            println!("{agree} heights in common, all the same roots ({} given, {} seen here)", roots.len(), w.seen().roots.len());
+        }
+        Cmd::CheckEquivocation { ref file } => {
+            let e: lichen_l2::Equivocation = serde_json::from_slice(&std::fs::read(file)?).context("an equivocation (JSON)")?;
+            e.verify(&w.sequencer.deployment.sequencer)?;
+            println!("{e}: both signed by sequencer {}", hex::encode(w.sequencer.deployment.sequencer));
+        }
         Cmd::Return { amount, memo } => println!("returned: note {}", w.return_to_hub(amount, memo)?),
         Cmd::WithdrawInput { memo } => println!("{}", serde_json::to_string_pretty(&w.withdraw_input(memo)?)?),
         Cmd::ChainReceipt { memo, ref out } => {

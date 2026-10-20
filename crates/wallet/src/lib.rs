@@ -19,7 +19,7 @@ use lichen_ledger::{fresh_rho, mint_secret, note, sign, xonly, Deployment, Hash,
 use lichen_chain::{Chain, KeyFees};
 use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
 use lichen_proto::{all_moves, check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, mint_owner, Presig, fee_budget_of, tail_keys, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
-use lichen_l2::{Client, State};
+use lichen_l2::{Client, Equivocation, Seen, State};
 use lngap_btc::adaptor::{adaptor_extract, adaptor_sign, AdaptorSig};
 use lngap_channel::PartyKeys;
 use lngap_lamport::winternitz::WotsSecret;
@@ -48,6 +48,9 @@ struct Stored {
     /// What each return's withdrawal needs, kept once the sequencer has it.
     #[serde(default)]
     kept: Vec<Kept>,
+    /// Every signed root checked, by height.
+    #[serde(default)]
+    seen: Seen,
 }
 
 /// A return's withdrawal material, kept as soon as the sequencer has it,
@@ -140,6 +143,7 @@ pub struct Wallet {
     path: PathBuf,
     returns: Vec<(u32, u32)>,
     kept: Vec<Kept>,
+    seen: std::sync::Mutex<Seen>,
     pub contracts: Vec<Held>,
     pub deposits: Vec<Deposit>,
     pub sequencer: Client,
@@ -160,7 +164,7 @@ impl Wallet {
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
         // the deployment the sequencer announces, kept from now on
-        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: vec![], kept: vec![], contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: vec![], kept: vec![], seen: Default::default(), contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
         w.save()?;
         Ok(w)
     }
@@ -171,19 +175,57 @@ impl Wallet {
             Some(d) => Client::pinned(sequencer, d),
             None => Client::new(sequencer)?,
         };
-        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: s.returns, kept: s.kept, contracts: s.contracts, deposits: s.deposits, sequencer: client };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: s.returns, kept: s.kept, seen: std::sync::Mutex::new(s.seen), contracts: s.contracts, deposits: s.deposits, sequencer: client };
         if s.deployment.is_none() {
             w.save()?;
         }
         Ok(w)
     }
     pub(crate) fn save(&self) -> Result<()> {
-        let s = Stored { secret: hex::encode(self.key.to_bytes()), deployment: Some(self.sequencer.deployment), returns: self.returns.clone(), contracts: self.contracts.clone(), deposits: self.deposits.clone(), kept: self.kept.clone() };
+        let s = Stored { secret: hex::encode(self.key.to_bytes()), deployment: Some(self.sequencer.deployment), returns: self.returns.clone(), contracts: self.contracts.clone(), deposits: self.deposits.clone(), kept: self.kept.clone(), seen: self.seen.lock().unwrap().clone() };
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
         }
         std::fs::write(&self.path, serde_json::to_vec_pretty(&s)?)?;
         Ok(())
+    }
+    /// The sequencer's state, its roots checked and recorded: an error if
+    /// it shows a root at a height seen before other than the one seen
+    /// (the evidence written beside the wallet, `<wallet>.equivocation.json`).
+    pub fn state(&self) -> Result<State> {
+        let state = self.sequencer.state()?;
+        let new = self.seen.lock().unwrap().record(&state.sealed);
+        match new {
+            Ok(true) => self.save()?,
+            Ok(false) => {}
+            Err(e) => bail!("{e}: it signed two histories. The evidence: {}", self.evidence(&e)?.display()),
+        }
+        Ok(state)
+    }
+    /// The signed roots seen, by height.
+    pub fn seen(&self) -> Seen {
+        self.seen.lock().unwrap().clone()
+    }
+    /// Check `roots` from elsewhere (another wallet's, another server's)
+    /// against those seen: how many heights agree, or the first conflict,
+    /// its evidence written as by [`Wallet::state`]. Each root's signature
+    /// is checked first.
+    pub fn compare_roots(&self, roots: &[lichen_ledger::SignedRoot]) -> Result<usize> {
+        for r in roots {
+            r.verify(&self.sequencer.deployment.sequencer).with_context(|| format!("height {}: not the sequencer's signature", r.height))?;
+        }
+        let mut theirs = Seen::default();
+        theirs.record(roots).map_err(|e| anyhow::anyhow!("{e}: the roots given conflict among themselves"))?;
+        let seen = self.seen();
+        if let Err(e) = seen.clone().record(roots) {
+            bail!("{e}: it signed two histories. The evidence: {}", self.evidence(&e)?.display());
+        }
+        Ok(theirs.roots.keys().filter(|h| seen.roots.contains_key(h)).count())
+    }
+    fn evidence(&self, e: &Equivocation) -> Result<PathBuf> {
+        let path = self.path.with_extension("equivocation.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(e)?)?;
+        Ok(path)
     }
     /// The wallet's L2 address: its x-only public key.
     pub fn address(&self) -> Hash {
@@ -203,7 +245,7 @@ impl Wallet {
     /// payment's first, then our change if any).
     pub fn send(&mut self, to: Hash, amount: u64, memo: u32) -> Result<Vec<u32>> {
         anyhow::ensure!(amount > 0, "nothing to send");
-        let state = self.sequencer.state()?;
+        let state = self.state()?;
         let mut mine = self.notes(&state);
         mine.sort_by_key(|o| std::cmp::Reverse(o.note.value));
         let (mut spends, mut total) = (vec![], 0u64);
@@ -248,7 +290,7 @@ impl Wallet {
         if let Some(i) = self.kept(idx).and_then(|k| k.input.clone()) {
             return Ok(i);
         }
-        let input = self.sequencer.state()?.withdraw_input(idx, &self.sequencer.deployment)?;
+        let input = self.state()?.withdraw_input(idx, &self.sequencer.deployment)?;
         self.keep(idx).input = Some(input.clone());
         self.save()?;
         Ok(input)
@@ -501,7 +543,7 @@ impl Wallet {
     fn wait_mint(&self, index: u32, owner: &Hash, value: u64) -> Result<()> {
         let start = std::time::Instant::now();
         loop {
-            let state = self.sequencer.state()?;
+            let state = self.state()?;
             if let Some(n) = state.note(index) {
                 ensure!((n.owner, n.value, n.memo) == (*owner, value, 0), "note {index} is not the deposit minted to us, locked to the funding");
                 ensure!(!state.is_spent(n), "the deposit minted to us is spent");
@@ -545,7 +587,7 @@ impl Wallet {
         let locked = self.contracts[k].mint.clone().context("no locked deposit")?;
         ensure!(PublicKey::from_secret_key(SECP256K1, t) == locked.point, "not the adaptor point's secret");
         let key = mint_secret(&self.key, &t.secret_bytes())?;
-        let state = self.sequencer.state()?;
+        let state = self.state()?;
         let n = *state.note(locked.index).context("the deposit minted to us is gone")?;
         ensure!(n.owner == xonly(&key), "the deposit minted is not ours to claim");
         if !state.is_spent(&n) {
@@ -623,14 +665,14 @@ impl Wallet {
         ensure!(bitcoin::Amount::from_sat(b) <= held.record.terms.v_max(), "{b} sats is above the cap");
         let index = match self.returned(cid) {
             Some(index) => {
-                let v = self.sequencer.state()?.note(index).with_context(|| format!("no note {index}"))?.value;
+                let v = self.state()?.note(index).with_context(|| format!("no note {index}"))?.value;
                 ensure!(v == b, "contract {cid} has a return of {v} sats already, not folded: withdraw {v}, or dispute it");
                 index
             }
             None => self.return_to_hub(b, cid)?,
         };
         let start = std::time::Instant::now();
-        while self.sequencer.state()?.withdraw_input(index, &self.sequencer.deployment).is_err() {
+        while self.state()?.withdraw_input(index, &self.sequencer.deployment).is_err() {
             ensure!(start.elapsed() < std::time::Duration::from_secs(120), "the return was never sealed");
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
@@ -638,7 +680,7 @@ impl Wallet {
         // on the real statement the hub folds only a return whose height
         // the sequencer has proved (the chain receipt a dispute would need)
         if let Statement::Groth16 { .. } = statement {
-            let h = self.sequencer.state()?.withdraw_input(index, &self.sequencer.deployment)?.height;
+            let h = self.state()?.withdraw_input(index, &self.sequencer.deployment)?.height;
             let start = std::time::Instant::now();
             if self.sequencer.chain_receipt(h)?.is_none() {
                 if let Some(p) = &self.progress {

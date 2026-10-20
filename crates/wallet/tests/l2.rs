@@ -59,3 +59,43 @@ fn pay_return_and_the_withdrawal_input() {
     assert_eq!(bob.balance().unwrap(), 3);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A sequencer signing two histories (two ledgers under one key, as a
+/// sequencer showing one fork to Alice and another to Bob): a wallet that
+/// sees both roots at one height refuses to go on, and writes the
+/// evidence, which anyone can check; two wallets comparing their roots
+/// catch it too.
+#[test]
+fn two_histories_are_caught() {
+    let dir = std::env::temp_dir().join(format!("lichen-equivocation-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let a = Sequencer::start("127.0.0.1:0", Some(dir.join("a.json")), regtest_sequencer(), HUB_KEY).unwrap();
+    let b = Sequencer::start("127.0.0.1:0", Some(dir.join("b.json")), regtest_sequencer(), HUB_KEY).unwrap();
+    let alice = Wallet::create(&dir.join("alice.json"), &a.url).unwrap();
+    let bob = Wallet::create(&dir.join("bob.json"), &b.url).unwrap();
+    for (w, v) in [(&alice, 10), (&bob, 7)] {
+        w.sequencer.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![lichen_ledger::note(w.address(), v, 0)]))).unwrap();
+        w.sequencer.seal().unwrap();
+        assert_eq!(w.balance().unwrap(), v);
+    }
+
+    // each history alone checks; together they conflict at height 1
+    let theirs: Vec<_> = bob.seen().roots.into_values().collect();
+    let e = alice.compare_roots(&theirs).unwrap_err().to_string();
+    assert!(e.contains("two roots at height 1"), "{e}");
+    let evidence = dir.join("alice.equivocation.json");
+    let eq: lichen_l2::Equivocation = serde_json::from_slice(&std::fs::read(&evidence).unwrap()).unwrap();
+    eq.verify(&Deployment::toy().sequencer).unwrap();
+    let mut forged = eq.clone();
+    forged.second.signature = forged.first.signature.clone();
+    assert!(forged.verify(&Deployment::toy().sequencer).is_err(), "a root signed by no one is no evidence");
+    assert_eq!(bob.compare_roots(&bob.seen().roots.into_values().collect::<Vec<_>>()).unwrap(), 1, "a history agrees with itself");
+
+    // Alice's wallet shown the other history refuses to go on
+    std::fs::remove_file(&evidence).unwrap();
+    let alice = Wallet::open(&dir.join("alice.json"), &b.url).unwrap();
+    let e = alice.balance().unwrap_err().to_string();
+    assert!(e.contains("signed two histories"), "{e}");
+    assert!(evidence.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

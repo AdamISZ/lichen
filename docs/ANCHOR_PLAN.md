@@ -146,4 +146,18 @@ hours on mainnet at best; minutes on Mutinynet. It must fit inside
 
 ## Status
 
-Step 0 in progress.
+**Step 0 done** (2026-10-20):
+- the wallet keeps each return's withdrawal input and chain receipt
+  (`Kept`) as soon as the sequencer has them; `export-dispute` packs
+  them and the tower uses them, asking the sequencer only for what's
+  missing (`96013a7`);
+- signed roots recorded and compared (`lichen_l2::Seen`, `Equivocation`):
+  the wallet records every root it checks and refuses to go on, with
+  the evidence in `<wallet>.equivocation.json`, if shown a second root
+  at a height; the hub the same before folding (`seen.json`,
+  `equivocation.json`); `lichen roots`, `compare-roots`,
+  `check-equivocation`. Test: two ledgers under one key
+  (`crates/wallet/tests/l2.rs`). Every root is kept, about 300 bytes a
+  height: fine at this scale, to prune later (keep from the oldest open
+  contract's opening). Publishing roots somewhere public (nostr, say) is
+  left to whoever runs a watcher.
