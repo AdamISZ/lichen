@@ -720,7 +720,10 @@ impl Wallet {
             ensure!(start.elapsed() < std::time::Duration::from_secs(120), "the return was never sealed");
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
-        self.withdraw_input(cid)?;
+        // keep the input now, unless it waits on an anchor (below)
+        if self.sequencer.deployment.seal.is_none() {
+            self.withdraw_input(cid)?;
+        }
         // on the real statement the hub folds only a return anchored on
         // Bitcoin under a root the sequencer has proved, the anchor deep
         // enough (what a dispute would need)

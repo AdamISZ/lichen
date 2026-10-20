@@ -150,6 +150,21 @@ fn a_withdrawal_under_an_anchor() {
     gone.sequencer = "http://127.0.0.1:9".into();
     assert_eq!(lichen_wallet::tower::withdraw_input(&gone).unwrap().height, a.anchor.height, "packed: no sequencer needed");
 
+    // the hub folds again: Bob withdraws at once, his return not yet
+    // anchored (the mock statement's fold doesn't wait for one), and
+    // Alice's refused return is folded when asked again
+    hub.set_refuse_folds(false);
+    let bch = chain("bob");
+    rt.fund(&bch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
+    let mut bob = Wallet::create(&dir.join("bob.json"), &seq.url).unwrap();
+    let bheld = bob.open_contract(&hub.url, &bch, &mock(), &dir.join("bob"), ask, bch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { bch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
+    rt.mine(1).unwrap();
+    wait("Bob's deposit", || bob.balance().unwrap() == ask.deposit);
+    let txid = bob.withdraw(&hub.url, &mock(), &dir.join("bob"), bheld.record.cid(), ask.deposit).unwrap();
+    println!("LICHEN contract {}: Bob's return folded before any anchor, {txid}", bheld.record.cid());
+    let txid = w.withdraw(&hub.url, &mock(), &dir.join("alice"), cid, ask.deposit).unwrap();
+    println!("LICHEN contract {cid}: Alice's, asked again, folded, {txid}");
+
     stop.store(true, Ordering::Relaxed);
     sealer.join().unwrap();
     drop(hub);
