@@ -38,6 +38,27 @@ struct Args {
     /// private input in the clear: tests and demos only.
     #[arg(long)]
     native_proofs: bool,
+    /// Anchor the history on Bitcoin (docs/ANCHOR_PLAN.md) through this
+    /// bitcoind (its RPC URL), whose wallet pays the anchors' fees. A new
+    /// ledger gets its genesis seal from it; a ledger made without one
+    /// can't be anchored.
+    #[arg(long)]
+    anchor_rpc: Option<String>,
+    /// The bitcoind's cookie file.
+    #[arg(long)]
+    anchor_cookie: Option<PathBuf>,
+    /// The bitcoind's wallet.
+    #[arg(long, default_value = "sequencer")]
+    anchor_wallet: String,
+    /// `regtest`, `mutinynet`, `signet` or `testnet4`.
+    #[arg(long, default_value = "regtest")]
+    network: lichen_chain::Net,
+    /// Confirmations before an anchor is recorded.
+    #[arg(long, default_value_t = 1)]
+    anchor_confirmations: u32,
+    /// The anchors' fee rate, sat/vB.
+    #[arg(long, default_value_t = 2)]
+    anchor_feerate: u64,
 }
 
 fn main() -> Result<()> {
@@ -51,7 +72,25 @@ fn main() -> Result<()> {
         (true, Some(_)) => bail!("--toy and --issuer: one or the other"),
         (false, None) => bail!("name the hub with --issuer <its L2 key> (or run the toy deployment with --toy)"),
     };
-    let s = Sequencer::start_with(&a.listen, Some(a.ledger), key, issuer, Options { native_proofs: a.native_proofs })?;
+    let chain = match (&a.anchor_rpc, &a.anchor_cookie) {
+        (Some(url), Some(cookie)) => Some(lichen_chain::Chain::connect_on(url, cookie, &a.anchor_wallet, a.network)?),
+        (None, None) => None,
+        _ => bail!("--anchor-rpc and --anchor-cookie: both or neither"),
+    };
+    // a new ledger to anchor: its genesis seal first
+    let seal = match &chain {
+        Some(c) if !a.ledger.exists() => {
+            let seal = lichen_sequencer::anchor::genesis_seal(c, &lichen_ledger::xonly(&key))?;
+            println!("genesis seal {}", lichen_ledger::outpoint::to_string(&seal));
+            Some(seal)
+        }
+        _ => None,
+    };
+    let mut s = Sequencer::start_with(&a.listen, Some(a.ledger), key, issuer, Options { native_proofs: a.native_proofs, seal })?;
+    if let Some(c) = chain {
+        let opts = lichen_sequencer::anchor::Anchoring { confirmations: a.anchor_confirmations, feerate: a.anchor_feerate, ..Default::default() };
+        s.anchor(c, opts)?;
+    }
     let client = Client::new(&s.url)?;
     let d = client.deployment;
     println!("lichen sequencer at {}: sequencer {}, hub {}, deployment {}", s.url, hex::encode(d.sequencer), hex::encode(d.hub), hex::encode(d.id()));

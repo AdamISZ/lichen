@@ -11,7 +11,7 @@ use lichen_wallet::Wallet;
 fn shield_pay_and_return() {
     let dir = std::env::temp_dir().join(format!("lichen-shielded-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let seq = Sequencer::start_with("127.0.0.1:0", Some(dir.join("ledger.json")), regtest_sequencer(), HUB_KEY, Options { native_proofs: true }).unwrap();
+    let seq = Sequencer::start_with("127.0.0.1:0", Some(dir.join("ledger.json")), regtest_sequencer(), HUB_KEY, Options { native_proofs: true, ..Default::default() }).unwrap();
     let mut alice = Wallet::create(&dir.join("alice.json"), &seq.url).unwrap();
     let mut bob = Wallet::create(&dir.join("bob.json"), &seq.url).unwrap();
     alice.sequencer.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![lichen_ledger::note(alice.address(), 100, 0)]))).unwrap();

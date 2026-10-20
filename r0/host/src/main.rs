@@ -151,6 +151,12 @@ struct LnGapInput {
     path: Vec<[u8; 32]>,
     sequencer: [u8; 32],
     hub: [u8; 32],
+    /// Beside it (docs/ANCHOR_PLAN.md): the headers on top of the chain
+    /// receipt's last anchor (hex), and the contract's `W` (decimal).
+    #[serde(default)]
+    headers: Vec<String>,
+    #[serde(default)]
+    work: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -165,10 +171,11 @@ fn load(p: &str) -> Result<Receipt> {
     bincode::deserialize(&read(p)?).with_context(|| format!("a receipt, {p}"))
 }
 
-/// The withdrawal statement's input for ln-gap's (`json`) under the chain
-/// receipt `chain`: its `recent` from the receipt's journal, which must
-/// end at the input's root (checked natively, with the receipt). The
-/// input's bytes, the statement's journal.
+/// The withdrawal statement's input for ln-gap's (`json`, at the anchored
+/// height, with the headers and `W`) under the chain receipt `chain`: the
+/// rest of the receipt's journal, whose last anchor must be the input's
+/// root (checked natively, with the receipt). The input's bytes, the
+/// statement's journal.
 fn withdraw_input(json: &str, chain: &Receipt) -> Result<(Vec<u8>, [u8; lichen_withdraw::JOURNAL_LEN])> {
     let i: LnGapInput = serde_json::from_slice(&read(json)?).with_context(|| format!("{json}: a withdrawal input"))?;
     let id = image_id(&committed("chain")?)?;
@@ -176,7 +183,9 @@ fn withdraw_input(json: &str, chain: &Receipt) -> Result<(Vec<u8>, [u8; lichen_w
     let c = lichen_validity::ChainJournal::from_bytes(&chain.journal.bytes).map_err(|e| anyhow::anyhow!("not a chain journal: {e:?}"))?;
     let chain_id: [u8; 32] = id.as_bytes().try_into()?;
     ensure!(c.chain_id == chain_id, "the chain receipt names another chain guest");
-    ensure!(c.height == i.height, "the chain receipt is of height {}, the withdrawal's root of {}", c.height, i.height);
+    ensure!(c.anchor.height == i.height, "the chain receipt's last anchor is of height {}, the withdrawal's root of {}", c.anchor.height, i.height);
+    let headers = i.headers.iter().map(|h| hex::decode(h).ok().and_then(|b| b.try_into().ok()).context("a header: 80 bytes, hex")).collect::<Result<Vec<[u8; 80]>>>()?;
+    let work: u128 = if i.work.is_empty() { 0 } else { i.work.parse().context("the work: a decimal")? };
     let n = i.note;
     let input = lichen_withdraw::WithdrawInput {
         height: i.height,
@@ -187,7 +196,13 @@ fn withdraw_input(json: &str, chain: &Receipt) -> Result<(Vec<u8>, [u8; lichen_w
         path: i.path,
         sequencer: i.sequencer,
         hub: i.hub,
+        chain_height: c.height,
+        chain_root: c.root,
         recent: c.recent,
+        hist: c.hist,
+        anchor: c.anchor,
+        headers,
+        work,
     };
     let journal = lichen_withdraw::check(&input, &chain_id, &mut |j| j == chain.journal.bytes.as_slice()).map_err(|r| anyhow::anyhow!("the withdrawal statement rejects the input: {r:?}"))?;
     eprintln!("lichen-r0: the return of {} with memo {} at index {}, under the root of height {}", n.value, n.memo, input.index, input.height);
@@ -289,7 +304,7 @@ fn main() -> Result<()> {
             r.verify(id)?;
             let j = lichen_validity::ChainJournal::from_bytes(&r.journal.bytes).map_err(|e| anyhow::anyhow!("not a chain journal: {e:?}"))?;
             ensure!(j.chain_id == id.as_bytes(), "the journal names another chain guest");
-            println!("height {} root {} recent {} hub {}", j.height, hex::encode(j.root), hex::encode(j.recent), hex::encode(j.hub));
+            println!("height {} root {} recent {} hub {}; anchored at {} (root {})", j.height, hex::encode(j.root), hex::encode(j.recent), hex::encode(j.hub), j.anchor.height, hex::encode(j.anchor.root));
             Ok(())
         }
         ["image-id"] => {

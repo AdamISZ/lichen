@@ -26,7 +26,10 @@ use k256::schnorr::{Signature, VerifyingKey};
 use lichen_shielded::{self as sh, Hash, TREE_DEPTH};
 use sha2::{Digest, Sha256};
 
+pub mod btc;
 pub mod smt;
+
+pub use btc::OutPoint;
 
 /// A spend's anchor must be one of the last this many sealed tree roots
 /// (docs/SHIELDED_PLAN.md).
@@ -164,6 +167,145 @@ pub enum Tx {
     /// Its receipt is checked by the caller, against the journal
     /// recomputed from these fields.
     Shielded { anchor: Hash, t_spends: Vec<(TNote, u32)>, t_sigs: Vec<[u8; 64]>, nfs: Vec<Hash>, cms: Vec<Hash>, ciphertexts: Vec<Vec<u8>>, t_outputs: Vec<TNote> },
+    /// An anchor on Bitcoin of this history ([`AnchorRecord`]).
+    Anchor(AnchorRecord),
+}
+
+/// The history hash after `root`: `hist_h = H(hist_{h-1} ‖ root_h)`, from
+/// `hist_0 = 0` (docs/ANCHOR_PLAN.md).
+pub fn hist_next(hist: &Hash, root: &Hash) -> Hash {
+    sha256(&[b"lichen/hist", hist, root])
+}
+
+/// The anchoring's state, carried from height to height in the chain
+/// journal: the genesis seal and the sequencer's key (fixed at height 0),
+/// the current seal (the outpoint the next anchor must spend), and the
+/// last anchor's height, root and block (zero before the first).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AnchorState {
+    pub genesis: OutPoint,
+    pub sequencer: Hash,
+    pub seal: OutPoint,
+    pub height: u64,
+    pub root: Hash,
+    pub block: Hash,
+}
+
+impl AnchorState {
+    /// The state at height 0, before any anchor.
+    pub fn genesis(seal: OutPoint, sequencer: Hash) -> AnchorState {
+        AnchorState { genesis: seal, sequencer, seal, height: 0, root: [0; 32], block: [0; 32] }
+    }
+    fn is_genesis(&self) -> bool {
+        *self == AnchorState::genesis(self.genesis, self.sequencer)
+    }
+    /// Whether any anchor was recorded.
+    pub fn anchored(&self) -> bool {
+        self.height > 0
+    }
+    /// 176 bytes.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut w = W(Vec::with_capacity(176));
+        w.anchor(self);
+        w.0
+    }
+    pub fn from_bytes(b: &[u8]) -> Result<AnchorState, Reject> {
+        let mut r = R(b);
+        let a = r.anchor()?;
+        r.end()?;
+        Ok(a)
+    }
+}
+
+/// The seal's script: P2TR with the sequencer's key as the output key
+/// itself (untweaked), so only the sequencer spends it.
+pub fn seal_script(sequencer: &Hash) -> [u8; 34] {
+    let mut s = [0u8; 34];
+    s[0] = 0x51;
+    s[1] = 0x20;
+    s[2..].copy_from_slice(sequencer);
+    s
+}
+
+/// An anchor's commitment, its second output's script: `OP_RETURN
+/// "lichen" ‖ at ‖ hist_at` (46 bytes pushed).
+pub fn commitment_script(at: u64, hist: &Hash) -> [u8; 48] {
+    let mut s = [0u8; 48];
+    s[0] = 0x6a;
+    s[1] = 46;
+    s[2..8].copy_from_slice(b"lichen");
+    s[8..16].copy_from_slice(&at.to_be_bytes());
+    s[16..].copy_from_slice(hist);
+    s
+}
+
+/// An anchor's record: the transaction (non-witness serialization) that
+/// spent the seal, committing `hist_at` of this history; the header of
+/// its block, its index there and Merkle path; and to show `hist_at` an
+/// ancestor of this block's starting history, `hist_{at-1}` and the roots
+/// `at..=i` (`i` the block's starting height).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnchorRecord {
+    pub tx: Vec<u8>,
+    pub header: [u8; 80],
+    pub index: u32,
+    pub path: Vec<Hash>,
+    pub before: Hash,
+    pub roots: Vec<Hash>,
+}
+
+impl AnchorRecord {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut w = W(Vec::new());
+        w.record(self);
+        w.0
+    }
+    pub fn from_bytes(b: &[u8]) -> Result<AnchorRecord, Reject> {
+        let mut r = R(b);
+        let a = r.record()?;
+        r.end()?;
+        Ok(a)
+    }
+}
+
+/// Check an anchor record against the anchoring's state, in a block
+/// starting at `height` with history hash `hist`: the next state.
+pub fn check_anchor(state: &AnchorState, height: u64, hist: &Hash, rec: &AnchorRecord) -> Result<AnchorState, Reject> {
+    // a 64-byte transaction could pass for a Merkle node
+    if rec.tx.len() == 64 {
+        return Err(Reject::Seal);
+    }
+    let tx = btc::parse_tx(&rec.tx).ok_or(Reject::Seal)?;
+    if tx.inputs.first() != Some(&state.seal) || tx.outputs.len() < 2 || tx.outputs[0].1 != seal_script(&state.sequencer) {
+        return Err(Reject::Seal);
+    }
+    let c = tx.outputs[1].1;
+    if c.len() != 48 || c[..8] != commitment_script(0, &[0; 32])[..8] {
+        return Err(Reject::Seal);
+    }
+    let at = u64::from_be_bytes(c[8..16].try_into().unwrap());
+    let hist_at: Hash = c[16..].try_into().unwrap();
+    // a later height than the last anchor's, of this history
+    if at <= state.height || at > height || rec.roots.len() as u64 != height - at + 1 {
+        return Err(Reject::Seal);
+    }
+    let mut h = hist_next(&rec.before, &rec.roots[0]);
+    if h != hist_at {
+        return Err(Reject::Seal);
+    }
+    for r in &rec.roots[1..] {
+        h = hist_next(&h, r);
+    }
+    if h != *hist {
+        return Err(Reject::Seal);
+    }
+    // in the block it names
+    let header = btc::Header(rec.header);
+    let txid = btc::sha256d(&rec.tx);
+    if btc::merkle_root(&txid, rec.index, &rec.path) != header.merkle_root() {
+        return Err(Reject::Seal);
+    }
+    Ok(AnchorState { seal: OutPoint { txid, vout: 0 }, height: at, root: rec.roots[0], block: header.hash(), ..*state })
 }
 
 /// The statement's input: the state at height `i`, the block, and the
@@ -177,6 +319,9 @@ pub struct BlockInput {
     pub nullifiers: Hash,
     /// The last sealed tree roots, oldest first (at most `RECENT`).
     pub recent: Vec<Hash>,
+    /// The history hash and the anchoring's state at `height`.
+    pub hist: Hash,
+    pub anchor: AnchorState,
     pub txs: Vec<Tx>,
     /// An insert proof per nullifier, in order: each transaction's
     /// transparent spends', then its shielded ones.
@@ -195,6 +340,10 @@ pub struct BlockJournal {
     pub recent_from: Hash,
     pub to: Hash,
     pub recent_to: Hash,
+    pub hist_from: Hash,
+    pub hist_to: Hash,
+    pub anchor_from: AnchorState,
+    pub anchor_to: AnchorState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,6 +366,8 @@ pub enum Reject {
     Genesis,
     /// The previous chain receipt doesn't verify.
     Chain,
+    /// An anchor record that doesn't check.
+    Seal,
 }
 
 fn check_sig(key: &Hash, msg: &Hash, sig: &[u8; 64]) -> Result<(), Reject> {
@@ -281,8 +432,10 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
     let z = tree_empties();
     let t_i = input.tree.root(&z);
     let mut st = State { input, z, e: smt::empties(), t_i, tree: input.tree.clone(), nullifiers: input.nullifiers, made: Vec::new(), nf_proofs: input.nf_proofs.iter(), paths: input.paths.iter() };
+    let mut anchor = input.anchor;
     for tx in &input.txs {
         match tx {
+            Tx::Anchor(rec) => anchor = check_anchor(&anchor, input.height, &input.hist, rec)?,
             Tx::Mint { outputs, sig } => {
                 check_sig(&input.hub, &mint_digest(outputs), sig)?;
                 for n in outputs {
@@ -357,13 +510,18 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
     if recent.len() > RECENT {
         recent.remove(0);
     }
+    let to = state_root(input.height + 1, &t_next, &st.nullifiers);
     Ok(BlockJournal {
         hub: input.hub,
         height: input.height,
         from: state_root(input.height, &t_i, &input.nullifiers),
         recent_from: recent_hash(&input.recent),
-        to: state_root(input.height + 1, &t_next, &st.nullifiers),
+        to,
         recent_to: recent_hash(&recent),
+        hist_from: input.hist,
+        hist_to: hist_next(&input.hist, &to),
+        anchor_from: input.anchor,
+        anchor_to: anchor,
     })
 }
 
@@ -380,6 +538,8 @@ pub struct ChainJournal {
     pub root: Hash,
     pub recent: Hash,
     pub chain_id: Hash,
+    pub hist: Hash,
+    pub anchor: AnchorState,
 }
 
 /// The chain statement: the block in `input` checked ([`check`]), from
@@ -390,16 +550,16 @@ pub fn chain(chain_id: &Hash, input: &BlockInput, verify_spend: &mut dyn FnMut(&
     let j = check(input, verify_spend)?;
     if input.height == 0 {
         let empty = smt::EMPTIES[smt::DEPTH];
-        if input.tree.size != 0 || input.nullifiers != empty || !input.recent.is_empty() {
+        if input.tree.size != 0 || input.nullifiers != empty || !input.recent.is_empty() || input.hist != [0; 32] || !input.anchor.is_genesis() {
             return Err(Reject::Genesis);
         }
     } else {
-        let prev = ChainJournal { hub: j.hub, height: j.height, root: j.from, recent: j.recent_from, chain_id: *chain_id };
+        let prev = ChainJournal { hub: j.hub, height: j.height, root: j.from, recent: j.recent_from, chain_id: *chain_id, hist: j.hist_from, anchor: j.anchor_from };
         if !verify_chain(&prev.to_bytes()) {
             return Err(Reject::Chain);
         }
     }
-    Ok(ChainJournal { hub: j.hub, height: j.height + 1, root: j.to, recent: j.recent_to, chain_id: *chain_id })
+    Ok(ChainJournal { hub: j.hub, height: j.height + 1, root: j.to, recent: j.recent_to, chain_id: *chain_id, hist: j.hist_to, anchor: j.anchor_to })
 }
 
 // ----- encodings: what the chain guest reads and commits -----
@@ -444,6 +604,26 @@ impl W {
         for s in ss {
             self.put(s);
         }
+    }
+    fn anchor(&mut self, a: &AnchorState) {
+        self.put(&a.genesis.to_bytes());
+        self.put(&a.sequencer);
+        self.put(&a.seal.to_bytes());
+        self.put(&a.height.to_be_bytes());
+        self.put(&a.root);
+        self.put(&a.block);
+    }
+    fn bytes(&mut self, b: &[u8]) {
+        self.len(b.len());
+        self.put(b);
+    }
+    fn record(&mut self, a: &AnchorRecord) {
+        self.bytes(&a.tx);
+        self.put(&a.header);
+        self.put(&a.index.to_be_bytes());
+        self.hashes(&a.path);
+        self.put(&a.before);
+        self.hashes(&a.roots);
     }
 }
 
@@ -491,6 +671,18 @@ impl R<'_> {
     fn sigs(&mut self) -> Result<Vec<[u8; 64]>, Reject> {
         self.list(|r| r.take())
     }
+    fn anchor(&mut self) -> Result<AnchorState, Reject> {
+        Ok(AnchorState { genesis: OutPoint::from_bytes(&self.take()?), sequencer: self.take()?, seal: OutPoint::from_bytes(&self.take()?), height: self.u64()?, root: self.take()?, block: self.take()? })
+    }
+    fn record(&mut self) -> Result<AnchorRecord, Reject> {
+        Ok(AnchorRecord { tx: self.bytes()?, header: self.take()?, index: self.u32()?, path: self.hashes()?, before: self.take()?, roots: self.hashes()? })
+    }
+    fn bytes(&mut self) -> Result<Vec<u8>, Reject> {
+        let n = self.len()?;
+        let (b, rest) = self.0.split_at(n);
+        self.0 = rest;
+        Ok(b.to_vec())
+    }
     fn end(&self) -> Result<(), Reject> {
         if self.0.is_empty() { Ok(()) } else { Err(Reject::Encoding) }
     }
@@ -499,6 +691,7 @@ impl R<'_> {
 const MINT: u8 = 0;
 const TRANSFER: u8 = 1;
 const SHIELDED: u8 = 2;
+const ANCHOR: u8 = 3;
 
 impl BlockInput {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -509,6 +702,8 @@ impl BlockInput {
         w.hashes(&self.tree.branch);
         w.put(&self.nullifiers);
         w.hashes(&self.recent);
+        w.put(&self.hist);
+        w.anchor(&self.anchor);
         w.len(self.txs.len());
         for tx in &self.txs {
             match tx {
@@ -537,6 +732,10 @@ impl BlockInput {
                     }
                     w.notes(t_outputs);
                 }
+                Tx::Anchor(a) => {
+                    w.0.push(ANCHOR);
+                    w.record(a);
+                }
             }
         }
         w.len(self.nf_proofs.len());
@@ -558,6 +757,8 @@ impl BlockInput {
         let tree = Frontier { size: r.u32()?, branch: r.hashes()? };
         let nullifiers = r.take()?;
         let recent = r.hashes()?;
+        let hist = r.take()?;
+        let anchor = r.anchor()?;
         let txs = r.list(|r| {
             Ok(match r.take::<1>()?[0] {
                 MINT => Tx::Mint { outputs: r.notes()?, sig: r.take()? },
@@ -576,13 +777,14 @@ impl BlockInput {
                     })?,
                     t_outputs: r.notes()?,
                 },
+                ANCHOR => Tx::Anchor(r.record()?),
                 _ => return Err(Reject::Encoding),
             })
         })?;
         let nf_proofs = r.list(|r| Ok(smt::Proof { bitmap: r.take()?, siblings: r.hashes()? }))?;
         let paths = r.list(|r| r.hashes())?;
         r.end()?;
-        Ok(BlockInput { hub, height, tree, nullifiers, recent, txs, nf_proofs, paths })
+        Ok(BlockInput { hub, height, tree, nullifiers, recent, hist, anchor, txs, nf_proofs, paths })
     }
 }
 
@@ -595,11 +797,15 @@ impl BlockJournal {
         w.put(&self.recent_from);
         w.put(&self.to);
         w.put(&self.recent_to);
+        w.put(&self.hist_from);
+        w.put(&self.hist_to);
+        w.anchor(&self.anchor_from);
+        w.anchor(&self.anchor_to);
         w.0
     }
     pub fn from_bytes(b: &[u8]) -> Result<BlockJournal, Reject> {
         let mut r = R(b);
-        let j = BlockJournal { hub: r.take()?, height: r.u64()?, from: r.take()?, recent_from: r.take()?, to: r.take()?, recent_to: r.take()? };
+        let j = BlockJournal { hub: r.take()?, height: r.u64()?, from: r.take()?, recent_from: r.take()?, to: r.take()?, recent_to: r.take()?, hist_from: r.take()?, hist_to: r.take()?, anchor_from: r.anchor()?, anchor_to: r.anchor()? };
         r.end()?;
         Ok(j)
     }
@@ -613,11 +819,13 @@ impl ChainJournal {
         w.put(&self.root);
         w.put(&self.recent);
         w.put(&self.chain_id);
+        w.put(&self.hist);
+        w.anchor(&self.anchor);
         w.0
     }
     pub fn from_bytes(b: &[u8]) -> Result<ChainJournal, Reject> {
         let mut r = R(b);
-        let j = ChainJournal { hub: r.take()?, height: r.u64()?, root: r.take()?, recent: r.take()?, chain_id: r.take()? };
+        let j = ChainJournal { hub: r.take()?, height: r.u64()?, root: r.take()?, recent: r.take()?, chain_id: r.take()?, hist: r.take()?, anchor: r.anchor()? };
         r.end()?;
         Ok(j)
     }

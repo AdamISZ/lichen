@@ -38,7 +38,7 @@ fn shielded_deposits_a_fold_and_a_dispute_input() {
     let rt = Regtest::start_standard().unwrap();
     let dir = std::env::temp_dir().join(format!("lichen-hub-shielded-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let seq = Sequencer::start_with("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY, Options { native_proofs: true }).unwrap();
+    let seq = Sequencer::start_with("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY, Options { native_proofs: true, ..Default::default() }).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let (s2, url) = (stop.clone(), seq.url.clone());
     let sealer = std::thread::spawn(move || {

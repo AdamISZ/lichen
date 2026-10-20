@@ -15,6 +15,7 @@ pub mod electrs;
 use std::path::Path;
 
 use anyhow::{bail, ensure, Context, Result};
+use bitcoin::hashes::Hash as _;
 use bitcoin::{Amount, Network, OutPoint, Script, ScriptBuf, Transaction, TxOut, Txid};
 use bitcoincore_rpc::json::{AddressType, SignRawTransactionInput};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
@@ -525,6 +526,86 @@ impl Chain {
             }),
             Backend::Esplora(e) => e.get_tx(txid),
         }
+    }
+    /// The block (on the best chain) that confirms `txid`, if any.
+    pub fn block_of(&self, txid: &Txid) -> Result<Option<bitcoin::BlockHash>> {
+        match &self.backend {
+            Backend::Rpc { rpc, .. } => {
+                let lookup = || rpc.call::<serde_json::Value>("getrawtransaction", &[serde_json::json!(txid.to_string()), serde_json::json!(true)]);
+                let Ok(v) = lookup().or_else(|_| {
+                    index_caught_up(rpc);
+                    lookup()
+                }) else {
+                    return Ok(None);
+                };
+                match v.get("blockhash").and_then(|b| b.as_str()) {
+                    Some(b) if v.get("confirmations").and_then(|c| c.as_u64()).unwrap_or(0) > 0 => Ok(Some(b.parse()?)),
+                    _ => Ok(None),
+                }
+            }
+            Backend::Esplora(e) => Ok(e.first(|c| Ok(c.get_tx_status(txid)?))?.block_hash),
+        }
+    }
+    /// The best chain's block at `height`.
+    pub fn block_hash(&self, height: u32) -> Result<bitcoin::BlockHash> {
+        match &self.backend {
+            Backend::Rpc { rpc, .. } => Ok(rpc.get_block_hash(height.into())?),
+            Backend::Esplora(e) => e.first(|c| Ok(c.get_block_hash(height)?)),
+        }
+    }
+    /// A block's header, its 80 bytes.
+    pub fn header(&self, block: &bitcoin::BlockHash) -> Result<[u8; 80]> {
+        let h = match &self.backend {
+            Backend::Rpc { rpc, .. } => rpc.get_block_header(block)?,
+            Backend::Esplora(e) => e.first(|c| Ok(c.get_header_by_hash(block)?))?,
+        };
+        let b = bitcoin::consensus::serialize(&h);
+        ensure!(h.block_hash() == *block, "the header served isn't {block}'s");
+        Ok(b.try_into().expect("a header is 80 bytes"))
+    }
+    /// A block's txids, in order.
+    pub fn block_txids(&self, block: &bitcoin::BlockHash) -> Result<Vec<Txid>> {
+        match &self.backend {
+            Backend::Rpc { rpc, .. } => Ok(rpc.get_block_info(block)?.tx),
+            Backend::Esplora(e) => e.first(|c| Ok(c.get_block_txids(block)?)),
+        }
+    }
+    /// Up to `n` headers of the best chain after `block`, in order (fewer
+    /// at the tip; none if `block` isn't on the best chain).
+    pub fn headers_after(&self, block: &bitcoin::BlockHash, n: usize) -> Result<Vec<[u8; 80]>> {
+        let at = match &self.backend {
+            Backend::Rpc { rpc, .. } => {
+                let i = rpc.get_block_header_info(block)?;
+                if i.confirmations < 0 {
+                    return Ok(vec![]);
+                }
+                i.height as u32
+            }
+            Backend::Esplora(e) => {
+                let st = e.first(|c| Ok(c.get_block_status(block)?))?;
+                match (st.in_best_chain, st.height) {
+                    (true, Some(h)) => h,
+                    _ => return Ok(vec![]),
+                }
+            }
+        };
+        let tip = self.height()?;
+        let mut out: Vec<[u8; 80]> = vec![];
+        let mut prev = *block;
+        for h in at + 1..=tip.min(at + n as u32) {
+            let hash = match &self.backend {
+                Backend::Rpc { rpc, .. } => rpc.get_block_hash(h.into())?,
+                Backend::Esplora(e) => e.first(|c| Ok(c.get_block_hash(h)?))?,
+            };
+            let header = self.header(&hash)?;
+            // a reorg while reading: stop at what still links
+            if header[4..36] != prev.to_byte_array() {
+                break;
+            }
+            out.push(header);
+            prev = hash;
+        }
+        Ok(out)
     }
     /// Whether an outpoint is still unspent (in the chain or the mempool).
     pub fn unspent(&self, op: &OutPoint) -> Result<bool> {

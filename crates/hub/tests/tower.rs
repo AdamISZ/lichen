@@ -137,15 +137,16 @@ fn a_tower_plays_the_dispute_from_a_package() {
     let stub = dir.join("stub-prover.sh");
     std::fs::write(&stub, format!("#!/bin/sh\n[ \"$1\" = claim ] || exit 2\ncp \"$2\" {}\ncp \"$3\" {}\necho c1a1 > \"$4\"\n", dir.join("seen.json").display(), dir.join("seen.chain").display())).unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    assert!(tower::prove(&pkg, &dir.join("proof"), &stub).is_err(), "no chain receipt yet");
+    assert!(tower::prove(&pkg, &ch, &dir.join("proof"), &stub).is_err(), "no chain receipt yet");
     std::fs::create_dir_all(lichen_sequencer::blocks_dir(&ledger)).unwrap();
     std::fs::write(lichen_sequencer::blocks_dir(&ledger).join(format!("{}.chain", input.height)), [7, 7, 7]).unwrap();
-    let claim = tower::prove(&pkg, &dir.join("proof"), &stub).unwrap();
+    let claim = tower::prove(&pkg, &ch, &dir.join("proof"), &stub).unwrap();
     assert_eq!(claim, vec![0xc1, 0xa1], "the prover's claim, read back");
     let seen: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("seen.json")).unwrap()).unwrap();
-    assert_eq!(seen, serde_json::to_value(w.withdraw_input(cid).unwrap()).unwrap(), "the prover was given the withdrawal's input");
+    let given = lichen_ledger::ProverInput { input: w.withdraw_input(cid).unwrap(), headers: vec![], work: String::new() };
+    assert_eq!(seen, serde_json::to_value(&given).unwrap(), "the prover was given the withdrawal's input (no anchoring here: no headers)");
     assert_eq!(std::fs::read(dir.join("seen.chain")).unwrap(), [7, 7, 7], "and the sequencer's chain receipt");
-    assert!(tower::prove(&pkg, &dir.join("proof"), std::path::Path::new("/usr/bin/false")).is_err(), "a failing prover is an error");
+    assert!(tower::prove(&pkg, &ch, &dir.join("proof"), std::path::Path::new("/usr/bin/false")).is_err(), "a failing prover is an error");
 
     // the tower, with a chain of its own, plays the dispute to its end
     let tch = chain("tower");

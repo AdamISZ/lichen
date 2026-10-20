@@ -66,6 +66,10 @@ pub struct Kept {
     /// The chain receipt, hex.
     #[serde(default)]
     pub chain: Option<String>,
+    /// In an anchored deployment, the anchor the input is under, with the
+    /// height whose chain receipt (the one kept) first carries it.
+    #[serde(default)]
+    pub anchor: Option<lichen_ledger::Anchored>,
 }
 
 /// A deposit for a contract not yet open: kept from before it is paid,
@@ -290,25 +294,44 @@ impl Wallet {
         if let Some(i) = self.kept(idx).and_then(|k| k.input.clone()) {
             return Ok(i);
         }
-        let input = self.state()?.withdraw_input(idx, &self.sequencer.deployment)?;
-        self.keep(idx).input = Some(input.clone());
+        let d = self.sequencer.deployment;
+        let state = self.state()?;
+        // in an anchored deployment, under the first anchor covering it
+        let (input, anchor) = match d.seal {
+            Some(_) => state.anchored_input(idx, &d).map(|(i, a)| (i, Some(a)))?,
+            None => (state.withdraw_input(idx, &d)?, None),
+        };
+        let k = self.keep(idx);
+        (k.input, k.anchor) = (Some(input.clone()), anchor);
         self.save()?;
         Ok(input)
     }
 
-    /// The sequencer's chain receipt at the height of the return's root
-    /// (the withdrawal guest proves that root ends a valid history), for
-    /// the prover: `lichen-r0 claim <withdraw input> <chain receipt> <out>`.
-    /// Kept from the first time the sequencer has it.
+    /// The sequencer's chain receipt for the return's withdrawal (the
+    /// withdrawal guest proves its root ends a valid history): at the
+    /// height of its root, or in an anchored deployment the first to carry
+    /// its anchor. For the prover: `lichen-r0 claim <withdraw input> <chain
+    /// receipt> <out>`. Kept from the first time the sequencer has it.
     pub fn chain_receipt(&mut self, c: u32) -> Result<Vec<u8>> {
         let input = self.withdraw_input(c)?;
-        if let Some(r) = self.kept(input.index).and_then(|k| k.chain.clone()) {
+        let k = self.kept(input.index).cloned().unwrap_or_default();
+        if let Some(r) = k.chain {
             return Ok(hex::decode(r)?);
         }
-        let r = chain_receipt(&self.sequencer, input.height)?;
+        let r = chain_receipt(&self.sequencer, k.anchor.map_or(input.height, |a| a.from))?;
         self.keep(input.index).chain = Some(hex::encode(&r));
         self.save()?;
         Ok(r)
+    }
+
+    /// The prover's input for the return's withdrawal (`lichen-r0 claim`'s
+    /// JSON): ln-gap's, and in an anchored deployment the headers on the
+    /// anchor's block, from `chain`, as many as the contract's `W` asks.
+    pub fn prover_input(&mut self, c: u32, chain: &Chain) -> Result<lichen_ledger::ProverInput> {
+        let input = self.withdraw_input(c)?;
+        let anchor = self.kept(input.index).and_then(|k| k.anchor);
+        let checkpoint = self.contracts.iter().find(|h| h.record.cid() == c).and_then(|h| h.record.checkpoint);
+        prover_input(input, anchor.as_ref(), checkpoint.as_ref(), chain)
     }
 
     /// What's kept for the return at note `idx`.
@@ -323,6 +346,20 @@ impl Wallet {
                 self.kept.last_mut().unwrap()
             }
         }
+    }
+}
+
+/// The prover's input for a withdrawal: ln-gap's `input`, and under an
+/// anchor the headers on its block that `checkpoint`'s `W` asks, from
+/// `chain`.
+pub fn prover_input(input: WithdrawInput, anchor: Option<&lichen_ledger::Anchored>, checkpoint: Option<&lichen_proto::Checkpoint>, chain: &Chain) -> Result<lichen_ledger::ProverInput> {
+    match (anchor, checkpoint) {
+        (Some(a), Some(c)) => {
+            let headers = lichen_proto::headers_for(chain, &a.anchor.block, c.work())?;
+            Ok(lichen_ledger::ProverInput { input, headers: headers.iter().map(hex::encode).collect(), work: c.work().to_string() })
+        }
+        (None, None) => Ok(lichen_ledger::ProverInput { input, headers: vec![], work: String::new() }),
+        _ => bail!("an anchored withdrawal needs its anchor and its contract's checkpoint"),
     }
 }
 
@@ -484,10 +521,17 @@ impl Wallet {
             let least = lichen_proto::windows(net).user;
             ensure!(w.user >= least, "the hub offers {} blocks for each of the user's moves, under the network's {least}", w.user);
         }
+        // an anchored deployment's contract: a checkpoint on our own view of
+        // the chain (a stale or forked one could ask work no withdrawal
+        // shows)
+        if d.seal.is_some() {
+            offer.checkpoint.context("the hub's offer has no checkpoint, in an anchored deployment")?.check(chain, 2016)?;
+        }
         let mut record = Record {
             statement: statement.id().to_string(),
             network: net,
-            deployment: d.id(),
+            deployment: lichen_proto::contract_word(&d, offer.checkpoint.as_ref())?,
+            checkpoint: offer.checkpoint,
             terms: t,
             pubs: [req.alice.clone(), offer.hub.clone()],
             moves: all_moves(&moves, &offer.moves),
@@ -677,17 +721,34 @@ impl Wallet {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         self.withdraw_input(cid)?;
-        // on the real statement the hub folds only a return whose height
-        // the sequencer has proved (the chain receipt a dispute would need)
+        // on the real statement the hub folds only a return anchored on
+        // Bitcoin under a root the sequencer has proved, the anchor deep
+        // enough (what a dispute would need)
         if let Statement::Groth16 { .. } = statement {
-            let h = self.state()?.withdraw_input(index, &self.sequencer.deployment)?.height;
-            let start = std::time::Instant::now();
-            if self.sequencer.chain_receipt(h)?.is_none() {
-                if let Some(p) = &self.progress {
-                    p(format!("waiting for the sequencer to prove height {h}, the return's (a few minutes)"));
+            let progress = self.progress.clone();
+            let say = |m: String| {
+                if let Some(p) = &progress {
+                    p(m)
                 }
+            };
+            let start = std::time::Instant::now();
+            let patience = std::time::Duration::from_secs(1200);
+            if self.sequencer.deployment.seal.is_some() {
+                let mut told = false;
+                while self.state()?.anchored_input(index, &self.sequencer.deployment).is_err() {
+                    if !std::mem::replace(&mut told, true) {
+                        say("waiting for the sequencer to anchor the return's height on Bitcoin".into());
+                    }
+                    ensure!(start.elapsed() < patience, "the sequencer hasn't anchored the return in 20 minutes: is it anchoring? Withdraw again later");
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+            self.withdraw_input(cid)?;
+            let h = self.kept(index).and_then(|k| k.anchor).map_or_else(|| self.kept(index).and_then(|k| k.input.as_ref()).map_or(0, |i| i.height), |a| a.from);
+            if self.sequencer.chain_receipt(h)?.is_none() {
+                say(format!("waiting for the sequencer to prove height {h}, the return's (a few minutes)"));
                 while self.sequencer.chain_receipt(h)?.is_none() {
-                    ensure!(start.elapsed() < std::time::Duration::from_secs(1200), "the sequencer hasn't proved height {h} in 20 minutes: is its chain prover running? Withdraw again later");
+                    ensure!(start.elapsed() < patience, "the sequencer hasn't proved height {h} in 20 minutes: is its chain prover running? Withdraw again later");
                     std::thread::sleep(std::time::Duration::from_secs(10));
                 }
             }
@@ -698,7 +759,19 @@ impl Wallet {
         let fold = c.fold(held.record.funding, bitcoin::Amount::from_sat(b), FOLD_FEE)?;
         let alice_sig = fold.sign(&self.contract_keys(&held.nonce).payment)?;
         let req = FoldRequest { cid, index, b, alice_sig };
-        let done: Folded = hub_call(&format!("{hub}/fold"), Some(serde_json::to_string(&req)?))?;
+        // the anchor not yet deep enough: ask again as blocks come
+        let start = std::time::Instant::now();
+        let done: Folded = loop {
+            match hub_call(&format!("{hub}/fold"), Some(serde_json::to_string(&req)?)) {
+                Err(e) if format!("{e:#}").contains("isn't deep enough yet") && start.elapsed() < std::time::Duration::from_secs(7200) => {
+                    if let Some(p) = &self.progress {
+                        p(format!("{e:#}; waiting"));
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
+                r => break r?,
+            }
+        };
         self.contracts[k].closed = Some(done.txid);
         self.save()?;
         Ok(done.txid)

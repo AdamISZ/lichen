@@ -373,10 +373,16 @@ impl Inner {
         let pub_of = |ks: Vec<WotsSecret>| ks.iter().map(|k| k.public()).collect::<Vec<_>>();
         let hub_moves: Vec<_> = (1..=m).filter(|d| d % 2 == 0).map(|d| pub_of(move_secrets(&self.cfg.seed, cid, program, d))).collect();
         let path: Vec<_> = path_secrets(&self.cfg.seed, cid, program).into_iter().map(pub_of).collect();
+        // an anchored deployment's contract: its checkpoint, the tip now
+        let checkpoint = match self.seq.deployment.seal {
+            Some(_) => Some(lichen_proto::Checkpoint::tip(&self.chain)?),
+            None => None,
+        };
         let mut record = Record {
             statement: self.cfg.statement.id().to_string(),
             network: self.cfg.network,
-            deployment: self.seq.deployment.id(),
+            deployment: lichen_proto::contract_word(&self.seq.deployment, checkpoint.as_ref())?,
+            checkpoint,
             // a reserve to measure the floors under (any amount above them:
             // they depend on the links' sizes, not on the amounts; the cap
             // isn't, for a small one); the real one below
@@ -433,7 +439,7 @@ impl Inner {
         let owner = mint_owner(&req.l2_address, &mint_point)?;
         let mint_index = self.seq.submit(&Tx::Mint(Mint::new(&self.cfg.l2_key, vec![note(owner, d, 0)])))?[0];
         self.note(format!("contract {cid}: offered; minted {d} sats to the user, locked to the funding"));
-        let offer = OpenOffer { cid, t_close, reserve_hub, hub, moves: hub_moves, path, funding, hub_coins, hub_sigs: record.hub_sigs.clone(), mint_point, mint_index, windows: record.windows };
+        let offer = OpenOffer { cid, t_close, reserve_hub, hub, moves: hub_moves, path, funding, hub_coins, hub_sigs: record.hub_sigs.clone(), mint_point, mint_index, windows: record.windows, checkpoint: record.checkpoint };
         self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t });
         Ok(offer)
     }
@@ -516,22 +522,28 @@ impl Inner {
     /// asks for, within the cap; then the hub signs her fold and
     /// broadcasts it. On the real statement the hub folds only what Alice
     /// could win by dispute: the withdrawal statement checked natively,
-    /// with the sequencer's chain receipt at the return's height (so the
-    /// return's root ends a valid history, not just a signed one).
+    /// under the first anchor on Bitcoin that covers the return, with the
+    /// sequencer's chain receipt carrying it (so a valid history, and the
+    /// one the sequencer anchored) and the headers on the anchor's block
+    /// the contract's checkpoint asks for (docs/ANCHOR_PLAN.md).
     fn fold(&self, f: FoldRequest) -> Result<Folded> {
         ensure!(!self.refuse_folds.load(Ordering::Relaxed), "this hub refuses cooperative withdrawals");
         let o = self.open.lock().unwrap().get(&f.cid).cloned().context("no such contract")?;
         ensure!(o.closed.is_none(), "contract {} is closed", f.cid);
-        let input = self.state()?.withdraw_input(f.index, &self.seq.deployment)?;
+        let state = self.state()?;
+        let input = state.withdraw_input(f.index, &self.seq.deployment)?;
         ensure!(input.note.memo == f.cid && input.note.value == f.b, "note {} is not a return of {} with memo {}", f.index, f.b, f.cid);
         if let Statement::Groth16 { .. } = self.cfg.statement {
-            let h = input.height;
-            let chain = self.seq.chain_receipt(h)?.with_context(|| format!("the sequencer hasn't proved height {h} yet (its chain prover proves each height after it seals): try again in a few minutes"))?;
-            let j = lichen_ledger::check_withdrawal(&input, &chain).with_context(|| format!("note {}: the withdrawal statement", f.index))?;
+            let checkpoint = o.record.checkpoint.context("the real statement needs an anchored deployment's contract (a checkpoint)")?;
+            let (input, a) = state.anchored_input(f.index, &self.seq.deployment)?;
+            let h = a.from;
+            let chain = self.seq.chain_receipt(h)?.with_context(|| format!("the sequencer hasn't proved height {h} yet, the first to carry the return's anchor (its chain prover proves each height after it seals): try again in a few minutes"))?;
+            let headers = lichen_proto::headers_for(&self.chain, &a.anchor.block, checkpoint.work())?;
+            let j = lichen_ledger::check_withdrawal(&input, &chain, headers, checkpoint.work()).with_context(|| format!("note {}: the withdrawal statement", f.index))?;
             // b ‖ c ‖ D (b fits a u32: the statement checked it)
             let mut want = (f.b as u32).to_le_bytes().to_vec();
             want.extend(f.cid.to_le_bytes());
-            want.extend(self.seq.deployment.id());
+            want.extend(o.record.deployment);
             ensure!(j[..] == want[..], "note {}: the statement's journal is not this withdrawal's", f.index);
         }
         let c = o.record.contract(&self.cfg.statement, &self.program)?;

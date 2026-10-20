@@ -373,6 +373,9 @@ pub struct OpenOffer {
     /// single window).
     #[serde(default)]
     pub windows: Option<Windows>,
+    /// In an anchored deployment, the contract's checkpoint.
+    #[serde(default)]
+    pub checkpoint: Option<Checkpoint>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -498,6 +501,73 @@ pub fn sign_anchor(kp: &bitcoin::key::Keypair, child: &Transaction, prevouts: &[
     Ok(lngap_btc::witness::tapscript_witness(&[sig.as_ref().to_vec()], &leaf.script, &tree.control_block("fee")?))
 }
 
+/// How many blocks' work, at the checkpoint's difficulty, a withdrawal
+/// shows on top of the anchor of its root (docs/ANCHOR_PLAN.md).
+pub const ANCHOR_DEPTH: u128 = 10;
+
+/// The Bitcoin block a contract opened at, in an anchored deployment: its
+/// difficulty fixes the work `W` a withdrawal shows on top of its anchor.
+/// Each side checks it against its own view of the chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub height: u32,
+    pub hash: bitcoin::BlockHash,
+    pub bits: u32,
+}
+
+impl Checkpoint {
+    /// The checkpoint at the chain's tip.
+    pub fn tip(chain: &lichen_chain::Chain) -> Result<Checkpoint> {
+        let height = chain.height()?;
+        let hash = chain.block_hash(height)?;
+        let header = chain.header(&hash)?;
+        Ok(Checkpoint { height, hash, bits: u32::from_le_bytes(header[72..76].try_into().unwrap()) })
+    }
+    /// `W`: [`ANCHOR_DEPTH`] blocks of its difficulty.
+    pub fn work(&self) -> u128 {
+        ANCHOR_DEPTH.saturating_mul(lichen_ledger::lichen_validity::btc::work(self.bits))
+    }
+    /// Check it against `chain`: its block on the best chain with these
+    /// bits, at most `stale` blocks below the tip.
+    pub fn check(&self, chain: &lichen_chain::Chain, stale: u32) -> Result<()> {
+        ensure!(chain.block_hash(self.height)? == self.hash, "the checkpoint {} isn't the best chain's block {}", self.hash, self.height);
+        let header = chain.header(&self.hash)?;
+        ensure!(u32::from_le_bytes(header[72..76].try_into().unwrap()) == self.bits, "the checkpoint's bits aren't its block's");
+        ensure!(chain.height()? <= self.height + stale, "the checkpoint, block {}, is stale", self.height);
+        Ok(())
+    }
+}
+
+/// Headers on top of block `from` (internal order), from the chain, until
+/// their work reaches `work`: what a withdrawal shows on top of its
+/// anchor. An error, saying how far it has got, if not there yet.
+pub fn headers_for(chain: &lichen_chain::Chain, from: &Hash, work: u128) -> Result<Vec<[u8; 80]>> {
+    use bitcoin::hashes::Hash as _;
+    let block = bitcoin::BlockHash::from_byte_array(*from);
+    let mut out = vec![];
+    let mut sum = 0u128;
+    for h in chain.headers_after(&block, 4 * ANCHOR_DEPTH as usize)? {
+        sum = sum.saturating_add(lichen_ledger::lichen_validity::btc::work(u32::from_le_bytes(h[72..76].try_into().unwrap())));
+        out.push(h);
+        if sum >= work && !out.is_empty() {
+            return Ok(out);
+        }
+    }
+    bail!("the anchor isn't deep enough yet: {} blocks on it, {sum} of the {work} work the contract asks", out.len())
+}
+
+/// The journal's `D` a contract pins: the deployment's id, or in an
+/// anchored deployment (a genesis seal) the contract's, of the genesis
+/// seal and the checkpoint's `W` too.
+pub fn contract_word(d: &Deployment, checkpoint: Option<&Checkpoint>) -> Result<Hash> {
+    match (d.seal, checkpoint) {
+        (None, None) => Ok(d.id()),
+        (Some(seal), Some(c)) => Ok(lichen_ledger::lichen_withdraw_contract_id(&d.id(), &seal, c.work())),
+        (Some(_), None) => bail!("an anchored deployment's contract needs a checkpoint"),
+        (None, Some(_)) => bail!("a checkpoint in a deployment that doesn't anchor"),
+    }
+}
+
 /// A contract as each side keeps it: enough to rebuild every transaction
 /// and both parties' signatures on the pre-signed set.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -506,8 +576,13 @@ pub struct Record {
     /// The Bitcoin network, which fixes the contract's timing.
     #[serde(default)]
     pub network: Net,
-    /// The L2 deployment's id: the claim's journal must carry it.
+    /// The claim's journal must carry this: the L2 deployment's id, or in
+    /// an anchored deployment the contract's ([`contract_word`]).
     pub deployment: Hash,
+    /// In an anchored deployment, the Bitcoin block the contract opened at,
+    /// which fixes the work a withdrawal shows on top of its anchor.
+    #[serde(default)]
+    pub checkpoint: Option<Checkpoint>,
     pub terms: Terms,
     pub pubs: [PartyPubKeys; 2],
     /// The move keys by depth, one per field.
@@ -822,7 +897,7 @@ mod tests {
     #[test]
     fn the_groth16_layout_pins_the_deployment() {
         let g16 = Statement::Groth16 { pdf: PathBuf::from("unused.yaml") };
-        let (ours, theirs) = (Deployment::toy(), Deployment { sequencer: [1; 32], hub: [2; 32] });
+        let (ours, theirs) = (Deployment::toy(), Deployment { sequencer: [1; 32], hub: [2; 32], seal: None });
         let (b_word, checks) = g16.layout(42, &ours.id());
         assert_eq!(b_word, 41);
         assert_eq!(checks.len(), 1 + 8 + 1 + 8, "the journal's length, the image id, the memo, the deployment");

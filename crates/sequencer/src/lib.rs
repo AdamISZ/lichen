@@ -6,13 +6,16 @@
 //! The sequencer is trusted for the L2's finality, inclusion and
 //! availability (the L2's own assumptions), and for nothing else.
 
+pub mod anchor;
+
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
 use lichen_l2::{Applied, ChainReceipt, Event, Refused, State};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_ledger::{xonly, Deployment, Hash, Ledger, Proof, Tx};
+use lichen_ledger::{xonly, Deployment, Hash, Ledger, OutPoint, Proof, Tx};
 use tiny_http::{Header, Method, Response, Server};
 
 /// A running sequencer.
@@ -20,6 +23,12 @@ pub struct Sequencer {
     pub url: String,
     server: Arc<Server>,
     thread: Option<std::thread::JoinHandle<()>>,
+    ledger: Arc<Mutex<Ledger>>,
+    events: Arc<Mutex<Vec<Event>>>,
+    path: Option<PathBuf>,
+    key: SigningKey,
+    stop: Arc<AtomicBool>,
+    anchorer: Option<std::thread::JoinHandle<()>>,
 }
 
 /// How a sequencer runs.
@@ -28,6 +37,9 @@ pub struct Options {
     /// Accept native proofs of shielded spends: the sender's private input
     /// in the clear (tests and demos).
     pub native_proofs: bool,
+    /// The genesis seal of a new ledger that will be anchored
+    /// ([`anchor::genesis_seal`]); a ledger kept from before has its own.
+    pub seal: Option<OutPoint>,
 }
 
 impl Sequencer {
@@ -37,19 +49,22 @@ impl Sequencer {
         Sequencer::start_with(addr, path, key, issuer, Options::default())
     }
     pub fn start_with(addr: &str, path: Option<PathBuf>, key: SigningKey, issuer: Hash, opts: Options) -> Result<Sequencer> {
-        let deployment = Deployment { sequencer: xonly(&key), hub: issuer };
+        let deployment = Deployment { sequencer: xonly(&key), hub: issuer, seal: opts.seal };
         let mut ledger: Ledger = match &path {
             Some(p) if p.exists() => serde_json::from_slice(&std::fs::read(p)?).context("the ledger file")?,
             _ => Ledger::new(deployment),
         };
         ledger.native_proofs = opts.native_proofs;
-        anyhow::ensure!(ledger.deployment == deployment, "the ledger file is another deployment's (sequencer {}, hub {})", hex::encode(ledger.deployment.sequencer), hex::encode(ledger.deployment.hub));
+        let d = ledger.deployment;
+        anyhow::ensure!(d.sequencer == deployment.sequencer && d.hub == deployment.hub, "the ledger file is another deployment's (sequencer {}, hub {})", hex::encode(d.sequencer), hex::encode(d.hub));
+        anyhow::ensure!(opts.seal.is_none() || d.seal == opts.seal, "the ledger file has another genesis seal");
         let server = Arc::new(Server::http(addr).map_err(|e| anyhow!("listen on {addr}: {e}"))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let ledger = Arc::new(Mutex::new(ledger));
         let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(vec![]));
         let srv = server.clone();
         let blocks = path.as_ref().map(|p| blocks_dir(p));
+        let (shared, shared_events, shared_path, shared_key) = (ledger.clone(), events.clone(), path.clone(), key.clone());
         let thread = std::thread::spawn(move || {
             for mut req in srv.incoming_requests() {
                 let mut body = String::new();
@@ -65,12 +80,28 @@ impl Sequencer {
                 let _ = req.respond(Response::from_string(json).with_status_code(code).with_header(ct));
             }
         });
-        Ok(Sequencer { url: format!("http://127.0.0.1:{port}"), server, thread: Some(thread) })
+        Ok(Sequencer { url: format!("http://127.0.0.1:{port}"), server, thread: Some(thread), ledger: shared, events: shared_events, path: shared_path, key: shared_key, stop: Arc::new(AtomicBool::new(false)), anchorer: None })
+    }
+
+    /// Anchor the history on Bitcoin from now on, through `chain` (a
+    /// bitcoind wallet paying the fees): a thread until the sequencer
+    /// stops.
+    pub fn anchor(&mut self, chain: lichen_chain::Chain, opts: anchor::Anchoring) -> Result<()> {
+        anyhow::ensure!(self.anchorer.is_none(), "already anchoring");
+        anyhow::ensure!(self.ledger.lock().unwrap().deployment.seal.is_some(), "this deployment has no genesis seal: start a new ledger with one (Options::seal)");
+        let a = anchor::Anchorer { ledger: self.ledger.clone(), events: self.events.clone(), path: self.path.clone(), key: self.key.clone(), chain, opts };
+        let stop = self.stop.clone();
+        self.anchorer = Some(std::thread::spawn(move || a.run(stop)));
+        Ok(())
     }
 }
 
 impl Drop for Sequencer {
     fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.anchorer.take() {
+            let _ = t.join();
+        }
         self.server.unblock();
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -132,9 +163,10 @@ fn handle(ledger: &Mutex<Ledger>, events: &Mutex<Vec<Event>>, key: &SigningKey, 
             Err(e) => refuse(400, format!("not a transaction: {e}")),
         },
         (Method::Post, "/seal") => {
-            // nothing new since the last height: no new height
+            // nothing new since the last height (no transaction, not even
+            // an anchor's record): no new height
             if let Some(last) = l.sealed.last() {
-                if last.size == l.tree.len() && last.nullifiers == l.nullifiers.root() {
+                if last.size == l.tree.len() && last.nullifiers == l.nullifiers.root() && l.pending.is_empty() {
                     return (200, serde_json::to_string(last).unwrap());
                 }
             }

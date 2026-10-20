@@ -80,7 +80,9 @@ enum Cmd {
     /// `equivocation.json`): both roots at one height, both signed by this
     /// wallet's sequencer.
     CheckEquivocation { file: PathBuf },
-    /// Print the withdrawal statement's input for a return (JSON).
+    /// Print the withdrawal statement's input for a return (JSON), for the
+    /// prover: in an anchored deployment, under the anchor covering it, with
+    /// the headers on the anchor's block its contract asks.
     WithdrawInput { memo: u32 },
     /// Write the sequencer's chain receipt at the height of a return's
     /// root, which the withdrawal's proof needs.
@@ -291,7 +293,14 @@ fn main() -> Result<()> {
             println!("{e}: both signed by sequencer {}", hex::encode(w.sequencer.deployment.sequencer));
         }
         Cmd::Return { amount, memo } => println!("returned: note {}", w.return_to_hub(amount, memo)?),
-        Cmd::WithdrawInput { memo } => println!("{}", serde_json::to_string_pretty(&w.withdraw_input(memo)?)?),
+        Cmd::WithdrawInput { memo } => {
+            // in an anchored deployment, with the headers on the anchor
+            let input = match w.sequencer.deployment.seal {
+                Some(_) => serde_json::to_value(w.prover_input(memo, &chain(&a)?)?)?,
+                None => serde_json::to_value(w.withdraw_input(memo)?)?,
+            };
+            println!("{}", serde_json::to_string_pretty(&input)?);
+        }
         Cmd::ChainReceipt { memo, ref out } => {
             std::fs::write(out, w.chain_receipt(memo)?)?;
             println!("{}: the chain receipt for the return with memo {memo}", out.display());

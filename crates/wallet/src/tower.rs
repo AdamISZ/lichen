@@ -62,6 +62,10 @@ pub struct Package {
     pub input: Option<lichen_ledger::WithdrawInput>,
     #[serde(default)]
     pub chain: Option<String>,
+    /// In an anchored deployment, the anchor the input is under (with the
+    /// height whose chain receipt first carries it).
+    #[serde(default)]
+    pub anchor: Option<lichen_ledger::Anchored>,
 }
 
 fn entropy(h: &str) -> Result<[u8; 32]> {
@@ -87,43 +91,59 @@ impl Package {
 /// root). Checked against the contract (its deployment, the note's memo
 /// and amount).
 pub fn withdraw_input(p: &Package) -> Result<lichen_ledger::WithdrawInput> {
-    let input = match &p.input {
-        Some(i) => i.clone(),
+    Ok(withdrawal(p)?.0)
+}
+
+/// The input and, in an anchored deployment, its anchor: as packed, or
+/// from the sequencer.
+fn withdrawal(p: &Package) -> Result<(lichen_ledger::WithdrawInput, Option<lichen_ledger::Anchored>)> {
+    let (input, anchor) = match &p.input {
+        Some(i) => (i.clone(), p.anchor),
         None => {
             let seq = lichen_l2::Client::new(&p.sequencer)?;
-            ensure!(seq.deployment.id() == p.record.deployment, "the sequencer at {} serves another deployment than the contract's", p.sequencer);
-            seq.state()?.withdraw_input(p.note, &seq.deployment)?
+            let state = seq.state()?;
+            match p.record.checkpoint {
+                Some(_) => state.anchored_input(p.note, &seq.deployment).map(|(i, a)| (i, Some(a)))?,
+                None => (state.withdraw_input(p.note, &seq.deployment)?, None),
+            }
         }
     };
-    ensure!(lichen_ledger::deployment_id(&input.sequencer, &input.hub) == p.record.deployment, "the input is in another deployment than the contract's");
+    let d = lichen_ledger::deployment_id(&input.sequencer, &input.hub);
+    let ours = match (p.record.checkpoint, anchor) {
+        (Some(c), Some(a)) => lichen_ledger::lichen_withdraw_contract_id(&d, &a.anchor.genesis, c.work()),
+        (None, None) => d,
+        _ => anyhow::bail!("an anchored contract's input needs its anchor"),
+    };
+    ensure!(ours == p.record.deployment, "the input is in another deployment than the contract's");
     ensure!(input.index == p.note && input.note.memo == p.cid() && input.note.value == u64::from(p.b), "note {} is not a return of {} with memo {}", p.note, p.b, p.cid());
-    Ok(input)
+    Ok((input, anchor))
 }
 
 /// Prove the package's withdrawal and wrap the proof: the statement's
-/// input and the chain receipt at its root's height (as packed, or from
-/// the sequencer),
-/// then `prover claim <input.json> <chain receipt> <claim.hex>`
+/// input and the chain receipt for it (as packed, or from the sequencer),
+/// and in an anchored deployment the headers on the anchor's block (from
+/// `chain`), then `prover claim <input.json> <chain receipt> <claim.hex>`
 /// (`lichen-r0`: the STARK and the Groth16 wrap, x86 for the wrap), in
 /// `work`. The claim's input, the verifier's.
-pub fn prove(p: &Package, work: &Path, prover: &Path) -> Result<Vec<u8>> {
+pub fn prove(p: &Package, chain: &Chain, work: &Path, prover: &Path) -> Result<Vec<u8>> {
     std::fs::create_dir_all(work)?;
-    let (json, chain, out) = (work.join("withdraw-input.json"), work.join("chain.receipt"), work.join("claim.hex"));
-    let input = withdraw_input(p)?;
-    std::fs::write(&json, serde_json::to_vec_pretty(&input)?)?;
+    let (json, receipt_file, out) = (work.join("withdraw-input.json"), work.join("chain.receipt"), work.join("claim.hex"));
+    let (input, anchor) = withdrawal(p)?;
     let receipt = match &p.chain {
         Some(r) => hex::decode(r)?,
-        None => crate::chain_receipt(&lichen_l2::Client::new(&p.sequencer)?, input.height)?,
+        None => crate::chain_receipt(&lichen_l2::Client::new(&p.sequencer)?, anchor.map_or(input.height, |a| a.from))?,
     };
-    std::fs::write(&chain, receipt)?;
-    let status = std::process::Command::new(prover).arg("claim").arg(&json).arg(&chain).arg(&out).status().with_context(|| format!("running the prover {}", prover.display()))?;
+    let full = crate::prover_input(input, anchor.as_ref(), p.record.checkpoint.as_ref(), chain)?;
+    std::fs::write(&json, serde_json::to_vec_pretty(&full)?)?;
+    std::fs::write(&receipt_file, receipt)?;
+    let status = std::process::Command::new(prover).arg("claim").arg(&json).arg(&receipt_file).arg(&out).status().with_context(|| format!("running the prover {}", prover.display()))?;
     ensure!(status.success(), "the prover {} failed: {status}", prover.display());
     Ok(hex::decode(std::fs::read_to_string(&out)?.trim())?)
 }
 
 /// The claim's input: as exported, or as made before (a resumed tower),
 /// or the mock's, or proved.
-fn claim_input(p: &Package, statement: &Statement, kept: Option<&(u32, String)>, work: &Path, prover: &Path) -> Result<Vec<u8>> {
+fn claim_input(p: &Package, chain: &Chain, statement: &Statement, kept: Option<&(u32, String)>, work: &Path, prover: &Path) -> Result<Vec<u8>> {
     if let Some(h) = &p.claim {
         return Ok(hex::decode(h)?);
     }
@@ -133,7 +153,7 @@ fn claim_input(p: &Package, statement: &Statement, kept: Option<&(u32, String)>,
     if let Some(i) = statement.mock_input(p.b, p.cid()) {
         return Ok(i);
     }
-    prove(p, work, prover)
+    prove(p, chain, work, prover)
 }
 
 /// A package as a dispute's signer.
@@ -238,7 +258,7 @@ pub fn run(chain: &Chain, statement: &Statement, package: &Path, dir: &Path, pro
             f(format!("proving the withdrawal of {} sats (note {}) with {}", p.b, p.note, prover.display()));
         }
     }
-    let input = claim_input(&p, statement, store.state.claim.as_ref(), &dir.join("proof"), prover)?;
+    let input = claim_input(&p, chain, statement, store.state.claim.as_ref(), &dir.join("proof"), prover)?;
     let (record, b) = (p.record.clone(), p.b);
     let signer = PackageSigner::new(p, statement)?;
     Engine { signer: &signer, store: &mut store, opts }.run(chain, &record, statement, dir, b, &input)
@@ -255,6 +275,7 @@ impl Wallet {
         // as far as the sequencer has them; what it hasn't, the tower asks for
         let input = self.withdraw_input(cid).ok();
         let chain = input.as_ref().and_then(|_| self.chain_receipt(cid).ok()).map(hex::encode);
+        let anchor = self.kept(note).and_then(|k| k.anchor);
         let h = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
         ensure!(h.closed.is_none(), "contract {cid} is closed");
         let b = match &input {
@@ -271,6 +292,6 @@ impl Wallet {
             .collect();
         let hops = if program.schedule.jump.is_some() { (1..=lngap_ladder::tail::CHUNKS).map(|k| hex::encode(s.hop_entropy(k))).collect() } else { vec![] };
         let fee_key = hex::encode(s.fees(h.record.network).keypair.secret_bytes());
-        Ok(Package { version: VERSION, sequencer: self.sequencer.url.clone(), record: h.record.clone(), b, note, b_wire, inputs, moves, hops, fee_key, claim: claim.map(hex::encode), input, chain })
+        Ok(Package { version: VERSION, sequencer: self.sequencer.url.clone(), record: h.record.clone(), b, note, b_wire, inputs, moves, hops, fee_key, claim: claim.map(hex::encode), input, chain, anchor })
     }
 }

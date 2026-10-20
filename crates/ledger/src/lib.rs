@@ -28,6 +28,8 @@ use sha2::{Digest, Sha256};
 
 pub use lngap_r0_core::{check, deployment_id, node, root_from_path, state_root, Note, Reject, WithdrawInput, HUB_KEY, JOURNAL_LEN, SEQUENCER_KEY, TREE_DEPTH};
 pub use lichen_shielded as shielded;
+pub use lichen_validity::{self, AnchorState, OutPoint};
+pub use lichen_withdraw::contract_id as lichen_withdraw_contract_id;
 
 pub type Hash = [u8; 32];
 
@@ -87,6 +89,68 @@ pub struct Deployment {
     pub sequencer: Hash,
     #[serde(with = "hex32")]
     pub hub: Hash,
+    /// The genesis seal, if the sequencer anchors its history on Bitcoin
+    /// (docs/ANCHOR_PLAN.md): the outpoint the first anchor spends.
+    #[serde(default, with = "outpoint_opt", skip_serializing_if = "Option::is_none")]
+    pub seal: Option<OutPoint>,
+}
+
+/// An outpoint as Bitcoin shows it, `<txid>:<vout>` (the txid reversed
+/// from its internal order).
+pub mod outpoint {
+    use super::OutPoint;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn to_string(o: &OutPoint) -> String {
+        let mut t = o.txid;
+        t.reverse();
+        format!("{}:{}", hex::encode(t), o.vout)
+    }
+    pub fn parse(s: &str) -> Option<OutPoint> {
+        let (t, v) = s.split_once(':')?;
+        let mut txid: [u8; 32] = hex::decode(t).ok()?.try_into().ok()?;
+        txid.reverse();
+        Some(OutPoint { txid, vout: v.parse().ok()? })
+    }
+    pub fn serialize<S: Serializer>(o: &OutPoint, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&to_string(o))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<OutPoint, D::Error> {
+        let s = String::deserialize(d)?;
+        parse(&s).ok_or_else(|| serde::de::Error::custom(format!("not an outpoint <txid>:<vout>: {s}")))
+    }
+}
+
+mod outpoint_opt {
+    use super::OutPoint;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(o: &Option<OutPoint>, s: S) -> Result<S::Ok, S::Error> {
+        match o {
+            Some(o) => super::outpoint::serialize(o, s),
+            None => s.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<OutPoint>, D::Error> {
+        match Option::<String>::deserialize(d)? {
+            Some(s) => super::outpoint::parse(&s).map(Some).ok_or_else(|| serde::de::Error::custom(format!("not an outpoint <txid>:<vout>: {s}"))),
+            None => Ok(None),
+        }
+    }
+}
+
+/// The anchoring's state, as hex of its encoding.
+mod anchor_hex {
+    use lichen_validity::AnchorState;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(a: &AnchorState, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(a.to_bytes()))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<AnchorState, D::Error> {
+        let s = String::deserialize(d)?;
+        hex::decode(&s).ok().and_then(|b| AnchorState::from_bytes(&b).ok()).ok_or_else(|| serde::de::Error::custom("not an anchor state"))
+    }
 }
 
 /// A 32-byte key as hex in JSON; read from hex or, as files and peers
@@ -115,7 +179,7 @@ pub mod hex32 {
 impl Deployment {
     /// The toy deployment's (tests, the demo): keys anyone can derive.
     pub fn toy() -> Deployment {
-        Deployment { sequencer: SEQUENCER_KEY, hub: HUB_KEY }
+        Deployment { sequencer: SEQUENCER_KEY, hub: HUB_KEY, seal: None }
     }
     pub fn id(&self) -> Hash {
         deployment_id(&self.sequencer, &self.hub)
@@ -417,6 +481,9 @@ pub enum Tx {
     Mint(Mint),
     Transfer(Transfer),
     Shielded(Shielded),
+    /// An anchor of this history on Bitcoin, confirmed: its record
+    /// (`lichen_validity::AnchorRecord`'s encoding).
+    Anchor(#[serde(with = "hexvec")] Vec<u8>),
 }
 
 /// A leaf of the commitment tree: a transparent note's opening, or a
@@ -495,11 +562,52 @@ pub struct Ledger {
     /// block.
     #[serde(default)]
     pub pending: Vec<Tx>,
+    /// The anchoring's state now, and at the last seal (the pending
+    /// block's starting state).
+    #[serde(default, with = "anchor_hex")]
+    pub anchor: AnchorState,
+    #[serde(default, with = "anchor_hex")]
+    pub anchor_sealed: AnchorState,
+    /// Each new anchoring state with the height whose seal first carried
+    /// it: the chain receipts from that height on hold it as their last
+    /// anchor, until the next.
+    #[serde(default)]
+    pub anchors: Vec<Anchored>,
+}
+
+/// An anchoring state, from the height whose seal first carried it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Anchored {
+    pub from: u64,
+    #[serde(with = "anchor_hex")]
+    pub anchor: AnchorState,
 }
 
 impl Ledger {
     pub fn new(deployment: Deployment) -> Ledger {
-        Ledger { deployment, ..Ledger::default() }
+        let anchor = AnchorState::genesis(deployment.seal.unwrap_or_default(), deployment.sequencer);
+        Ledger { deployment, anchor, anchor_sealed: anchor, ..Ledger::default() }
+    }
+
+    /// The history hash at height `h` (`lichen_validity::hist_next` over
+    /// the roots sealed to it).
+    pub fn hist_at(&self, h: u64) -> Hash {
+        self.sealed.iter().take(h as usize).fold([0; 32], |acc, s| lichen_validity::hist_next(&acc, &s.root()))
+    }
+
+    /// The record of an anchor confirmed on Bitcoin, as the block
+    /// statement checks it: the transaction (non-witness serialization),
+    /// its block's header, its index there and Merkle path, and the roots
+    /// from the height it commits to the last sealed one.
+    pub fn anchor_record(&self, tx: Vec<u8>, header: [u8; 80], index: u32, path: Vec<Hash>) -> Result<lichen_validity::AnchorRecord> {
+        let t = lichen_validity::btc::parse_tx(&tx).context("not a transaction")?;
+        let c = t.outputs.get(1).context("no commitment output")?.1;
+        ensure!(c.len() == 48, "not an anchor's commitment");
+        let at = u64::from_be_bytes(c[8..16].try_into().unwrap());
+        let last = self.sealed.last().map_or(0, |s| s.height);
+        ensure!(at >= 1 && at <= last, "an anchor of height {at}, beyond the last sealed ({last})");
+        let roots = self.sealed[at as usize - 1..last as usize].iter().map(|s| s.root()).collect();
+        Ok(lichen_validity::AnchorRecord { tx, header, index, path, before: self.hist_at(at - 1), roots })
     }
 
     fn append(&mut self, outputs: &[Note]) -> Result<Vec<u32>> {
@@ -554,6 +662,12 @@ impl Ledger {
 
     fn apply_tx(&mut self, tx: &Tx) -> Result<Vec<u32>> {
         match tx {
+            Tx::Anchor(r) => {
+                let rec = lichen_validity::AnchorRecord::from_bytes(r).map_err(|e| anyhow::anyhow!("an anchor record: {e:?}"))?;
+                let last = self.sealed.last().map_or(0, |s| s.height);
+                self.anchor = lichen_validity::check_anchor(&self.anchor, last, &self.hist_at(last), &rec).map_err(|e| anyhow::anyhow!("the anchor doesn't check: {e:?}"))?;
+                Ok(vec![])
+            }
             Tx::Mint(m) => {
                 verify(&self.deployment.hub, &Mint::digest(&m.outputs), &m.sig).context("a mint not signed by the hub")?;
                 self.append(&m.outputs)
@@ -613,7 +727,13 @@ impl Ledger {
     /// since the last seal, in order).
     pub fn seal_block(&mut self, sequencer: &SigningKey) -> (SignedRoot, Vec<Tx>) {
         let block = std::mem::take(&mut self.pending);
-        (self.seal_root(sequencer), block)
+        let changed = self.anchor_sealed != self.anchor;
+        self.anchor_sealed = self.anchor;
+        let s = self.seal_root(sequencer);
+        if changed {
+            self.anchors.push(Anchored { from: s.height, anchor: self.anchor });
+        }
+        (s, block)
     }
 
     /// The block statement's input for the pending block (call before
@@ -631,7 +751,7 @@ impl Ledger {
         let mut spent_before = vec![];
         for t in &txs {
             match t {
-                v::Tx::Mint { .. } => {}
+                v::Tx::Mint { .. } | v::Tx::Anchor(_) => {}
                 v::Tx::Transfer { spends, .. } => {
                     nfs.extend(spends.iter().map(|s| s.0.nullifier()));
                     spent_before.extend(spends.iter().map(|s| s.1).filter(|&i| i < size0));
@@ -666,6 +786,8 @@ impl Ledger {
             tree: v::Frontier { size: size0, branch },
             nullifiers,
             recent: self.sealed.iter().rev().take(lichen_validity::RECENT).rev().map(|s| s.tree).collect(),
+            hist: self.hist_at(height),
+            anchor: self.anchor_sealed,
             txs,
             nf_proofs,
             paths: spent_before.iter().map(|&i| self.tree.path_at(i, size0)).collect(),
@@ -709,10 +831,25 @@ impl Ledger {
     }
 }
 
-/// The withdrawal statement with validity's input (`lichen-withdraw`):
-/// ln-gap's, and the recent roots' hash of the chain receipt at its
-/// height.
-pub fn with_chain(input: &WithdrawInput, recent: Hash) -> Result<lichen_withdraw::WithdrawInput> {
+/// What a prover of the withdrawal statement is given beside the chain
+/// receipt (`lichen-r0 claim`'s JSON): ln-gap's input (at the anchored
+/// height), the headers on the anchor's block (hex) and the contract's
+/// `W` (decimal).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProverInput {
+    #[serde(flatten)]
+    pub input: WithdrawInput,
+    #[serde(default)]
+    pub headers: Vec<String>,
+    #[serde(default)]
+    pub work: String,
+}
+
+/// The withdrawal statement's input (`lichen-withdraw`): ln-gap's at the
+/// anchored height, the chain receipt's journal (its anchoring state's
+/// last anchor that height's root), the headers on top of the anchor's
+/// block, and the contract's `W`.
+pub fn with_chain(input: &WithdrawInput, chain: &lichen_validity::ChainJournal, headers: Vec<[u8; 80]>, work: u128) -> Result<lichen_withdraw::WithdrawInput> {
     let n = &input.note;
     Ok(lichen_withdraw::WithdrawInput {
         height: input.height,
@@ -723,7 +860,13 @@ pub fn with_chain(input: &WithdrawInput, recent: Hash) -> Result<lichen_withdraw
         path: input.path.clone(),
         sequencer: input.sequencer,
         hub: input.hub,
-        recent,
+        chain_height: chain.height,
+        chain_root: chain.root,
+        recent: chain.recent,
+        hist: chain.hist,
+        anchor: chain.anchor,
+        headers,
+        work,
     })
 }
 
@@ -744,6 +887,7 @@ fn block_tx(tx: &Tx) -> Result<lichen_validity::Tx> {
             ciphertexts: t.outputs.iter().map(|o| o.ciphertext.clone()).collect(),
             t_outputs: t.t_outputs.iter().map(tn).collect(),
         },
+        Tx::Anchor(r) => V::Anchor(lichen_validity::AnchorRecord::from_bytes(r).map_err(|e| anyhow::anyhow!("an anchor record: {e:?}"))?),
     })
 }
 
@@ -768,20 +912,29 @@ fn verify_receipt(_: &[u8], _: &[u8]) -> Result<()> {
 /// The chain guest's image id (`r0/guests/chain.id`).
 pub const CHAIN_IMAGE_ID: &str = include_str!("../../../r0/guests/chain.id");
 
-/// The withdrawal statement on `input`, natively, as its guest checks it:
-/// the chain receipt (bincode) at the input's height verified against the
-/// chain guest, then `lichen_withdraw::check`. Its journal `b ‖ c ‖ D`:
-/// what a proof of this withdrawal would commit, so what a dispute would
-/// accept.
+/// The chain journal of a chain receipt (bincode), verified against the
+/// chain guest.
 #[cfg(feature = "risc0")]
-pub fn check_withdrawal(input: &WithdrawInput, chain_receipt: &[u8]) -> Result<[u8; lichen_withdraw::JOURNAL_LEN]> {
+pub fn chain_journal(chain_receipt: &[u8]) -> Result<lichen_validity::ChainJournal> {
     let r: risc0_zkvm::Receipt = bincode::deserialize(chain_receipt).context("not a RISC Zero receipt")?;
     let id: Hash = hex::decode(CHAIN_IMAGE_ID.trim()).ok().and_then(|v| v.try_into().ok()).context("the chain guest's image id")?;
     r.verify(risc0_zkvm::sha::Digest::from_bytes(id)).context("the chain receipt doesn't verify against the chain guest")?;
     let c = lichen_validity::ChainJournal::from_bytes(&r.journal.bytes).map_err(|e| anyhow::anyhow!("not a chain journal: {e:?}"))?;
     ensure!(c.chain_id == id, "the chain receipt names another chain guest");
-    ensure!(c.height == input.height, "the chain receipt is of height {}, the withdrawal's root of {}", c.height, input.height);
-    lichen_withdraw::check(&with_chain(input, c.recent)?, &id, &mut |j| j == r.journal.bytes.as_slice()).map_err(|e| anyhow::anyhow!("the withdrawal statement rejects it: {e:?}"))
+    Ok(c)
+}
+
+/// The withdrawal statement natively, as its guest checks it: the chain
+/// receipt (bincode) verified against the chain guest, then
+/// `lichen_withdraw::check` with the headers on top of its last anchor and
+/// the contract's `W`. Its journal `b ‖ c ‖ D`: what a proof of this
+/// withdrawal would commit, so what a dispute would accept.
+#[cfg(feature = "risc0")]
+pub fn check_withdrawal(input: &WithdrawInput, chain_receipt: &[u8], headers: Vec<[u8; 80]>, work: u128) -> Result<[u8; lichen_withdraw::JOURNAL_LEN]> {
+    let c = chain_journal(chain_receipt)?;
+    ensure!(c.anchor.height == input.height, "the chain receipt's last anchor is of height {}, the withdrawal's root of {}", c.anchor.height, input.height);
+    let journal = c.to_bytes();
+    lichen_withdraw::check(&with_chain(input, &c, headers, work)?, &c.chain_id, &mut |j| j == journal.as_slice()).map_err(|e| anyhow::anyhow!("the withdrawal statement rejects it: {e:?}"))
 }
 
 /// A note for `owner`.
@@ -800,26 +953,53 @@ mod tests {
     use super::*;
 
     /// The hub's check before a fold, on a real chain receipt (the
-    /// real-receipt test's height 4, kept with LICHEN_KEEP=1; remade when
-    /// the chain guest is): the statement's journal for the return of 60
-    /// with memo 42, and refusals for another height and another note.
+    /// real-receipt test's, kept with LICHEN_KEEP=1; remade when the chain
+    /// guest is): the statement's journal for the return of 60 with memo
+    /// 42, and refusals for another height and another note. Ignored until
+    /// the chain guest with anchoring is built (docs/ANCHOR_PLAN.md) and
+    /// the receipt remade.
     #[cfg(feature = "risc0")]
     #[test]
+    #[ignore]
     fn the_withdrawal_checked_with_a_chain_receipt() {
         let receipt = include_bytes!("../tests/data/chain-4.receipt");
         let input: WithdrawInput = serde_json::from_str(include_str!("../tests/data/withdraw-60-42.json")).unwrap();
-        let j = check_withdrawal(&input, receipt).unwrap();
+        let headers: Vec<[u8; 80]> = vec![];
+        let j = check_withdrawal(&input, receipt, headers.clone(), 0).unwrap();
         assert_eq!(j[..8], [60, 0, 0, 0, 42, 0, 0, 0]);
-        assert_eq!(j[..], check(&input).unwrap()[..], "ln-gap's statement's journal");
         let mut other = input.clone();
         other.height = 3;
-        assert!(format!("{:#}", check_withdrawal(&other, receipt).unwrap_err()).contains("of height 4"));
+        assert!(format!("{:#}", check_withdrawal(&other, receipt, headers.clone(), 0).unwrap_err()).contains("of height"));
         let mut other = input.clone();
         other.note.value = 61;
-        assert!(format!("{:#}", check_withdrawal(&other, receipt).unwrap_err()).contains("rejects"));
+        assert!(format!("{:#}", check_withdrawal(&other, receipt, headers.clone(), 0).unwrap_err()).contains("rejects"));
         let mut bad = receipt.to_vec();
         bad[1000] ^= 1;
-        assert!(check_withdrawal(&input, &bad).is_err(), "a damaged receipt");
+        assert!(check_withdrawal(&input, &bad, headers, 0).is_err(), "a damaged receipt");
+    }
+
+    /// An anchor of height `at`'s history, spending `seal`: the
+    /// transaction (one input, the seal and the commitment) and a header
+    /// of regtest's difficulty on `prev` holding it alone.
+    fn anchor_tx(l: &Ledger, seal: &OutPoint, at: u64, prev: &Hash) -> (Vec<u8>, [u8; 80]) {
+        let mut tx = vec![2, 0, 0, 0, 1];
+        tx.extend(seal.to_bytes());
+        tx.extend([0, 0xff, 0xff, 0xff, 0xff, 2]);
+        tx.extend(330u64.to_le_bytes());
+        tx.push(34);
+        tx.extend(lichen_validity::seal_script(&l.deployment.sequencer));
+        tx.extend(0u64.to_le_bytes());
+        tx.push(48);
+        tx.extend(lichen_validity::commitment_script(at, &l.hist_at(at)));
+        tx.extend([0, 0, 0, 0]);
+        let mut h = [0u8; 80];
+        h[4..36].copy_from_slice(prev);
+        h[36..68].copy_from_slice(&lichen_validity::btc::sha256d(&tx));
+        h[72..76].copy_from_slice(&0x207fffffu32.to_le_bytes());
+        while !lichen_validity::btc::Header(h).pow_ok() {
+            h[76] += 1;
+        }
+        (tx, h)
     }
 
     fn transfer(spends: Vec<(Spend, &SigningKey)>, outputs: Vec<Note>) -> Tx {
@@ -850,7 +1030,7 @@ mod tests {
         // fresh keys, no labels: the statement's input carries them and its
         // journal commits to them
         let (hub, seq) = (fresh_key(), fresh_key());
-        let d = Deployment { sequencer: xonly(&seq), hub: xonly(&hub) };
+        let d = Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None };
         assert_ne!(d.id(), Deployment::toy().id());
         let mut l = Ledger::new(d);
         assert!(l.apply(&Tx::Mint(Mint::new(&regtest_hub(), vec![note(d.hub, 7, 0)]))).is_err(), "the toy hub can't mint here");
@@ -869,7 +1049,7 @@ mod tests {
     fn mint_transfer_return_and_the_statements_input() {
         let (hub, seq) = (regtest_hub(), regtest_sequencer());
         let (alice, bob) = (key_from_label("test/alice"), key_from_label("test/bob"));
-        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub) });
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
         let n0 = note(xonly(&alice), 10, 0);
         let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![n0]))).unwrap()[0];
         // nobody but the hub mints
@@ -929,13 +1109,14 @@ mod tests {
         // the chain statement: from genesis, or from the chain journal
         // the last block's ended
         let id = [0xc4; 32];
-        let prev = lichen_validity::ChainJournal { hub: j.hub, height: j.height, root: from.0, recent: from.1, chain_id: id }.to_bytes();
+        assert_eq!((input.hist, input.anchor), (l.hist_at(input.height), l.anchor_sealed));
+        let prev = lichen_validity::ChainJournal { hub: j.hub, height: j.height, root: from.0, recent: from.1, chain_id: id, hist: j.hist_from, anchor: j.anchor_from }.to_bytes();
         let c = lichen_validity::chain(&id, &input, &mut |jb| journals.iter().any(|x| x == jb), &mut |jb| {
             assert!(input.height > 0, "genesis needs no receipt");
             jb == prev
         })
         .unwrap();
-        assert_eq!((c.height, c.root, c.recent, c.chain_id), (j.height + 1, j.to, j.recent_to, id));
+        assert_eq!((c.height, c.root, c.recent, c.chain_id, c.hist, c.anchor), (j.height + 1, j.to, j.recent_to, id, j.hist_to, j.anchor_to));
         assert_eq!(lichen_validity::ChainJournal::from_bytes(&c.to_bytes()), Ok(c));
         if input.height == 0 {
             let mut bad = input.clone();
@@ -947,6 +1128,7 @@ mod tests {
         let s = l.seal(seq);
         assert_eq!((j.from, j.recent_from), from, "the block starts where the last ended");
         assert_eq!((j.height + 1, j.to), (s.height, s.root()), "and ends at the root the sequencer signs");
+        assert_eq!((j.hist_to, j.anchor_to), (l.hist_at(s.height), l.anchor_sealed), "and its history and anchoring");
         j
     }
 
@@ -957,7 +1139,8 @@ mod tests {
         let alice = key_from_label("test/alice");
         let (alice_nk, bob_nk) = (sha256(&[b"alice nk"]), sha256(&[b"bob nk"]));
         let (a_owner, b_owner) = (shielded::owner(&alice_nk), shielded::owner(&bob_nk));
-        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub) });
+        let genesis_seal = OutPoint { txid: [0x5e; 32], vout: 1 };
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: Some(genesis_seal) });
         l.native_proofs = true;
         let z = v::tree_empties();
         let genesis = (v::state_root(0, &z[TREE_DEPTH], &lichen_validity::smt::EMPTIES[lichen_validity::smt::DEPTH]), v::recent_hash(&[]));
@@ -1016,21 +1199,51 @@ mod tests {
         assert_eq!(v::check(&bad, &mut |_| true), Err(v::Reject::BadSignature));
         let j4 = seal_checked(&mut l, &seq, (j3.to, j3.recent_to));
 
-        // Bob's return withdrawn under the root of height 4, a chain
-        // receipt ending there: the journal is ln-gap's statement's
+        // block 5: an anchor of height 4 (a mined block holding it), a
+        // forged one refused
+        let (tx, header) = anchor_tx(&l, &genesis_seal, 4, &[0xb0; 32]);
+        let rec = l.anchor_record(tx.clone(), header, 0, vec![]).unwrap();
+        assert_eq!((rec.before, rec.roots.len()), (l.hist_at(3), 1));
+        let (wrong, _) = anchor_tx(&l, &OutPoint { txid: [1; 32], vout: 0 }, 4, &[0xb0; 32]);
+        assert!(l.apply(&Tx::Anchor(l.anchor_record(wrong, header, 0, vec![]).unwrap().to_bytes())).is_err(), "not the seal");
+        let mut late = tx.clone();
+        let n = late.len();
+        late[n - 4 - 32] ^= 1; // the committed history
+        assert!(l.apply(&Tx::Anchor(l.anchor_record(late, header, 0, vec![]).unwrap().to_bytes())).is_err(), "not this history");
+        assert!(l.apply(&Tx::Anchor(l.anchor_record(tx.clone(), [0; 80], 0, vec![]).unwrap().to_bytes())).is_err(), "not in the block named");
+        l.apply(&Tx::Anchor(rec.to_bytes())).unwrap();
+        assert_eq!((l.anchor.height, l.anchor.root, l.anchor.seal.txid), (4, j4.to, lichen_validity::btc::sha256d(&tx)));
+        let j5 = seal_checked(&mut l, &seq, (j4.to, j4.recent_to));
+        assert_eq!(j5.anchor_to, l.anchor);
+        assert_eq!(j5.anchor_from, v::AnchorState::genesis(genesis_seal, xonly(&seq)));
+
+        // Bob's return withdrawn under the anchored root of height 4, the
+        // chain receipt at 5 carrying the anchor, ten headers on the
+        // anchor's block
         let index = (0..l.tree.len() as u32).find(|&i| l.note(i).is_some_and(|n| n.memo == 42)).unwrap();
         let ln = l.withdraw_input(index).unwrap();
         assert_eq!(ln.height, 4);
-        assert_eq!(l.recent_at(4), Some(j4.recent_to));
-        let w = with_chain(&ln, l.recent_at(4).unwrap()).unwrap();
+        assert_eq!(l.recent_at(5), Some(j5.recent_to));
         let id = [0xc4; 32];
-        let ends = v::ChainJournal { hub: j4.hub, height: 4, root: j4.to, recent: j4.recent_to, chain_id: id }.to_bytes();
+        let c5 = v::ChainJournal { hub: j5.hub, height: 5, root: j5.to, recent: j5.recent_to, chain_id: id, hist: j5.hist_to, anchor: j5.anchor_to };
+        let mut headers: Vec<[u8; 80]> = vec![];
+        for _ in 0..10 {
+            let prev = headers.last().map_or(j5.anchor_to.block, |h| v::btc::sha256d(h));
+            headers.push(anchor_tx(&l, &genesis_seal, 4, &prev).1);
+        }
+        let w = with_chain(&ln, &c5, headers.clone(), 20).unwrap();
+        let ends = c5.to_bytes();
         assert_eq!(lichen_withdraw::chain_journal(&w, &id).to_bytes(), ends);
         let journal = lichen_withdraw::check(&w, &id, &mut |jb| jb == ends).unwrap();
-        assert_eq!(journal, check(&ln).unwrap(), "ln-gap's journal, b ‖ c ‖ D");
-        // under height 3's chain receipt: refused
-        let three = v::ChainJournal { hub: j3.hub, height: 4, root: j3.to, recent: j3.recent_to, chain_id: id }.to_bytes();
-        assert_eq!(lichen_withdraw::check(&w, &id, &mut |jb| jb == three), Err(lichen_withdraw::Reject::Chain));
+        assert_eq!(journal[..8], check(&ln).unwrap()[..8], "ln-gap's b ‖ c");
+        assert_eq!(journal[8..], lichen_withdraw::contract_id(&l.deployment.id(), &genesis_seal, 20), "D, the contract's");
+        // asking more work than the headers carry: refused
+        let w = with_chain(&ln, &c5, headers, 22).unwrap();
+        assert_eq!(lichen_withdraw::check(&w, &id, &mut |jb| jb == ends), Err(lichen_withdraw::Reject::Depth));
+        // under height 4's chain receipt, before the anchor: refused
+        let c4 = v::ChainJournal { hub: j4.hub, height: 4, root: j4.to, recent: j4.recent_to, chain_id: id, hist: j4.hist_to, anchor: j4.anchor_to };
+        let w = with_chain(&ln, &c4, vec![], 0).unwrap();
+        assert_eq!(lichen_withdraw::check(&w, &id, &mut |_| true), Err(lichen_withdraw::Reject::NotAnchored));
     }
 
     #[test]
@@ -1039,7 +1252,7 @@ mod tests {
         // root after: what a block guest will check
         let (hub, seq) = (regtest_hub(), regtest_sequencer());
         let alice = key_from_label("test/alice");
-        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub) });
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
         let empty = l.nullifiers.root();
         assert_eq!(empty, lichen_validity::smt::empties()[lichen_validity::smt::DEPTH]);
         let n0 = note(xonly(&alice), 10, 0);
@@ -1069,7 +1282,7 @@ mod tests {
         let alice = key_from_label("test/alice");
         let (alice_nk, bob_nk) = (sha256(&[b"alice nk"]), sha256(&[b"bob nk"]));
         let (a_owner, b_owner) = (shielded::owner(&alice_nk), shielded::owner(&bob_nk));
-        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub) });
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
         l.native_proofs = true;
         let minted = note(xonly(&alice), 20, 0);
         let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![minted]))).unwrap()[0];

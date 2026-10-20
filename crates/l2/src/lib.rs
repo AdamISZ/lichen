@@ -32,12 +32,16 @@ pub struct State {
     pub notes: Vec<Leaf>,
     pub nullifiers: Vec<Hash>,
     pub sealed: Vec<SignedRoot>,
+    /// Each anchoring state on Bitcoin, from the height that first carried
+    /// it (none for a sequencer that doesn't anchor).
+    #[serde(default)]
+    pub anchors: Vec<lichen_ledger::Anchored>,
 }
 
 impl State {
     /// The state of ledger `l`.
     pub fn of(l: &Ledger) -> State {
-        State { notes: l.notes.clone(), nullifiers: l.nullifiers.iter().copied().collect(), sealed: l.sealed.clone() }
+        State { notes: l.notes.clone(), nullifiers: l.nullifiers.iter().copied().collect(), sealed: l.sealed.clone(), anchors: l.anchors.clone() }
     }
     /// The commitment tree, rebuilt from the leaves.
     pub fn tree(&self) -> Tree {
@@ -69,13 +73,32 @@ impl State {
         self.nullifiers.contains(&lichen_ledger::nullifier(note))
     }
     /// The withdrawal statement's input for the return at `index` in
-    /// deployment `d`, built and checked locally.
+    /// deployment `d`, built and checked locally: ln-gap's, under the first
+    /// sealed root that includes it.
     pub fn withdraw_input(&self, index: u32, d: &Deployment) -> Result<WithdrawInput> {
-        let note = *self.note(index).context("no such note")?;
         let s = self.sealed.iter().find(|s| s.size > index).context("the return is not sealed yet")?;
+        self.withdraw_input_at(index, s.height, d)
+    }
+    /// As [`State::withdraw_input`], under the root sealed at `height`.
+    pub fn withdraw_input_at(&self, index: u32, height: u64, d: &Deployment) -> Result<WithdrawInput> {
+        let note = *self.note(index).context("no such note")?;
+        let s = self.sealed.iter().find(|s| s.height == height).with_context(|| format!("no height {height}"))?;
+        ensure!(s.size > index, "note {index} isn't in the tree at height {height}");
         let input = WithdrawInput { height: s.height, nullifiers: s.nullifiers, signature: s.signature.clone(), note, index, path: self.tree().path_at(index, s.size), sequencer: d.sequencer, hub: d.hub };
         lichen_ledger::check(&input).map_err(|r| anyhow!("the statement would reject this return: {r:?}"))?;
         Ok(input)
+    }
+    /// In an anchored deployment, the return at `index` under the first
+    /// anchor that covers it (docs/ANCHOR_PLAN.md): ln-gap's input at the
+    /// anchored height, and that anchor's state with the height whose
+    /// chain receipt first carries it.
+    pub fn anchored_input(&self, index: u32, d: &Deployment) -> Result<(WithdrawInput, lichen_ledger::Anchored)> {
+        let sealed = self.sealed.iter().find(|s| s.size > index).context("the return is not sealed yet")?;
+        let a = *self.anchors.iter().find(|a| a.anchor.height >= sealed.height).with_context(|| format!("the return, at height {}, isn't anchored on Bitcoin yet", sealed.height))?;
+        let input = self.withdraw_input_at(index, a.anchor.height, d)?;
+        let root = self.sealed.iter().find(|s| s.height == a.anchor.height).map(|s| s.root());
+        ensure!(root == Some(a.anchor.root), "the anchor of height {} isn't of the root signed there", a.anchor.height);
+        Ok((input, a))
     }
 }
 /// The signed roots a party has seen, by height: a second, different root
@@ -158,6 +181,9 @@ pub enum Event {
     },
     /// A height sealed: the notes so far, its signed root.
     Sealed { height: u64, notes: u32, root: Hash },
+    /// An anchor on Bitcoin recorded: the height it commits, its txid
+    /// (internal order). Unknown to readers from before: skipped.
+    Anchored { height: u64, txid: Hash },
 }
 
 impl Event {
@@ -166,6 +192,13 @@ impl Event {
         match tx {
             Tx::Mint(m) => Event::Mint { to: m.outputs.iter().map(|n| (n.owner, n.value)).collect() },
             Tx::Transfer(t) => Event::Transfer { from: t.spends.iter().map(|s| s.note.owner).collect(), to: t.outputs.iter().map(|n| (n.owner, n.value, n.memo)).collect() },
+            Tx::Anchor(r) => match lichen_ledger::lichen_validity::AnchorRecord::from_bytes(r) {
+                Ok(rec) => {
+                    let at = lichen_ledger::lichen_validity::btc::parse_tx(&rec.tx).and_then(|t| t.outputs.get(1).map(|o| o.1)).filter(|c| c.len() == 48).map_or(0, |c| u64::from_be_bytes(c[8..16].try_into().unwrap()));
+                    Event::Anchored { height: at, txid: lichen_ledger::lichen_validity::btc::sha256d(&rec.tx) }
+                }
+                Err(_) => Event::Anchored { height: 0, txid: [0; 32] },
+            },
             Tx::Shielded(t) => Event::Shielded {
                 from: t.t_spends.iter().map(|s| s.note.owner).collect(),
                 spent: t.nfs.len(),

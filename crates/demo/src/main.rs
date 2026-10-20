@@ -358,6 +358,11 @@ fn state(d: &Demo) -> Result<Value> {
                     height = json!(h);
                     ("sealed", format!("height {h} sealed and signed: {notes} notes, root {}…", &hex::encode(root)[..12]))
                 }
+                Event::Anchored { height: h, txid } => {
+                    let mut t = txid;
+                    t.reverse();
+                    ("anchored", format!("height {h} anchored on Bitcoin: {}…", &hex::encode(t)[..12]))
+                }
             };
             json!({ "n": n, "kind": kind, "text": text, "detail": detail, "height": height })
         })

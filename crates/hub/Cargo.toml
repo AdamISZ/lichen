@@ -29,3 +29,5 @@ lngap-ladder.workspace = true
 lichen-sequencer.workspace = true
 lichen-wallet = { path = "../wallet" }
 bitcoincore-rpc.workspace = true
+lichen-validity.workspace = true
+lichen-withdraw.workspace = true
