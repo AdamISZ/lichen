@@ -1812,7 +1812,9 @@ dependencies = [
  "lichen-ledger",
  "lichen-proto",
  "lichen-sequencer",
+ "lichen-validity",
  "lichen-wallet",
+ "lichen-withdraw",
  "lngap-btc",
  "lngap-channel",
  "lngap-ladder",
@@ -1879,10 +1881,16 @@ name = "lichen-sequencer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bitcoin",
  "clap",
  "hex",
+ "lichen-chain",
  "lichen-l2",
  "lichen-ledger",
+ "lichen-validity",
+ "lichen-withdraw",
+ "lngap-btc",
+ "serde",
  "serde_json",
  "tiny_http",
 ]
