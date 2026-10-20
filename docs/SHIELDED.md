@@ -170,8 +170,11 @@ What it takes ([RUN_A_TOWER.md](RUN_A_TOWER.md) has the setup):
   window passes: on Mutinynet (30-second blocks, a 10-minute window)
   well under an hour from the tower's start; with 10-minute blocks
   (a one-hour window), a few hours. If the hub plays the whole search,
-  there are 21 rounds of moves. On Mutinynet, with prompt answers, that
-  took about 13 minutes. With 10-minute blocks each move waits for a
+  there are 21 rounds of moves. In a Mutinynet trial against a hub
+  disputing a true claim, the tower took 75 minutes from its start to
+  the payout: 10 proving, 5 to compute and escalate, 16 for the search,
+  and the rest waiting out the hub's last window. The payout is yours
+  to sweep 40 blocks later. With 10-minute blocks each move waits for a
   confirmation, and the hub may use its full hour for each choice:
   expect several hours, up to about a day.
 - **Money.** Rent for that long: at on-demand cloud prices, a few

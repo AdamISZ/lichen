@@ -79,8 +79,43 @@ hub runs the withdrawal statement natively before folding
 (`lichen_ledger::check_withdrawal`: the chain receipt at the return's
 height verified, then `lichen_withdraw::check`), 50 ms; the wallet's
 `withdraw` waits for that receipt (up to 20 minutes). Tested on the
-real height-4 receipt (`crates/ledger/tests/data`). Left: a Mutinynet
-trial with the tower, which also exercises the fold's check.
+real height-4 receipt (`crates/ledger/tests/data`).
+
+**The Mutinynet trial** (2026-10-19), a fresh deployment (`3d40fd9a…`:
+a new sequencer key, the ledger from genesis; the phase-1 deployment
+`837ceb56…` archived, its contracts all closed), hub and sequencer at
+`02bea4f`, the chain prover on the Mac beside them. Alice and Bob each
+open a contract (1008, 1009: deposit 30,000, cap 65,535, reserve 20,000)
+and shield it; Alice pays Bob 5,000, shielded. Proving on the Mac with
+the chain prover running: shield 13–14 s, the payment 29 s, a return
+17 s (one note) or 28 s (two). The chain prover took 23–168 s a height
+(1–11), so it fell behind the openings' burst of mints and claims.
+
+- **A, the fold's check:** Bob withdraws 35,000. The wallet waited for
+  height 10's chain receipt, the hub checked the withdrawal statement
+  under it and folded (`068570d4…`): 1,092 s, nearly all of it the chain
+  prover catching up.
+- **B, the tower:** the hub restarted hostile (refuse, dispute true
+  claims). Alice returns 25,000 (height 11), is refused, exports
+  (3.5 MB); the tower on the GCE `n2-highmem-4` reaches her sequencer
+  through an SSH tunnel to prove. Proved 364 s, wrapped 259 s, the traced
+  run and escalation 4.5 min (move 1 confirmed at 3,519,341); the hub
+  played every choice, move 21 at 15.5 min; no disprove, so after the
+  hub's window (3,519,449) the tower proved the last step: the payout
+  `1c8b3127…`, 75 min from the tower's start. Alice swept on the Mac
+  after δ (40 blocks): 146,055 sats (`63550942…`).
+
+Found and fixed: two openings at once took the hub's one coin, the
+second funding refused as a double spend (`3ea50fc`: selected coins
+locked until spent; Alice's opening resumed with `open --resume`); the
+tower image lacked `r0/host`, so `lichen-r0` couldn't resolve its
+guests (`08ac020`; patched on the box for the trial); three `chain:
+ALARM`s from one Esplora server named twice, a spend reaching the
+mempool between the two answers (`6685664`: ask again first).
+
+Left: a sequencer's prover keeping up (a burst of openings put it ten
+heights behind; the wallet waits 20 minutes); the separate anchor key
+(TOWER_PLAN.md).
 
 A withdrawal disputed on Bitcoin now needs the sequencer's chain receipt
 at its return's height, not only the signed root: a sequencer that stops

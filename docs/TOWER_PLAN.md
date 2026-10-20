@@ -183,7 +183,12 @@ the chain: the escalation, after which every instance reads it.
    The plan as written: **two Esplora endpoints** with the rules above. Test: a stub endpoint
    serving a move the hub signed but didn't broadcast is ignored;
    endpoints that disagree raise the alarm.
-4. **Written, not yet run (2026-10-17).** `deploy/tower/` (Dockerfile:
+4. **Done (2026-10-19)**, the Mutinynet trial on the shielded L2: a
+   hostile hub, the tower on a GCE `n2-highmem-4` from Alice's package,
+   proving through a tunnel to her sequencer, the whole search, the
+   payout 75 minutes from its start, swept on her Mac
+   ([SHIELDED_PLAN.md](SHIELDED_PLAN.md), "The Mutinynet trial").
+   Written 2026-10-17: `deploy/tower/` (Dockerfile:
    the wallet, the verifier ELF, `lngap-r0` and r0vm 3.0.6; the wrap
    through the host's Docker socket, its work dir at one path on both
    sides, `RISC0_WORK_DIR`), `build.sh`, `docker-compose.yml`,
