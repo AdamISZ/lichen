@@ -121,9 +121,10 @@ transactions an hour: plenty for a demonstration, far short of a busy
 payment system. Running it: [RUN_A_SEQUENCER.md](RUN_A_SEQUENCER.md).
 
 **What the lag means.** A payment is final when it is sealed, as on
-transparent lichen: you trust the sequencer for that, not the chain
-proof (a proof shows a history is valid, not that it is the only one
-the sequencer signed). So you needn't wait for the prover before
+transparent lichen, if you trust the sequencer: a proof shows a history
+is valid, not that it is the only one the sequencer signed. Without
+trusting it, a payment is final once its height is anchored on Bitcoin
+and buried (below). So you needn't wait for the prover before
 treating a payment as received. Signing two histories can't go unseen,
 though, by anyone who looks: your wallet keeps every root it checks and
 stops, writing the evidence beside itself, if it's ever shown a
@@ -144,12 +145,33 @@ height is proved from the last in one step, so the work can't yet be
 shared among machines; proving blocks in parallel and chaining them
 after would allow it.
 
+**Anchoring on Bitcoin.** A sequencer could sign two histories that
+split at some height, each valid: pay someone in one and return the same
+money to the hub in the other. So the sequencer anchors its history on
+Bitcoin (branch `anchor`, [ANCHOR_PLAN.md](ANCHOR_PLAN.md)): it keeps
+one output, the seal, and each anchor transaction spends it, makes the
+next, and commits a hash of the whole history up to a sealed height. An
+output can be spent only once, so only one history is ever anchored;
+each anchor is recorded on the L2 and checked by the chain proof, so a
+history forked from the anchored one can hold none after the fork. A
+withdrawal, cooperative or disputed, is of a return under an anchored
+root, with blocks on top of the anchor's whose work is at least ten
+blocks' at the difficulty when the contract opened (its checkpoint).
+Forging one means mining a branch of Bitcoin that long.
+
+What it costs: an anchor of about 220 vB per Bitcoin block at most, and
+only when something has changed; a withdrawal waits for the next anchor
+and ten blocks on it, about two hours with 10-minute blocks (on
+Mutinynet, minutes). On regtest and Mutinynet the proof of work is
+negligible (Mutinynet is a signet: its blocks are authorized by a
+signature), so there they show how it works, not its security.
+
 **A cooperative withdrawal**: return to the hub, ask it to fold, and it
 pays you on Bitcoin in one transaction. You prove nothing for it. The
 hub checks the withdrawal statement natively, in milliseconds, against
-the sequencer's chain proof at your return's height. So `withdraw` may
-wait a few minutes for the sequencer to prove that height; it says so
-while it waits.
+the sequencer's chain proof carrying your return's anchor and the blocks
+on it. So `withdraw` waits for the anchor, the chain proof and the
+blocks; it says what it's waiting for.
 
 ## The bad case: a refused withdrawal
 

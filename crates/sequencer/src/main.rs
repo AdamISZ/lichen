@@ -72,7 +72,10 @@ fn main() -> Result<()> {
         (true, Some(_)) => bail!("--toy and --issuer: one or the other"),
         (false, None) => bail!("name the hub with --issuer <its L2 key> (or run the toy deployment with --toy)"),
     };
-    let chain = match (&a.anchor_rpc, &a.anchor_cookie) {
+    // (empty: not given, as a compose file passes an unset variable)
+    let anchor_rpc = a.anchor_rpc.as_ref().filter(|u| !u.is_empty());
+    let anchor_cookie = a.anchor_cookie.as_ref().filter(|c| !c.as_os_str().is_empty());
+    let chain = match (anchor_rpc, anchor_cookie) {
         (Some(url), Some(cookie)) => Some(lichen_chain::Chain::connect_on(url, cookie, &a.anchor_wallet, a.network)?),
         (None, None) => None,
         _ => bail!("--anchor-rpc and --anchor-cookie: both or neither"),

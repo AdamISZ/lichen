@@ -10,9 +10,9 @@ What the sequencer is trusted for: the L2's finality, inclusion and
 availability. Nothing else: every client checks each signed root, and a
 withdrawal's proof checks the sequencer's signature on the root it uses.
 
-It has no chain. It runs no Bitcoin node and holds no coins, and it never
-runs a dispute. It needs one fact from the hub: the hub's L2 key, which
-it treats as the only key allowed to mint.
+It never runs a dispute. It needs one fact from the hub: the hub's L2
+key, which it treats as the only key allowed to mint. Unless it anchors
+its history on Bitcoin (below), it has no chain: no node, no coins.
 
 Shielded transactions (branch `shielded`, [SHIELDED.md](SHIELDED.md))
 carry a RISC Zero receipt of the spend guest, which the sequencer checks
@@ -32,6 +32,30 @@ The sequencer serves those receipts, `GET /chain/<h>`, and every
 withdrawal needs the one at its return's height: a disputed one's proof
 checks its root ends a valid history, and the hub checks the same before
 it folds. So run the chain prover alongside the sequencer.
+
+**Anchoring** (branch `anchor`, [ANCHOR_PLAN.md](ANCHOR_PLAN.md)): so
+that it can't sign two histories unseen, the sequencer commits its
+history to Bitcoin. Started with `--anchor-rpc <bitcoind's RPC URL>
+--anchor-cookie <its cookie file>` (and `--anchor-wallet`, `sequencer`
+by default; `--network`), it uses that node's wallet:
+
+- on a new ledger, before its first height, it pays 1,000 sats to the
+  **genesis seal** (a P2TR output of its own key), which the deployment
+  names from then on (`/info`); a ledger started without one can't be
+  anchored later;
+- whenever something has changed since the last anchor and none is in
+  flight, it sends an **anchor**: a transaction spending the seal,
+  making the next, and committing the history to the last sealed height
+  (about 220 vB, at `--anchor-feerate`, 2 sat/vB by default, from the
+  wallet);
+- once it has `--anchor-confirmations` (1 by default), it records the
+  anchor on the L2, in the next height's block, for the chain prover.
+
+Withdrawals need their return anchored, so keep the wallet funded: a
+few thousand sats a day at most on a test network. The anchor in flight
+is kept beside the ledger (`ledger.anchor.json`), so a restart carries
+on. The seal is the sequencer's key's own output: its key spends it, and
+losing the key ends the anchoring with the deployment.
 
 ## A machine
 
@@ -98,8 +122,8 @@ Everything is in `deploy/sequencer/data/<network>/`:
 | `ledger.json` | the ledger: every note, nullifier and sealed height. Written after every change. Losing it loses the L2's state. |
 
 Back up both. Nothing else in this setup protects the ledger: it has a
-single copy, and no roots are published to Bitcoin yet (README, "Things
-not implemented yet").
+single copy. Anchoring commits to its history on Bitcoin, but doesn't
+keep its data.
 
 Day to day:
 
