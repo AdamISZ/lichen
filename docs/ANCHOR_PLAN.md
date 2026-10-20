@@ -108,6 +108,72 @@ its confirmation, 9 more blocks, the anchor record proved. About two
 hours on mainnet at best; minutes on Mutinynet. It must fit inside
 `T_close` with the dispute.
 
+## The design, in detail (2026-10-20)
+
+Worked out while building it; it refines the sketch above.
+
+**The history hash.** `hist_0 = 0`, `hist_h = H("lichen/hist" ‖
+hist_{h-1} ‖ root_h)`, `root_h` the state root signed at `h`. The block
+statement carries it from height to height beside the recent roots. An
+anchor commits `hist_at`, not a root: it then commits the whole history
+to `at`, and the chain guest can check it is an ancestor of the current
+one by hashing forward (the record supplies `hist_{at-1}` and the roots
+`at..i`, a hash each: a few hundred between anchors, cheap next to a
+signature).
+
+**The anchor transaction.** Input 0 spends the seal; any other inputs
+pay the fee. Output 0 is the next seal, P2TR with the sequencer's key as
+the output key itself (untweaked: no curve arithmetic in the guest to
+check it; Bitcoin doesn't require the tweak). Output 1 is `OP_RETURN
+"lichen" ‖ at ‖ hist_at` (46 bytes). The guest reads the
+non-witness serialization (the txid's), refuses 64 bytes (a Merkle
+node's length), and checks the Merkle path to the header's root. The
+seal's script is checked so no one else can spend it: anyone could
+otherwise stop the anchoring by spending it with a commitment the
+sequencer's history doesn't hold.
+
+**The anchor state**, in the chain journal: the genesis seal and the
+sequencer's key (constant, fixed at height 0), the current seal, the
+anchored height `at`, its root `root_at`, and the anchor's block hash.
+A record needs `at` above the last anchored height.
+
+**No proof of work in the chain guest.** The withdrawal statement
+checks it, on top of the anchor's block. A forked history's anchor can
+only be in a block off Bitcoin's real chain (the real chain's spend of
+that seal commits the other history), so it costs the work on top of it
+whatever the chain guest checked. The chain guest checks only that the
+transaction is in the block it names.
+
+**The withdrawal statement**, changed:
+- the return under the anchored root: `SR = root_at`, the sequencer's
+  signature on it (`input.height = at`; a note not yet in the tree at
+  `at` has no path to it), the chain receipt at any height whose anchor
+  state has that root;
+- headers: the first's parent the anchor's block, each linked, each
+  hash within its own target, their work summed (`2^256/target`,
+  computed from the compact bits) at least the contract's `W`;
+- `D = H("lichen/contract" ‖ deployment id ‖ genesis seal ‖ W)`.
+
+**Per contract:** `W = k · work(bits at the checkpoint)`, `k = 10`
+(blocks on top of the anchor's; a work sum, so fewer if difficulty
+rises, more if it falls, never stuck). The checkpoint (height, hash,
+bits) is in the contract's terms; hub and wallet each check it against
+their own view of the chain. A hub has reason to set `W` high, which
+would make the user's withdrawals unprovable, so the wallet checks.
+On regtest each block's work is about 2, so `W` is tiny: mechanics only.
+
+**The sequencer** with Bitcoin access (a bitcoind wallet): makes the
+genesis seal before its first seal (a ledger sealed without one can't be
+anchored); while sealed heights are newer than the last anchored and no
+anchor is in flight, broadcasts one for the last sealed height; once it
+has `n` confirmations (1 on test networks), applies its record as an L2
+transaction (`Tx::Anchor`), which the next block carries to the chain
+prover.
+
+**Receivers** don't need a proof: the wallet has every signed root
+(the root records above), so it computes `hist` itself, finds the anchor
+on Bitcoin, compares, and counts confirmations.
+
 ## Later, not now
 
 - A freeze: each seal also spendable after N blocks unspent (CSV), so a
