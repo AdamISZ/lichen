@@ -956,11 +956,9 @@ mod tests {
     /// real-receipt test's, kept with LICHEN_KEEP=1; remade when the chain
     /// guest is): the statement's journal for the return of 60 with memo
     /// 42 under its anchor, ten blocks on it; refusals for another height,
-    /// another note, too few blocks. Ignored until the chain guest with
-    /// anchoring is built and the files remade (docs/ANCHOR_PLAN.md).
+    /// another note, too few blocks.
     #[cfg(feature = "risc0")]
     #[test]
-    #[ignore]
     fn the_withdrawal_checked_with_a_chain_receipt() {
         let receipt = include_bytes!("../tests/data/chain.receipt");
         let p: ProverInput = serde_json::from_str(include_str!("../tests/data/withdraw-60-42.json")).unwrap();
