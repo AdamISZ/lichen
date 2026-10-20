@@ -11,9 +11,9 @@ repository at the revision in `LNGAP_REV`.
 |---|---|---|
 | `ledger` | | everyone: notes (transparent and shielded), mints, transfers, the trees, signed roots |
 | `shielded` | | wallet, sequencer, the spend guest: the spend statement (`no_std`) |
-| `validity` | | sequencer, the chain guest: the block and chain statements, the nullifier tree (`no_std`) |
-| `withdraw` | | hub, the withdrawal guest: the withdrawal statement with the chain receipt (`no_std`) |
-| `sequencer` | `lichen-sequencer` | the L2's sequencer: orders transactions, seals and signs heights, records blocks for the chain prover |
+| `validity` | | sequencer, the chain guest: the block and chain statements, the nullifier tree, anchor records and what they read of Bitcoin (`btc`) (`no_std`) |
+| `withdraw` | | hub, the withdrawal guest: the withdrawal statement with the chain receipt, under an anchor with work on it (`no_std`) |
+| `sequencer` | `lichen-sequencer` | the L2's sequencer: orders transactions, seals and signs heights, records blocks for the chain prover, anchors its history on Bitcoin (`anchor`) |
 | `l2` | | wallet and hub: the sequencer's API and its client |
 | `wallet` | `lichen` | the user; also `lichen tower`, a dispute played from a package |
 | `chain` | | each party: its own bitcoind wallet over RPC, or Esplora |
@@ -33,7 +33,7 @@ Mac and its Groth16 wrap needs x86 Linux.
 | `guests/` | their committed builds (`<g>.bin`) and image ids (`<g>.id`), and how each was built (its README) |
 | `host/` | `lichen-r0`: proves each guest, wraps in Groth16, encodes the BitVMX verifier's input |
 | `build-guest.sh` | a guest's reproducible build (x86 Linux), then packing it (anywhere) |
-| `spend-prover.sh`, `chain-prover.sh`, `withdraw-prover.sh` | `lichen-r0` in its image, for the wallet, the sequencer's operator and the user |
+| `spend-prover.sh`, `chain-prover.sh`, `withdraw-prover.sh` | `lichen-r0` in its image (`LICHEN_R0_IMAGE`, `lichen-r0` by default), for the wallet, the sequencer's operator and the user |
 
 The guests hold each other's image ids: chain holds spend's, withdraw
 holds chain's. So rebuild them in that order. A new withdrawal guest is a
