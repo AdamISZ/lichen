@@ -96,12 +96,20 @@ so get the machine ready first.
 
 ### Your sequencer
 
-The tower fetches the return's note and its path from the sequencer
-named in the package while it proves (the first few minutes; not
-after). A public sequencer needs nothing. If the package names one on
-your own device (`http://127.0.0.1:18300`), open a tunnel to the machine
-from your device before you start the tower, and keep it open until the
-log says `wrapped in Groth16`:
+The package carries what the tower proves from: the return's note, its
+path, the signed root and the chain receipt at its height, as your
+wallet kept them (it keeps each as soon as the sequencer has it; a
+cooperative withdrawal that was refused waited for both). Then the
+tower never contacts the sequencer.
+
+If the export happened before the sequencer proved the return's
+height, the package lacks the chain receipt and the tower fetches it
+from the sequencer named in the package while it proves (the first few
+minutes). A public sequencer needs nothing. If the package names one on
+your own device (`http://127.0.0.1:18300`), either export again once
+`lichen chain-receipt <contract> /dev/null` succeeds, or open a
+tunnel to the machine from your device before you start the tower, and
+keep it open until the log says `wrapped in Groth16`:
 
 ```sh
 ssh -N -R 18300:127.0.0.1:18300 <you>@<machine>

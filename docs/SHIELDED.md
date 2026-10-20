@@ -189,7 +189,9 @@ What it takes ([RUN_A_TOWER.md](RUN_A_TOWER.md) has the setup):
 - **Liveness.** Every withdrawal, cooperative or disputed, needs the
   sequencer's chain proof at its height. A sequencer that stops
   proving, or stops serving the proofs, stops withdrawals, just as one
-  that stopped signing roots would. The ledger's data lives with the
+  that stopped signing roots would. Your wallet keeps a return's signed
+  root, path and chain proof once the sequencer has them, so a
+  sequencer that stops after that can't stop that withdrawal. The ledger's data lives with the
   sequencer; data availability is out of scope.
 - **Hardware signers aren't supported.** The right to spend a shielded
   note is knowledge of a key inside the proof, not a signature a device

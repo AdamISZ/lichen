@@ -42,8 +42,18 @@ fn pay_return_and_the_withdrawal_input() {
         std::fs::write(&path, serde_json::to_string_pretty(&input).unwrap()).unwrap();
     }
 
-    // a restarted sequencer keeps the ledger
+    // the wallet keeps the input and, once proved, the chain receipt: a
+    // sequencer gone after that stops neither
+    assert!(alice.chain_receipt(42).is_err(), "height not proved yet");
+    std::fs::write(dir.join(format!("ledger.json.blocks/{}.chain", input.height)), b"a receipt").unwrap();
+    assert_eq!(alice.chain_receipt(42).unwrap(), b"a receipt");
     drop(seq);
+    let mut alice = Wallet::open(&dir.join("alice.json"), "http://127.0.0.1:9").unwrap();
+    assert!(alice.balance().is_err(), "the sequencer is gone");
+    assert_eq!(serde_json::to_value(alice.withdraw_input(42).unwrap()).unwrap(), serde_json::to_value(&input).unwrap());
+    assert_eq!(alice.chain_receipt(42).unwrap(), b"a receipt");
+
+    // a restarted sequencer keeps the ledger
     let seq = Sequencer::start("127.0.0.1:0", Some(dir.join("ledger.json")), regtest_sequencer(), HUB_KEY).unwrap();
     let bob = Wallet::open(&dir.join("bob.json"), &seq.url).unwrap();
     assert_eq!(bob.balance().unwrap(), 3);

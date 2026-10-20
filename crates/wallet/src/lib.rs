@@ -45,6 +45,24 @@ struct Stored {
     /// Deposits paid (or to be paid) for contracts not yet open.
     #[serde(default)]
     deposits: Vec<Deposit>,
+    /// What each return's withdrawal needs, kept once the sequencer has it.
+    #[serde(default)]
+    kept: Vec<Kept>,
+}
+
+/// A return's withdrawal material, kept as soon as the sequencer has it,
+/// so that a sequencer gone after that stops nothing: the statement's
+/// input once the return is sealed, and the chain receipt at its height
+/// once proved.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Kept {
+    /// The return's note.
+    pub index: u32,
+    #[serde(default)]
+    pub input: Option<WithdrawInput>,
+    /// The chain receipt, hex.
+    #[serde(default)]
+    pub chain: Option<String>,
 }
 
 /// A deposit for a contract not yet open: kept from before it is paid,
@@ -121,6 +139,7 @@ pub struct Wallet {
     key: SigningKey,
     path: PathBuf,
     returns: Vec<(u32, u32)>,
+    kept: Vec<Kept>,
     pub contracts: Vec<Held>,
     pub deposits: Vec<Deposit>,
     pub sequencer: Client,
@@ -141,7 +160,7 @@ impl Wallet {
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
         // the deployment the sequencer announces, kept from now on
-        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: vec![], contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: vec![], kept: vec![], contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
         w.save()?;
         Ok(w)
     }
@@ -152,14 +171,14 @@ impl Wallet {
             Some(d) => Client::pinned(sequencer, d),
             None => Client::new(sequencer)?,
         };
-        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: s.returns, contracts: s.contracts, deposits: s.deposits, sequencer: client };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: s.returns, kept: s.kept, contracts: s.contracts, deposits: s.deposits, sequencer: client };
         if s.deployment.is_none() {
             w.save()?;
         }
         Ok(w)
     }
     pub(crate) fn save(&self) -> Result<()> {
-        let s = Stored { secret: hex::encode(self.key.to_bytes()), deployment: Some(self.sequencer.deployment), returns: self.returns.clone(), contracts: self.contracts.clone(), deposits: self.deposits.clone() };
+        let s = Stored { secret: hex::encode(self.key.to_bytes()), deployment: Some(self.sequencer.deployment), returns: self.returns.clone(), contracts: self.contracts.clone(), deposits: self.deposits.clone(), kept: self.kept.clone() };
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -223,17 +242,45 @@ impl Wallet {
         self.returns.iter().rev().find(|r| r.0 == cid).map(|r| r.1)
     }
     /// The withdrawal statement's input for our return with memo `c`, once
-    /// it is sealed.
-    pub fn withdraw_input(&self, c: u32) -> Result<WithdrawInput> {
-        let &(_, idx) = self.returns.iter().find(|r| r.0 == c).with_context(|| format!("no return with memo {c}"))?;
-        self.sequencer.state()?.withdraw_input(idx, &self.sequencer.deployment)
+    /// it is sealed: kept from the first time the sequencer has it.
+    pub fn withdraw_input(&mut self, c: u32) -> Result<WithdrawInput> {
+        let idx = self.returned(c).with_context(|| format!("no return with memo {c}"))?;
+        if let Some(i) = self.kept(idx).and_then(|k| k.input.clone()) {
+            return Ok(i);
+        }
+        let input = self.sequencer.state()?.withdraw_input(idx, &self.sequencer.deployment)?;
+        self.keep(idx).input = Some(input.clone());
+        self.save()?;
+        Ok(input)
     }
 
     /// The sequencer's chain receipt at the height of the return's root
     /// (the withdrawal guest proves that root ends a valid history), for
     /// the prover: `lichen-r0 claim <withdraw input> <chain receipt> <out>`.
-    pub fn chain_receipt(&self, c: u32) -> Result<Vec<u8>> {
-        chain_receipt(&self.sequencer, self.withdraw_input(c)?.height)
+    /// Kept from the first time the sequencer has it.
+    pub fn chain_receipt(&mut self, c: u32) -> Result<Vec<u8>> {
+        let input = self.withdraw_input(c)?;
+        if let Some(r) = self.kept(input.index).and_then(|k| k.chain.clone()) {
+            return Ok(hex::decode(r)?);
+        }
+        let r = chain_receipt(&self.sequencer, input.height)?;
+        self.keep(input.index).chain = Some(hex::encode(&r));
+        self.save()?;
+        Ok(r)
+    }
+
+    /// What's kept for the return at note `idx`.
+    pub fn kept(&self, idx: u32) -> Option<&Kept> {
+        self.kept.iter().find(|k| k.index == idx)
+    }
+    fn keep(&mut self, idx: u32) -> &mut Kept {
+        match self.kept.iter().position(|k| k.index == idx) {
+            Some(k) => &mut self.kept[k],
+            None => {
+                self.kept.push(Kept { index: idx, ..Default::default() });
+                self.kept.last_mut().unwrap()
+            }
+        }
     }
 }
 
@@ -587,6 +634,7 @@ impl Wallet {
             ensure!(start.elapsed() < std::time::Duration::from_secs(120), "the return was never sealed");
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
+        self.withdraw_input(cid)?;
         // on the real statement the hub folds only a return whose height
         // the sequencer has proved (the chain receipt a dispute would need)
         if let Statement::Groth16 { .. } = statement {
@@ -601,6 +649,7 @@ impl Wallet {
                     std::thread::sleep(std::time::Duration::from_secs(10));
                 }
             }
+            self.chain_receipt(cid)?;
         }
         let program = statement.program(dir)?;
         let c = held.record.contract(statement, &program)?;

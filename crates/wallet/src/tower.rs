@@ -33,7 +33,7 @@ pub const VERSION: u32 = 1;
 pub struct Package {
     pub version: u32,
     /// The sequencer (the return's note, its path and the signed root, for
-    /// a tower that proves).
+    /// a tower that proves), asked only for what isn't packed below.
     pub sequencer: String,
     /// The contract.
     pub record: Record,
@@ -55,6 +55,13 @@ pub struct Package {
     /// export; else the tower builds the mock's, or proves.
     #[serde(default)]
     pub claim: Option<String>,
+    /// The withdrawal statement's input and the chain receipt at its
+    /// height (hex), as the wallet kept them: a tower that has them needs
+    /// nothing from the sequencer.
+    #[serde(default)]
+    pub input: Option<lichen_ledger::WithdrawInput>,
+    #[serde(default)]
+    pub chain: Option<String>,
 }
 
 fn entropy(h: &str) -> Result<[u8; 32]> {
@@ -75,19 +82,27 @@ impl Package {
     }
 }
 
-/// The withdrawal statement's input for the package's return, from the
-/// sequencer's public state: the note, its path, the signed root. Checked
-/// against the contract (its deployment, the note's memo and amount).
+/// The withdrawal statement's input for the package's return: as packed,
+/// or from the sequencer's public state (the note, its path, the signed
+/// root). Checked against the contract (its deployment, the note's memo
+/// and amount).
 pub fn withdraw_input(p: &Package) -> Result<lichen_ledger::WithdrawInput> {
-    let seq = lichen_l2::Client::new(&p.sequencer)?;
-    ensure!(seq.deployment.id() == p.record.deployment, "the sequencer at {} serves another deployment than the contract's", p.sequencer);
-    let input = seq.state()?.withdraw_input(p.note, &seq.deployment)?;
-    ensure!(input.note.memo == p.cid() && input.note.value == u64::from(p.b), "note {} is not a return of {} with memo {}", p.note, p.b, p.cid());
+    let input = match &p.input {
+        Some(i) => i.clone(),
+        None => {
+            let seq = lichen_l2::Client::new(&p.sequencer)?;
+            ensure!(seq.deployment.id() == p.record.deployment, "the sequencer at {} serves another deployment than the contract's", p.sequencer);
+            seq.state()?.withdraw_input(p.note, &seq.deployment)?
+        }
+    };
+    ensure!(lichen_ledger::deployment_id(&input.sequencer, &input.hub) == p.record.deployment, "the input is in another deployment than the contract's");
+    ensure!(input.index == p.note && input.note.memo == p.cid() && input.note.value == u64::from(p.b), "note {} is not a return of {} with memo {}", p.note, p.b, p.cid());
     Ok(input)
 }
 
 /// Prove the package's withdrawal and wrap the proof: the statement's
-/// input and the chain receipt at its root's height from the sequencer,
+/// input and the chain receipt at its root's height (as packed, or from
+/// the sequencer),
 /// then `prover claim <input.json> <chain receipt> <claim.hex>`
 /// (`lichen-r0`: the STARK and the Groth16 wrap, x86 for the wrap), in
 /// `work`. The claim's input, the verifier's.
@@ -96,7 +111,11 @@ pub fn prove(p: &Package, work: &Path, prover: &Path) -> Result<Vec<u8>> {
     let (json, chain, out) = (work.join("withdraw-input.json"), work.join("chain.receipt"), work.join("claim.hex"));
     let input = withdraw_input(p)?;
     std::fs::write(&json, serde_json::to_vec_pretty(&input)?)?;
-    std::fs::write(&chain, crate::chain_receipt(&lichen_l2::Client::new(&p.sequencer)?, input.height)?)?;
+    let receipt = match &p.chain {
+        Some(r) => hex::decode(r)?,
+        None => crate::chain_receipt(&lichen_l2::Client::new(&p.sequencer)?, input.height)?,
+    };
+    std::fs::write(&chain, receipt)?;
     let status = std::process::Command::new(prover).arg("claim").arg(&json).arg(&chain).arg(&out).status().with_context(|| format!("running the prover {}", prover.display()))?;
     ensure!(status.success(), "the prover {} failed: {status}", prover.display());
     Ok(hex::decode(std::fs::read_to_string(&out)?.trim())?)
@@ -228,13 +247,20 @@ pub fn run(chain: &Chain, statement: &Statement, package: &Path, dir: &Path, pro
 impl Wallet {
     /// The package for a tower to play contract `cid`'s dispute: the
     /// withdrawal returned on the L2 (its note found among the wallet's
-    /// returns), and `claim` if made already (else the tower builds the
-    /// mock's, or proves).
-    pub fn export_dispute(&self, statement: &Statement, program: &Program, cid: u32, claim: Option<&[u8]>) -> Result<Package> {
+    /// returns) with its input and chain receipt as far as the wallet has
+    /// them, and `claim` if made already (else the tower builds the mock's,
+    /// or proves).
+    pub fn export_dispute(&mut self, statement: &Statement, program: &Program, cid: u32, claim: Option<&[u8]>) -> Result<Package> {
+        let note = self.returned(cid).with_context(|| format!("no return to the hub with memo {cid}: return the withdrawal first"))?;
+        // as far as the sequencer has them; what it hasn't, the tower asks for
+        let input = self.withdraw_input(cid).ok();
+        let chain = input.as_ref().and_then(|_| self.chain_receipt(cid).ok()).map(hex::encode);
         let h = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
         ensure!(h.closed.is_none(), "contract {cid} is closed");
-        let &(_, note) = self.returns.iter().rev().find(|(memo, _)| *memo == cid).with_context(|| format!("no return to the hub with memo {cid}: return the withdrawal first"))?;
-        let b = self.sequencer.state()?.note(note).with_context(|| format!("no note {note}"))?.value;
+        let b = match &input {
+            Some(i) => i.note.value,
+            None => self.sequencer.state()?.note(note).with_context(|| format!("no note {note}"))?.value,
+        };
         let b = u32::try_from(b).context("b fits in a u32")?;
         let s = self.secrets(&h.nonce);
         let spec = h.record.spec(statement);
@@ -245,6 +271,6 @@ impl Wallet {
             .collect();
         let hops = if program.schedule.jump.is_some() { (1..=lngap_ladder::tail::CHUNKS).map(|k| hex::encode(s.hop_entropy(k))).collect() } else { vec![] };
         let fee_key = hex::encode(s.fees(h.record.network).keypair.secret_bytes());
-        Ok(Package { version: VERSION, sequencer: self.sequencer.url.clone(), record: h.record.clone(), b, note, b_wire, inputs, moves, hops, fee_key, claim: claim.map(hex::encode) })
+        Ok(Package { version: VERSION, sequencer: self.sequencer.url.clone(), record: h.record.clone(), b, note, b_wire, inputs, moves, hops, fee_key, claim: claim.map(hex::encode), input, chain })
     }
 }

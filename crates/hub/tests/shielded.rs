@@ -111,6 +111,12 @@ fn shielded_deposits_a_fold_and_a_dispute_input() {
     let program = mock().program(&dir.join("bob")).unwrap();
     let pkg = w.export_dispute(&mock(), &program, cid, None).unwrap();
     assert_eq!(serde_json::to_value(lichen_wallet::tower::withdraw_input(&pkg).unwrap()).unwrap(), serde_json::to_value(&input).unwrap());
+    // the package carries the input: the tower needs no sequencer for it
+    let mut gone = pkg.clone();
+    gone.sequencer = "http://127.0.0.1:9".into();
+    assert_eq!(serde_json::to_value(lichen_wallet::tower::withdraw_input(&gone).unwrap()).unwrap(), serde_json::to_value(&input).unwrap());
+    gone.b += 1;
+    assert!(lichen_wallet::tower::withdraw_input(&gone).is_err(), "checked against the package's amount");
     println!("LICHEN Bob's refused withdrawal of 50,000 from shielded notes: the dispute's input checks");
     stop.store(true, Ordering::Relaxed);
     sealer.join().unwrap();
