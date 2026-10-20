@@ -176,6 +176,14 @@ on Bitcoin, compares, and counts confirmations.
 
 ## Later, not now
 
+- A deployment with no shielding (decided 2026-10-20: after the MVP):
+  validity proofs and anchoring over transparent notes only, so that
+  clients can be light (no spend proofs, no scanning, hardware signers).
+  The sequencer's cost is unchanged (the chain prover proves every
+  block either way). Today the chain statement depends on
+  `lichen-shielded`; the refactor makes shielding a deployment's option
+  on top of validity and anchoring.
+
 - A freeze: each seal also spendable after N blocks unspent (CSV), so a
   stopped sequencer is a fact on Bitcoin; then a forced exit, a note
   proved unspent under the frozen root, in place of the default's
