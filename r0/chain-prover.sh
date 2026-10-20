@@ -35,7 +35,7 @@ prove() {
         # Docker without shared folders (as r0/spend-prover.sh): the files
         # in as a tar stream, the receipt out on stdout
         # shellcheck disable=SC2086
-        tar cf - $files | docker run --rm -i --entrypoint sh lichen-r0 -c \
+        tar cf - $files | docker run --rm -i --entrypoint sh "${LICHEN_R0_IMAGE:-lichen-r0}" -c \
             "mkdir /b && cd /b && tar xf - && /src/r0/target/release/lichen-r0 chain $(echo "$args" | sed 's|OUT|/b/out|') >&2 && cat /b/out" > "$h.chain.tmp"
     fi
     cd - >/dev/null

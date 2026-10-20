@@ -848,6 +848,20 @@ pub fn sign_move(program: &Program, d: u32, keys: &[lngap_lamport::winternitz::W
     sign_fields(keys, msg, &sizes)
 }
 
+/// The canned claim's `D` (`tests/data/claim-60-42.*`, the real-receipt
+/// test's): the toy deployment with the genesis seal of the regtest run
+/// that made it, a contract checkpointed at regtest's difficulty.
+pub fn canned_d() -> Hash {
+    let d = Deployment { seal: Some(canned_seal()), ..Deployment::toy() };
+    let regtest = Checkpoint { height: 0, hash: <bitcoin::BlockHash as bitcoin::hashes::Hash>::all_zeros(), bits: 0x207fffff };
+    contract_word(&d, Some(&regtest)).unwrap()
+}
+
+/// The canned claim's genesis seal.
+pub fn canned_seal() -> lichen_ledger::OutPoint {
+    lichen_ledger::outpoint::parse(include_str!("../tests/data/claim-60-42.seal").trim()).expect("the canned claim's genesis seal")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -914,10 +928,14 @@ mod tests {
         assert!(failing(&claim(&ours)).is_empty());
         assert_eq!(failing(&claim(&theirs)), (1..=8).map(|j| format!("deployment_{j}")).collect::<Vec<_>>());
         // the real claim (the committed guest's proof of the toy
-        // deployment's return of 60, memo 42) passes every check
+        // deployment's return of 60, memo 42, anchored on regtest: D the
+        // contract's, of the run's genesis seal and regtest's W) passes
+        // every check
         let real = hex::decode(include_str!("../tests/data/claim-60-42.hex").trim()).unwrap();
         let words = lngap_zk::final_d60::input_words(&real);
         assert_eq!(words.len(), 51);
+        let (_, checks) = g16.layout(42, &canned_d());
+        let failing = |w: &[u32]| checks.iter().filter(|c| w[c.word] != c.value).map(|c| c.name.clone()).collect::<Vec<_>>();
         assert!(failing(&words).is_empty(), "{:?}", failing(&words));
         assert_eq!(words[b_word], 60);
         assert_eq!(g16.accepts(&real), Some(true));

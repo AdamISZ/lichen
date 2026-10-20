@@ -21,7 +21,7 @@ use lichen_chain::Chain;
 use lichen_hub::{Config, Hub};
 use lichen_ledger::{regtest_sequencer, HUB_KEY};
 use lichen_proto::Statement;
-use lichen_sequencer::Sequencer;
+use lichen_sequencer::{Options, Sequencer};
 use lichen_wallet::dispute::Outcome;
 use lichen_wallet::{Ask, Wallet};
 use lngap_btc::regtest::Regtest;
@@ -75,7 +75,9 @@ fn a_read_lie_on_the_groth16_verifier() {
     let (step, hops, lie) = a_late_read_lie(&statement, &input, &dir.join("probe"), 20_000);
     println!("LICHEN R: a read lie at step {step}, a path of {hops} hops, found in {:.0?}", t.elapsed());
 
-    let seq = Sequencer::start("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY).unwrap();
+    // the deployment the canned claim's D commits to: its genesis seal (no
+    // anchoring needed: the dispute reads only the claim's words)
+    let seq = Sequencer::start_with("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY, Options { seal: Some(lichen_proto::canned_seal()), ..Default::default() }).unwrap();
     let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     // blocks when the mempool has something, else every 15 s (as groth16.rs)
