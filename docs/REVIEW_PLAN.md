@@ -15,11 +15,11 @@ under S.
 
 | id | where | finding | status |
 |---|---|---|---|
-| S1 | validity `check_anchor`, `btc::merkle_root` | The anchor's Merkle path length isn't bound to the block's tree depth: a fake anchor beneath a real 64-byte transaction (CVE-2017-12842 class). It forges an anchor of another history in a real block with real work on top. The cost is a large grind but below `W`'s work. Fix: also prove the coinbase at index 0 with a path of the same length (Bitcoin's own depth), and refuse a 64-byte coinbase. | fixed in the chain guest (the record carries the coinbase and its path; the anchor's path as long), awaiting the build |
+| S1 | validity `check_anchor`, `btc::merkle_root` | The anchor's Merkle path length isn't bound to the block's tree depth: a fake anchor beneath a real 64-byte transaction (CVE-2017-12842 class). It forges an anchor of another history in a real block with real work on top. The cost is a large grind but below `W`'s work. Fix: also prove the coinbase at index 0 with a path of the same length (Bitcoin's own depth), and refuse a 64-byte coinbase. | fixed in the chain guest (the record carries the coinbase and its path; the anchor's path as long), built (chain `d810c783…`, withdraw `11a9f930…`) |
 | S2 | ledger `apply_tx` vs chain guest | No limit on a shielded transaction's ciphertext size or on a block's size: one user can make a block the chain guest can't prove. Native fix: the sequencer refuses large ciphertexts and bounds a block (no guest change). | fixed natively, see L8 |
-| S3 | validity `Mint::digest` | A mint's signature doesn't bind the deployment, so mints replay across deployments that share a hub key. Fix: the deployment id in the digest. | fixed in the chain guest (the digest binds the sequencer, the hub and the genesis seal), awaiting the build |
+| S3 | validity `Mint::digest` | A mint's signature doesn't bind the deployment, so mints replay across deployments that share a hub key. Fix: the deployment id in the digest. | fixed in the chain guest (the digest binds the sequencer, the hub and the genesis seal), built (chain `d810c783…`, withdraw `11a9f930…`) |
 | S4 | validity `state_root` | The tree's size isn't in the state root, so the chain prover may choose a padded frontier (liveness only). Fix: the size in the root. | deferred: the root's formula is ln-gap's withdrawal core's too; liveness only, and only the sequencer's own prover |
-| S5 | shielded journal encoding | List lengths are written as `u8` (not exploitable today: real receipts carry at most 4). Fix: refuse more than `MAX_*`. | fixed in the chain guest (the spend statement's bounds checked before re-encoding; the spend guest unchanged), awaiting the build |
+| S5 | shielded journal encoding | List lengths are written as `u8` (not exploitable today: real receipts carry at most 4). Fix: refuse more than `MAX_*`. | fixed in the chain guest (the spend statement's bounds checked before re-encoding; the spend guest unchanged), built (chain `d810c783…`, withdraw `11a9f930…`) |
 
 ## L: ledger, sequencer, l2, chain
 
@@ -102,3 +102,13 @@ under S.
 - **D3 (H2).** The hub's watcher: one thread, blocking. A hub with many
   contracts needs per-contract scheduling (no sleeps), or a thread per
   dispute.
+
+## Next
+
+- The Groth16 tests (G1–G3, `groth16_read`) on the new guests: not run
+  yet (2026-10-21).
+- A new deployment for a trial on the new guests: the Mutinynet one runs
+  on the old (`lichen-r0:anchor`).
+- Open still: L9, L12, L13, H2 (D3), H8, H9 (D1), H13, W6, W7, W9, W13,
+  W14, S4; clippy's warnings in `validity` (guest code: with the next
+  guest build).
