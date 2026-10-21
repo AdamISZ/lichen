@@ -160,6 +160,35 @@ fn a_withdrawal_under_an_anchor() {
     let bheld = bob.open_contract(&hub.url, &bch, &mock(), &dir.join("bob"), ask, bch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { bch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
     rt.mine(1).unwrap();
     wait("Bob's deposit", || bob.balance().unwrap() == ask.deposit);
+    // the receiver's view: his deposit's note sealed, then anchored, then
+    // final ten blocks on, each anchor checked on Bitcoin
+    let f = bob.finality(&bch).unwrap();
+    assert_eq!(f.sealed + f.anchored + f.fin, ask.deposit);
+    wait("Bob's deposit anchored", || {
+        let _ = rt.mine(1);
+        bob.finality(&bch).unwrap().sealed == 0
+    });
+    rt.mine(10).unwrap();
+    let f = bob.finality(&bch).unwrap();
+    assert_eq!((f.sealed, f.anchored, f.fin), (0, 0, ask.deposit), "final: {f:?}");
+    assert!(f.last.unwrap().confirmations >= 10);
+    // a sequencer's state whose anchors don't check: refused
+    let state = bob.sequencer.state().unwrap();
+    let mut forged = state.clone();
+    forged.anchors[0].anchor.root = [1; 32];
+    let e = bob.checked_anchors(&forged, &bch).unwrap_err();
+    assert!(format!("{e:#}").contains("another root"), "{e:#}");
+    let mut forged = state.clone();
+    let h = forged.anchors[0].anchor.height as usize;
+    forged.sealed[h - 1].tree = [2; 32];
+    let e = bob.checked_anchors(&forged, &bch).unwrap_err();
+    assert!(format!("{e:#}").contains("commits another history"), "{e:#}");
+    let mut forged = state.clone();
+    forged.anchors.remove(0);
+    if !forged.anchors.is_empty() {
+        let e = bob.checked_anchors(&forged, &bch).unwrap_err();
+        assert!(format!("{e:#}").contains("doesn't spend the last seal"), "{e:#}");
+    }
     let txid = bob.withdraw(&hub.url, &mock(), &dir.join("bob"), bheld.record.cid(), ask.deposit).unwrap();
     println!("LICHEN contract {}: Bob's return folded before any anchor, {txid}", bheld.record.cid());
     let txid = w.withdraw(&hub.url, &mock(), &dir.join("alice"), cid, ask.deposit).unwrap();

@@ -8,6 +8,7 @@
 
 pub mod dispute;
 pub mod engine;
+pub mod finality;
 pub mod shielded;
 pub mod tower;
 

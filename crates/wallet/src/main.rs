@@ -263,6 +263,17 @@ fn main() -> Result<()> {
         Cmd::Balance => {
             let (t, s) = w.balances()?;
             println!("{} (transparent {t}, shielded {s})", t + s);
+            // in an anchored deployment: how final, the anchors checked on
+            // Bitcoin
+            if w.sequencer.deployment.seal.is_some() {
+                let f = w.finality(&chain(&a)?)?;
+                let depth = lichen_proto::ANCHOR_DEPTH;
+                println!("  final (anchored, {depth}+ blocks deep): {}; anchored, not yet {depth} deep: {}; sealed, not yet anchored: {}", f.fin, f.anchored, f.sealed);
+                match f.last {
+                    Some(c) => println!("  the last anchor: height {}, {} confirmations", c.height, c.confirmations),
+                    None => println!("  no anchor yet"),
+                }
+            }
         }
         Cmd::Send { to, amount } if to.len() == 128 => {
             let to: lichen_wallet::shielded::SAddress = to.parse()?;
