@@ -25,17 +25,17 @@ under S.
 
 | id | where | finding | status |
 |---|---|---|---|
-| L1 | sequencer `/tx` | Any client may post `Tx::Anchor`. A fake record (any header whose Merkle root is the fake txid) takes the seal chain over and stops anchoring for good. Fix: only the anchorer applies anchor records. | |
-| L2 | ledger `verify_receipt` | A Groth16 spend receipt is accepted, which the chain prover can't take as an assumption, so the prover stops at that height for good. Fix: succinct or composite only. | |
-| L3 | ledger `append_leaves` | Capacity is checked mid-append: a transaction that fills the tree leaves some of its leaves behind and isn't pending. The next root is then unprovable. Fix: check capacity up front. (The tree's 65,536 notes are a design limit: see D2.) | |
-| L4 | anchorer `step`, chain `get_tx` | An RPC error reads as "gone": the flight is cleared and a second anchor spends the same seal. Also a crash between broadcast and saving the flight. Fix: tell errors from absence; find the seal's spender on chain before sending again. | |
-| L5 | anchorer `step` | Recording isn't idempotent: a record already applied fails `Seal` forever. Fix: an anchor already recorded clears the flight. | |
-| L6 | sequencer save | The ledger is written in place, after every 200 response (GETs too), and errors are ignored, so a crash can truncate it. Fix: atomic write (tmp, fsync, rename), only after changes, and a failed save refuses the request. | |
-| L7 | sequencer `record` | Block files are written before the ledger is saved: after a crash, a stale `<h>.chain` or `<h>.k.receipt` can stay. Fix: clear a height's stale files when recording it again. | |
-| L8 | sequencer HTTP | One thread, an unbounded body. Fix: cap the body; cap ciphertexts and outputs (S2). | |
+| L1 | sequencer `/tx` | Any client may post `Tx::Anchor`. A fake record (any header whose Merkle root is the fake txid) takes the seal chain over and stops anchoring for good. Fix: only the anchorer applies anchor records. || fixed, 148d487 |
+| L2 | ledger `verify_receipt` | A Groth16 spend receipt is accepted, which the chain prover can't take as an assumption, so the prover stops at that height for good. Fix: succinct or composite only. || fixed, 148d487 |
+| L3 | ledger `append_leaves` | Capacity is checked mid-append: a transaction that fills the tree leaves some of its leaves behind and isn't pending. The next root is then unprovable. Fix: check capacity up front. (The tree's 65,536 notes are a design limit: see D2.) || fixed, 148d487 |
+| L4 | anchorer `step`, chain `get_tx` | An RPC error reads as "gone": the flight is cleared and a second anchor spends the same seal. Also a crash between broadcast and saving the flight. Fix: tell errors from absence; find the seal's spender on chain before sending again. || fixed, 148d487 |
+| L5 | anchorer `step` | Recording isn't idempotent: a record already applied fails `Seal` forever. Fix: an anchor already recorded clears the flight. || fixed, 148d487 |
+| L6 | sequencer save | The ledger is written in place, after every 200 response (GETs too), and errors are ignored, so a crash can truncate it. Fix: atomic write (tmp, fsync, rename), only after changes, and a failed save refuses the request. || fixed, 148d487 |
+| L7 | sequencer `record` | Block files are written before the ledger is saved: after a crash, a stale `<h>.chain` or `<h>.k.receipt` can stay. Fix: clear a height's stale files when recording it again. || fixed, 148d487 |
+| L8 | sequencer HTTP | One thread, an unbounded body. Fix: cap the body; cap ciphertexts and outputs (S2). || fixed, 148d487 |
 | L9 | anchorer, `anchored_input` | A reorg after recording (1 confirmation by default) strands returns under that anchor. | open: depth by default on testnet4; note |
-| L10 | anchorer `send` | Coins stay locked when `new_spk` fails; a flat 270 vB fee whatever the inputs; no fee bump. | |
-| L11 | chain `confirmations`, `coins_of` | `u32` subtraction can wrap when servers lag. | |
+| L10 | anchorer `send` | Coins stay locked when `new_spk` fails; a flat 270 vB fee whatever the inputs; no fee bump. || fixed, 148d487 (no fee bump yet) |
+| L11 | chain `confirmations`, `coins_of` | `u32` subtraction can wrap when servers lag. || fixed, 148d487 |
 | L12 | sequencer events | Not persisted: numbering restarts. | open (demo only) |
 | L13 | ledger `Tree::levels` | The tree is rebuilt per path, under the lock. | open (performance) |
 
@@ -43,39 +43,39 @@ under S.
 
 | id | where | finding | status |
 |---|---|---|---|
-| H1 | hub fold, default, timeouts | A contract is closed as soon as the hub broadcasts, not when its transaction confirms. A conflicting escalation mined instead goes unwatched, and Alice's timeouts pay her claim. Fix: closed on confirmation; keep watching until then. | |
+| H1 | hub fold, default, timeouts | A contract is closed as soon as the hub broadcasts, not when its transaction confirms. A conflicting escalation mined instead goes unwatched, and Alice's timeouts pay her claim. Fix: closed on confirmation; keep watching until then. || fixed, 6fcdbbc |
 | H2 | hub watcher | One thread for every contract, and it blocks: a disprove sleeps `δ` (40 blocks on Mutinynet) while another contract's choice window (20) runs out. | design (D3) |
-| H3 | hub `disputes_tick` | One contract's error aborts the tick (later contracts starve) and drops its dispute state. Fix: per-contract errors, state kept. | |
-| H4 | hub `/accept` | The funding is broadcast before the contract is saved. Fix: save first. | |
-| H5 | hub defaults | Each failing attempt makes a fee coin (a wallet transaction) every tick, and its error stops other contracts' defaults. Fix: check the contract output is unspent first; per-contract errors. | |
-| H6 | hub `/open` | Input that panics the one HTTP thread: a reserve near `u64::MAX` (Amount overflow); an input-word key with other parameters (`assert_eq!` in presign). Fix: validate, and catch a handler's panic. | |
-| H7 | hub `/open` | Repeated for one cid: it locks more hub coins each time, mints again, and overwrites another user's pending offer. Fix: one pending offer per cid, the old one's coins unlocked. | |
+| H3 | hub `disputes_tick` | One contract's error aborts the tick (later contracts starve) and drops its dispute state. Fix: per-contract errors, state kept. || fixed, 6fcdbbc |
+| H4 | hub `/accept` | The funding is broadcast before the contract is saved. Fix: save first. || fixed, 6fcdbbc |
+| H5 | hub defaults | Each failing attempt makes a fee coin (a wallet transaction) every tick, and its error stops other contracts' defaults. Fix: check the contract output is unspent first; per-contract errors. || fixed, 6fcdbbc |
+| H6 | hub `/open` | Input that panics the one HTTP thread: a reserve near `u64::MAX` (Amount overflow); an input-word key with other parameters (`assert_eq!` in presign). Fix: validate, and catch a handler's panic. || fixed, 6fcdbbc |
+| H7 | hub `/open` | Repeated for one cid: it locks more hub coins each time, mints again, and overwrites another user's pending offer. Fix: one pending offer per cid, the old one's coins unlocked. || fixed, 6fcdbbc (binding /open to the deposit key: open) |
 | H8 | hub funding | Never fee-bumped: a funding pinned until the refund matures. | open (the known TODO in PLAN.md) |
 | H9 | proto `terms` | Alice's reserve has no minimum, so a false claim costs her nothing. | design (D1) |
 | H10 | hub floors | Measured once with the first user's keys (follows from H6's unchecked key parameters). | with H6 |
-| H11 | hub dispute | "Already settled by timeout" doesn't close the contract. | |
-| H12 | hub files | Written in place; one unreadable file stops the hub from starting. Fix: atomic writes. | |
+| H11 | hub dispute | "Already settled by timeout" doesn't close the contract. || fixed, 6fcdbbc |
+| H12 | hub files | Written in place; one unreadable file stops the hub from starting. Fix: atomic writes. || fixed, 6fcdbbc |
 | H13 | proto `Checkpoint::tip` | On testnet4 the tip can be a minimum-difficulty block, so `W` is trivial. | open: note |
 
 ## W: wallet, tower, demo
 
 | id | where | finding | status |
 |---|---|---|---|
-| W1 | wallet `withdraw` | The hub's fold txid is taken on trust, and the contract closed on it: a hub answering any txid stops the dispute. Fix: the txid must be the fold's, seen on chain. | |
-| W2 | wallet `open_with` | `T_close` is checked only to be in the future; the deposit's refund timeout is taken from the hub unchecked. Fix: both against the network's. | |
-| W3 | wallet `refund`, accept | The deposit record (with `offered`) is dropped when the refund is broadcast, or when the accept returns, before anything confirms. | |
-| W4 | wallet `resume_open` | Overwrites an earlier offered record whose presignature is still valid. | |
-| W5 | wallet save | Written in place, with default permissions; the only copy of the key. Fix: atomic, 0600. Tower packages too. | |
-| W6 | wallet | No lock between `lichen` processes: lost updates. | |
-| W7 | wallet `withdraw` | The return is recorded only after the sequencer answers: a lost answer, then a rerun, returns twice. | |
-| W8 | wallet `sweep_dispute` | A stored payout isn't checked to be this contract's terminal (and can panic). | |
-| W9 | tower `export_dispute` | Ignores the claim the wallet already escalated (Groth16 proofs are randomized). | |
-| W10 | wallet shielded prover | The spend's private input (`nk`) is left in a temp directory on failure, readable by others. | |
-| W11 | demo `withdraw` | Any withdraw error starts a dispute, which pays a claim with no return under the demo's true-for-all statement. `busy` sticks after a panic. | |
-| W12 | wallet `wait_link` | Waits forever on a hub link left unconfirmed in the mempool; a mempool-only conflict is recorded as lost. | |
-| W13 | wallet `dispute` CLI | A kept claim overrides the amount silently; b isn't checked against the return on the mock statement. | |
+| W1 | wallet `withdraw` | The hub's fold txid is taken on trust, and the contract closed on it: a hub answering any txid stops the dispute. Fix: the txid must be the fold's, seen on chain. || fixed, 1bd9af3 |
+| W2 | wallet `open_with` | `T_close` is checked only to be in the future; the deposit's refund timeout is taken from the hub unchecked. Fix: both against the network's. || fixed, 1bd9af3 |
+| W3 | wallet `refund`, accept | The deposit record (with `offered`) is dropped when the refund is broadcast, or when the accept returns, before anything confirms. || fixed, 1bd9af3 |
+| W4 | wallet `resume_open` | Overwrites an earlier offered record whose presignature is still valid. || fixed, 1bd9af3 |
+| W5 | wallet save | Written in place, with default permissions; the only copy of the key. Fix: atomic, 0600. Tower packages too. || fixed, 1bd9af3 |
+| W6 | wallet | No lock between `lichen` processes: lost updates. | open |
+| W7 | wallet `withdraw` | The return is recorded only after the sequencer answers: a lost answer, then a rerun, returns twice. | open |
+| W8 | wallet `sweep_dispute` | A stored payout isn't checked to be this contract's terminal (and can panic). || fixed, 1bd9af3 |
+| W9 | tower `export_dispute` | Ignores the claim the wallet already escalated (Groth16 proofs are randomized). | open |
+| W10 | wallet shielded prover | The spend's private input (`nk`) is left in a temp directory on failure, readable by others. || fixed, 1bd9af3 |
+| W11 | demo `withdraw` | Any withdraw error starts a dispute, which pays a claim with no return under the demo's true-for-all statement. `busy` sticks after a panic. || fixed, e8c6009 |
+| W12 | wallet `wait_link` | Waits forever on a hub link left unconfirmed in the mempool; a mempool-only conflict is recorded as lost. || fixed, 1bd9af3 (a mempool-only conflict still reads as lost) |
+| W13 | wallet `dispute` CLI | A kept claim overrides the amount silently; b isn't checked against the return on the mock statement. | open |
 | W14 | wallet finality | Cached anchors' heights aren't rechecked after a reorg; matched by position. | open: low |
-| W15 | demo | Orphaned provers (SIGINT; a prover's PID 1 ignores it), the port bound late, `--dir` wiped unchecked. | |
+| W15 | demo | Orphaned provers (SIGINT; a prover's PID 1 ignores it), the port bound late, `--dir` wiped unchecked. || fixed, e8c6009 |
 
 ## T: tests and CI
 
