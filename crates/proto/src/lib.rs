@@ -641,7 +641,7 @@ impl Record {
 /// built for.
 pub fn check_request_keys(program: &Program, req: &OpenRequest) -> Result<()> {
     let wants = |k: &lngap_lamport::winternitz::WotsPublic, p: lngap_lamport::winternitz::WotsParams| k.params == p && k.digits.len() == p.total_digits() as usize;
-    ensure!(req.inputs.len() == program.info.input_words as usize, "{} input-word keys for {} words", req.inputs.len(), program.info.input_words);
+    ensure!(req.inputs.len() == program.info.input_words, "{} input-word keys for {} words", req.inputs.len(), program.info.input_words);
     ensure!(req.inputs.iter().all(|k| wants(k, lngap_zk::final_d60::input_key_params())), "an input-word key of other parameters");
     ensure!(req.hops.iter().all(|k| wants(k, lngap_lamport::winternitz::WotsParams::for_bytes(1))), "a hop key of other parameters");
     Ok(())
