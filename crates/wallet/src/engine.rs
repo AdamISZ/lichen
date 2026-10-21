@@ -201,6 +201,14 @@ fn wait_link(chain: &Chain, txid: &Txid, ours: &OutPoint, deadline: u32) -> Resu
             if confirmed_at(chain, txid)?.is_none() && chain.get_tx(txid).is_none() {
                 return Ok(Next::Taken);
             }
+            // the link, unconfirmed: waited for, but never past the
+            // deadline (a link left in the mempool must not hold off our
+            // timeout)
+            let h = chain.height()?;
+            if h >= deadline {
+                return Ok(Next::Deadline);
+            }
+            ensure!(!stall.stalled(h), "the chain stalled");
             continue;
         }
         let h = chain.height()?;

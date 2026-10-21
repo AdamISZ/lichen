@@ -153,15 +153,22 @@ impl Wallet {
         match &self.spend_prover {
             SpendProver::Native => Ok(Proof::Native(input.to_bytes())),
             SpendProver::Command(cmd) => {
+                // the input holds nk, the notes' spending authority: in a
+                // directory of the owner's alone, removed however proving ends
                 let dir = std::env::temp_dir().join(format!("lichen-spend-{}", hex::encode(fresh_rho())));
-                std::fs::create_dir_all(&dir)?;
-                let (inp, out) = (dir.join("input.bin"), dir.join("receipt.bin"));
-                std::fs::write(&inp, input.to_bytes())?;
-                let st = std::process::Command::new(cmd).arg("spend").arg(&inp).arg(&out).status().with_context(|| format!("running {}", cmd.display()))?;
-                ensure!(st.success(), "the prover failed ({st})");
-                let r = std::fs::read(&out).context("the prover's receipt")?;
+                let mut b = std::fs::DirBuilder::new();
+                #[cfg(unix)]
+                std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+                b.create(&dir)?;
+                let r = (|| -> Result<Vec<u8>> {
+                    let (inp, out) = (dir.join("input.bin"), dir.join("receipt.bin"));
+                    lichen_ledger::files::write_private(&inp, &input.to_bytes())?;
+                    let st = std::process::Command::new(cmd).arg("spend").arg(&inp).arg(&out).status().with_context(|| format!("running {}", cmd.display()))?;
+                    ensure!(st.success(), "the prover failed ({st})");
+                    std::fs::read(&out).context("the prover's receipt")
+                })();
                 let _ = std::fs::remove_dir_all(&dir);
-                Ok(Proof::Risc0(r))
+                Ok(Proof::Risc0(r?))
             }
         }
     }

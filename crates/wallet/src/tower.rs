@@ -217,7 +217,7 @@ impl StateFile {
         Ok(StateFile { path, state })
     }
     fn save(&self) -> Result<()> {
-        std::fs::write(&self.path, serde_json::to_vec_pretty(&self.state)?)?;
+        lichen_ledger::files::write_private(&self.path, &serde_json::to_vec_pretty(&self.state)?)?;
         Ok(())
     }
 }

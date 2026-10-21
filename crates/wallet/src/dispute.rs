@@ -62,6 +62,18 @@ impl Store for HeldStore<'_> {
 }
 
 impl Wallet {
+    /// Contract `k` is still open: no closing transaction, or one named
+    /// (the hub's answer to a fold) that never reached the chain, which
+    /// is then forgotten.
+    fn ensure_open(&mut self, chain: &Chain, k: usize) -> Result<()> {
+        if let Some(t) = self.contracts[k].closed {
+            ensure!(chain.get_tx(&t).is_none(), "contract {} is closed ({t})", self.contracts[k].record.cid());
+            self.contracts[k].closed = None;
+            self.save()?;
+        }
+        Ok(())
+    }
+
     fn step(&self, msg: String) {
         if let Some(f) = &self.progress {
             f(msg);
@@ -77,7 +89,7 @@ impl Wallet {
     /// already on chain is replayed, not posted again.
     pub fn dispute(&mut self, chain: &Chain, statement: &Statement, dir: &Path, cid: u32, b: u32, input: &[u8]) -> Result<(Outcome, Swept)> {
         let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
-        ensure!(self.contracts[k].closed.is_none(), "contract {cid} is closed");
+        self.ensure_open(chain, k)?;
         let held = self.contracts[k].clone();
         let signer = WalletSigner { secrets: self.secrets(&held.nonce), network: held.record.network };
         let opts = Options { progress: self.progress.clone(), pause_after: self.pause_after, unchecked_claims: self.unchecked_claims, lie: self.lie.clone() };
@@ -93,12 +105,18 @@ impl Wallet {
     /// paid by `outcome`'s payout: keep it with the contract, and sweep.
     pub fn sweep_dispute(&mut self, chain: &Chain, statement: &Statement, dir: &Path, cid: u32, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
         let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
-        ensure!(self.contracts[k].closed.is_none(), "contract {cid} is closed");
+        self.ensure_open(chain, k)?;
         let payout = outcome.payout().context("the tower's dispute wasn't won")?;
-        ensure!(chain.get_tx(&payout).is_some(), "the payout {payout} is not on chain");
+        let tx = chain.get_tx(&payout).with_context(|| format!("the payout {payout} is not on chain"))?;
+        // a terminal of this contract's dispute (one of its links' outputs
+        // spent), with the outputs a payout has, checked before it is kept
+        let d = Disputed::new(&self.contracts[k].record, statement, dir)?;
+        let links: std::collections::HashSet<_> = d.set.values().map(|p| p.tx.compute_txid()).collect();
+        ensure!(tx.input.first().is_some_and(|i| links.contains(&i.previous_output.txid)), "{payout} is no terminal of contract {cid}'s dispute");
+        let t = &d.contract.spec.terms;
+        ensure!(tx.output.len() as u32 > t.bits - t.low_bits, "{payout} hasn't a payout's outputs");
         self.contracts[k].payout = Some(outcome.clone());
         self.save()?;
-        let d = Disputed::new(&self.contracts[k].record, statement, dir)?;
         self.won(chain, &d, k, b, outcome)
     }
 

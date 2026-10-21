@@ -390,7 +390,8 @@ fn main() -> Result<()> {
             let program = a.statement.program(&a.wallet.with_extension("d"))?;
             let claim = input.as_ref().map(|p| -> Result<Vec<u8>> { Ok(hex::decode(std::fs::read_to_string(p)?.trim())?) }).transpose()?;
             let p = w.export_dispute(&a.statement, &program, contract, claim.as_deref())?;
-            std::fs::write(out, serde_json::to_vec_pretty(&p)?)?;
+            // a tower package holds the contract's one-time secrets
+            lichen_ledger::files::write_private(out, &serde_json::to_vec_pretty(&p)?)?;
             println!("wrote {}: contract {contract}'s dispute (a claim of {} sats) for a tower; it holds this contract's one-time secrets", out.display(), p.b);
         }
         Cmd::SweepDispute { contract, ref tower_state } => {

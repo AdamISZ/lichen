@@ -99,6 +99,22 @@ pub struct Deposit {
     /// same, and reveals `t` ([`Wallet::claim_mint`]).
     #[serde(default)]
     pub offered: Option<(Record, Locked)>,
+    /// Offers accepted before `offered` (an opening resumed after the
+    /// hub's failure): each pre-signature still lets the hub broadcast its
+    /// funding, so each is kept until one is out or the deposit refunded.
+    #[serde(default)]
+    pub earlier: Vec<(Record, Locked)>,
+}
+
+impl Deposit {
+    /// The offer accepted whose funding is on chain, if any.
+    fn funded(&self, chain: &Chain) -> Option<(Record, Locked)> {
+        self.offered.iter().chain(&self.earlier).find(|(r, _)| chain.get_tx(&r.funding.txid).is_some()).cloned()
+    }
+    /// Whether the hub holds a pre-signature of ours on this deposit.
+    fn presigned(&self) -> bool {
+        self.offered.is_some() || !self.earlier.is_empty()
+    }
 }
 
 /// A contract's `D`, minted before its funding to [`mint_owner`] of our
@@ -202,7 +218,8 @@ impl Wallet {
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
         }
-        std::fs::write(&self.path, serde_json::to_vec_pretty(&s)?)?;
+        // the only copy of the wallet's key: replaced atomically, the owner's alone
+        lichen_ledger::files::write_private(&self.path, &serde_json::to_vec_pretty(&s)?)?;
         Ok(())
     }
     /// The sequencer's state, its roots checked and recorded: an error if
@@ -472,7 +489,10 @@ impl Wallet {
         let nonce = hex::encode(fresh_rho());
         let dep_kp = self.deposit_key(&nonce);
         let offer: DepositOffer = hub_call(&format!("{hub}/deposit"), Some(serde_json::to_string(&DepositRequest { alice: dep_kp.x_only_public_key().0 })?))?;
-        let dep = Deposit { nonce: nonce.clone(), cid: offer.cid, hub: offer.hub, timeout: offer.timeout, payout: payout.clone(), offered: None };
+        // the refund's timeout is the network's: a hub naming a longer one
+        // could lock the deposit up for as long
+        ensure!(offer.timeout == lichen_proto::deposit_timeout(net), "the hub's deposit refund waits {} blocks, not the network's {}", offer.timeout, lichen_proto::deposit_timeout(net));
+        let dep = Deposit { nonce: nonce.clone(), cid: offer.cid, hub: offer.hub, timeout: offer.timeout, payout: payout.clone(), offered: None, earlier: vec![] };
         self.deposits.push(dep.clone());
         self.save()?;
         let dep_spk = deposit_tree(&dep_kp.x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();
@@ -490,7 +510,7 @@ impl Wallet {
     pub fn resume_open(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, ask: Ask, cid: u32) -> Result<Held> {
         let dep = self.deposits.iter().find(|d| d.cid == cid).cloned().with_context(|| format!("no deposit for contract {cid}"))?;
         // an offer accepted whose funding is out: the contract is open
-        if dep.offered.as_ref().is_some_and(|(r, _)| chain.get_tx(&r.funding.txid).is_some()) {
+        if dep.funded(chain).is_some() {
             self.claim_mint(chain, cid)?;
             return self.contracts.iter().find(|h| h.record.cid() == cid).cloned().context("the contract");
         }
@@ -526,7 +546,9 @@ impl Wallet {
         // the contract as the offer makes it, checked before signing
         ensure!(offer.cid == dep.cid, "the offer is for contract {}, the deposit for {}", offer.cid, dep.cid);
         let t = terms(offer.cid, &req, offer.t_close, offer.reserve_hub)?;
-        ensure!(offer.t_close > chain.height()?, "T_close is past");
+        // time to withdraw, and to dispute, before the default
+        let least = chain.height()? + lichen_proto::min_duration(net);
+        ensure!(offer.t_close >= least, "the hub's T_close, block {}, is too soon (at least block {least})", offer.t_close);
         // the hub's windows: never less time for her moves than the
         // network's (longer ones only slow a dispute)
         if let Some(w) = offer.windows {
@@ -581,14 +603,33 @@ impl Wallet {
         let (_, msg) = deposit_open_msg(&offer.funding, &coin.0, &known, &dep_tree)?;
         let locked = Locked { index: offer.mint_index, point: offer.mint_point, presig: adaptor_sign(&dep_kp, &msg, &offer.mint_point).into(), deposit: coin.0, claimed: false };
         if let Some(d) = self.deposits.iter_mut().find(|d| d.cid == dep.cid) {
-            d.offered = Some((record.clone(), locked.clone()));
+            if let Some(old) = d.offered.replace((record.clone(), locked.clone())) {
+                if old.0.funding != record.funding {
+                    d.earlier.push(old);
+                }
+            }
         }
         self.save()?;
         chain.watch(&fees.spk())?;
         let accept = Accept { cid: offer.cid, alice_sigs: record.alice_sigs.clone(), deposit_presig: locked.presig.clone() };
         let opened: Opened = hub_call(&format!("{hub}/accept"), Some(serde_json::to_string(&accept)?))?;
+        // the hub broadcast it before answering; an Esplora indexes it soon
+        let start = std::time::Instant::now();
+        let funded = loop {
+            if chain.get_tx(&record.funding.txid).is_some() {
+                break true;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(30) {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        };
         self.contracts.push(Held { nonce, record, closed: None, claim: None, payout: None, mint: Some(locked) });
-        self.deposits.retain(|x| x.cid != dep.cid);
+        // the deposit's record goes once the funding is out: until then a
+        // hub that answered but never broadcast leaves the refund
+        if funded {
+            self.deposits.retain(|x| x.cid != dep.cid);
+        }
         self.save()?;
         self.claim_mint_with(dep.cid, &opened.t)?;
         self.contracts.iter().find(|h| h.record.cid() == dep.cid).cloned().context("the contract")
@@ -620,8 +661,8 @@ impl Wallet {
     pub fn claim_mint(&mut self, chain: &Chain, cid: u32) -> Result<()> {
         if !self.contracts.iter().any(|h| h.record.cid() == cid) {
             let dep = self.deposits.iter().find(|d| d.cid == cid).cloned().with_context(|| format!("no contract or deposit {cid}"))?;
-            let (record, locked) = dep.offered.clone().with_context(|| format!("no offer accepted for contract {cid}"))?;
-            ensure!(chain.get_tx(&record.funding.txid).is_some(), "contract {cid}'s funding is not out: if the hub never broadcasts it, refund the deposit after its timeout");
+            ensure!(dep.presigned(), "no offer accepted for contract {cid}");
+            let (record, locked) = dep.funded(chain).with_context(|| format!("contract {cid}'s funding is not out: if the hub never broadcasts it, refund the deposit after its timeout"))?;
             self.contracts.push(Held { nonce: dep.nonce, record, closed: None, claim: None, payout: None, mint: Some(locked) });
             self.deposits.retain(|d| d.cid != cid);
             self.save()?;
@@ -632,6 +673,11 @@ impl Wallet {
             return Ok(());
         }
         let funding = chain.get_tx(&h.record.funding.txid).context("the funding is not out")?;
+        // the deposit's record, kept until the funding was seen: done with
+        if self.deposits.iter().any(|d| d.cid == cid) {
+            self.deposits.retain(|d| d.cid != cid);
+            self.save()?;
+        }
         let sig = deposit_sig_in(&funding, &locked.deposit).context("no signature of ours in the funding's deposit input")?;
         let t = adaptor_extract(&AdaptorSig::from(&locked.presig), &sig).context("the funding's signature doesn't complete our pre-signature")?;
         self.claim_mint_with(cid, &t)
@@ -703,8 +749,13 @@ impl Wallet {
         let sig = lngap_btc::sighash::sign_tapscript(&kp, &tx, 0, std::slice::from_ref(&out), &leaf.script)?;
         tx.input[0].witness = lngap_btc::witness::tapscript_witness(&[sig.as_ref().to_vec()], &leaf.script, &tree.control_block(DEPOSIT_REFUND)?);
         let txid = chain.broadcast(&tx).context("the refund")?;
-        self.deposits.retain(|x| x.cid != cid);
-        self.save()?;
+        // a deposit the hub holds a pre-signature on is kept: until the
+        // refund confirms, the hub's funding may still replace it, and
+        // then the contract is open
+        if !dep.presigned() {
+            self.deposits.retain(|x| x.cid != cid);
+            self.save()?;
+        }
         Ok(txid)
     }
 
@@ -787,6 +838,9 @@ impl Wallet {
                 r => break r?,
             }
         };
+        // the hub's txid must be the fold's (a dispute is refused while a
+        // contract's closing transaction is on chain)
+        ensure!(done.txid == fold.tx.compute_txid(), "the hub answered {} for the fold, not its txid {}", done.txid, fold.tx.compute_txid());
         self.contracts[k].closed = Some(done.txid);
         self.save()?;
         Ok(done.txid)
