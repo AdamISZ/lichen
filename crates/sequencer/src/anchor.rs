@@ -154,14 +154,20 @@ impl Anchorer {
             let header = self.chain.header(&block)?;
             let txids = self.chain.block_txids(&block)?;
             let index = txids.iter().position(|t| *t == f.txid).context("the anchor among its block's transactions")?;
-            let path = merkle_path(&txids.iter().map(|t| t.to_byte_array()).collect::<Vec<_>>(), index);
-            let mut bare = tx.clone();
-            for i in &mut bare.input {
-                i.witness = Witness::new();
-            }
-            let bytes = bitcoin::consensus::serialize(&bare);
+            let leaves: Vec<[u8; 32]> = txids.iter().map(|t| t.to_byte_array()).collect();
+            let path = merkle_path(&leaves, index);
+            // the block's coinbase and its path: they fix the tree's depth
+            // for the statement
+            let coinbase = self.chain.get_tx(&txids[0]).context("the anchor's block's coinbase")?;
+            let bare = |t: &Transaction| {
+                let mut t = t.clone();
+                for i in &mut t.input {
+                    i.witness = Witness::new();
+                }
+                bitcoin::consensus::serialize(&t)
+            };
             let mut l = self.shared.ledger.lock().unwrap();
-            let rec = l.anchor_record(bytes, header, index as u32, path)?;
+            let rec = l.anchor_record(bare(&tx), header, index as u32, path, bare(&coinbase), merkle_path(&leaves, 0))?;
             let t = Tx::Anchor(rec.to_bytes());
             l.apply(&t).context("the anchor's record")?;
             self.shared.save(&l)?;

@@ -475,7 +475,7 @@ impl Inner {
         let fault = *self.opening_fault.lock().unwrap();
         let d = u64::from(record.terms.deposit) - u64::from(fault == OpeningFault::ShortMint);
         let owner = mint_owner(&req.l2_address, &mint_point)?;
-        let mint_index = self.seq.submit(&Tx::Mint(Mint::new(&self.cfg.l2_key, vec![note(owner, d, 0)])))?[0];
+        let mint_index = self.seq.submit(&Tx::Mint(Mint::new(&self.cfg.l2_key, &self.seq.deployment, vec![note(owner, d, 0)])))?[0];
         self.note(format!("contract {cid}: offered; minted {d} sats to the user, locked to the funding"));
         let offer = OpenOffer { cid, t_close, reserve_hub, hub, moves: hub_moves, path, funding, hub_coins, hub_sigs: record.hub_sigs.clone(), mint_point, mint_index, windows: record.windows, checkpoint: record.checkpoint };
         let replaced = self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t, made: std::time::Instant::now() });

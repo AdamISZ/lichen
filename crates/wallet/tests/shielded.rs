@@ -14,7 +14,7 @@ fn shield_pay_and_return() {
     let seq = Sequencer::start_with("127.0.0.1:0", Some(dir.join("ledger.json")), regtest_sequencer(), HUB_KEY, Options { native_proofs: true, ..Default::default() }).unwrap();
     let mut alice = Wallet::create(&dir.join("alice.json"), &seq.url).unwrap();
     let mut bob = Wallet::create(&dir.join("bob.json"), &seq.url).unwrap();
-    alice.sequencer.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![lichen_ledger::note(alice.address(), 100, 0)]))).unwrap();
+    alice.sequencer.submit(&Tx::Mint(Mint::new(&regtest_hub(), &alice.sequencer.deployment, vec![lichen_ledger::note(alice.address(), 100, 0)]))).unwrap();
     alice.sequencer.seal().unwrap();
 
     // Alice shields 70 (30 stays transparent)

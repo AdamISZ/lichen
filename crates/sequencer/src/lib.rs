@@ -323,7 +323,7 @@ mod tests {
             r => panic!("a body over the limit: {r:?}"),
         }
         // a mint and a seal: saved; then reads leave the file alone
-        let mint = Tx::Mint(lichen_ledger::Mint::new(&lichen_ledger::regtest_hub(), vec![lichen_ledger::note([7; 32], 5, 0)]));
+        let mint = Tx::Mint(lichen_ledger::Mint::new(&lichen_ledger::regtest_hub(), &c.deployment, vec![lichen_ledger::note([7; 32], 5, 0)]));
         c.submit(&mint).unwrap();
         c.seal().unwrap();
         let saved = std::fs::read(&ledger).unwrap();

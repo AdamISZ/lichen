@@ -117,6 +117,12 @@ pub fn merkle_root(txid: &Hash, mut index: u32, path: &[Hash]) -> Hash {
     h
 }
 
+/// Whether `b` (a non-witness serialization) is a coinbase: one input,
+/// spending the null outpoint.
+pub fn is_coinbase(b: &[u8]) -> bool {
+    parse_tx(b).is_some_and(|t| t.inputs.len() == 1 && t.inputs[0] == OutPoint { txid: [0; 32], vout: u32::MAX })
+}
+
 /// A transaction's inputs (each spend's outpoint) and outputs (value,
 /// script), read from its non-witness serialization.
 pub struct Tx<'a> {

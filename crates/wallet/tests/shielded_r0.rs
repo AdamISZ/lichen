@@ -45,7 +45,7 @@ fn shield_pay_and_return_with_receipts() {
     let mut bob = Wallet::create(&dir.join("bob.json"), &seq.url).unwrap();
     alice.spend_prover = SpendProver::Command(prover.clone());
     bob.spend_prover = SpendProver::Command(prover);
-    alice.sequencer.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![lichen_ledger::note(alice.address(), 100, 0)]))).unwrap();
+    alice.sequencer.submit(&Tx::Mint(Mint::new(&regtest_hub(), &alice.sequencer.deployment, vec![lichen_ledger::note(alice.address(), 100, 0)]))).unwrap();
     alice.sequencer.seal().unwrap();
     let t = std::time::Instant::now();
     alice.shield(100).unwrap();

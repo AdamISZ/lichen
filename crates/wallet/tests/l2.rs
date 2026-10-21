@@ -14,9 +14,9 @@ fn pay_return_and_the_withdrawal_input() {
     let mut bob = Wallet::create(&dir.join("bob.json"), &seq.url).unwrap();
 
     // the hub issues 10 to Alice (her deposit, in a contract with the hub)
-    let mint = Mint::new(&regtest_hub(), vec![lichen_ledger::note(alice.address(), 10, 0)]);
+    let mint = Mint::new(&regtest_hub(), &alice.sequencer.deployment, vec![lichen_ledger::note(alice.address(), 10, 0)]);
     alice.sequencer.submit(&Tx::Mint(mint)).unwrap();
-    assert!(alice.sequencer.submit(&Tx::Mint(Mint::new(&regtest_sequencer(), vec![lichen_ledger::note(bob.address(), 5, 0)]))).is_err(), "only the hub mints");
+    assert!(alice.sequencer.submit(&Tx::Mint(Mint::new(&regtest_sequencer(), &alice.sequencer.deployment, vec![lichen_ledger::note(bob.address(), 5, 0)]))).is_err(), "only the hub mints");
     alice.sequencer.seal().unwrap();
     assert_eq!(alice.balance().unwrap(), 10);
 
@@ -74,7 +74,7 @@ fn two_histories_are_caught() {
     let alice = Wallet::create(&dir.join("alice.json"), &a.url).unwrap();
     let bob = Wallet::create(&dir.join("bob.json"), &b.url).unwrap();
     for (w, v) in [(&alice, 10), (&bob, 7)] {
-        w.sequencer.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![lichen_ledger::note(w.address(), v, 0)]))).unwrap();
+        w.sequencer.submit(&Tx::Mint(Mint::new(&regtest_hub(), &w.sequencer.deployment, vec![lichen_ledger::note(w.address(), v, 0)]))).unwrap();
         w.sequencer.seal().unwrap();
         assert_eq!(w.balance().unwrap(), v);
     }

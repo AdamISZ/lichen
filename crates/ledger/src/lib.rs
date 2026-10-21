@@ -354,16 +354,22 @@ pub struct Mint {
 }
 
 impl Mint {
-    pub fn digest(outputs: &[Note]) -> Hash {
+    /// What the hub signs: the notes, in deployment `d` (its keys and
+    /// genesis seal: `lichen_validity::mint_digest`), so a mint replays in
+    /// no other.
+    pub fn digest(d: &Deployment, outputs: &[Note]) -> Hash {
         let mut h = Sha256::new();
         h.update(b"lichen/mint");
+        h.update(d.sequencer);
+        h.update(d.hub);
+        h.update(d.seal.unwrap_or_default().to_bytes());
         for n in outputs {
             h.update(n.commitment());
         }
         h.finalize().into()
     }
-    pub fn new(hub: &SigningKey, outputs: Vec<Note>) -> Mint {
-        let sig = sign(hub, &Mint::digest(&outputs));
+    pub fn new(hub: &SigningKey, d: &Deployment, outputs: Vec<Note>) -> Mint {
+        let sig = sign(hub, &Mint::digest(d, &outputs));
         Mint { outputs, sig }
     }
 }
@@ -599,9 +605,10 @@ impl Ledger {
 
     /// The record of an anchor confirmed on Bitcoin, as the block
     /// statement checks it: the transaction (non-witness serialization),
-    /// its block's header, its index there and Merkle path, and the roots
-    /// from the height it commits to the last sealed one.
-    pub fn anchor_record(&self, tx: Vec<u8>, header: [u8; 80], index: u32, path: Vec<Hash>) -> Result<lichen_validity::AnchorRecord> {
+    /// its block's header, its index there and Merkle path, the block's
+    /// coinbase (non-witness) and its path, and the roots from the height
+    /// it commits to the last sealed one.
+    pub fn anchor_record(&self, tx: Vec<u8>, header: [u8; 80], index: u32, path: Vec<Hash>, coinbase: Vec<u8>, coinbase_path: Vec<Hash>) -> Result<lichen_validity::AnchorRecord> {
         let t = lichen_validity::btc::parse_tx(&tx).context("not a transaction")?;
         let c = t.outputs.get(1).context("no commitment output")?.1;
         ensure!(c.len() == 48, "not an anchor's commitment");
@@ -609,7 +616,7 @@ impl Ledger {
         let last = self.sealed.last().map_or(0, |s| s.height);
         ensure!(at >= 1 && at <= last, "an anchor of height {at}, beyond the last sealed ({last})");
         let roots = self.sealed[at as usize - 1..last as usize].iter().map(|s| s.root()).collect();
-        Ok(lichen_validity::AnchorRecord { tx, header, index, path, before: self.hist_at(at - 1), roots })
+        Ok(lichen_validity::AnchorRecord { tx, header, index, path, coinbase, coinbase_path, before: self.hist_at(at - 1), roots })
     }
 
     fn append(&mut self, outputs: &[Note]) -> Result<Vec<u32>> {
@@ -674,7 +681,7 @@ impl Ledger {
                 Ok(vec![])
             }
             Tx::Mint(m) => {
-                verify(&self.deployment.hub, &Mint::digest(&m.outputs), &m.sig).context("a mint not signed by the hub")?;
+                verify(&self.deployment.hub, &Mint::digest(&self.deployment, &m.outputs), &m.sig).context("a mint not signed by the hub")?;
                 self.append(&m.outputs)
             }
             Tx::Transfer(t) => {
@@ -1035,12 +1042,34 @@ mod tests {
         tx.extend([0, 0, 0, 0]);
         let mut h = [0u8; 80];
         h[4..36].copy_from_slice(prev);
-        h[36..68].copy_from_slice(&lichen_validity::btc::sha256d(&tx));
+        let leaves = [lichen_validity::btc::sha256d(&coinbase()), lichen_validity::btc::sha256d(&tx)].concat();
+        h[36..68].copy_from_slice(&lichen_validity::btc::sha256d(&leaves));
         h[72..76].copy_from_slice(&0x207fffffu32.to_le_bytes());
         while !lichen_validity::btc::Header(h).pow_ok() {
             h[76] += 1;
         }
         (tx, h)
+    }
+
+    /// A coinbase (65 bytes: one input spending the null outpoint).
+    fn coinbase() -> Vec<u8> {
+        let mut cb = vec![2, 0, 0, 0, 1];
+        cb.extend([0; 32]);
+        cb.extend([0xff; 4]);
+        cb.extend([4, 1, 2, 3, 4]);
+        cb.extend([0xff; 4]);
+        cb.push(1);
+        cb.extend(50u64.to_le_bytes());
+        cb.extend([1, 0x51]);
+        cb.extend([0; 4]);
+        cb
+    }
+
+    /// The record of `tx`, an anchor in `header`'s block after its
+    /// coinbase ([`anchor_tx`]'s blocks).
+    fn record_of(l: &Ledger, tx: Vec<u8>, header: [u8; 80]) -> Result<lichen_validity::AnchorRecord> {
+        let (cb, txid) = (coinbase(), lichen_validity::btc::sha256d(&tx));
+        l.anchor_record(tx, header, 1, vec![lichen_validity::btc::sha256d(&cb)], cb, vec![txid])
     }
 
     fn transfer(spends: Vec<(Spend, &SigningKey)>, outputs: Vec<Note>) -> Tx {
@@ -1074,14 +1103,14 @@ mod tests {
         let d = Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None };
         assert_ne!(d.id(), Deployment::toy().id());
         let mut l = Ledger::new(d);
-        assert!(l.apply(&Tx::Mint(Mint::new(&regtest_hub(), vec![note(d.hub, 7, 0)]))).is_err(), "the toy hub can't mint here");
-        let r = l.apply(&Tx::Mint(Mint::new(&hub, vec![note(d.hub, 7, 9)]))).unwrap()[0];
+        assert!(l.apply(&Tx::Mint(Mint::new(&regtest_hub(), &l.deployment, vec![note(d.hub, 7, 0)]))).is_err(), "the toy hub can't mint here");
+        let r = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![note(d.hub, 7, 9)]))).unwrap()[0];
         l.seal(&seq);
         let input = l.withdraw_input(r).unwrap();
         assert_eq!(check(&input).unwrap()[8..], d.id());
         // sealed by another key: no withdrawal input
         let mut l2 = Ledger::new(d);
-        let r2 = l2.apply(&Tx::Mint(Mint::new(&hub, vec![note(d.hub, 7, 9)]))).unwrap()[0];
+        let r2 = l2.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![note(d.hub, 7, 9)]))).unwrap()[0];
         l2.seal(&regtest_sequencer());
         assert!(l2.withdraw_input(r2).is_err());
     }
@@ -1092,9 +1121,9 @@ mod tests {
         let (alice, bob) = (key_from_label("test/alice"), key_from_label("test/bob"));
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
         let n0 = note(xonly(&alice), 10, 0);
-        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![n0]))).unwrap()[0];
+        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![n0]))).unwrap()[0];
         // nobody but the hub mints
-        assert!(l.apply(&Tx::Mint(Mint::new(&alice, vec![note(xonly(&alice), 5, 0)]))).is_err());
+        assert!(l.apply(&Tx::Mint(Mint::new(&alice, &l.deployment, vec![note(xonly(&alice), 5, 0)]))).is_err());
         l.seal(&seq);
         // Alice pays Bob 4, keeps 6
         let (to_bob, change) = (note(xonly(&bob), 4, 0), note(xonly(&alice), 6, 0));
@@ -1127,7 +1156,7 @@ mod tests {
         let alice = key_from_label("test/alice");
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
         let m0 = note(xonly(&alice), 20, 0);
-        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![m0]))).unwrap()[0];
+        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![m0]))).unwrap()[0];
         l.seal(&seq);
         // block 2: a transfer of the mint, from before the block (a path)
         l.apply(&transfer(vec![(Spend { note: m0, index: i0 }, &alice)], vec![note(xonly(&alice), 15, 0), note(xonly(&alice), 5, 0)])).unwrap();
@@ -1187,23 +1216,23 @@ mod tests {
         let (hub, seq) = (regtest_hub(), regtest_sequencer());
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
         let notes = |n: usize, v0: u64| (0..n as u64).map(|i| note([7; 32], v0 + i, 0)).collect::<Vec<_>>();
-        assert!(format!("{:#}", l.apply(&Tx::Mint(Mint::new(&hub, notes(MAX_TX_OUTPUTS + 1, 1)))).unwrap_err()).contains("new notes"));
+        assert!(format!("{:#}", l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, notes(MAX_TX_OUTPUTS + 1, 1)))).unwrap_err()).contains("new notes"));
         // the tree one short of full: a mint of two refused whole
         for i in 0..(1u32 << TREE_DEPTH) - 1 {
             l.tree.append(sha256(&[&i.to_be_bytes()])).unwrap();
         }
         let (len, notes_before) = (l.tree.len(), l.notes.len());
-        assert!(format!("{:#}", l.apply(&Tx::Mint(Mint::new(&hub, notes(2, 100)))).unwrap_err()).contains("full"));
+        assert!(format!("{:#}", l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, notes(2, 100)))).unwrap_err()).contains("full"));
         assert_eq!((l.tree.len(), l.notes.len(), l.pending.len()), (len, notes_before, 0), "nothing of it left behind");
-        l.apply(&Tx::Mint(Mint::new(&hub, notes(1, 100)))).unwrap();
+        l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, notes(1, 100)))).unwrap();
         // a height holds at most MAX_BLOCK_TXS
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
         for i in 0..MAX_BLOCK_TXS as u64 {
-            l.apply(&Tx::Mint(Mint::new(&hub, vec![note([7; 32], i + 1, 0)]))).unwrap();
+            l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![note([7; 32], i + 1, 0)]))).unwrap();
         }
-        assert!(format!("{:#}", l.apply(&Tx::Mint(Mint::new(&hub, vec![note([7; 32], 1_000_000, 0)]))).unwrap_err()).contains("full"));
+        assert!(format!("{:#}", l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![note([7; 32], 1_000_000, 0)]))).unwrap_err()).contains("full"));
         l.seal(&seq);
-        l.apply(&Tx::Mint(Mint::new(&hub, vec![note([7; 32], 1_000_000, 0)]))).unwrap();
+        l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![note([7; 32], 1_000_000, 0)]))).unwrap();
     }
 
     /// The spend statement's input for spending shielded notes (value,
@@ -1277,8 +1306,8 @@ mod tests {
 
         // block 1: two mints, and a transfer of one of them within the block
         let (m0, m1) = (note(xonly(&alice), 20, 0), note(xonly(&alice), 7, 0));
-        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![m0]))).unwrap()[0];
-        l.apply(&Tx::Mint(Mint::new(&hub, vec![m1]))).unwrap();
+        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![m0]))).unwrap()[0];
+        l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![m1]))).unwrap();
         let moved = note(xonly(&alice), 20, 0);
         let i2 = l.apply(&transfer(vec![(Spend { note: m0, index: i0 }, &alice)], vec![moved])).unwrap()[0];
         let j1 = seal_checked(&mut l, &seq, genesis);
@@ -1320,7 +1349,7 @@ mod tests {
         let ret = shielded::TOut { owner: HUB_KEY, value: 12, memo: 42, rho: fresh_rho() };
         let input = spend_input(&l, &[], &bob_nk, &[(12, shielded::rho(&nf_pay, 0), paid[0])], vec![], vec![ret]);
         l.apply(&shielded_tx(&input, vec![], vec![Note { owner: ret.owner, value: 12, memo: 42, rho: ret.rho }], None)).unwrap();
-        let mint = Mint::new(&hub, vec![note(xonly(&alice), 1, 0)]);
+        let mint = Mint::new(&hub, &l.deployment, vec![note(xonly(&alice), 1, 0)]);
         l.apply(&Tx::Mint(mint)).unwrap();
         let mut bad = l.block_input().unwrap();
         if let v::Tx::Mint { sig, .. } = &mut bad.txs[1] {
@@ -1332,15 +1361,25 @@ mod tests {
         // block 5: an anchor of height 4 (a mined block holding it), a
         // forged one refused
         let (tx, header) = anchor_tx(&l, &genesis_seal, 4, &[0xb0; 32]);
-        let rec = l.anchor_record(tx.clone(), header, 0, vec![]).unwrap();
+        let rec = record_of(&l, tx.clone(), header).unwrap();
+        assert_eq!(coinbase().len(), 65);
+        // the depth: a path other than the coinbase's length, or the
+        // coinbase made to look like a node, refused
+        let mut deep = rec.clone();
+        deep.path.push([3; 32]);
+        assert_eq!(v::check_anchor(&l.anchor, 4, &l.hist_at(4), &deep), Err(v::Reject::Seal), "a path deeper than the coinbase's");
+        let mut no_cb = rec.clone();
+        no_cb.coinbase = tx.clone();
+        assert_eq!(v::check_anchor(&l.anchor, 4, &l.hist_at(4), &no_cb), Err(v::Reject::Seal), "no coinbase");
+        assert!(v::check_anchor(&l.anchor, 4, &l.hist_at(4), &rec).is_ok());
         assert_eq!((rec.before, rec.roots.len()), (l.hist_at(3), 1));
         let (wrong, _) = anchor_tx(&l, &OutPoint { txid: [1; 32], vout: 0 }, 4, &[0xb0; 32]);
-        assert!(l.apply(&Tx::Anchor(l.anchor_record(wrong, header, 0, vec![]).unwrap().to_bytes())).is_err(), "not the seal");
+        assert!(l.apply(&Tx::Anchor(record_of(&l, wrong, header).unwrap().to_bytes())).is_err(), "not the seal");
         let mut late = tx.clone();
         let n = late.len();
         late[n - 4 - 32] ^= 1; // the committed history
-        assert!(l.apply(&Tx::Anchor(l.anchor_record(late, header, 0, vec![]).unwrap().to_bytes())).is_err(), "not this history");
-        assert!(l.apply(&Tx::Anchor(l.anchor_record(tx.clone(), [0; 80], 0, vec![]).unwrap().to_bytes())).is_err(), "not in the block named");
+        assert!(l.apply(&Tx::Anchor(record_of(&l, late, header).unwrap().to_bytes())).is_err(), "not this history");
+        assert!(l.apply(&Tx::Anchor(record_of(&l, tx.clone(), [0; 80]).unwrap().to_bytes())).is_err(), "not in the block named");
         l.apply(&Tx::Anchor(rec.to_bytes())).unwrap();
         assert_eq!((l.anchor.height, l.anchor.root, l.anchor.seal.txid), (4, j4.to, lichen_validity::btc::sha256d(&tx)));
         let j5 = seal_checked(&mut l, &seq, (j4.to, j4.recent_to));
@@ -1386,7 +1425,7 @@ mod tests {
         let empty = l.nullifiers.root();
         assert_eq!(empty, lichen_validity::smt::empties()[lichen_validity::smt::DEPTH]);
         let n0 = note(xonly(&alice), 10, 0);
-        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![n0]))).unwrap()[0];
+        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![n0]))).unwrap()[0];
         let nf = nullifier(&n0);
         let p = l.nullifiers.proof(&nf);
         l.apply(&transfer(vec![(Spend { note: n0, index: i0 }, &alice)], vec![note(xonly(&alice), 10, 0)])).unwrap();
@@ -1415,7 +1454,7 @@ mod tests {
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
         l.native_proofs = true;
         let minted = note(xonly(&alice), 20, 0);
-        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![minted]))).unwrap()[0];
+        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![minted]))).unwrap()[0];
         l.seal(&seq);
 
         // Alice shields her 20: notes of 15 and 5 of her own

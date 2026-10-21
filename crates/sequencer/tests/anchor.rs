@@ -46,7 +46,7 @@ fn heights_anchored_and_recorded() {
     let s = start();
     let c = Client::new(&s.url).unwrap();
     assert_eq!(c.deployment.seal, Some(seal), "the deployment names its genesis seal");
-    let mint = |v: u64| c.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![lichen_ledger::note([7; 32], v, 0)]))).unwrap();
+    let mint = |v: u64| c.submit(&Tx::Mint(Mint::new(&regtest_hub(), &c.deployment, vec![lichen_ledger::note([7; 32], v, 0)]))).unwrap();
 
     // height 1 sealed: an anchor of it goes out, and is recorded once
     // mined, in the block after
@@ -140,7 +140,7 @@ fn a_forked_history_is_never_anchored() {
         let ledger = dir.join(format!("{name}.json"));
         let mut s = Sequencer::start_with("127.0.0.1:0", Some(ledger.clone()), key.clone(), HUB_KEY, Options { seal: Some(seal), ..Default::default() }).unwrap();
         let c = Client::new(&s.url).unwrap();
-        c.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![lichen_ledger::note([7; 32], v, 0)]))).unwrap();
+        c.submit(&Tx::Mint(Mint::new(&regtest_hub(), &c.deployment, vec![lichen_ledger::note([7; 32], v, 0)]))).unwrap();
         c.seal().unwrap();
         s.anchor(chain(name), opts.clone()).unwrap();
         seqs.push((s, c, ledger));
@@ -177,7 +177,11 @@ fn a_forked_history_is_never_anchored() {
     let header = chain("a").header(&block).unwrap();
     for from in [lose, win] {
         let roots: Vec<[u8; 32]> = seqs[from].1.state().unwrap().sealed[..1].iter().map(|s| s.root()).collect();
-        let rec = v::AnchorRecord { tx: bitcoin::consensus::serialize(&tx), header, index: index as u32, path: lichen_sequencer::anchor::merkle_path(&txids, index), before: [0; 32], roots };
+        let mut cb = chain("a").get_tx(&bitcoin::Txid::from_byte_array(txids[0])).unwrap();
+        for i in &mut cb.input {
+            i.witness = bitcoin::Witness::new();
+        }
+        let rec = v::AnchorRecord { tx: bitcoin::consensus::serialize(&tx), header, index: index as u32, path: lichen_sequencer::anchor::merkle_path(&txids, index), coinbase: bitcoin::consensus::serialize(&cb), coinbase_path: lichen_sequencer::anchor::merkle_path(&txids, 0), before: [0; 32], roots };
         // a client can't post one at all; the loser's own ledger refuses
         // it as its record too
         let e = seqs[lose].1.submit(&Tx::Anchor(rec.to_bytes())).unwrap_err();
@@ -215,7 +219,7 @@ fn an_anchorers_crash_windows() {
         s
     };
     let anchored = |c: &Client, v: u64| {
-        c.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![lichen_ledger::note([7; 32], v, 0)]))).unwrap();
+        c.submit(&Tx::Mint(Mint::new(&regtest_hub(), &c.deployment, vec![lichen_ledger::note([7; 32], v, 0)]))).unwrap();
         c.seal().unwrap();
         wait("an anchor in flight", || in_flight_file(&ledger).exists());
         wait("its record", || {

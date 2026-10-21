@@ -77,10 +77,15 @@ pub fn recent_hash(roots: &[Hash]) -> Hash {
     h.finalize().into()
 }
 
-/// The ledger's `Mint::digest`.
-pub fn mint_digest(outputs: &[TNote]) -> Hash {
+/// The ledger's `Mint::digest`: the deployment's (its sequencer, its hub,
+/// its genesis seal), so that a hub's signature mints in that deployment
+/// alone.
+pub fn mint_digest(sequencer: &Hash, hub: &Hash, genesis: &OutPoint, outputs: &[TNote]) -> Hash {
     let mut h = Sha256::new();
     h.update(b"lichen/mint");
+    h.update(sequencer);
+    h.update(hub);
+    h.update(genesis.to_bytes());
     for n in outputs {
         h.update(n.commitment());
     }
@@ -241,15 +246,18 @@ pub fn commitment_script(at: u64, hist: &Hash) -> [u8; 48] {
 
 /// An anchor's record: the transaction (non-witness serialization) that
 /// spent the seal, committing `hist_at` of this history; the header of
-/// its block, its index there and Merkle path; and to show `hist_at` an
-/// ancestor of this block's starting history, `hist_{at-1}` and the roots
-/// `at..=i` (`i` the block's starting height).
+/// its block, its index there and Merkle path; the block's coinbase
+/// (non-witness) and its path, which fix the tree's depth; and to show
+/// `hist_at` an ancestor of this block's starting history, `hist_{at-1}`
+/// and the roots `at..=i` (`i` the block's starting height).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorRecord {
     pub tx: Vec<u8>,
     pub header: [u8; 80],
     pub index: u32,
     pub path: Vec<Hash>,
+    pub coinbase: Vec<u8>,
+    pub coinbase_path: Vec<Hash>,
     pub before: Hash,
     pub roots: Vec<Hash>,
 }
@@ -299,10 +307,18 @@ pub fn check_anchor(state: &AnchorState, height: u64, hist: &Hash, rec: &AnchorR
     if h != *hist {
         return Err(Reject::Seal);
     }
-    // in the block it names
+    // in the block it names, at a leaf: its path as long as the
+    // coinbase's (index 0), which can't pass for a node of the tree (it
+    // isn't 64 bytes, and it is a coinbase), so the tree's real depth. A
+    // shorter or longer path could pass a forged transaction off as half
+    // of a real 64-byte one, or as a node (CVE-2017-12842).
     let header = btc::Header(rec.header);
+    let depth = rec.coinbase_path.len();
+    if rec.coinbase.len() == 64 || !btc::is_coinbase(&rec.coinbase) || btc::merkle_root(&btc::sha256d(&rec.coinbase), 0, &rec.coinbase_path) != header.merkle_root() {
+        return Err(Reject::Seal);
+    }
     let txid = btc::sha256d(&rec.tx);
-    if btc::merkle_root(&txid, rec.index, &rec.path) != header.merkle_root() {
+    if rec.path.len() != depth || depth >= 32 || rec.index >> depth != 0 || rec.index == 0 || btc::merkle_root(&txid, rec.index, &rec.path) != header.merkle_root() {
         return Err(Reject::Seal);
     }
     Ok(AnchorState { seal: OutPoint { txid, vout: 0 }, height: at, root: rec.roots[0], block: header.hash(), ..*state })
@@ -437,7 +453,7 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
         match tx {
             Tx::Anchor(rec) => anchor = check_anchor(&anchor, input.height, &input.hist, rec)?,
             Tx::Mint { outputs, sig } => {
-                check_sig(&input.hub, &mint_digest(outputs), sig)?;
+                check_sig(&input.hub, &mint_digest(&input.anchor.sequencer, &input.hub, &input.anchor.genesis, outputs), sig)?;
                 for n in outputs {
                     if n.value == 0 {
                         return Err(Reject::Empty);
@@ -469,7 +485,9 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                 if !input.recent.contains(anchor) {
                     return Err(Reject::Anchor);
                 }
-                if t_sigs.len() != t_spends.len() || ciphertexts.len() != cms.len() {
+                // the spend statement's own bounds, so the journal's list
+                // lengths (bytes) are what it proved
+                if t_sigs.len() != t_spends.len() || ciphertexts.len() != cms.len() || t_spends.len() + nfs.len() > sh::MAX_SPENDS || cms.len() + t_outputs.len() > sh::MAX_OUTPUTS {
                     return Err(Reject::Shape);
                 }
                 let journal = sh::Journal {
@@ -622,6 +640,8 @@ impl W {
         self.put(&a.header);
         self.put(&a.index.to_be_bytes());
         self.hashes(&a.path);
+        self.bytes(&a.coinbase);
+        self.hashes(&a.coinbase_path);
         self.put(&a.before);
         self.hashes(&a.roots);
     }
@@ -675,7 +695,7 @@ impl R<'_> {
         Ok(AnchorState { genesis: OutPoint::from_bytes(&self.take()?), sequencer: self.take()?, seal: OutPoint::from_bytes(&self.take()?), height: self.u64()?, root: self.take()?, block: self.take()? })
     }
     fn record(&mut self) -> Result<AnchorRecord, Reject> {
-        Ok(AnchorRecord { tx: self.bytes()?, header: self.take()?, index: self.u32()?, path: self.hashes()?, before: self.take()?, roots: self.hashes()? })
+        Ok(AnchorRecord { tx: self.bytes()?, header: self.take()?, index: self.u32()?, path: self.hashes()?, coinbase: self.bytes()?, coinbase_path: self.hashes()?, before: self.take()?, roots: self.hashes()? })
     }
     fn bytes(&mut self) -> Result<Vec<u8>, Reject> {
         let n = self.len()?;
