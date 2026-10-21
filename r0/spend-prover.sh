@@ -4,4 +4,4 @@
 # through stdin and stdout. Called as: spend-prover.sh spend <input> <receipt>
 set -eu
 [ "$1" = spend ] || { echo "usage: $0 spend <input> <receipt>" >&2; exit 2; }
-docker run --rm -i "${LICHEN_R0_IMAGE:-lichen-r0}" spend - - < "$2" > "$3"
+docker run --rm -i --init "${LICHEN_R0_IMAGE:-lichen-r0}" spend - - < "$2" > "$3"

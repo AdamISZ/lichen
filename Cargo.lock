@@ -1794,6 +1794,7 @@ dependencies = [
  "lngap-sessions",
  "serde",
  "serde_json",
+ "signal-hook",
  "tiny_http",
 ]
 

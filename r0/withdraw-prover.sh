@@ -24,6 +24,6 @@ if [ "$cmd" = claim ]; then
     mkdir "$tmp/r0work"
     wrap="-v /var/run/docker.sock:/var/run/docker.sock -v $tmp/r0work:$tmp/r0work -e RISC0_WORK_DIR=$tmp/r0work"
 fi
-tar cf - -C "$tmp" input.json chain.receipt | docker run --rm -i $wrap --entrypoint sh "${LICHEN_R0_IMAGE:-lichen-r0}" -c \
+tar cf - -C "$tmp" input.json chain.receipt | docker run --rm -i --init $wrap --entrypoint sh "${LICHEN_R0_IMAGE:-lichen-r0}" -c \
     "mkdir /w && cd /w && tar xf - && /src/r0/target/release/lichen-r0 $cmd input.json chain.receipt /w/out >&2 && { [ ! -e /w/out ] || cat /w/out; }" > "$tmp/out"
 [ "$cmd" = exec-withdraw ] || mv "$tmp/out" "$out"

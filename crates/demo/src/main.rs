@@ -16,6 +16,7 @@
 //! still applies): a stand-in for the proof of the return, which the real
 //! statement checks (minutes on x86, too slow to watch).
 
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -95,8 +96,15 @@ fn task(u: &Arc<User>, f: impl FnOnce(&Arc<User>) + std::marker::Send + 'static)
     }
     let u = u.clone();
     std::thread::spawn(move || {
-        f(&u);
-        u.busy.store(false, Ordering::SeqCst);
+        // free again however `f` ends, a panic too
+        struct Free(Arc<User>);
+        impl Drop for Free {
+            fn drop(&mut self) {
+                self.0.busy.store(false, Ordering::SeqCst);
+            }
+        }
+        let free = Free(u.clone());
+        f(&free.0);
     });
     Ok(())
 }
@@ -139,6 +147,8 @@ struct Demo {
     /// What happened on Bitcoin, in words.
     chain_log: Mutex<Vec<String>>,
     rt: Regtest,
+    /// The chain prover's process group.
+    prover: Mutex<Option<u32>>,
 }
 
 impl Demo {
@@ -181,8 +191,14 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
     if !image.is_ok_and(|o| o.status.success()) {
         bail!("no prover image: every shielded spend is proved for real; build it first (docker build -f r0/Dockerfile -t lichen-r0 ., in lichen's root)");
     }
+    // only a directory a demo made before is wiped
+    let marker = args.dir.join(".lichen-demo");
+    if args.dir.exists() && std::fs::read_dir(&args.dir)?.next().is_some() && !marker.exists() {
+        bail!("{} isn't empty and isn't a demo's: name another --dir", args.dir.display());
+    }
     let _ = std::fs::remove_dir_all(&args.dir);
     std::fs::create_dir_all(&args.dir)?;
+    std::fs::write(&marker, "")?;
     println!("starting bitcoind (regtest), the sequencer and the hub ...");
     let rt = Regtest::start()?;
     // a ledger file, so that the sequencer records each block for the
@@ -247,11 +263,13 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
             finality: Mutex::new(None),
         }));
     }
-    let d = Arc::new(Demo { seq: Client::new(&seq.url)?, blocks: blocks.clone(), chain_prover: !args.no_chain_prover, hub, users, statement, chain_log: Mutex::new(vec![]), rt });
+    let d = Arc::new(Demo { seq: Client::new(&seq.url)?, blocks: blocks.clone(), chain_prover: !args.no_chain_prover, hub, users, statement, chain_log: Mutex::new(vec![]), rt, prover: Mutex::new(None) });
     if d.chain_prover {
         std::fs::create_dir_all(&blocks)?;
         let log = std::fs::File::create(args.dir.join("chain-prover.log"))?;
-        std::process::Command::new(r0().join("chain-prover.sh")).arg(&blocks).stdout(log.try_clone()?).stderr(log).spawn().context("starting the chain prover")?;
+        // in a process group of its own, stopped with the demo
+        let child = std::process::Command::new(r0().join("chain-prover.sh")).arg(&blocks).stdout(log.try_clone()?).stderr(log).process_group(0).spawn().context("starting the chain prover")?;
+        *d.prover.lock().unwrap() = Some(child.id());
     }
     // the sequencer seals, and blocks come, in the background
     std::mem::forget(seq); // runs for the demo's life
@@ -467,6 +485,9 @@ fn withdraw(d: &Arc<Demo>, r: Withdraw) -> Result<Value> {
                 set(format!("withdrawn: the hub folded the contract; {} sats and the reserve are on chain", r.amount));
                 d2.log(format!("{}: contract {cid} folded cooperatively ({txid})", u2.name));
             }
+            // a dispute only for a return made and refused: not for an error
+            // before it (more than the balance, above the cap)
+            Err(e) if w.returned(cid).is_none() || u32::try_from(r.amount).is_err() => set(format!("not withdrawn: {e:#}")),
             Err(e) => {
                 set(format!("the hub refused ({e:#}); enforcing the withdrawal on Bitcoin ..."));
                 d2.log(format!("{}: the hub refused to fold; escalating to Bitcoin", u2.name));
@@ -535,8 +556,21 @@ fn route(d: &Arc<Demo>, method: &Method, url: &str, body: &str) -> Result<(Strin
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let d = start(&args)?;
+    // the port first: a busy one fails before anything is started
     let server = Server::http(&args.listen).map_err(|e| anyhow::anyhow!("listen on {}: {e}", args.listen))?;
+    let d = start(&args)?;
+    // Ctrl-C (or a TERM): the chain prover and bitcoind stopped, the
+    // node's data removed, before exiting (the spend provers' containers,
+    // in our process group, stop with their own Ctrl-C)
+    let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM])?;
+    let d2 = d.clone();
+    std::thread::spawn(move || {
+        if signals.forever().next().is_some() {
+            println!("stopping ...");
+            shutdown(&d2);
+            std::process::exit(130);
+        }
+    });
     println!("lichen demo at http://{}", args.listen);
     for mut req in server.incoming_requests() {
         let mut body = String::new();
@@ -549,4 +583,21 @@ fn main() -> Result<()> {
         let _ = req.respond(Response::from_string(text).with_status_code(code).with_header(h));
     }
     Ok(())
+}
+
+/// Stop what the demo started outside this process: the chain prover's
+/// process group (its containers stop with their clients, `--init`), and
+/// bitcoind, its data directory removed.
+fn shutdown(d: &Demo) {
+    if let Some(pid) = *d.prover.lock().unwrap() {
+        let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
+    }
+    if let Ok(rpc) = bitcoincore_rpc::Client::new(d.rt.rpc_url(), Auth::CookieFile(d.rt.cookie().clone())) {
+        let _ = rpc.stop();
+        let start = Instant::now();
+        while rpc.get_block_count().is_ok() && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let _ = std::fs::remove_dir_all(d.rt.datadir());
 }
