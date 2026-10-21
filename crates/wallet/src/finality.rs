@@ -58,9 +58,15 @@ impl Wallet {
         let genesis = d.seal.context("this deployment doesn't anchor its history")?;
         let hist = hists(state);
         let seal_spk = bitcoin::ScriptBuf::from_bytes(seal_script(&d.sequencer).to_vec());
-        let mut prev = bitcoin::OutPoint { txid: bitcoin::Txid::from_byte_array(genesis.txid), vout: genesis.vout };
-        let mut out = vec![];
-        for a in &state.anchors {
+        // the anchors checked before, while the state still names them
+        let mut cache = self.anchors_checked.lock().unwrap();
+        let keep = cache.iter().zip(&state.anchors).take_while(|(c, a)| c.anchor == a.anchor && hist.get(c.anchor.height as usize) == Some(&c.hist)).count();
+        cache.truncate(keep);
+        let mut prev = match cache.last() {
+            Some(c) => bitcoin::OutPoint { txid: bitcoin::Txid::from_byte_array(c.anchor.seal.txid), vout: 0 },
+            None => bitcoin::OutPoint { txid: bitcoin::Txid::from_byte_array(genesis.txid), vout: genesis.vout },
+        };
+        for a in &state.anchors[keep..] {
             let s = &a.anchor;
             let txid = bitcoin::Txid::from_byte_array(s.seal.txid);
             let at = s.height;
@@ -73,10 +79,12 @@ impl Wallet {
             ensure!(state.sealed.get(at as usize - 1).map(|r| r.root()) == Some(s.root), "{}: of another root than the one signed there", what());
             let block = chain.block_of(&txid)?.with_context(|| format!("{}: not confirmed", what()))?;
             ensure!(block.to_byte_array() == s.block, "{}: confirmed in another block than recorded", what());
-            out.push(Checked { height: at, confirmations: chain.confirmations(&txid)? });
+            let height = chain.block_height(&block)?.with_context(|| format!("{}: its block isn't on the best chain", what()))?;
+            cache.push(crate::AnchorChecked { anchor: *s, hist: *h, block_height: height });
             prev = bitcoin::OutPoint { txid, vout: 0 };
         }
-        Ok(out)
+        let tip = chain.height()?;
+        Ok(cache.iter().map(|c| Checked { height: c.anchor.height, confirmations: (tip + 1).saturating_sub(c.block_height) }).collect())
     }
 
     /// The wallet's holdings by how final they are, the anchors checked on

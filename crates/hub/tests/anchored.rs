@@ -174,15 +174,17 @@ fn a_withdrawal_under_an_anchor() {
     assert!(f.last.unwrap().confirmations >= 10);
     // a sequencer's state whose anchors don't check: refused
     let state = bob.sequencer.state().unwrap();
-    let mut forged = state.clone();
-    forged.anchors[0].anchor.root = [1; 32];
-    let e = bob.checked_anchors(&forged, &bch).unwrap_err();
-    assert!(format!("{e:#}").contains("another root"), "{e:#}");
+    // (each anchor already checked, and cached: the roots under it are
+    // checked again)
     let mut forged = state.clone();
     let h = forged.anchors[0].anchor.height as usize;
     forged.sealed[h - 1].tree = [2; 32];
     let e = bob.checked_anchors(&forged, &bch).unwrap_err();
     assert!(format!("{e:#}").contains("commits another history"), "{e:#}");
+    let mut forged = state.clone();
+    forged.anchors[0].anchor.root = [1; 32];
+    let e = bob.checked_anchors(&forged, &bch).unwrap_err();
+    assert!(format!("{e:#}").contains("another root"), "{e:#}");
     let mut forged = state.clone();
     forged.anchors.remove(0);
     if !forged.anchors.is_empty() {

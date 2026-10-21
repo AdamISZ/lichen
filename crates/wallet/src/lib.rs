@@ -54,6 +54,15 @@ struct Stored {
     seen: Seen,
 }
 
+/// An anchor checked on Bitcoin, and the height of its block.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AnchorChecked {
+    pub anchor: lichen_ledger::AnchorState,
+    /// The history hash it committed.
+    pub hist: Hash,
+    pub block_height: u32,
+}
+
 /// A return's withdrawal material, kept as soon as the sequencer has it,
 /// so that a sequencer gone after that stops nothing: the statement's
 /// input once the return is sealed, and the chain receipt at its height
@@ -149,6 +158,8 @@ pub struct Wallet {
     returns: Vec<(u32, u32)>,
     kept: Vec<Kept>,
     seen: std::sync::Mutex<Seen>,
+    /// The anchors checked on Bitcoin so far ([`Wallet::checked_anchors`]).
+    anchors_checked: std::sync::Mutex<Vec<AnchorChecked>>,
     pub contracts: Vec<Held>,
     pub deposits: Vec<Deposit>,
     pub sequencer: Client,
@@ -169,7 +180,7 @@ impl Wallet {
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
         // the deployment the sequencer announces, kept from now on
-        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: vec![], kept: vec![], seen: Default::default(), contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: vec![], kept: vec![], seen: Default::default(), anchors_checked: Default::default(), contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
         w.save()?;
         Ok(w)
     }
@@ -180,7 +191,7 @@ impl Wallet {
             Some(d) => Client::pinned(sequencer, d),
             None => Client::new(sequencer)?,
         };
-        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: s.returns, kept: s.kept, seen: std::sync::Mutex::new(s.seen), contracts: s.contracts, deposits: s.deposits, sequencer: client };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: s.returns, kept: s.kept, seen: std::sync::Mutex::new(s.seen), anchors_checked: Default::default(), contracts: s.contracts, deposits: s.deposits, sequencer: client };
         if s.deployment.is_none() {
             w.save()?;
         }

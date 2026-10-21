@@ -570,6 +570,19 @@ impl Chain {
             Backend::Esplora(e) => e.first(|c| Ok(c.get_block_txids(block)?)),
         }
     }
+    /// The height of `block` on the best chain, if it is on it.
+    pub fn block_height(&self, block: &bitcoin::BlockHash) -> Result<Option<u32>> {
+        match &self.backend {
+            Backend::Rpc { rpc, .. } => {
+                let i = rpc.get_block_header_info(block)?;
+                Ok((i.confirmations >= 0).then_some(i.height as u32))
+            }
+            Backend::Esplora(e) => {
+                let st = e.first(|c| Ok(c.get_block_status(block)?))?;
+                Ok(st.height.filter(|_| st.in_best_chain))
+            }
+        }
+    }
     /// Up to `n` headers of the best chain after `block`, in order (fewer
     /// at the tip; none if `block` isn't on the best chain).
     pub fn headers_after(&self, block: &bitcoin::BlockHash, n: usize) -> Result<Vec<[u8; 80]>> {
