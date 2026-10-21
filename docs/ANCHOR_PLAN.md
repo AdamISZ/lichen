@@ -276,7 +276,18 @@ in an anchored deployment needs the anchor, so Bob's first try failed at
 once (`863bfbd`, with a test); the anchor's size, estimated at 220 vB,
 is 269 (its fee now at the rate asked).
 
-Left: the Groth16 dispute tests on the new claim (G1 passed; G2 missed
-its 3-minute window on a Mac busy proving: rerun idle); the receiver's
-view (a payment shown anchored, and how deep); the guest builds' speed
-(pack without rebuilding the prover; cache cargo's build).
+Then: the Groth16 dispute tests pass on the new claim, on an idle Mac
+(G1 conceded, G2 proved after the whole search in 782 s, G3's lie of 61
+disproved in 551 s; G2 had missed its 3-minute window on a Mac also
+proving). The receiver's view: `lichen balance` (and the demo's panes)
+split what's held into final (anchored, ten blocks deep), anchored, and
+sealed only, each anchor checked by the wallet on Bitcoin, once
+(`crates/wallet/src/finality.rs`); in the demo, at a block a second, a
+payment is final about nine seconds after it's sealed.
+
+TODO: the guest builds' speed: `build-guest.sh pack` with any prover
+image there (packing doesn't depend on the statements), the prover image
+rebuilt once after the guests; BuildKit cache mounts for cargo's
+registry and `target/` in r0/Dockerfile and the guest builder. The demo
+leaves its bitcoind and chain prover running when stopped (no signal
+handler).

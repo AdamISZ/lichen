@@ -159,6 +159,12 @@ root, with blocks on top of the anchor's whose work is at least ten
 blocks' at the difficulty when the contract opened (its checkpoint).
 Forging one means mining a branch of Bitcoin that long.
 
+`lichen balance` shows how final what you hold is: final (anchored,
+ten blocks deep), anchored, or sealed only. The wallet doesn't take the
+sequencer's word for the anchors: it checks each on Bitcoin, from the
+genesis seal on, against the history it computes from the roots it has
+checked.
+
 What it costs: an anchor of about 270 vB per Bitcoin block at most, and
 only when something has changed; a withdrawal waits for the next anchor
 and ten blocks on it, about two hours with 10-minute blocks (on
