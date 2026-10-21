@@ -53,8 +53,11 @@ fn heights_anchored_and_recorded() {
     mint(5);
     c.seal().unwrap();
     wait("the anchor of height 1 in flight", || in_flight_file(&ledger).exists());
-    rt.mine(1).unwrap();
-    wait("its record", || !in_flight_file(&ledger).exists());
+    // (the flight is kept before its broadcast: mine until it's in)
+    wait("its record", || {
+        let _ = rt.mine(1);
+        !in_flight_file(&ledger).exists()
+    });
     let s2 = c.seal().unwrap();
     assert_eq!(s2.height, 2, "the record is a new height's block");
     let st = c.state().unwrap();
@@ -75,7 +78,10 @@ fn heights_anchored_and_recorded() {
     rt.mine(1).unwrap();
     let s = start();
     let c = Client::new(&s.url).unwrap();
-    wait("its record, after the restart", || !in_flight_file(&ledger).exists());
+    wait("its record, after the restart", || {
+        let _ = rt.mine(1);
+        !in_flight_file(&ledger).exists()
+    });
     c.seal().unwrap();
     let st = c.state().unwrap();
     assert_eq!(st.anchors.iter().map(|a| (a.from, a.anchor.height)).collect::<Vec<_>>(), vec![(2, 1), (4, 3)]);
@@ -172,10 +178,78 @@ fn a_forked_history_is_never_anchored() {
     for from in [lose, win] {
         let roots: Vec<[u8; 32]> = seqs[from].1.state().unwrap().sealed[..1].iter().map(|s| s.root()).collect();
         let rec = v::AnchorRecord { tx: bitcoin::consensus::serialize(&tx), header, index: index as u32, path: lichen_sequencer::anchor::merkle_path(&txids, index), before: [0; 32], roots };
+        // a client can't post one at all; the loser's own ledger refuses
+        // it as its record too
         let e = seqs[lose].1.submit(&Tx::Anchor(rec.to_bytes())).unwrap_err();
+        assert!(format!("{e:#}").contains("anchorer only"), "{e:#}");
+        let mut l: lichen_ledger::Ledger = serde_json::from_slice(&std::fs::read(&seqs[lose].2).unwrap()).unwrap();
+        let e = l.apply(&Tx::Anchor(rec.to_bytes())).unwrap_err();
         assert!(format!("{e:#}").contains("doesn't check"), "{e:#}");
     }
     assert!(seqs[lose].1.state().unwrap().anchors.is_empty(), "the other history: never anchored");
     drop(seqs);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The anchorer's crash windows: a flight file left after its anchor was
+/// recorded (a crash between saving the record and clearing the flight) is
+/// cleared, and anchoring goes on; a flight naming an anchor found
+/// nowhere, the seal unspent, is given up and another is sent.
+#[test]
+fn an_anchorers_crash_windows() {
+    let rt = Regtest::start().unwrap();
+    let dir = std::env::temp_dir().join(format!("lichen-anchor-crash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ledger = dir.join("ledger.json");
+    let chain = || Chain::connect(rt.rpc_url(), rt.cookie(), "sequencer").unwrap();
+    rt.fund(&chain().new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
+    rt.mine(1).unwrap();
+    let key = regtest_sequencer();
+    let seal = genesis_seal(&chain(), &xonly(&key)).unwrap();
+    rt.mine(1).unwrap();
+    let opts = Anchoring { every: Duration::from_millis(100), ..Default::default() };
+    let start = || {
+        let mut s = Sequencer::start_with("127.0.0.1:0", Some(ledger.clone()), key.clone(), HUB_KEY, Options { seal: Some(seal), ..Default::default() }).unwrap();
+        s.anchor(chain(), opts.clone()).unwrap();
+        s
+    };
+    let anchored = |c: &Client, v: u64| {
+        c.submit(&Tx::Mint(Mint::new(&regtest_hub(), vec![lichen_ledger::note([7; 32], v, 0)]))).unwrap();
+        c.seal().unwrap();
+        wait("an anchor in flight", || in_flight_file(&ledger).exists());
+        wait("its record", || {
+            let _ = rt.mine(1);
+            !in_flight_file(&ledger).exists()
+        });
+        // the record is in the next height
+        c.seal().unwrap();
+    };
+    let s = start();
+    let c = Client::new(&s.url).unwrap();
+    anchored(&c, 5);
+    let first = c.state().unwrap().anchors[0].anchor;
+    drop(s);
+
+    // recorded, the flight file left behind
+    let txid = bitcoin::Txid::from_byte_array(first.seal.txid);
+    std::fs::write(in_flight_file(&ledger), serde_json::json!({ "txid": txid.to_string(), "at": first.height }).to_string()).unwrap();
+    let s = start();
+    let c = Client::new(&s.url).unwrap();
+    wait("the stale flight cleared", || !in_flight_file(&ledger).exists());
+    assert_eq!(c.state().unwrap().anchors.len(), 1, "not recorded twice");
+    anchored(&c, 6);
+    assert_eq!(c.state().unwrap().anchors.len(), 2);
+    drop(s);
+
+    // a flight found nowhere, the seal unspent: given up
+    std::fs::write(in_flight_file(&ledger), serde_json::json!({ "txid": "11".repeat(32), "at": 9 }).to_string()).unwrap();
+    let s = start();
+    let c = Client::new(&s.url).unwrap();
+    wait("the lost flight given up", || !in_flight_file(&ledger).exists());
+    anchored(&c, 7);
+    let st = c.state().unwrap();
+    assert_eq!(st.anchors.len(), 3, "anchoring goes on");
+    drop(s);
     let _ = std::fs::remove_dir_all(&dir);
 }

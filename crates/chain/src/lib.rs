@@ -511,7 +511,8 @@ impl Chain {
                 Ok(v.get("confirmations").and_then(|c| c.as_u64()).unwrap_or(0) as u32)
             }
             Backend::Esplora(e) => match e.confirmed_in(txid)? {
-                Some(h) => Ok(self.height()? + 1 - h),
+                // the tip read after: a server behind, or a reorg between, reads as 0
+                Some(h) => Ok((self.height()? + 1).saturating_sub(h)),
                 None => Ok(0),
             },
         }
@@ -661,7 +662,7 @@ impl Chain {
                 let coins = self.watcher()?.list_unspent(Some(0), None, Some(&[&addr]), Some(true), None)?;
                 Ok(coins
                     .into_iter()
-                    .map(|c| (OutPoint { txid: c.txid, vout: c.vout }, TxOut { value: c.amount, script_pubkey: spk.to_owned() }, (c.confirmations > 0).then(|| tip + 1 - c.confirmations)))
+                    .map(|c| (OutPoint { txid: c.txid, vout: c.vout }, TxOut { value: c.amount, script_pubkey: spk.to_owned() }, (c.confirmations > 0).then(|| (tip + 1).saturating_sub(c.confirmations))))
                     .collect())
             }
             Backend::Esplora(e) => Ok(e

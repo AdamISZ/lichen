@@ -18,6 +18,8 @@
 //!   with a proof of the spend statement; the tree holds both kinds of
 //!   leaf ([`Leaf`]).
 
+pub mod files;
+
 use std::collections::{BTreeSet, HashSet};
 
 use anyhow::{bail, ensure, Context, Result};
@@ -76,7 +78,7 @@ pub fn load_or_create_key(path: &std::path::Path) -> Result<SigningKey> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    std::fs::write(path, hex::encode(k.to_bytes()))?;
+    files::write_private(path, hex::encode(k.to_bytes()).as_bytes())?;
     Ok(k)
 }
 
@@ -624,6 +626,8 @@ impl Ledger {
                 ensure!(n.value > 0, "an empty note");
             }
         }
+        // all or nothing: a transaction that doesn't fit leaves no leaf
+        ensure!(self.tree.len() as usize + leaves.len() <= 1 << TREE_DEPTH, "the tree is full");
         let mut idx = vec![];
         for l in leaves {
             idx.push(self.tree.append(l.commitment())?);
@@ -655,6 +659,7 @@ impl Ledger {
     /// Check and apply a transaction; the indices of its new notes. It
     /// joins the next height's block.
     pub fn apply(&mut self, tx: &Tx) -> Result<Vec<u32>> {
+        policy(tx, self.pending.len())?;
         let idx = self.apply_tx(tx)?;
         self.pending.push(tx.clone());
         Ok(idx)
@@ -891,6 +896,38 @@ fn block_tx(tx: &Tx) -> Result<lichen_validity::Tx> {
     })
 }
 
+/// At most this many transactions in a height (an anchor's record aside),
+/// so that each block stays one the chain guest can prove.
+pub const MAX_BLOCK_TXS: usize = 512;
+/// At most this many new notes in a mint or a transfer.
+pub const MAX_TX_OUTPUTS: usize = 16;
+/// The largest shielded note ciphertext (the wallet's are 57 bytes).
+pub const MAX_CIPHERTEXT: usize = 256;
+/// The largest spend receipt (a succinct one is about 220 kB).
+pub const MAX_RECEIPT: usize = 1 << 20;
+
+/// The sequencer's limits on what it takes, beyond the statement's rules:
+/// stricter than the chain guest, so that every block it seals stays
+/// provable (in memory and cycles) whatever its users send.
+fn policy(tx: &Tx, pending: usize) -> Result<()> {
+    if !matches!(tx, Tx::Anchor(_)) {
+        ensure!(pending < MAX_BLOCK_TXS, "the next height is full ({MAX_BLOCK_TXS} transactions): send again after the next seal");
+    }
+    match tx {
+        Tx::Mint(m) => ensure!(m.outputs.len() <= MAX_TX_OUTPUTS, "more than {MAX_TX_OUTPUTS} new notes"),
+        Tx::Transfer(t) => ensure!(t.outputs.len() <= MAX_TX_OUTPUTS && t.spends.len() <= MAX_TX_OUTPUTS, "more than {MAX_TX_OUTPUTS} spends or new notes"),
+        Tx::Shielded(t) => {
+            ensure!(t.outputs.len() + t.t_outputs.len() <= MAX_TX_OUTPUTS && t.t_spends.len() + t.nfs.len() <= MAX_TX_OUTPUTS, "more than {MAX_TX_OUTPUTS} spends or new notes");
+            ensure!(t.outputs.iter().all(|o| o.ciphertext.len() <= MAX_CIPHERTEXT), "a ciphertext longer than {MAX_CIPHERTEXT} bytes");
+            if let Proof::Risc0(r) = &t.proof {
+                ensure!(r.len() <= MAX_RECEIPT, "a receipt larger than {MAX_RECEIPT} bytes");
+            }
+        }
+        Tx::Anchor(_) => {}
+    }
+    Ok(())
+}
+
 /// The spend guest's image id (`r0/guests/spend.id`, `lichen-r0 image-id`).
 pub const SPEND_IMAGE_ID: &str = include_str!("../../../r0/guests/spend.id");
 
@@ -898,6 +935,9 @@ pub const SPEND_IMAGE_ID: &str = include_str!("../../../r0/guests/spend.id");
 #[cfg(feature = "risc0")]
 fn verify_receipt(receipt: &[u8], journal: &[u8]) -> Result<()> {
     let r: risc0_zkvm::Receipt = bincode::deserialize(receipt).context("not a RISC Zero receipt")?;
+    // the chain prover takes it as an assumption, which RISC Zero can't
+    // do for a Groth16 receipt: a block holding one could never be proved
+    ensure!(matches!(r.inner, risc0_zkvm::InnerReceipt::Succinct(_) | risc0_zkvm::InnerReceipt::Composite(_)), "a spend receipt must be succinct or composite");
     let id: [u8; 32] = hex::decode(SPEND_IMAGE_ID.trim()).ok().and_then(|v| v.try_into().ok()).context("the spend guest's image id")?;
     r.verify(risc0_zkvm::sha::Digest::from_bytes(id)).context("the receipt doesn't verify against the spend guest")?;
     ensure!(r.journal.bytes == journal, "the receipt proves another transaction");
@@ -1075,6 +1115,32 @@ mod tests {
         assert_eq!(journal[8..], Deployment::toy().id());
         // a note that isn't the hub's is no return
         assert!(l.withdraw_input(idx[0]).is_err());
+    }
+
+    /// The sequencer's limits: a mint of too many notes, a full height;
+    /// and a transaction that doesn't fit the tree leaves nothing behind.
+    #[test]
+    fn limits_and_a_full_tree() {
+        let (hub, seq) = (regtest_hub(), regtest_sequencer());
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
+        let notes = |n: usize, v0: u64| (0..n as u64).map(|i| note([7; 32], v0 + i, 0)).collect::<Vec<_>>();
+        assert!(format!("{:#}", l.apply(&Tx::Mint(Mint::new(&hub, notes(MAX_TX_OUTPUTS + 1, 1)))).unwrap_err()).contains("new notes"));
+        // the tree one short of full: a mint of two refused whole
+        for i in 0..(1u32 << TREE_DEPTH) - 1 {
+            l.tree.append(sha256(&[&i.to_be_bytes()])).unwrap();
+        }
+        let (len, notes_before) = (l.tree.len(), l.notes.len());
+        assert!(format!("{:#}", l.apply(&Tx::Mint(Mint::new(&hub, notes(2, 100)))).unwrap_err()).contains("full"));
+        assert_eq!((l.tree.len(), l.notes.len(), l.pending.len()), (len, notes_before, 0), "nothing of it left behind");
+        l.apply(&Tx::Mint(Mint::new(&hub, notes(1, 100)))).unwrap();
+        // a height holds at most MAX_BLOCK_TXS
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
+        for i in 0..MAX_BLOCK_TXS as u64 {
+            l.apply(&Tx::Mint(Mint::new(&hub, vec![note([7; 32], i + 1, 0)]))).unwrap();
+        }
+        assert!(format!("{:#}", l.apply(&Tx::Mint(Mint::new(&hub, vec![note([7; 32], 1_000_000, 0)]))).unwrap_err()).contains("full"));
+        l.seal(&seq);
+        l.apply(&Tx::Mint(Mint::new(&hub, vec![note([7; 32], 1_000_000, 0)]))).unwrap();
     }
 
     /// The spend statement's input for spending shielded notes (value,

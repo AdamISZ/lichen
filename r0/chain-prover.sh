@@ -52,7 +52,16 @@ while :; do
         sleep 5
         continue
     fi
+    # the sequencer records a height again (and clears its old files) if
+    # it restarted after recording a block it never kept: a proof of the
+    # input that was there is then thrown away
+    sum=$(cksum < "$dir/$h.input")
     prove "$h"
+    if [ ! -f "$dir/$h.input" ] || [ "$(cksum < "$dir/$h.input")" != "$sum" ]; then
+        rm -f "$dir/$h.chain.tmp"
+        echo "chain-prover: height $h was recorded again while proving; proving it again"
+        continue
+    fi
     mv "$dir/$h.chain.tmp" "$dir/$h.chain"
     echo "chain-prover: height $h proved"
 done

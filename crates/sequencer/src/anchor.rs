@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -23,9 +23,10 @@ use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
 use bitcoin::{absolute, transaction, Amount, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
 use lichen_chain::Chain;
 use lichen_l2::Event;
-use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::lichen_validity::{commitment_script, seal_script};
-use lichen_ledger::{Ledger, OutPoint, Tx};
+use lichen_ledger::{files, OutPoint, Tx};
+
+use crate::Shared;
 use serde::{Deserialize, Serialize};
 
 /// What the seal output holds (it moves from anchor to anchor).
@@ -48,11 +49,17 @@ impl Default for Anchoring {
     }
 }
 
-/// An anchor broadcast, not yet recorded.
+/// An anchor signed (and broadcast, or about to be), not yet recorded:
+/// kept before it is broadcast, so a crash never loses track of a spend
+/// of the seal.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct InFlight {
     txid: Txid,
     at: u64,
+    /// The signed transaction (hex), to broadcast again if it went
+    /// missing.
+    #[serde(default)]
+    raw: Option<String>,
 }
 
 fn to_bitcoin(o: &OutPoint) -> bitcoin::OutPoint {
@@ -74,19 +81,24 @@ pub fn genesis_seal(chain: &Chain, sequencer: &[u8; 32]) -> Result<OutPoint> {
     Ok(OutPoint { txid: txid.to_byte_array(), vout: vout as u32 })
 }
 
+/// An anchor's virtual size: the key path spend of the seal, the seal,
+/// the commitment and the change (269 vB measured on Mutinynet with one
+/// P2TR wallet coin), and 68 vB for each further coin (P2WPKH's, the
+/// larger).
+fn anchor_vsize(coins: usize) -> u64 {
+    270 + 68 * coins.saturating_sub(1) as u64
+}
+
 /// The anchoring thread's shared state.
 pub(crate) struct Anchorer {
-    pub ledger: Arc<Mutex<Ledger>>,
-    pub events: Arc<Mutex<Vec<Event>>>,
-    pub path: Option<PathBuf>,
-    pub key: SigningKey,
+    pub shared: Arc<Shared>,
     pub chain: Chain,
     pub opts: Anchoring,
 }
 
 impl Anchorer {
     fn flight_file(&self) -> Option<PathBuf> {
-        self.path.as_ref().map(|p| p.with_extension("anchor.json"))
+        self.shared.path.as_ref().map(|p| in_flight_file(p))
     }
     fn in_flight(&self) -> Option<InFlight> {
         std::fs::read(self.flight_file()?).ok().and_then(|b| serde_json::from_slice(&b).ok())
@@ -94,18 +106,14 @@ impl Anchorer {
     fn set_in_flight(&self, f: Option<&InFlight>) -> Result<()> {
         if let Some(p) = self.flight_file() {
             match f {
-                Some(f) => std::fs::write(p, serde_json::to_vec(f)?)?,
-                None => {
-                    let _ = std::fs::remove_file(p);
-                }
+                Some(f) => files::write_atomic(&p, &serde_json::to_vec(f)?)?,
+                None => match std::fs::remove_file(&p) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                    _ => {}
+                },
             }
         }
         Ok(())
-    }
-    fn save(&self, l: &Ledger) {
-        if let Some(p) = &self.path {
-            let _ = std::fs::write(p, serde_json::to_vec(l).unwrap());
-        }
     }
 
     pub fn run(self, stop: Arc<AtomicBool>) {
@@ -127,13 +135,17 @@ impl Anchorer {
     /// One look: record the anchor in flight once confirmed, or send one
     /// if there's a newer sealed height. What happened, if anything.
     fn step(&self, flight: &mut Option<InFlight>) -> Result<Option<String>> {
+        ensure!(!self.shared.poisoned.load(Ordering::SeqCst), "the ledger couldn't be saved: anchoring stopped");
         if let Some(f) = flight.clone() {
-            let Some(tx) = self.chain.get_tx(&f.txid) else {
-                // gone (never relayed, or replaced): the seal is unspent
-                // again, so send another
+            // recorded already (a crash after the record was saved, before
+            // the flight was cleared)
+            if self.shared.ledger.lock().unwrap().anchor.seal.txid == f.txid.to_byte_array() {
                 *flight = None;
                 self.set_in_flight(None)?;
-                bail!("the anchor {} of height {} is gone; sending another", f.txid, f.at);
+                return Ok(Some(format!("height {} already recorded ({})", f.at, f.txid)));
+            }
+            let Some(tx) = self.chain.get_tx(&f.txid) else {
+                return self.missing(flight, &f);
             };
             if self.chain.confirmations(&f.txid)? < self.opts.confirmations {
                 return Ok(None);
@@ -148,19 +160,19 @@ impl Anchorer {
                 i.witness = Witness::new();
             }
             let bytes = bitcoin::consensus::serialize(&bare);
-            let mut l = self.ledger.lock().unwrap();
+            let mut l = self.shared.ledger.lock().unwrap();
             let rec = l.anchor_record(bytes, header, index as u32, path)?;
             let t = Tx::Anchor(rec.to_bytes());
             l.apply(&t).context("the anchor's record")?;
-            self.events.lock().unwrap().push(Event::of(&t));
-            self.save(&l);
+            self.shared.save(&l)?;
+            self.shared.events.lock().unwrap().push(Event::of(&t));
             drop(l);
             *flight = None;
             self.set_in_flight(None)?;
             return Ok(Some(format!("height {} anchored in {} (block {block}), recorded", f.at, f.txid)));
         }
         let (seal, at, hist, news) = {
-            let l = self.ledger.lock().unwrap();
+            let l = self.shared.ledger.lock().unwrap();
             let Some(last) = l.sealed.last() else { return Ok(None) };
             // something new since the last anchor's height, not only the
             // record of an anchor (else each record would be anchored in
@@ -175,52 +187,86 @@ impl Anchorer {
         if !news {
             return Ok(None);
         }
-        let txid = self.send(&seal, at, &hist)?;
-        let f = InFlight { txid, at };
-        self.set_in_flight(Some(&f))?;
-        *flight = Some(f);
-        Ok(Some(format!("height {at} sent for anchoring: {txid}")))
+        let (tx, coins) = self.sign(&seal, at, &hist)?;
+        let f = InFlight { txid: tx.compute_txid(), at, raw: Some(bitcoin::consensus::encode::serialize_hex(&tx)) };
+        if let Err(e) = self.set_in_flight(Some(&f)) {
+            let _ = self.chain.unlock(&coins);
+            return Err(e.context("keeping the anchor in flight"));
+        }
+        *flight = Some(f.clone());
+        // a broadcast that fails, or whose answer is lost, is settled at
+        // the next look: found, broadcast again, or given up
+        self.chain.broadcast(&tx).with_context(|| format!("broadcasting the anchor {} of height {at}", f.txid))?;
+        Ok(Some(format!("height {at} sent for anchoring: {}", f.txid)))
     }
 
-    /// Build, sign and broadcast an anchor of height `at` spending `seal`.
-    fn send(&self, seal: &OutPoint, at: u64, hist: &[u8; 32]) -> Result<Txid> {
+    /// The anchor in flight isn't found. It is gone only if the seal is
+    /// unspent: then broadcast it again, or, if that fails, give it up
+    /// (its coins freed) so the next look sends another. If the seal is
+    /// spent, by this anchor unseen or by anything else, wait: sending
+    /// another would spend it twice.
+    fn missing(&self, flight: &mut Option<InFlight>, f: &InFlight) -> Result<Option<String>> {
+        let seal = to_bitcoin(&self.shared.ledger.lock().unwrap().anchor.seal);
+        if !self.chain.unspent(&seal)? {
+            bail!("the anchor {} of height {} isn't found, but the seal {seal} is spent: waiting", f.txid, f.at);
+        }
+        let raw = f.raw.as_deref().and_then(|h| bitcoin::consensus::encode::deserialize_hex::<Transaction>(h).ok());
+        if let Some(tx) = &raw {
+            if self.chain.broadcast(tx).is_ok() {
+                return Ok(Some(format!("the anchor {} of height {} broadcast again", f.txid, f.at)));
+            }
+            let _ = self.chain.unlock(&tx.input.iter().skip(1).map(|i| i.previous_output).collect::<Vec<_>>());
+        }
+        *flight = None;
+        self.set_in_flight(None)?;
+        bail!("the anchor {} of height {} is gone; sending another", f.txid, f.at)
+    }
+
+    /// Build and sign an anchor of height `at` spending `seal`, and the
+    /// wallet coins it locked for its fee.
+    fn sign(&self, seal: &OutPoint, at: u64, hist: &[u8; 32]) -> Result<(Transaction, Vec<bitcoin::OutPoint>)> {
         let seal = to_bitcoin(seal);
         let prev = self.chain.get_tx(&seal.txid).context("the seal's transaction")?;
         let seal_out = prev.output.get(seal.vout as usize).context("the seal output")?.clone();
-        let sequencer = self.key.verifying_key().to_bytes();
+        let sequencer = self.shared.key.verifying_key().to_bytes();
         ensure!(seal_out.script_pubkey == seal_spk(&sequencer.into()), "the seal isn't this sequencer's");
-        // 269 vB measured (Mutinynet): the key path spend, a P2TR wallet
-        // input; the seal, the commitment and the change
-        let fee = Amount::from_sat(270 * self.opts.feerate);
-        let coins = self.chain.select(fee + Amount::from_sat(330))?;
-        let total: Amount = coins.iter().map(|c| c.1.value).sum();
+        // the change script before any coin is locked
         let change = self.chain.new_spk()?;
-        let mut tx = Transaction {
-            version: transaction::Version::TWO,
-            lock_time: absolute::LockTime::ZERO,
-            input: std::iter::once(seal).chain(coins.iter().map(|c| c.0)).map(|o| TxIn { previous_output: o, script_sig: ScriptBuf::new(), sequence: Sequence::ENABLE_RBF_NO_LOCKTIME, witness: Witness::new() }).collect(),
-            output: vec![
-                TxOut { value: seal_out.value, script_pubkey: seal_out.script_pubkey.clone() },
-                TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::from_bytes(commitment_script(at, hist).to_vec()) },
-                TxOut { value: total - fee, script_pubkey: change },
-            ],
-        };
-        let prevouts: Vec<(bitcoin::OutPoint, TxOut)> = std::iter::once((seal, seal_out)).chain(coins.iter().cloned()).collect();
-        let r = (|| -> Result<Txid> {
+        // enough for an anchor with up to three coins; its fee then from
+        // the coins chosen
+        let coins = self.chain.select(Amount::from_sat(anchor_vsize(3) * self.opts.feerate + 330))?;
+        let locked: Vec<bitcoin::OutPoint> = coins.iter().map(|c| c.0).collect();
+        let r = (|| -> Result<Transaction> {
+            let fee = Amount::from_sat(anchor_vsize(coins.len()) * self.opts.feerate);
+            let total: Amount = coins.iter().map(|c| c.1.value).sum();
+            ensure!(total >= fee + Amount::from_sat(330), "the coins chosen don't pay the anchor's fee");
+            let tx = Transaction {
+                version: transaction::Version::TWO,
+                lock_time: absolute::LockTime::ZERO,
+                input: std::iter::once(seal).chain(coins.iter().map(|c| c.0)).map(|o| TxIn { previous_output: o, script_sig: ScriptBuf::new(), sequence: Sequence::ENABLE_RBF_NO_LOCKTIME, witness: Witness::new() }).collect(),
+                output: vec![
+                    TxOut { value: seal_out.value, script_pubkey: seal_out.script_pubkey.clone() },
+                    TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::from_bytes(commitment_script(at, hist).to_vec()) },
+                    TxOut { value: total - fee, script_pubkey: change },
+                ],
+            };
+            let prevouts: Vec<(bitcoin::OutPoint, TxOut)> = std::iter::once((seal, seal_out)).chain(coins.iter().cloned()).collect();
             let mut signed = self.chain.sign_mine(&tx, &prevouts)?;
             let outs: Vec<TxOut> = prevouts.iter().map(|p| p.1.clone()).collect();
             let sighash = SighashCache::new(&tx).taproot_key_spend_signature_hash(0, &Prevouts::All(&outs), TapSighashType::Default)?;
             let secp = Secp256k1::new();
-            let keypair = Keypair::from_seckey_slice(&secp, &self.key.to_bytes())?;
+            let keypair = Keypair::from_seckey_slice(&secp, &self.shared.key.to_bytes())?;
             let sig = secp.sign_schnorr(&Message::from_digest(sighash.to_byte_array()), &keypair);
             signed.input[0].witness = Witness::from_slice(&[sig.as_ref()]);
-            tx = signed;
-            self.chain.broadcast(&tx)
+            Ok(signed)
         })();
-        if r.is_err() {
-            let _ = self.chain.unlock(&coins.iter().map(|c| c.0).collect::<Vec<_>>());
+        match r {
+            Ok(tx) => Ok((tx, locked)),
+            Err(e) => {
+                let _ = self.chain.unlock(&locked);
+                Err(e)
+            }
         }
-        r
     }
 }
 
@@ -243,4 +289,30 @@ pub fn merkle_path(txids: &[[u8; 32]], mut index: usize) -> Vec<[u8; 32]> {
 /// The anchor in flight beside the ledger at `p`, for a reader (tests).
 pub fn in_flight_file(p: &Path) -> PathBuf {
     p.with_extension("anchor.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lichen_ledger::lichen_validity::btc;
+
+    /// Every index's path, for 1 to 9 transactions (odd levels pair their
+    /// last node with itself), leads to the root Bitcoin computes.
+    #[test]
+    fn merkle_paths_lead_to_bitcoins_root() {
+        for n in 1..=9u8 {
+            let txids: Vec<[u8; 32]> = (0..n).map(|i| btc::sha256d(&[i, n])).collect();
+            let root = bitcoin::merkle_tree::calculate_root(txids.iter().map(|t| Txid::from_byte_array(*t))).unwrap();
+            for i in 0..n as usize {
+                let path = merkle_path(&txids, i);
+                assert_eq!(btc::merkle_root(&txids[i], i as u32, &path), root.to_byte_array(), "{n} transactions, index {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_anchors_size_grows_with_its_coins() {
+        assert_eq!(anchor_vsize(1), 270);
+        assert_eq!(anchor_vsize(3), 270 + 2 * 68);
+    }
 }
