@@ -124,6 +124,35 @@ Only Alice proves. The counter is checked inside her trace: if it's
 valid she can't produce an accepting trace, and the operator disproves
 her. So it's one game, with no second ladder and no roles reversed.
 
+**The alternative, and the conservative route: a separate counter game.**
+Alice's escalation output gets a branch: within `W_c`, the hub may
+spend into a counter ladder with the roles reversed. The hub proves its
+counter, Alice checks it, and one Groth16 trace is bisected, as today.
+
+- **The counter holds:** the hub takes the contract.
+- **The counter fails:** the output returns to Alice's game where it
+  left off.
+- **No counter:** Alice's game, as now.
+
+With rational play only one game runs. A false counter costs the hub
+only that game's floors, and a true claim survives both games. Each
+game uses today's ELF, depth and rules.
+
+What it needs:
+
+- a role-reversed instance of the ladder. ln-gap fixes the roles by
+  position (`pubs[0]` Alice, `play.rs`'s `Prover`), but BitVMX's
+  decision functions underneath don't care who plays which side;
+- the branch leaf, signed at opening. The pre-signed set roughly doubles
+  (about 90 transactions on the mock), but the reserve doesn't, since
+  only one game's floors are ever paid;
+- one cross-game check that the counter names Alice's `E`: she
+  re-reveals her `E` words beside the hub's, and the hub's output is
+  taken if they differ.
+
+The single program above becomes an optimization, if a two-proof ELF
+proves cheap.
+
 ## After an exit
 
 The operator, as sequencer, posts an exit record on the L2: a
