@@ -1117,6 +1117,69 @@ mod tests {
         assert!(l.withdraw_input(idx[0]).is_err());
     }
 
+    /// What the block statement refuses of blocks the sequencer never
+    /// seals (a chain prover's forgeries): each refusal honest blocks
+    /// never reach.
+    #[test]
+    fn the_block_statement_refuses() {
+        use lichen_validity as v;
+        let (hub, seq) = (regtest_hub(), regtest_sequencer());
+        let alice = key_from_label("test/alice");
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
+        let m0 = note(xonly(&alice), 20, 0);
+        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, vec![m0]))).unwrap()[0];
+        l.seal(&seq);
+        // block 2: a transfer of the mint, from before the block (a path)
+        l.apply(&transfer(vec![(Spend { note: m0, index: i0 }, &alice)], vec![note(xonly(&alice), 15, 0), note(xonly(&alice), 5, 0)])).unwrap();
+        let good = l.block_input().unwrap();
+        let check = |b: &v::BlockInput| v::check(b, &mut |_| true).map(|_| ());
+        assert_eq!(check(&good), Ok(()));
+        // the mint spent for other outputs, signed by its owner
+        let signed = |outs: Vec<Note>| block_tx(&transfer(vec![(Spend { note: m0, index: i0 }, &alice)], outs)).unwrap();
+        let with = |tx: v::Tx| {
+            let mut b = good.clone();
+            b.txs[0] = tx;
+            b
+        };
+        assert_eq!(check(&with(signed(vec![note(xonly(&alice), 21, 0)]))), Err(v::Reject::Unbalanced), "more out than in");
+        assert_eq!(check(&with(signed(vec![note(xonly(&alice), u64::MAX, 0), note(xonly(&alice), 21, 0)]))), Err(v::Reject::Unbalanced), "a sum that overflows");
+        assert_eq!(check(&with(signed(vec![note(xonly(&alice), 20, 0), note(xonly(&alice), 0, 0)]))), Err(v::Reject::Empty), "an empty note");
+        let mut bad = good.clone();
+        bad.paths[0][0][0] ^= 1;
+        assert_eq!(check(&bad), Err(v::Reject::NotInTree), "a path to another tree");
+        // shapes
+        let mut bad = good.clone();
+        if let v::Tx::Transfer { sigs, .. } = &mut bad.txs[0] {
+            sigs.pop();
+        }
+        assert_eq!(check(&bad), Err(v::Reject::Shape), "a signature missing");
+        let mut bad = good.clone();
+        bad.nf_proofs.push(bad.nf_proofs[0].clone());
+        assert_eq!(check(&bad), Err(v::Reject::Shape), "an insert proof left over");
+        let mut bad = good.clone();
+        bad.paths.push(bad.paths[0].clone());
+        assert_eq!(check(&bad), Err(v::Reject::Shape), "a path left over");
+        let mut bad = good.clone();
+        bad.recent = vec![[0; 32]; v::RECENT + 1];
+        assert_eq!(check(&bad), Err(v::Reject::Shape), "too many recent roots");
+        // the same note spent twice in one block
+        let mut bad = good.clone();
+        bad.txs.push(bad.txs[0].clone());
+        bad.nf_proofs.push(bad.nf_proofs[0].clone());
+        bad.paths.push(bad.paths[0].clone());
+        assert!(check(&bad).is_err(), "a double spend within a block");
+        // a frontier claiming a full tree: no room for the outputs
+        let mut bad = good.clone();
+        bad.tree.size = 1 << TREE_DEPTH;
+        assert!(check(&bad).is_err(), "a full tree");
+        // the encoding: a byte more, a byte less
+        let mut b = good.to_bytes();
+        b.push(0);
+        assert_eq!(v::BlockInput::from_bytes(&b), Err(v::Reject::Encoding));
+        let b = good.to_bytes();
+        assert_eq!(v::BlockInput::from_bytes(&b[..b.len() - 1]), Err(v::Reject::Encoding));
+    }
+
     /// The sequencer's limits: a mint of too many notes, a full height;
     /// and a transaction that doesn't fit the tree leaves nothing behind.
     #[test]
