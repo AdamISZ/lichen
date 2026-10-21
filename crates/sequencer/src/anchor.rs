@@ -189,8 +189,9 @@ impl Anchorer {
         let seal_out = prev.output.get(seal.vout as usize).context("the seal output")?.clone();
         let sequencer = self.key.verifying_key().to_bytes();
         ensure!(seal_out.script_pubkey == seal_spk(&sequencer.into()), "the seal isn't this sequencer's");
-        // about 220 vB: the key path spend, a P2TR wallet input, three outputs
-        let fee = Amount::from_sat(220 * self.opts.feerate);
+        // 269 vB measured (Mutinynet): the key path spend, a P2TR wallet
+        // input; the seal, the commitment and the change
+        let fee = Amount::from_sat(270 * self.opts.feerate);
         let coins = self.chain.select(fee + Amount::from_sat(330))?;
         let total: Amount = coins.iter().map(|c| c.1.value).sum();
         let change = self.chain.new_spk()?;

@@ -46,7 +46,7 @@ by default; `--network`), it uses that node's wallet:
 - whenever something has changed since the last anchor and none is in
   flight, it sends an **anchor**: a transaction spending the seal,
   making the next, and committing the history to the last sealed height
-  (about 220 vB, at `--anchor-feerate`, 2 sat/vB by default, from the
+  (about 270 vB, at `--anchor-feerate`, 2 sat/vB by default, from the
   wallet);
 - once it has `--anchor-confirmations` (1 by default), it records the
   anchor on the L2, in the next height's block, for the chain prover.

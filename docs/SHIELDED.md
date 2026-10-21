@@ -159,7 +159,7 @@ root, with blocks on top of the anchor's whose work is at least ten
 blocks' at the difficulty when the contract opened (its checkpoint).
 Forging one means mining a branch of Bitcoin that long.
 
-What it costs: an anchor of about 220 vB per Bitcoin block at most, and
+What it costs: an anchor of about 270 vB per Bitcoin block at most, and
 only when something has changed; a withdrawal waits for the next anchor
 and ten blocks on it, about two hours with 10-minute blocks (on
 Mutinynet, minutes). On regtest and Mutinynet the proof of work is

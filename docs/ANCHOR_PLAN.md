@@ -102,7 +102,7 @@ trusts its sequencer may fold sooner at its own risk.
 **Receivers.** A payment is trustless once its height is anchored 10
 deep. The wallet shows both: sealed, and anchored (and how deep).
 
-**Costs.** One anchor of about 150 vB per Bitcoin block at most, only
+**Costs.** One anchor of about 270 vB per Bitcoin block at most, only
 when there's activity. A withdrawal waits for: sealing, the anchor,
 its confirmation, 9 more blocks, the anchor record proved. About two
 hours on mainnet at best; minutes on Mutinynet. It must fit inside
@@ -235,3 +235,48 @@ on Bitcoin, compares, and counts confirmations.
   height: fine at this scale, to prune later (keep from the oldest open
   contract's opening). Publishing roots somewhere public (nostr, say) is
   left to whoever runs a watcher.
+
+**Steps 1–3 done** (2026-10-20, branch `anchor`), natively and then with
+the guests: chain `04debc77…`, withdraw `9a7b0b40…` (x86 Linux). The
+real-receipt test anchors on regtest and proves the withdrawal under the
+anchor, ten blocks on it: on the Mac 392,631 user cycles, 75 s (before
+anchoring 332k, 75 s: one segment either way); on the GCE `n2-highmem-4`
+proved in 361 s, wrapped in 258 s, the same as before. The chain guest:
+about 3% more a block (the history hash: a mint 395,543 cycles, was
+384,061); a block holding only an anchor's record about 130k cycles, 50 s
+on the Mac. Tests: the statements', the sequencer anchoring on regtest
+(a restart with an anchor in flight), a fork (of two histories under one
+key and one genesis seal, only one is ever anchored), an anchored
+contract's withdrawal checked by the statement natively.
+
+**The Mutinynet trial** (2026-10-20/21), a fresh deployment (`8c971e86…`:
+a new sequencer key, genesis seal `415a16c7…:0`; the last one,
+`3d40fd9a…`, archived), the sequencer anchoring through the hub's node
+(`deploy/sequencer/anchor.yml`), the chain prover on the Mac. Each
+anchor 269 vB; one a block at most, only when something changed.
+
+- **Opening:** Alice and Bob open at once (1011, 1010), each with a
+  checkpoint both sides checked; `D` the contract's. Shield 13 s, a
+  payment 30 s, as before.
+- **A, the fold under an anchor:** Bob withdraws 35,000: his return at
+  height 13, anchored at 13, the chain receipt at 14 carrying it, the
+  headers on the anchor from the hub's own node: folded (`70cdf2d8…`).
+  The wait was the chain prover's (the Mac also running the Groth16
+  test), not the anchor's.
+- **B, the tower:** the hub hostile; Alice's return at 15 refused after
+  its anchor and chain receipt (3 minutes). Her package carried the
+  input, the chain receipt and the anchor, so the tower (GCE) never
+  reached the sequencer: no tunnel. Proved 405 s, wrapped 263 s,
+  escalated at 3,522,157, move 21 after 14 minutes, the last step proved
+  after the hub's window: the payout `5b03d690…`, 74 minutes from the
+  tower's start. Swept on the Mac after δ: 146,064 sats (`c00e4d15…`).
+
+Found and fixed: `withdraw` kept the input straight after sealing, which
+in an anchored deployment needs the anchor, so Bob's first try failed at
+once (`863bfbd`, with a test); the anchor's size, estimated at 220 vB,
+is 269 (its fee now at the rate asked).
+
+Left: the Groth16 dispute tests on the new claim (G1 passed; G2 missed
+its 3-minute window on a Mac busy proving: rerun idle); the receiver's
+view (a payment shown anchored, and how deep); the guest builds' speed
+(pack without rebuilding the prover; cache cargo's build).
