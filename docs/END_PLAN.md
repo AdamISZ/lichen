@@ -76,10 +76,16 @@ H_TapTweak(P ‖ leaf)·G`. Anchors are key-path spends with the tweaked
 key.
 
 The leaf needs nSequence to hold a lock of at least `N`, so a leaf spend
-can never be an anchor. Without that rule anyone could keep a dead L2
-"alive" by re-anchoring its last history through the leaf every `N`
-blocks. The hub, which takes the default's windfall, would have reason
-to.
+can never be an anchor. This is how the guests see which path spent the
+seal: the txid commits nSequence but not the witness. (The alternative
+is proving the witness through the coinbase's wtxid commitment, which
+is heavier.) Without the rule, a leaf spend shaped as an anchor would
+extend the seal chain. It couldn't keep a dead L2 alive: an anchor must
+commit a height above the last, and only the sequencer seals heights.
+But it would delay the end by `N` for each height sealed and not yet
+anchored. A sequencer colluding with the hub could seal many empty
+heights before going quiet, and the hub could then feed them in one per
+`N` blocks, pushing the end past `T_close`.
 
 No curve arithmetic in the guests. `Q` is a constant of the deployment:
 the genesis anchor state carries it in place of the sequencer's key,
