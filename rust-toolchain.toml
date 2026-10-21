@@ -1,0 +1,5 @@
+# The toolchain CI uses, as ln-gap's (its rust-toolchain.toml): bump both
+# together.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy"]

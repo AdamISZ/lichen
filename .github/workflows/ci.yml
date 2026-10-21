@@ -1,0 +1,84 @@
+name: CI
+
+# Push to master and every PR: lint and build, then the default test suite
+# (docs/CODE.md, "Tests"): everything that needs nothing outside the tree
+# but bitcoind on regtest. ln-gap is a path dependency (`../ln-gap`), so
+# the job checks it out beside lichen at the revision `LNGAP_REV` pins.
+#
+# The Esplora tests (crates/chain/tests/esplora.rs, the hub's deposit test)
+# need Blockstream's electrs: built once at a pinned revision, then cached.
+#
+# Not run here: the opt-in (ignored) tests, which need the RISC Zero
+# prover image built locally (`shielded_r0`) or BitVMX's Groth16 verifier
+# and half an hour each (`groth16`, `groth16_read`).
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  BITCOIN_VERSION: "31.0"
+  BITCOIN_SHA256: d3e4c58a35b1d0a97a457462c94f55501ad167c660c245cb1ffa565641c65074
+  ELECTRS_REV: b7ae3356e3a77b33db96129d61a1b70b8113700e
+
+defaults:
+  run:
+    working-directory: lichen
+
+jobs:
+  build:
+    name: Build and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lichen
+      - id: rev
+        run: echo "rev=$(cat LNGAP_REV)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: AdamISZ/ln-gap
+          ref: ${{ steps.rev.outputs.rev }}
+          path: ln-gap
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: lichen
+          shared-key: debug
+      # Advisory: clippy's warnings do not fail the job.
+      - run: cargo clippy --locked --workspace --all-targets
+      - run: cargo test --locked --workspace --no-run
+
+  test:
+    name: Tests (regtest)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lichen
+      - id: rev
+        run: echo "rev=$(cat LNGAP_REV)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: AdamISZ/ln-gap
+          ref: ${{ steps.rev.outputs.rev }}
+          path: ln-gap
+      - uses: ./ln-gap/.github/actions/bitcoind
+      - id: electrs
+        uses: actions/cache@v4
+        with:
+          path: ~/electrs
+          key: electrs-${{ env.ELECTRS_REV }}
+      - if: steps.electrs.outputs.cache-hit != 'true'
+        run: cargo install --locked --git https://github.com/blockstream/electrs --rev "$ELECTRS_REV" electrs --root ~/electrs
+      - run: echo "LICHEN_ELECTRS=$HOME/electrs/bin/electrs" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: lichen
+          shared-key: debug
+          save-if: false
+      - run: cargo test --locked --workspace
