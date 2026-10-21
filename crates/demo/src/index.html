@@ -37,7 +37,7 @@ button:disabled { opacity: .5; cursor: default; }
 .log { list-style: none; margin: 0; padding: 0; overflow-y: auto; max-height: 260px; display: flex; flex-direction: column; gap: 3px; }
 .log li { padding: 3px 0; border-bottom: 1px dashed var(--line); }
 .k { display: inline-block; min-width: 62px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
-.k.mint { color: var(--mint); } .k.transfer { color: var(--accent); } .k.return { color: var(--ret); } .k.sealed { color: var(--seal); } .k.btc { color: var(--warn); }
+.k.mint { color: var(--mint); } .k.transfer { color: var(--accent); } .k.return { color: var(--ret); } .k.sealed { color: var(--seal); } .k.btc { color: var(--warn); } .k.anchored { color: var(--warn); }
 .k.shield, .k.shielded { color: var(--shield); }
 li.sealed { color: var(--seal); }
 #ledger { max-height: 440px; }
@@ -123,6 +123,7 @@ function userPane(name, other) {
     <div><span class="big" id="${name}-l2"></span> <span class="muted">shielded on the L2</span> <span class="muted" id="${name}-transparent"></span></div>
     <div class="muted">${name}'s notes, which only ${name} can see:</div>
     <div class="notes" id="${name}-notes"></div>
+    <div class="muted" id="${name}-finality"></div>
     <div class="muted">on-chain wallet: <span id="${name}-onchain"></span></div>
     <div class="card" id="${name}-contract"></div>
     <div class="row">
@@ -167,6 +168,14 @@ function renderUser(u, s) {
     ? u.notes.map(x => `<span>${Number(x.value).toLocaleString('en-US')}</span>`).join('')
     : '<span class="muted">none yet</span>';
   document.getElementById(n + '-onchain').textContent = sats(u.onchain);
+  // how final: anchored on Bitcoin (each anchor checked by the wallet),
+  // and how deep
+  const f = u.finality;
+  const part = (v, what) => v ? `${Number(v).toLocaleString('en-US')} ${what}` : '';
+  document.getElementById(n + '-finality').innerHTML = f
+    ? ([part(f.final, '<b>final</b> (anchored on Bitcoin, 10 blocks deep)'), part(f.anchored, 'anchored, not yet 10 blocks deep'), part(f.sealed, 'sealed, not yet anchored')].filter(x => x).join(' · ') || 'nothing held')
+      + (f.last ? ` · last anchor: height ${f.last.height}, ${f.last.confirmations} blocks deep` : '')
+    : '';
   const c = u.contract;
   document.getElementById(n + '-contract').innerHTML = c
     ? `contract <b>${c.cid}</b> · <b>${c.state}</b>${c.dispute ? ' · ' + esc(c.dispute) : ''}<br>

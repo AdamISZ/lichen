@@ -77,6 +77,9 @@ struct User {
     /// Our shielded notes as last seen (value, leaf), kept for while the
     /// wallet is busy.
     notes: Mutex<Vec<(u64, u32)>>,
+    /// How final our notes are, as last seen (the anchors checked on the
+    /// node).
+    finality: Mutex<Option<lichen_wallet::finality::Finality>>,
 }
 
 impl User {
@@ -186,8 +189,16 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
     // chain prover; no native proofs
     let ledger = args.dir.join("ledger.json");
     let blocks = lichen_sequencer::blocks_dir(&ledger);
-    let seq = Sequencer::start("127.0.0.1:0", Some(ledger), regtest_sequencer(), HUB_KEY)?;
     let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w);
+    // the sequencer anchors its history on the node (docs/ANCHOR_PLAN.md):
+    // its wallet pays the genesis seal, then each anchor
+    let seq_chain = chain("sequencer")?;
+    rt.fund(&seq_chain.new_spk()?, Amount::from_sat(10_000_000))?;
+    rt.mine(1)?;
+    let seal = lichen_sequencer::anchor::genesis_seal(&seq_chain, &lichen_ledger::xonly(&regtest_sequencer()))?;
+    rt.mine(1)?;
+    let mut seq = Sequencer::start_with("127.0.0.1:0", Some(ledger), regtest_sequencer(), HUB_KEY, lichen_sequencer::Options { seal: Some(seal), ..Default::default() })?;
+    seq.anchor(seq_chain, lichen_sequencer::anchor::Anchoring { every: Duration::from_millis(500), ..Default::default() })?;
     // several coins, so the hub can fund more than one contract a block
     let hub_chain = chain("hub")?;
     for _ in 0..8 {
@@ -233,6 +244,7 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
             activity: Mutex::new(String::new()),
             busy: AtomicBool::new(false),
             notes: Mutex::new(vec![]),
+            finality: Mutex::new(None),
         }));
     }
     let d = Arc::new(Demo { seq: Client::new(&seq.url)?, blocks: blocks.clone(), chain_prover: !args.no_chain_prover, hub, users, statement, chain_log: Mutex::new(vec![]), rt });
@@ -299,13 +311,18 @@ fn state(d: &Demo) -> Result<Value> {
             // our notes need our keys: the wallet's, unless it's busy
             if let Ok(w) = u.wallet.try_lock() {
                 *u.notes.lock().unwrap() = w.shielded_notes(&st).iter().map(|n| (n.value, n.index)).collect();
+                if let Ok(f) = w.finality(&u.chain) {
+                    *u.finality.lock().unwrap() = Some(f);
+                }
             }
             let notes = u.notes.lock().unwrap().clone();
+            let finality = u.finality.lock().unwrap().map(|f| json!({ "final": f.fin, "anchored": f.anchored, "sealed": f.sealed, "last": f.last.map(|c| json!({ "height": c.height, "confirmations": c.confirmations })) }));
             json!({
                 "name": u.name,
                 "address": u.saddr.to_string(),
                 "shielded": notes.iter().map(|n| n.0).sum::<u64>(),
                 "notes": notes.iter().map(|n| json!({ "value": n.0, "leaf": n.1 })).collect::<Vec<_>>(),
+                "finality": finality,
                 "transparent": l2(&u.address),
                 "onchain": u.chain.balance().map(|b| b.to_sat()).unwrap_or(0),
                 "contract": contract_view(*u.cid.lock().unwrap()),
