@@ -3,6 +3,12 @@
 2026-10-21, branch `anchor`. After anchoring (ANCHOR_PLAN.md); its
 "later, not now" freeze, worked out.
 
+Superseded the same day by EXIT_PLAN.md for a deployment whose hub and
+sequencer cooperate. There, exits from any anchored state, with the
+operator's counter, need no end, and they cover censorship too. Kept
+for operators that don't trust each other, or a clean shutdown with one
+final state.
+
 ## The problem
 
 Every withdrawal is a return the sequencer must seal and anchor. A
