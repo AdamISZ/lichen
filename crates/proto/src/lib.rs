@@ -137,6 +137,17 @@ pub fn deposit_tree(alice: &bitcoin::XOnlyPublicKey, hub: &bitcoin::XOnlyPublicK
 pub const DEPOSIT_OPEN: &str = "deposit_open";
 pub const DEPOSIT_REFUND: &str = "deposit_refund";
 
+/// The shortest life a wallet accepts for a contract, opening to
+/// `T_close`, in blocks: time to withdraw, and to dispute, before the
+/// default (a day; regtest's tests open short contracts).
+pub fn min_duration(net: Net) -> u32 {
+    match net {
+        Net::Regtest => 20,
+        Net::Mutinynet => 2_880,
+        Net::Signet | Net::Testnet4 => 144,
+    }
+}
+
 /// A contract's default life, opening to `T_close`, in blocks: a week
 /// (regtest: 1,000 blocks).
 pub fn default_duration(net: Net) -> u32 {
@@ -624,9 +635,24 @@ impl Record {
     }
 }
 
+/// The keys of an opening request beyond its move keys (which the
+/// contract checks): one input-word key per word of the statement's input
+/// and one hop key per tail chunk, each of the parameters the scripts are
+/// built for.
+pub fn check_request_keys(program: &Program, req: &OpenRequest) -> Result<()> {
+    let wants = |k: &lngap_lamport::winternitz::WotsPublic, p: lngap_lamport::winternitz::WotsParams| k.params == p && k.digits.len() == p.total_digits() as usize;
+    ensure!(req.inputs.len() == program.info.input_words as usize, "{} input-word keys for {} words", req.inputs.len(), program.info.input_words);
+    ensure!(req.inputs.iter().all(|k| wants(k, lngap_zk::final_d60::input_key_params())), "an input-word key of other parameters");
+    ensure!(req.hops.iter().all(|k| wants(k, lngap_lamport::winternitz::WotsParams::for_bytes(1))), "a hop key of other parameters");
+    Ok(())
+}
+
 /// The terms of a contract opened from `req` with the hub's choices.
 pub fn terms(cid: u32, req: &OpenRequest, t_close: u32, reserve_hub: u64) -> Result<Terms> {
     ensure!((10..=32).contains(&req.bits), "a cap of 2^{} sats", req.bits);
+    // amounts that add up without overflow
+    let most = Amount::MAX_MONEY.to_sat();
+    ensure!(req.reserve <= most && reserve_hub <= most, "a reserve above 21 million bitcoin");
     let v_max = (1u64 << req.bits) - 1;
     ensure!(req.deposit > 0 && req.deposit <= v_max, "a deposit of {} with a cap of {v_max}", req.deposit);
     Ok(Terms {
@@ -865,6 +891,42 @@ pub fn canned_seal() -> lichen_ledger::OutPoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An opening request's keys of other parameters, or a reserve whose
+    /// sum would overflow, are refused before anything is built on them.
+    #[test]
+    fn a_request_checked() {
+        use lngap_lamport::winternitz::{WotsParams, WotsSecret};
+        let dir = std::env::temp_dir().join(format!("lichen-proto-req-{}", std::process::id()));
+        let program = Statement::Mock { session: 0, returns: vec![] }.program(&dir).unwrap();
+        let input = |j: usize, p: WotsParams| WotsSecret::from_entropy(p, [j as u8; 32]).public();
+        let alice = lngap_channel::PartyKeys::from_seed(lngap_channel::Role::User, lngap_btc::keys::Seed::from_label("test/alice")).public();
+        let good = lngap_zk::final_d60::input_key_params();
+        let mut req = OpenRequest {
+            alice,
+            l2_address: [7; 32],
+            deposit: 100_000,
+            bits: 21,
+            reserve: 20_000,
+            moves: vec![],
+            inputs: (0..program.info.input_words).map(|j| input(j, good)).collect(),
+            hops: vec![],
+            cid: 1000,
+            deposit_coin: (OutPoint::null(), TxOut { value: Amount::ZERO, script_pubkey: bitcoin::ScriptBuf::new() }),
+            fee_spk: bitcoin::ScriptBuf::new(),
+        };
+        check_request_keys(&program, &req).unwrap();
+        terms(1000, &req, 100, 20_000).unwrap();
+        // a key of other parameters panicked in pre-signing
+        req.inputs[0] = input(0, WotsParams::for_bytes(2));
+        assert!(format!("{:#}", check_request_keys(&program, &req).unwrap_err()).contains("parameters"));
+        req.inputs.pop();
+        assert!(check_request_keys(&program, &req).is_err(), "a key short");
+        // a reserve near u64::MAX overflowed the contract's value
+        req.reserve = u64::MAX - 5;
+        assert!(format!("{:#}", terms(1000, &req, 100, 20_000).unwrap_err()).contains("21 million"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The hub checks the claim natively on the input it rebuilds from the
     /// words read off the chain: that round trip keeps a valid proof valid

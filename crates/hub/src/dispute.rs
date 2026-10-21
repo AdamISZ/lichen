@@ -86,6 +86,7 @@ fn confirmed_at(inner: &Inner, txid: &Txid) -> Result<Option<u32>> {
 impl Inner {
     /// Advance every dispute by what the chain shows now.
     pub(crate) fn disputes_tick(&self) -> Result<()> {
+        self.check_closings()?;
         // contracts closed before the hub collected its bit outputs, once
         let leave = self.leave_bits.load(std::sync::atomic::Ordering::Relaxed);
         let uncollected: Vec<_> = self.open.lock().unwrap().values().filter(|o| o.closed.is_some() && !o.collected && !leave).map(|o| o.record.clone()).collect();
@@ -103,17 +104,23 @@ impl Inner {
             let cid = record.cid();
             let state = self.disputes.lock().unwrap().remove(&cid);
             let next = match state {
-                None => self.start(&record)?,
-                Some(State::Playing { d, v, awaiting, last }) => self.play(cid, *d, *v, awaiting, last)?,
-                Some(State::Conceded) => self.settled_by_user(&record, None)?,
-                Some(State::Proved { last }) => self.settled_by_user(&record, Some(last))?,
-                Some(State::Waiting { d, at, proved }) => self.wait_timeout(cid, *d, at, proved)?,
-                Some(State::Path(p)) => self.path_tick(cid, *p)?,
-                Some(State::Collect { link, since }) => self.collect(&record, link, since)?,
-                Some(s) => Some(s),
+                None => self.start(&record),
+                Some(State::Playing { d, v, awaiting, last }) => self.play(cid, *d, *v, awaiting, last),
+                Some(State::Conceded) => self.settled_by_user(&record, None),
+                Some(State::Proved { last }) => self.settled_by_user(&record, Some(last)),
+                Some(State::Waiting { d, at, proved }) => self.wait_timeout(cid, *d, at, proved),
+                Some(State::Path(p)) => self.path_tick(cid, *p),
+                Some(State::Collect { link, since }) => self.collect(&record, link, since),
+                Some(s) => Ok(Some(s)),
             };
-            if let Some(s) = next {
-                self.disputes.lock().unwrap().insert(cid, s);
+            // one contract's error never stops the others: its dispute is
+            // read again from the chain at the next tick
+            match next {
+                Ok(Some(s)) => {
+                    self.disputes.lock().unwrap().insert(cid, s);
+                }
+                Ok(None) => {}
+                Err(e) => self.note_once(format!("contract {cid}: {e:#}")),
             }
         }
         Ok(())
@@ -154,7 +161,7 @@ impl Inner {
             let id = d.txid("inputs");
             if confirmed_at(self, &id)?.is_none() {
                 // the rest of the input is due within the window, or the hub's timeout
-                let at = confirmed_at(self, &esc_id)?.unwrap();
+                let at = confirmed_at(self, &esc_id)?.context("the escalation, no longer confirmed")?;
                 if self.chain.height()? >= at + u32::from(d.contract.lock(Site::Claimed)) {
                     let txid = self.terminal(&d, "timeout_inputs")?;
                     self.note(format!("contract {cid}: the input never came; timeout {txid}"));
@@ -398,6 +405,7 @@ impl Inner {
             if !self.chain.unspent(&ours)? && self.chain.get_tx(&id).is_none() {
                 // spent, not by Alice's move: our own timeout, before a restart
                 self.note(format!("contract {cid}: already settled by timeout"));
+                self.close_settled(cid, ours.txid)?;
                 return Ok(Some(State::Done));
             }
             if self.chain.height()? >= last + w {

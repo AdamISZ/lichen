@@ -12,6 +12,7 @@
 mod dispute;
 
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,7 +22,7 @@ use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
 use bitcoin::{Amount, OutPoint, Sequence, TxOut};
 use lngap_btc::adaptor::{adaptor_complete, adaptor_verify, AdaptorSig};
 use lichen_chain::Chain;
-use lichen_ledger::{note, xonly, Mint, Tx};
+use lichen_ledger::{files, note, xonly, Mint, Tx};
 use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_proto::{all_moves, broadcast_deadline, check_funding, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, tail_keys, contributions, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, Windows, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
 use lichen_l2::Client;
@@ -119,7 +120,16 @@ struct Pending {
     record: Record,
     /// The adaptor secret of the funding offered.
     t: SecretKey,
+    /// When it was offered.
+    made: std::time::Instant,
 }
+
+/// The largest request body (an opening request with all its keys is a
+/// few hundred kilobytes).
+const MAX_BODY: usize = 8 << 20;
+/// A pending offer is replaced by a new request for its contract only
+/// this long after it was made.
+const OFFER_REPLACED_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Open {
@@ -133,6 +143,11 @@ pub(crate) struct Open {
     /// at once.
     #[serde(default)]
     pub(crate) collected: bool,
+    /// Whether the closing transaction confirmed: until then the hub keeps
+    /// looking, and watches the contract again if it vanishes (replaced by
+    /// a conflicting spend: the user's escalation, mined instead).
+    #[serde(default)]
+    pub(crate) confirmed: bool,
 }
 
 pub(crate) struct Inner {
@@ -194,7 +209,7 @@ impl Hub {
             let d: lichen_ledger::Deployment = serde_json::from_slice(&std::fs::read(&pin)?).context("deployment.json")?;
             ensure!(d == seq.deployment, "the sequencer at {} has key {}, not {} as pinned in {}", cfg.sequencer, hex::encode(seq.deployment.sequencer), hex::encode(d.sequencer), pin.display());
         } else {
-            std::fs::write(&pin, serde_json::to_vec_pretty(&seq.deployment)?)?;
+            files::write_atomic(&pin, &serde_json::to_vec_pretty(&seq.deployment)?)?;
         }
         let mut open = HashMap::new();
         for e in std::fs::read_dir(cfg.dir.join("contracts"))?.flatten() {
@@ -222,10 +237,18 @@ impl Hub {
         let http = std::thread::spawn(move || {
             for mut req in srv.incoming_requests() {
                 let mut body = String::new();
-                let _ = req.as_reader().read_to_string(&mut body);
-                let (code, json) = match route(&i1, req.method(), req.url(), &body) {
-                    Ok(j) => (200, j),
-                    Err(e) => (400, serde_json::json!({ "error": format!("{e:#}") }).to_string()),
+                let read = req.as_reader().take(MAX_BODY as u64 + 1).read_to_string(&mut body);
+                let error = |code: u16, e: String| (code, serde_json::json!({ "error": e }).to_string());
+                let (code, json) = match read {
+                    Err(e) => error(400, format!("the request's body: {e}")),
+                    Ok(n) if n > MAX_BODY => error(413, format!("a body over {MAX_BODY} bytes")),
+                    // a request that panics the handler is refused, and
+                    // the hub goes on serving
+                    Ok(_) => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| route(&i1, req.method(), req.url(), &body))) {
+                        Ok(Ok(j)) => (200, j),
+                        Ok(Err(e)) => error(400, format!("{e:#}")),
+                        Err(_) => error(500, "the request failed".into()),
+                    },
                 };
                 let ct = Header::from_bytes("Content-Type", "application/json").unwrap();
                 let _ = req.respond(Response::from_string(json).with_status_code(code).with_header(ct));
@@ -326,6 +349,14 @@ impl Inner {
         self.log.lock().unwrap().push(msg);
     }
 
+    /// A note not already the last one logged (an error repeated each
+    /// tick is logged once).
+    pub(crate) fn note_once(&self, msg: String) {
+        if self.log.lock().unwrap().last() != Some(&msg) {
+            self.note(msg);
+        }
+    }
+
     fn info(&self) -> Info {
         Info { network: self.cfg.network, deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.depths(), reserve_ppm: self.cfg.reserve_ppm, max_bits: self.cfg.max_bits, duration: self.cfg.duration }
     }
@@ -338,7 +369,7 @@ impl Inner {
             *n += 1;
             *n - 1
         };
-        std::fs::write(self.cfg.dir.join("deposits").join(format!("{cid}.json")), serde_json::to_vec(&(cid, req.alice))?)?;
+        files::write_atomic(&self.cfg.dir.join("deposits").join(format!("{cid}.json")), &serde_json::to_vec(&(cid, req.alice))?)?;
         self.deposits.lock().unwrap().insert(cid, req.alice);
         Ok(DepositOffer { cid, hub: deposit_key(&self.cfg.seed, cid).x_only_public_key().0, timeout: deposit_timeout(self.cfg.network) })
     }
@@ -353,9 +384,16 @@ impl Inner {
         let m = self.program.depths();
         ensure!(req.bits <= self.cfg.max_bits, "a cap above 2^{} sats", self.cfg.max_bits);
         ensure!(req.moves.len() as u32 == m.div_ceil(2), "{} move keys for the odd depths of {m}", req.moves.len());
+        lichen_proto::check_request_keys(&self.program, &req)?;
         let program = &self.program;
         let cid = req.cid;
         ensure!(!self.open.lock().unwrap().contains_key(&cid), "contract {cid} is open already");
+        // one offer pending a contract: a new one replaces it (its answer
+        // lost, say), its coins freed, but not sooner than a minute after
+        // it (each offer mints)
+        if let Some(p) = self.pending.lock().unwrap().get(&cid) {
+            ensure!(p.made.elapsed() >= OFFER_REPLACED_AFTER, "an offer for contract {cid} is pending: accept it, or ask again in a minute");
+        }
         // the deposit: to this contract's tree, confirmed, unspent
         let (dep_op, dep_out) = &req.deposit_coin;
         ensure!(dep_out.script_pubkey == self.deposit_tree(cid)?.script_pubkey(), "the deposit is not to contract {cid}'s address");
@@ -440,7 +478,10 @@ impl Inner {
         let mint_index = self.seq.submit(&Tx::Mint(Mint::new(&self.cfg.l2_key, vec![note(owner, d, 0)])))?[0];
         self.note(format!("contract {cid}: offered; minted {d} sats to the user, locked to the funding"));
         let offer = OpenOffer { cid, t_close, reserve_hub, hub, moves: hub_moves, path, funding, hub_coins, hub_sigs: record.hub_sigs.clone(), mint_point, mint_index, windows: record.windows, checkpoint: record.checkpoint };
-        self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t });
+        let replaced = self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t, made: std::time::Instant::now() });
+        if let Some(old) = replaced {
+            let _ = self.chain.unlock(&old.offer.hub_coins.iter().map(|c| c.0).collect::<Vec<_>>());
+        }
         Ok(offer)
     }
 
@@ -482,10 +523,18 @@ impl Inner {
         let hub_sig = lngap_btc::sighash::sign_tapscript(&deposit_key(&self.cfg.seed, a.cid), &funding, dep, &outs, &leaf.script)?;
         funding.input[dep].witness = lngap_btc::witness::tapscript_witness(&[alice_sig.as_ref().to_vec(), hub_sig.as_ref().to_vec()], &leaf.script, &tree.control_block(DEPOSIT_OPEN)?);
         let signed = self.chain.sign_mine(&funding, &prevouts)?;
-        let txid = self.chain.broadcast(&signed).context("broadcasting the funding")?;
-        self.note(format!("contract {}: opened (deposit {} sats, cap {} sats); funding broadcast", a.cid, record.terms.deposit, record.terms.v_max().to_sat()));
-        let o = Open { record, closed: None, collected: false };
+        // kept before the funding goes out: a contract the hub funded and
+        // forgot (a crash between) would never be defaulted or disputed
+        let o = Open { record, closed: None, collected: false, confirmed: false };
         self.save(&o)?;
+        let txid = match self.chain.broadcast(&signed) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = std::fs::remove_file(self.cfg.dir.join("contracts").join(format!("{}.json", a.cid)));
+                return Err(e.context("broadcasting the funding"));
+            }
+        };
+        self.note(format!("contract {}: opened (deposit {} sats, cap {} sats); funding broadcast", a.cid, o.record.terms.deposit, o.record.terms.v_max().to_sat()));
         self.open.lock().unwrap().insert(a.cid, o);
         self.deposits.lock().unwrap().remove(&a.cid);
         let _ = std::fs::remove_file(self.cfg.dir.join("deposits").join(format!("{}.json", a.cid)));
@@ -494,7 +543,7 @@ impl Inner {
     }
 
     fn save(&self, o: &Open) -> Result<()> {
-        std::fs::write(self.cfg.dir.join("contracts").join(format!("{}.json", o.record.cid())), serde_json::to_vec_pretty(o)?)?;
+        files::write_atomic(&self.cfg.dir.join("contracts").join(format!("{}.json", o.record.cid())), &serde_json::to_vec_pretty(o)?)?;
         Ok(())
     }
 
@@ -505,11 +554,11 @@ impl Inner {
         let state = self.seq.state()?;
         let mut seen = self.seen.lock().unwrap();
         match seen.record(&state.sealed) {
-            Ok(true) => std::fs::write(self.cfg.dir.join("seen.json"), serde_json::to_vec(&*seen)?)?,
+            Ok(true) => files::write_atomic(&self.cfg.dir.join("seen.json"), &serde_json::to_vec(&*seen)?)?,
             Ok(false) => {}
             Err(e) => {
                 let path = self.cfg.dir.join("equivocation.json");
-                std::fs::write(&path, serde_json::to_vec_pretty(&e)?)?;
+                files::write_atomic(&path, &serde_json::to_vec_pretty(&e)?)?;
                 self.note(format!("ALARM: {e}; the evidence: {}", path.display()));
                 bail!("{e}: it signed two histories; the hub folds nothing until this is resolved");
             }
@@ -563,9 +612,50 @@ impl Inner {
         let o = open.get_mut(&cid).context("no such contract")?;
         o.closed = Some(txid);
         o.collected = true;
+        o.confirmed = false;
         let o = o.clone();
         drop(open);
         self.save(&o)
+    }
+
+    /// Close a contract that a confirmed transaction `txid` settled.
+    pub(crate) fn close_settled(&self, cid: u32, txid: bitcoin::Txid) -> Result<()> {
+        self.close(cid, txid)?;
+        let mut open = self.open.lock().unwrap();
+        let o = open.get_mut(&cid).context("no such contract")?;
+        o.confirmed = true;
+        let o = o.clone();
+        drop(open);
+        self.save(&o)
+    }
+
+    /// Each contract closed by a transaction of the hub's not yet
+    /// confirmed: confirmed now, or still waiting, or gone (replaced or
+    /// evicted: then the contract is watched again from what the chain
+    /// shows).
+    fn check_closings(&self) -> Result<()> {
+        let closing: Vec<(u32, bitcoin::Txid)> = self.open.lock().unwrap().values().filter(|o| !o.confirmed).filter_map(|o| o.closed.map(|t| (o.record.cid(), t))).collect();
+        for (cid, txid) in closing {
+            if self.chain.confirmations(&txid)? >= 1 {
+                let mut open = self.open.lock().unwrap();
+                let Some(o) = open.get_mut(&cid) else { continue };
+                o.confirmed = true;
+                let o = o.clone();
+                drop(open);
+                self.save(&o)?;
+            } else if self.chain.get_tx(&txid).is_none() {
+                let mut open = self.open.lock().unwrap();
+                let Some(o) = open.get_mut(&cid) else { continue };
+                o.closed = None;
+                o.collected = false;
+                let o = o.clone();
+                drop(open);
+                self.save(&o)?;
+                self.disputes.lock().unwrap().remove(&cid);
+                self.note(format!("contract {cid}: its closing transaction {txid} is gone (replaced?); watching the contract again"));
+            }
+        }
+        Ok(())
     }
 
     /// Record whether what a closed contract left is collected.
@@ -585,6 +675,21 @@ impl Inner {
         let height = self.chain.height()?;
         let due: Vec<Open> = self.open.lock().unwrap().values().filter(|o| o.closed.is_none() && height >= o.record.terms.t_close).cloned().collect();
         for o in due {
+            // one contract's trouble never holds up another's default
+            if let Err(e) = self.default_one(&o) {
+                self.note_once(format!("contract {}: the default: {e:#}", o.record.cid()));
+            }
+        }
+        Ok(())
+    }
+
+    fn default_one(&self, o: &Open) -> Result<()> {
+        // the funding output spent (an escalation, a fold) or never there:
+        // no default to post, and no fee coin made for one
+        if !self.chain.unspent(&o.record.funding)? {
+            return Ok(());
+        }
+        {
             let c = o.record.contract(&self.cfg.statement, &self.program)?;
             let set = o.record.presigned(&c)?;
             let p = set.iter().find(|p| p.name == "default").context("no default")?;
