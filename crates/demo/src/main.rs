@@ -191,10 +191,12 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
     if !image.is_ok_and(|o| o.status.success()) {
         bail!("no prover image: every shielded spend is proved for real; build it first (docker build -f r0/Dockerfile -t lichen-r0 ., in lichen's root)");
     }
-    // only a directory a demo made before is wiped
+    // only a directory a demo made before is wiped: its marker, or (made
+    // before the marker) a demo's ledger and hub
     let marker = args.dir.join(".lichen-demo");
-    if args.dir.exists() && std::fs::read_dir(&args.dir)?.next().is_some() && !marker.exists() {
-        bail!("{} isn't empty and isn't a demo's: name another --dir", args.dir.display());
+    let a_demos = marker.exists() || (args.dir.join("ledger.json").exists() && args.dir.join("hub").is_dir());
+    if args.dir.exists() && std::fs::read_dir(&args.dir)?.next().is_some() && !a_demos {
+        bail!("{} has files that aren't a demo's (no .lichen-demo, ledger.json or hub/ in it), and the demo wipes its directory: name another --dir, or remove it", args.dir.display());
     }
     let _ = std::fs::remove_dir_all(&args.dir);
     std::fs::create_dir_all(&args.dir)?;
