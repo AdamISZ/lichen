@@ -304,8 +304,14 @@ impl Wallet {
     /// first step. The return's note index.
     /// From shielded notes if they cover it, else transparent ones.
     pub fn return_to_hub(&mut self, b: u64, c: u32) -> Result<u32> {
-        let (_, shielded) = self.balances()?;
-        let idx = if shielded >= b { self.return_shielded(b, c)? } else { self.send(self.sequencer.deployment.hub, b, c)?[0] };
+        let (transparent, shielded) = self.balances()?;
+        let idx = if shielded >= b {
+            self.return_shielded(b, c)?
+        } else if transparent >= b {
+            self.send(self.sequencer.deployment.hub, b, c)?[0]
+        } else {
+            bail!("the balance is {} ({shielded} shielded, {transparent} transparent), short of {b} (a return comes from notes of one kind)", shielded + transparent);
+        };
         self.returns.push((c, idx));
         self.save()?;
         Ok(idx)
