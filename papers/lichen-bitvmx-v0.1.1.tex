@@ -54,7 +54,9 @@ claim disproved is 100~kvB in 23 transactions, a lie about a memory read
 200~kvB in 25, an exit against a vanished hub 23~kvB in 5, and a
 contract pre-signs 141 transactions. From those figures we derive the
 reserves a contract needs and the number of contracts a hub can hold
-before congesting the chain becomes a profitable attack.
+before congesting the chain becomes a profitable attack: for a dispute
+lasting a week, about 3,300 as built, and 8,350 with a window for each
+move.
 \end{abstract}
 
 \tableofcontents
@@ -75,8 +77,9 @@ Script for a variable payout, the loser paying.
 \end{quote}
 and summarises any gadget by a handful of numbers: the bytes and
 transactions of an exit against an absent hub and of a dispute played
-to the end, each side's heaviest move within one window, the dispute's
-duration, the pre-signed set and the setup per contract.
+to the end, each side's moves that are due within a window (their sizes,
+and their sum), the dispute's duration, the pre-signed set and the setup
+per contract.
 
 This paper fills in those numbers for BitVMX, as built in the proof of
 concept~\cite{lichencode,lngapcode}, and explains where they come from.
@@ -97,8 +100,9 @@ exit against a vanished hub & 23.1~kvB, 5 transactions (Mutinynet) \\
 a true claim refused and played to the end & about 120~kvB, 23 transactions (the sum of measured parts; 122.9~kvB measured on regtest with the older 43-word input) \\
 a false claim disproved & 100.4~kvB, 23 transactions (Mutinynet) \\
 the worst case: a lie about a read, disproved & 200.5~kvB, 25 transactions at 66 hops (Mutinynet); about 212~kvB at the 86-hop maximum (est.) \\
-Alice's heaviest move due within one window & her proof of the last step, 25.2~kvB \\
-the hub's heaviest move due within one window & its path, \tx{combine\_8}, about 93~kvB (81.1~kvB measured at 7 chunks) \\
+Alice's windowed moves in a dispute & twelve: 105~kvB in all, the largest her proof of the last step, 25.2~kvB; as built, twelve windows sized to the proof, 302~kvB \\
+the hub's windowed moves in a dispute & twelve: 121~kvB in all, the largest its path, \tx{combine\_8}, about 93~kvB (81.1 measured at 7 chunks); as built, 191~kvB \\
+contracts safe with a one-week dispute & 3,300 as built, the user's side binding; about 8,350 with a window per move \\
 times Alice must act in a full dispute & 13 \\
 duration against a staller & about $10\,w_H + w_P$ blocks (hostile hub), $11\,w_A$ (hostile user) \\
 pre-signed per contract & 141 transactions, 169 inputs \\
@@ -724,53 +728,88 @@ each exit has until its contract's $\Tc$, so staggered expiries spread
 the load.
 
 \subsection{Congestion}
+\label{sec:congestion}
 
 When one side is hostile, a different limit binds. To make an honest
 party miss a move, the attacker must outbid it in every block of that
-move's window of $w$ blocks. That costs about the same whether one
-defender is shut out or many, so it pays only when the moves due in one
-window could not all fit in it anyway: $N s > w \cdot 1\,\mathrm{MvB}$,
-for $N$ contracts whose heaviest move due in a window is $s$. This is
+move's window. That costs about the same whether one defender is shut
+out or many, so it pays only when the moves due in one window could not
+all fit in it anyway: $N s > w \cdot 1\,\mathrm{MvB}$, for $N$ contracts
+whose move of $s$ bytes is due in a window of $w$ blocks. This is
 Flood \& Loot~\cite{floodloot} in lichen's form. We take the attacker's
-best case, every contract's heaviest move due in the same window:
-hostile users choose when to escalate, and a hostile hub can delay each
-of its replies by up to $w_H$ to bunch them.
+best case, every contract's move due in the same window: hostile users
+choose when to escalate, and a hostile hub can delay each of its replies
+by up to $w_H$ to bunch them.
+
+\paragraph{Per window, and per dispute.} The rule must hold for every
+window, so each window must be at least $N s_i / 1\,\mathrm{MvB}$ for
+the move $i$ due in it. But a BitVMX dispute is a sequence of windowed
+moves, and the defender's windows follow one another. So what a given
+$N$ costs is not one window but their sum, the dispute's length:
+\[
+  T \;\ge\; \frac{N}{1\,\mathrm{MvB}} \sum_i s_i ,
+  \qquad\text{that is}\qquad
+  N \;\le\; \frac{T \cdot 1\,\mathrm{MvB}}{\sum_i s_i},
+\]
+summed over the defender's windowed moves, when each move has a window
+sized to it. When one window serves several moves, as each of $w_A$,
+$w_H$ and $w_P$ does as built, each counts at the largest of them. This
+is the fair basis for comparing gadgets, whose disputes differ in how
+many windowed moves they have: a table of capacity per window alone
+would credit BitVMX with a window it needs a dozen times over.
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{52mm}LL}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{40mm}LL}
 \toprule
-& a hostile hub, against honest users & hostile users (read lies), against an honest hub \\
+& Alice, against a hostile hub & the hub, against hostile users (read lies) \\
 \midrule
-the defender's heaviest move in one window, $s$ & Alice's proof of the last step, 25.2~kvB & the hub's \tx{combine\_8}, about 93~kvB \\
-contracts safe at $w = 12$ (two hours) & 480 & 130 \\
-at $w = 144$ (a day) & 5,700 & 1,550 \\
-at $w = 1{,}008$ (a week) & 40,000 & 10,800 \\
-the window needed for 3,000 contracts & 76 blocks (13 hours) & 280 blocks (2 days) \\
-for 60,000 & 1,510 blocks (10 days) & 5,580 blocks (39 days) \\
+the defender's windowed moves & \tx{inputs} 9.9, nine rounds 63.6, the record 6.8, the proof 25.2~kvB: twelve & ten choices 3.4, the split and \tx{combine\_8} 93.6, the verdict 23.6~kvB: twelve \\
+$\sum_i s_i$, as built (one window per class) & 302~kvB: twelve windows $w_A$, each sized to the proof & 191~kvB: ten $w_H$ and two $w_P$, each sized to the path \\
+$\sum_i s_i$, with a window per move & 105~kvB & 121~kvB \\
+contracts safe with a dispute of a day (144 blocks): as built; per move & 480; 1,360 & 760; 1,190 \\
+of a week (1,008 blocks) & 3,300; 9,550 & 5,300; 8,350 \\
+the dispute for 3,000 contracts & 910 blocks (6 days); 320 (2 days) & 570 blocks (4 days); 360 (2.5 days) \\
+for 60,000 & 126 days; 44 days & 79 days; 50 days \\
 \bottomrule
 \end{tabularx}
 \end{center}
-The escalation and \tx{inputs} (21.5~kvB) are not counted: they run
-against $\Tc$, not a window, and only \tx{inputs} has a window, Alice's
-own, opened by her own escalation. Each window holds only its own
-moves, so only the two heavy ones grow with $N$: Alice's proof, due in
-the $w_A$ after $w_P$, and the hub's path, in $w_P$. The hub's choices,
-0.34~kvB each, keep $w_H$ short, and that is the window a vanished
-hub's users wait. The second column binds: the liar picks the lie, and
-a read lie maximises the hub's load in one window.
+The escalation (11.6~kvB) is not counted: it runs against $\Tc$, not a
+window. Nor are the attacker's own windows, through which it may stall:
+a hostile hub adds about $10\,w_H$ and the wait $w_P$ before Alice may
+prove, which lengthen Alice's dispute but do not load her. As built,
+Alice's side binds: her twelve windows are each sized to her heaviest
+move. With a window per move, the two sides are about even, and the hub's
+path dominates its side.
+
+Measured per window instead, the heaviest moves are Alice's proof
+(25.2~kvB) and the hub's \tx{combine\_8} (about 93~kvB): 480 and 130
+contracts safe at $w = 12$, 40,000 and 10,800 at $w = 1{,}008$. Those
+figures are correct for a single window, but a dispute that respects them
+lasts twelve such windows.
 
 \subsection{What would improve it, within BitVMX}
 
 \begin{itemize}[leftmargin=1.5em]
-\item \emph{The path in its own windows.} Posting each chunk of the
-  path as its own transaction in its own window, only in the read-lie
-  tail, would bring the hub's $s$ down to its read verdict, 23.6~kvB:
-  about 6,000 contracts per day-long window instead of 1,550.
+\item \emph{A window per move.} Sizing each of Alice's windows to its
+  own move rather than to her proof, and the hub's verdict window to the
+  verdict rather than to the path, cuts the per-dispute sums from 302
+  and 191~kvB to 105 and 121: nearly three times Alice's capacity for the
+  same dispute length.
 \item \emph{A shorter jump list.} Lerner's tighter long-jump function,
   about $\log_2 n + 3\log_2\log_2 n$ hops (some 45 instead of 86), or a
   counter moving over a step number's set bits only, shrinks the path,
-  its combine and the floors about in proportion.
+  its combine and the floors about in proportion: the hub's sum from 121
+  to about 75~kvB (est.).
+\item \emph{A binary search.} One hash a round instead of seven: 29
+  rounds of about 1.2~kvB (est.) instead of ten of 7.5, so Alice's rounds
+  total about 35~kvB instead of 64, and her sum falls by about a quarter,
+  at the price of 29 choices for the hub and a longer dispute against a
+  staller.
+\item \emph{The path in separate windows.} Posting each chunk of the
+  path as its own transaction in its own window shrinks the hub's
+  largest move to its verdict, 23.6~kvB, but not its sum: it helps the
+  per-window figure only.
 \item \emph{The inputs on demand.} With the hub gone, Alice could
   escalate with only $b$ and the checked words; a present hub would
   post a small pre-signed demand, and only then would she owe the rest.
@@ -785,8 +824,6 @@ a read lie maximises the hub's load in one window.
   the two budgets, not to ten windows; the price is extra pre-signed
   transactions, published only against a staller.
 \end{itemize}
-Smaller rounds would not help Alice's side: her heaviest move is the
-proof of one step, whatever the search's arity.
 
 \section{Alice's liveness and the tower}
 \label{sec:tower}

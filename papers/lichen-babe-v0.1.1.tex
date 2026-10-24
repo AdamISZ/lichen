@@ -51,7 +51,9 @@ asserted there, or lose. We sketch why this binds the proved amount to
 the paid one, give the transaction graph, and estimate costs from BABE's
 published measurements and lichen's: a refused withdrawal of about
 31~kvB in six transactions against BitVMX's 100--212~kvB in 23--25, a
-hub's binding move in a congestion attack of 17~kvB against 93, and a
+hub able to hold, for a dispute of a given length, about seven times as
+many contracts before congesting the chain pays (three without
+soldering), and a
 setup per contract of minutes of computation and about 90~MiB of storage
 for the user. Nothing here is built, and the security argument is a
 sketch.
@@ -449,29 +451,39 @@ it by demanding them only from a hub that is present~\cite{lichenbitvmx}.
 
 \subsection{Congestion}
 
-With the main paper's rule, $N s \le w \cdot 1\,\mathrm{MvB}$ for $N$
-contracts whose defender's heaviest move due in one window is $s$:
+The main paper's rule, $N s \le w \cdot 1\,\mathrm{MvB}$ for $N$
+contracts whose move of $s$ bytes is due in a window of $w$ blocks, must
+hold for every window. Comparing gadgets by one window would be unfair
+to the one with fewer: a BitVMX dispute is twelve windowed moves on each
+side, one after another, so a hub safe at a given window under BitVMX
+asks for a dispute twelve windows long. The fair basis is the dispute's
+length $T$ for a given $N$, with each window sized to its move:
+$N \le T \cdot 1\,\mathrm{MvB} / \sum_i s_i$, summed over the defender's
+windowed moves~\cite[\S 9]{lichenbitvmx}.
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{40mm}LLL}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{34mm}LLL}
 \toprule
-& hostile hub: $s$ = \tx{wrongly\_challenged}, 0.21~kvB & hostile users: $s$ = \tx{challenge\_assert}, 17.4~kvB (42 unsoldered) & BitVMX, binding side: 93~kvB \\
+& BABE, Alice against a hostile hub & BABE, the hub against hostile users & BitVMX, the binding side \\
 \midrule
-contracts safe at $w = 12$ & ${\sim}57{,}000$ & 690 (290) & 130 \\
-at $w = 144$ & ${\sim}690{,}000$ & 8,300 (3,400) & 1,550 \\
-at $w = 1{,}008$ & --- & 58,000 (24,000) & 10,800 \\
-window for 60,000 contracts & 13 blocks & 1,040 blocks (2,520) & 5,580 blocks \\
+windowed moves & \tx{wrongly\_challenged}, 0.21~kvB & the response 0.6 and \tx{challenge\_assert} 17.4 (42 unsoldered) & as built, Alice: twelve windows sized to her proof; with a window per move, the hub \\
+$\sum_i s_i$ & 0.21~kvB & 18~kvB (43) & 302~kvB; 121~kvB \\
+contracts safe with a dispute of a day & ${\sim}690{,}000$ & 8,000 (3,400) & 480; 1,190 \\
+of a week & --- & 56,000 (23,700) & 3,300; 8,350 \\
+the dispute for 60,000 contracts & 13 blocks & 7.5 days (18 days) & 126 days; 50 days \\
 \bottomrule
 \end{tabularx}
 \end{center}
-Hostile users bind, at about 5.3 times BitVMX's capacity with soldering
-and 2.2 without. A hostile hub stops mattering, since Alice's only
-windowed move is 149~vB. The hub's response, 0.6~kvB in $w_H$, grows
-with $N$ too: 60,000 contracts need $w_H$ of at least 36 blocks. Were
-BitVMX's path posted chunk by chunk in separate windows, its binding move
-would fall to 23.6~kvB, and BABE's advantage on this measure to about
-1.4 times; its advantage in total bytes, in the missing read-lie case
-and on the hostile-hub side would remain.
+Hostile users bind under BABE. For a dispute of the same length, BABE
+holds about 6.7 times as many contracts as BitVMX with a window per move
+(2.8 unsoldered), and 17 times as many as BitVMX as built (7 unsoldered).
+A hostile hub stops mattering, since Alice's only windowed move is
+149~vB; were her assertion given a window rather than a deadline, her
+sum would be 9.5~kvB, about 106,000 contracts for a week. The hub's
+response, 0.6~kvB in $w_H$, is part of its sum: 60,000 contracts need
+$w_H$ of at least 36 blocks. Chunking BitVMX's path into separate windows
+would not change these figures, since it shrinks the path's largest move
+but not its sum.
 
 \subsection{Reserves and time}
 

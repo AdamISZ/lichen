@@ -149,13 +149,37 @@ The hostile-users side still binds:
   unsoldered.
 - **Soldering is what decides the figure:** it costs the hub about
   12 min of SNARK proving per contract (paper: 745 s at M = 4).
-- **The ladder could also narrow its own figure.** Posting the path's
-  chunks in their own windows (MASS_EXIT.md, amelioration 2) would bring
-  the ladder's s to 23.6 kvB. Against that, BABE soldered is only 1.4×
-  better on this metric. So BABE's case on congestion rests mostly on:
-  - the hostile-hub column;
-  - the total bytes;
-  - the missing read-lie tail.
+
+**Correction (2026-10-25): compare by the dispute's length, not by one
+window.** The table above is right per window, but it is unfair to BABE.
+A BitVMX dispute is twelve windowed moves on each side, one after
+another, so being safe at a given w means a dispute twelve windows long.
+
+The fair rule fixes the total length T and sizes each window to its
+move: N ≤ T · 1 MvB / Σ sᵢ, summed over the defender's windowed moves.
+The Σ for each:
+
+| side | moves due in a window | Σ |
+|---|---|---|
+| BitVMX, Alice | `inputs` 9.9, rounds 63.6, record 6.8, proof 25.2 | 105 kvB with a window per move; 302 as built (12 × w_A, each sized to the proof) |
+| BitVMX, hub | choices 3.4, split and combine 93.6, verdict 23.6 | 121 kvB; 191 as built (two w_P sized to the path) |
+| BABE, Alice | `wrongly_challenged` | 0.21 kvB (9.5 with `assert` windowed) |
+| BABE, hub | response 0.6, `challenge_assert` 17.4 | 18 kvB (43 unsoldered) |
+
+Contracts safe with a one-week dispute:
+- **BitVMX:** 3,300 as built (Alice binds), 8,350 with a window per move
+  (the hub binds).
+- **BABE:** 56,000 soldered, 23,700 unsoldered.
+
+That is about 6.7× BitVMX with a window per move (2.8× unsoldered), and
+17× BitVMX as built (7×).
+
+**Retracted:** posting the path's chunks in separate windows shrinks the
+ladder's largest move to 23.6 kvB, but not its sum. It helps the
+per-window figure only, so the "1.4×" said before does not hold.
+
+The papers use this basis: `papers/lichen-bitvmx-v0.1.1` §9 and
+`papers/lichen-babe-v0.1.1` §7.2.
 
 **The hub's response** (0.6 kvB) also falls in a window, w_H, and grows
 with N under hostile users: 60,000 contracts need w_H ≥ 36 blocks. That
