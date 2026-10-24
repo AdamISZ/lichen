@@ -8,6 +8,8 @@ CAVEAT: Do not use with real money. Most importantly, the code is unaudited eith
 
 To follow an evolving tradition: the Introduction section here, is written by me. Most of the lower level documentation and instructions are LLM generated.
 
+Just want the idea, no maths, no complex diagrams, no code or demo or blah blah? [Here you go](docs/1000-ft-view.md).
+
 Choose your adventure:
 
 *New to the concept and want to understand it* - read this short intro, then go to the main [design paper](./papers/lichen-v0.1.1.pdf)
