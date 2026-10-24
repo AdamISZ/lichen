@@ -71,8 +71,8 @@ do not depend on how a disputed proof is checked on Bitcoin. It asks of
 the on-chain gadget only this:
 \begin{quote}
 given a proof whose public input binds the program and its journal
-$b \,\|\, c \,\|\, D$, adjudicate a two-party claim on Bitcoin: the
-contract's fixed terms ($c$, $D$, the program) checked, $b$ readable by
+$b \,\|\, c \,\|\, \mathcal{D}$, adjudicate a two-party claim on Bitcoin: the
+contract's fixed terms ($c$, $\mathcal{D}$, the program) checked, $b$ readable by
 Script for a variable payout, the loser paying.
 \end{quote}
 and summarises any gadget by a handful of numbers: the bytes and
@@ -123,7 +123,7 @@ one; Section~\ref{sec:costs} gives the parts and their sources.}
 
 Alice's withdrawal proof is a Groth16 proof (BN254) that RISC Zero's
 recursion verified a succinct receipt of the withdrawal guest, with
-journal $b \,\|\, c \,\|\, D$~\cite{pipeline}. The claim taken to Bitcoin
+journal $b \,\|\, c \,\|\, \mathcal{D}$~\cite{pipeline}. The claim taken to Bitcoin
 is about the run of a fixed program on that proof:
 \begin{quote}
 FairgateLabs' Groth16 verifier for BitVMX~\cite{bitvmxcpu}, compiled to
@@ -159,7 +159,7 @@ words & content & published in & used by the contract \\
 9--40 & the proof's three points, compressed & \tx{inputs} & by the search only \\
 41 & $b$ & \tx{escalate} & read by the payout \\
 42 & $c$, the contract's memo & \tx{escalate} & checked (\tx{memo}) \\
-43--50 & $D$, the contract's identifier & \tx{inputs} & checked (\tx{deployment\_1}--\tx{deployment\_8}) \\
+43--50 & $\mathcal{D}$, the contract's identifier & \tx{inputs} & checked (\tx{deployment\_1}--\tx{deployment\_8}) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -168,7 +168,7 @@ alone and at once: it re-verifies Alice's signature on the word and
 succeeds if the signed value differs from the contract's, taking the
 whole contract. So a proof of another program (the image id), for
 another contract (the memo) or against another deployment, history or
-finality threshold ($D$) loses before any search. The image-id check is
+finality threshold ($\mathcal{D}$) loses before any search. The image-id check is
 essential: the verifier would accept a valid proof of \emph{any}
 program. One image id suffices because the withdrawal guest has the
 chain guest's image id built in. Words are split between two
@@ -358,7 +358,7 @@ re-signs the set for both commitments.
 witness carries move~1 (the claim, 28 bytes: the last step and its
 hash; and round 1's seven hashes) and 11 claim words: the journal's
 length, the image id, $b$ and the memo. That is 944 stack items, close
-to the limit, so the other 40 words (the proof and $D$) follow in
+to the limit, so the other 40 words (the proof and $\mathcal{D}$) follow in
 \tx{inputs}, which spends the claimed output into the first output of
 the search. The claimed output has one more leaf, \tx{timeout\_inputs},
 paying the hub if \tx{inputs} has not come within Alice's window $w_A$:

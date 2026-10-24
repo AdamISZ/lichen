@@ -179,7 +179,7 @@ BABE's ciphertext is built from $T$, and $T$ contains $e(L, \gamma)$,
 the combination of the public inputs. So the whole public input is fixed
 at setup. For a RISC Zero proof that input is the claim digest, a hash
 over the image id and the journal; under BitVMX the journal is
-$b \,\|\, c \,\|\, D$, so setup would fix $b$, which Alice chooses only
+$b \,\|\, c \,\|\, \mathcal{D}$, so setup would fix $b$, which Alice chooses only
 when she withdraws. The ways round it that we know of:
 \begin{itemize}[leftmargin=1.5em]
 \item \emph{Supply $rL$ at proving time} for the asserted public input
@@ -217,13 +217,13 @@ setup. The statement proved becomes
 \[
   \exists\, b, w, \sigma_H:\quad
   \mathrm{Verify}(pk_H, b, \sigma_H) = 1 \;\wedge\;
-  \mathrm{ValidWithdrawal}(c, D, b, w) = 1,
+  \mathrm{ValidWithdrawal}(c, \mathcal{D}, b, w) = 1,
 \]
 where $\mathrm{ValidWithdrawal}$ is lichen's withdrawal statement
 unchanged (a return of $b$ to the hub with the contract's memo $c$, under
 an anchored root of a valid history, with the contract's work on top)
 and $w$ its witness. The journal holds only values fixed when the
-contract opens: $c$, $D$ and a digest of $pk_H$. The claim digest, and
+contract opens: $c$, $\mathcal{D}$ and a digest of $pk_H$. The claim digest, and
 so BABE's statement, is then fixed at setup, while $b$ is free until
 Alice withdraws.
 
@@ -286,7 +286,7 @@ the same script cost.
 \subsection{The guest}
 
 The withdrawal guest takes $b$ and $\sigma_H$ as private inputs, checks
-$\sigma_H$ against $pk_H$, and commits $c$, $D$ and $pk_H$'s digest. The
+$\sigma_H$ against $pk_H$, and commits $c$, $\mathcal{D}$ and $pk_H$'s digest. The
 cost of the check depends on the signature's hash. LN-GAP's one-time
 signatures chain \texttt{HASH160}, RIPEMD-160 of SHA-256: up to 150 chain
 steps for a 32-bit word, and RIPEMD-160 has no accelerator in RISC
