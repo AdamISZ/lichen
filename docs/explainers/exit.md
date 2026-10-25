@@ -115,7 +115,10 @@ The counter guest takes:
 - the chain receipt at a later anchored state `S′`, 10 deep, whose
   history passes through `S`;
 - one of her nullifiers, with the transaction that inserted it, at a
-  height `h` with `h_S < h ≤ h_S′`.
+  height `h` with `h_S < h ≤ h_S′`;
+- proof of when Alice's escalation confirmed on Bitcoin, and that the
+  insertion's anchor confirmed a few blocks before it (the cutoff,
+  below).
 
 It applies the exclusions below for the `c` inside `E`, and outputs
 `D ‖ E ‖ ok`, wrapped in Groth16 like Alice's proof.
@@ -147,10 +150,22 @@ Two insertions are excluded from counters:
   costs the hub nothing: if the return is sequenced, the hub has her
   tokens, and contract `c` still pays only once.
 
+**The cutoff: only what was final before her claim.** Alice has signed
+other transactions too, and the operator may be holding some of them,
+unsealed. If a counter could cite anything sealed during `W_c`, the
+operator could seal one of those after she has committed to her claim,
+and take her contract with it. So a counter may cite only an insertion
+anchored at least a few blocks before her escalation confirmed. The
+counter proves that height from Bitcoin itself, so neither side chooses
+it. Everything a counter can use was then already final on Bitcoin when
+she claimed. This covers her return too, but the return stays excluded
+in any case.
+
 The history can't be rewritten either. Each anchor spends the previous
 anchor's output on Bitcoin, so there is one anchored history, and `S`
-and `S′` are both in it. A counter against an honest Alice would need a
-spend she never made, in a history the operator can't change.
+and `S′` are both in it. If Alice hasn't spent since `S`, a counter
+would need a spend she never made, in a history the operator can't
+change.
 
 **Why `c` is inside `E`.** The exclusions name a contract, so the
 counter must be pinned to Alice's. If `E` left `c` out, the operator
@@ -217,13 +232,15 @@ one game's fees are ever paid.
 |---|---|
 | censors her return | she exits from her kit; the return can't be used against her |
 | stops sealing | her kit's `S` is already anchored |
-| withholds data | her last kit still works; only payments received since aren't exit-safe |
+| withholds data, with no spend of hers since her kit | her last kit still works |
+| holds a transaction she signed, and seals it after her claim | past the cutoff: not a counter |
+| seals a spend of hers, then withholds its new notes' data | she loses: the data-availability gap, see Limits |
 | vanishes | no counter; the timeouts in Alice's game pay her |
 | waits out `T_close` | her escalation confirms first; then no default is possible |
 | posts a garbage counter | she challenges it, the gadget rejects it, and her game goes on |
 | forges an insertion | it can't: a spend needs her keys, an exit record her proof |
 | counters with her own return | excluded |
-| floods the chain | the one attack left: see Limits |
+| floods the chain | congestion: see Limits |
 
 ## The alternative: one place
 
@@ -248,8 +265,15 @@ keep the gadget a black box, so this note describes them.
   exit is a dispute with a counter window, all competing for block space.
   How many contracts a hub can safely hold is the congestion question
   again, with longer disputes.
-- **Data availability, narrowed.** A payment is exit-safe only once its
-  receiver holds a kit for it. Withholding data can still stop payments
-  becoming final. It can't take back final ones.
+- **Data availability: the one substantial gap.** With the cutoff, the
+  exit is safe exactly when Alice can read the anchored data she needs.
+  The gap affects senders as well as receivers. In the consolidation
+  attack, Alice merges her covered notes into one new note. The operator
+  seals that and withholds the new note's data: the old notes are
+  countered, and the new one has no kit. Any spend that leaves her with
+  change works the same way. EXIT_PLAN.md lists the options: publishing
+  each batch's nullifiers and new commitments on Bitcoin (about 64
+  bytes per L2 transaction), or transaction expiry with a claim that
+  covers her own recent transactions, or accepting the gap.
 - **Whole notes.** A claim spends whole notes. Alice claims everything
   up to `V_max`, and above the cap the claimed notes' excess is forfeit.

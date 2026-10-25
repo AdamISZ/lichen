@@ -87,7 +87,9 @@ bytes:
   - a later anchored state `S'`, 10 deep, in the same history as `S`;
   - one of the claim's nullifiers, inserted at a height `h_S < h ≤ h_S'`
     by a transaction that isn't contract `c`'s own: neither its exit
-    record (below) nor a return with memo `c`.
+    record (below) nor a return with memo `c`;
+  - the escalation's confirmation at Bitcoin height `H_esc` (below), and
+    the insertion's anchor confirmed at or before `H_esc − m`.
 - **Journal:** `D ‖ E ‖ ok`.
 
 "The same history": the counter's chain receipt passes through `S`.
@@ -101,9 +103,40 @@ The counter covers three cases:
 - **The same note through two contracts:** the first claim's exit
   record (below) inserted the nullifier, and the second claim's counter
   shows it.
-- **A claim racing a spend:** the operator either refuses to sequence a
-  spend of nullifiers whose claim is pending, or sequences it and
-  counters.
+- **A claim racing a spend:** the operator, as sequencer, refuses to
+  sequence a spend of nullifiers whose claim is pending. A spend
+  anchored after the cutoff can't counter (below), so a sequenced one
+  is the operator's loss: the exit record then can't retire notes
+  already spent, and both the claim and the spend's receiver can be
+  paid.
+
+**The cutoff: only what was final before the claim.** A counter may
+cite only an insertion whose anchor confirmed at least `m` blocks before
+Alice's escalation. Without it, any transaction Alice has signed and the
+operator holds is a counter in waiting: the operator includes it during
+`W_c`, after she has committed to her claim, and takes her contract.
+Excluding her own return fixed one instance of this; the cutoff fixes
+all of them. With it, everything a counter can use was already final,
+on Bitcoin, when she claimed, so an honest Alice who can read the
+anchored data before escalating can't be countered. That leaves data
+availability as the only gap (Data availability, below).
+
+- **`H_esc` must be proved, not chosen.** If Alice named her own cutoff,
+  she could pick a stale one and hide a spend anchored after it. So the
+  counter guest proves the height: the transaction spending contract
+  `c`'s funding outpoint, in a block by Merkle path, on headers that
+  continue the anchors' chain. The guest must know the outpoint for
+  this: if `c` stays a memo number, `E`'s preimage gains the outpoint,
+  checked on chain against the contract's terms like `c`. Detail for
+  the design pass.
+- **The margin `m`.** Alice checks the anchored data up to the tip, then
+  broadcasts. Anchors confirmed between her check and `H_esc − m` could
+  be cited without her having seen them, so `m` covers her escalation's
+  confirmation time: `e` in the Timing table, 6 blocks on mainnet and 20
+  on Mutinynet. If her escalation takes longer, she fee-bumps it.
+- **The hub loses nothing it can't avoid.** A spend that races the
+  claim is one the operator, as sequencer, can refuse (above), and the
+  exit record retires the notes afterwards.
 
 **Why contract `c`'s own return doesn't count.** An honest Alice tries
 the cooperative way first: she signs a return of her notes with memo
@@ -264,11 +297,10 @@ append-only, so a path to `T_S` stays valid, and non-membership in
 so the wallet fetches one after events, not on a schedule:
 
 - **After a spend:** a kit at a state after the spend, 10 deep, covering
-  her change. She was online to sign, so this is a fetch about 10
-  blocks later. If she goes offline first, her old kit still exits
-  every note she didn't spend: they're unspent at the old `S`, and
-  nothing later spends them. Only the change is exposed, and only to
-  data withheld in that gap.
+  the new notes. She was online to sign, so this is a fetch about 10
+  blocks later. Until she has it, the new notes aren't exit-safe, and an
+  operator that withholds their data can keep them so (Data
+  availability, below).
 - **After a receipt:** whenever she next comes online. Until then the
   payment isn't final for her (below).
 - **Otherwise:** nothing. A wallet that happens to be online may
@@ -277,15 +309,67 @@ so the wallet fetches one after events, not on a schedule:
 If the operator stops serving, the last kit still works: Alice hasn't
 spent since, so no counter exists.
 
-So withholding data hurts only payments received after the last kit.
 Hence a rule for receivers: **a payment is final once you hold its kit
 at an anchored state 10 deep.** The wallet's "final" already means
-anchored 10 deep, and now it also requires the kit in hand. This
-narrows data availability to a per-receiver question. It doesn't solve
-it.
+anchored 10 deep, and now it also requires the kit in hand.
 
 The tower's package carries the kit, so a tower can exit with no
 operator.
+
+## Data availability: the one remaining gap
+
+With the cutoff, the exit is safe exactly when Alice can read the
+anchored data she needs. An earlier version of this plan said the
+receiver rule narrows data availability to a per-receiver question. It
+doesn't: senders are exposed too, through their own new notes.
+
+**The consolidation attack** (found by a reviewer). Alice's whole
+balance is covered by her kit. She signs a consolidation of her notes
+into one new note, of the same value, as the wallet recommends. The
+operator sequences and anchors it, and withholds the new note's data.
+Now:
+
+- the old notes are countered: the consolidation really spent them,
+  before the cutoff;
+- the new note has no kit, so she can't claim it;
+- at `T_close` the hub takes the contract.
+
+No payment to anyone else was needed, and the same works on any spend
+that leaves her with change. Her protection is lost the moment the
+operator anchors one of her transactions and withholds its outputs'
+data.
+
+The cutoff has already removed the timing half of the problem (a held
+transaction included after her claim). What's left is purely that
+anchors are public on Bitcoin but their contents aren't. If nothing has
+been anchored since her kit, she's safe. If something has and she can't
+read it, she can't tell whether her transactions are in it, or prove
+her new notes.
+
+Data availability is a hard problem for a system like this, but the aim
+is that it's the only substantial one, and with the cutoff it is. The
+options, still open:
+
+1. **Publish just enough with each anchor.** An exit needs only each
+   batch's inserted nullifiers and new note commitments, not full
+   transaction data. With them on Bitcoin, Alice can see whether her
+   notes were spent and rebuild her new notes' paths. About 64 bytes
+   per L2 transaction, against 269 vB per batch today: the Shielded CSV
+   end of the trade-off.
+2. **Transaction expiry and a two-branch claim.** Each L2 transaction is
+   valid only if anchored by a Bitcoin height it names, so a held
+   authorisation dies, and Alice knows exactly which of her
+   transactions could be inside anchors she can't read. Her claim then
+   lists them: "my notes `N` were unspent at `S`; since then I signed
+   only these, and my outputs among them are `O`." A counter showing a
+   listed transaction was included switches her claim to `O` instead of
+   taking the contract. That's two possible amounts, under two one-time
+   keys, with the payout following the counter game's verdict. A
+   consolidation is worth the same either way, and a payment pays her
+   the full notes if it wasn't included and her change if it was.
+3. **Accept the gap and document it.** A user is exit-safe only while
+   the operator serves data for her latest transactions; a wallet that
+   spends while the operator misbehaves can lose its whole contract.
 
 ## Timing
 
@@ -305,8 +389,9 @@ covered for 84% of its life (162 of 1,008 blocks short), a month's for
 96%.
 
 The counter window `W_c` runs after the escalation, so `T_close` doesn't
-bound it. It must fit: the latest spend's anchor, 10 blocks on it, the
-counter's proof (about 20 minutes), and posting it. That's 18 blocks on
+bound it. Any spend it can cite was anchored before the cutoff, so it
+must fit only the rest: 10 blocks on that anchor, the counter's proof
+(about 20 minutes), and posting it. That's 18 blocks on
 mainnet (3 h) and 80 on Mutinynet (40 min). Every dispute gets longer by
 `W_c`.
 
@@ -361,6 +446,8 @@ timeout.
 
 ## Costs and open questions
 
+- **Data availability,** the main open question: which of the three
+  options above, or which combination.
 - **ln-gap:**
   - a verifier-owned input link, the counter, with the hub's input-word
     keys signed at opening;
@@ -385,13 +472,16 @@ timeout.
 - **No contract, no exit.** Value above a contract's cap stays with the
   operator.
 - **Claims over the cap** forfeit the rest of the notes claimed; the
-  wallet sizes and consolidates notes to keep this small.
+  wallet sizes and consolidates notes to keep this small, but only while
+  the operator serves data, since a consolidation is itself a spend
+  (the consolidation attack).
 
 ## Steps
 
 1. **The exit claim** in `lichen-withdraw` (native, on the mock
    statement): the journal with `E`.
-2. **The counter statement** (native), and the exit record on the L2:
+2. **The counter statement** (native), with the cutoff and its proof of
+   `H_esc`, and the exit record on the L2:
    `Tx::Exit`, hub-signed and carrying the claimant's exit proof, both
    checked by the chain guest. A new chain guest.
 3. **ln-gap:** the verifier-owned input, the two-proof program (first
@@ -421,6 +511,9 @@ timeout.
        rejects it);
      - Alice's censored return sequenced after her escalation (not a
        counter; Alice wins);
+     - any spend of hers anchored after the cutoff (not a counter);
+     - the consolidation attack (Alice loses: the data-availability gap,
+       until one of its options is built);
      - a spend racing a claim.
    - Groth16: a countered exit end to end.
    - Mutinynet: a `HOSTILE` operator censoring; Alice exits, Bob's old
