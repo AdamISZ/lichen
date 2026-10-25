@@ -24,6 +24,11 @@ How lichen's contracts work, from real runs.
   each played to the end. The search lands on the lie: an exit code
   disproved in one step, and a read disproved by a 66-hop path back
   478 million steps. What it cost, and who paid.
+- [Exiting against a hostile operator](exit.md): a design, not built.
+  How a user exits from anchored state when the operator censors, stops
+  sealing or vanishes: her exit proof, the operator's counter proof,
+  and the verification gadget, kept abstract, used in one of two
+  places on chain.
 - [How a dispute pays out](payout.md): how one pre-signed transaction
   pays Alice exactly `b`, in bits, and the hub the rest. A toy example,
   then Test B's payout traced down to the witness.
