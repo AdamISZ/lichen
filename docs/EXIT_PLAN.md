@@ -51,7 +51,7 @@ A second mode of the withdrawal statement, with one image id.
   - all of that checks;
   - the notes are distinct;
   - `b ≤ Σ`.
-- **Journal:** `b ‖ c ‖ D ‖ E`, with `E = H(h_S ‖ SR_S ‖ nullifiers)`.
+- **Journal:** `b ‖ c ‖ D ‖ E`, with `E = H(c ‖ h_S ‖ SR_S ‖ nullifiers)`.
 
 The nullifiers are part of her input words, and the program checks them
 against `E`. They have to be: the operator can only search for a later
@@ -82,7 +82,8 @@ A new statement, proved by the operator, a Groth16 proof of about 256
 bytes:
 
 - **Inputs:**
-  - Alice's claim (`D`, `E`, the nullifier list);
+  - Alice's claim (`D`, and `E` with its preimage: `c`, `h_S`, `SR_S`
+    and the nullifier list);
   - a later anchored state `S'`, 10 deep, in the same history as `S`;
   - one of the claim's nullifiers, inserted at a height `h_S < h ≤ h_S'`
     by a transaction that isn't contract `c`'s own: neither its exit
@@ -112,6 +113,18 @@ the operator could sequence it after her escalation and take her whole
 contract with her own transaction. Excluding it costs the hub nothing:
 if the return is sequenced, the hub has her tokens, and contract `c`
 still pays only once.
+
+**Why `c` is inside `E`.** Both exclusions depend on `c`, so the counter
+must be about one contract's claim, fixed on chain. If `E` left `c`
+out, the operator could post Alice's genuine exit record for `c_A`, then
+prove a counter that applies the exclusion for some other `c_B`. To that
+counter, `c_A`'s record is an admissible insertion, and with the same
+`D` and `E` it would defeat her honest claim through `c_A`. Her censored
+return could be used the same way. With `c` in `E`, the counter guest
+recomputes `E` from its preimage and excludes for that `c`, so matching
+`E` on chain forces the exclusion to be for her contract. A double claim
+through `c'` is still countered: its `E` holds `c'`, and `c`'s record
+isn't `c'`'s own.
 
 ## The game
 

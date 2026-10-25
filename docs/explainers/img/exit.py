@@ -60,16 +60,16 @@ def proofs():
             ("from Bitcoin: headers with W of work on S's anchor", INK, 600, False),
             ("from her wallet: the notes' openings, and nk", INK, 600, False),
         ], "the exit guest", ["derives the nullifiers from the notes and nk,", "checks every path and non-membership, b ≤ Σ"],
-            "b ‖ c ‖ D ‖ E", "E = H(h_S ‖ SR_S ‖ nullifiers)"),
+            "b ‖ c ‖ D ‖ E", "E = H(c ‖ h_S ‖ SR_S ‖ nullifiers)"),
         (556, HUB, HUB_L, "The operator's counter proof", "made only if a later spend exists, within W_c", [
             ("from Alice's escalation, on chain:", INK, 600, False),
-            ("• her E, and the nullifiers she signed", INK2, 400, False),
+            ("• her E, and what it hashes: c, h_S, SR_S, nullifiers", INK2, 400, False),
             ("from its own ledger (it is the sequencer):", INK, 600, False),
             ("• the chain receipt at a later anchored S′, 10 deep", INK2, 400, False),
             ("• one of her nullifiers, inserted at h_S < h ≤ h_S′,", INK2, 400, False),
             ("   not by contract c's own return or exit record", INK2, 400, False),
         ], "the counter guest", ["checks that S′'s history passes through S,", "and the insertion, in it"],
-            "D ‖ E ‖ ok", "the same E as Alice's claim"),
+            "D ‖ E ‖ ok", "the same E as Alice's claim, so the same contract c"),
     ]
     for x, col, light, title, sub, rows, guest, gsub, jour, jsub in cols:
         w = 480

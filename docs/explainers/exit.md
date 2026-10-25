@@ -89,7 +89,7 @@ notes' openings and her key `nk`. The guest:
   and `S`'s anchoring;
 - **outputs** `b ‖ c ‖ D ‖ E`: the amount, the contract's memo, the
   deployment, and the claim's fingerprint
-  `E = H(h_S ‖ SR_S ‖ nullifiers)`.
+  `E = H(c ‖ h_S ‖ SR_S ‖ nullifiers)`.
 
 RISC Zero proves it as a STARK, and the STARK is wrapped in Groth16,
 about 256 bytes. This takes minutes, and the wrap can be delegated.
@@ -110,13 +110,15 @@ in its own ledger, since it is the sequencer.
 
 The counter guest takes:
 
-- Alice's `E` and nullifiers;
+- Alice's `E`, with what it hashes: her contract `c`, `h_S`, `SR_S` and
+  her nullifiers;
 - the chain receipt at a later anchored state `S′`, 10 deep, whose
   history passes through `S`;
 - one of her nullifiers, with the transaction that inserted it, at a
   height `h` with `h_S < h ≤ h_S′`.
 
-It outputs `D ‖ E ‖ ok`, and is wrapped in Groth16 like Alice's proof.
+It applies the exclusions below for the `c` inside `E`, and outputs
+`D ‖ E ‖ ok`, wrapped in Groth16 like Alice's proof.
 Proving takes about 20 minutes, and it must be posted within the counter
 window `W_c`, about 18 blocks on mainnet.
 
@@ -150,12 +152,21 @@ anchor's output on Bitcoin, so there is one anchored history, and `S`
 and `S′` are both in it. A counter against an honest Alice would need a
 spend she never made, in a history the operator can't change.
 
+**Why `c` is inside `E`.** The exclusions name a contract, so the
+counter must be pinned to Alice's. If `E` left `c` out, the operator
+could post her genuine exit record, then prove a counter that excludes
+for some other contract `c_B`: to that counter her record is an
+admissible insertion, and with the same `E` it would defeat her honest
+claim. With `c` in `E`, matching `E` on chain means the counter excluded
+for her contract.
+
 ## On chain: the gadget in one of two places
 
 ![the escalation, then one of two games](img/exit-graph.svg)
 
 **Escalate.** Alice spends the contract output with her claim: her proof
-and journal, and her nullifiers with `h_S` and `SR_S`, all under her
+and journal, and the rest of `E`'s preimage (her nullifiers, `h_S` and
+`SR_S`; `c` is in the journal), all under her
 one-time signatures. It must confirm by `T_close`. Once it does, the
 contract output is spent and the operator's default can't happen.
 
