@@ -279,5 +279,5 @@ proven valid history.
 
 ## Later
 
-Watchtowers: a turnkey tower, planned in [TOWER_PLAN.md](TOWER_PLAN.md) (the paper's Watchtowers section, papers/lichen-v0.1.1.pdf); several hubs
+Watchtowers: a turnkey tower, planned in [TOWER_PLAN.md](TOWER_PLAN.md) (papers/lichen-bitvmx-v0.1.1.pdf, the tower section); several hubs
 (colours, clearing lines); a GUI.
