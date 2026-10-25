@@ -56,8 +56,22 @@ A second mode of the withdrawal statement, with one image id.
 The nullifiers are part of her input words, and the program checks them
 against `E`. They have to be: the operator can only search for a later
 spend of nullifiers it knows, and the claim is the only place they
-appear. A claim spends whole notes, so the value above `b` is forfeit.
-The wallet keeps its notes sized for this. At most, say, 8 notes.
+appear. At most, say, 8 notes.
+
+**How much to claim.** A claim spends whole notes, and the contract
+pays once, so whatever she still holds afterwards is credit. An exit
+therefore claims everything it can:
+
+- `Σ ≤ V_max`: claim `b = Σ`. A dispute pays in multiples of 512 sats,
+  so only the rounding is lost.
+- `Σ > V_max`: claim `b = V_max`, from the subset of notes that covers
+  it with the least excess. The other notes stay out of `E`, so the
+  exit record doesn't burn them: they remain hers, as credit, for a
+  later contract or a sale to someone with headroom.
+
+The value above `b` in the claimed notes is forfeit, so the wallet
+keeps its notes sized to fit the cap closely. It also consolidates
+small notes, so that its balance fits in one claim.
 
 No note has to be bound to a contract in advance. The same note claimed
 through two contracts is caught by the counter, below.
@@ -71,7 +85,8 @@ bytes:
   - Alice's claim (`D`, `E`, the nullifier list);
   - a later anchored state `S'`, 10 deep, in the same history as `S`;
   - one of the claim's nullifiers, inserted at a height `h_S < h ≤ h_S'`
-    by a transaction that isn't contract `c`'s own exit record (below).
+    by a transaction that isn't contract `c`'s own: neither its exit
+    record (below) nor a return with memo `c`.
 - **Journal:** `D ‖ E ‖ ok`.
 
 "The same history": the counter's chain receipt passes through `S`.
@@ -88,6 +103,15 @@ The counter covers three cases:
 - **A claim racing a spend:** the operator either refuses to sequence a
   spend of nullifiers whose claim is pending, or sequences it and
   counters.
+
+**Why contract `c`'s own return doesn't count.** An honest Alice tries
+the cooperative way first: she signs a return of her notes with memo
+`c` and exits only when it isn't sealed (Timing, "detect"). The
+operator still holds that signed return. If a return could counter,
+the operator could sequence it after her escalation and take her whole
+contract with her own transaction. Excluding it costs the hub nothing:
+if the return is sequenced, the hub has her tokens, and contract `c`
+still pays only once.
 
 ## The game
 
@@ -221,9 +245,24 @@ For some anchored state after her last spend:
 - each note's path;
 - each nullifier's non-membership proof.
 
-The sequencer serves these per note, and the wallet refreshes its kit
-at each anchor it checks. If the operator stops serving, the last kit
-still works: Alice hasn't spent since, so no counter exists.
+The sequencer serves these per note. A kit never goes stale: the tree is
+append-only, so a path to `T_S` stays valid, and non-membership in
+`N_S` stays true of `S`. A new kit is needed only when her notes change,
+so the wallet fetches one after events, not on a schedule:
+
+- **After a spend:** a kit at a state after the spend, 10 deep, covering
+  her change. She was online to sign, so this is a fetch about 10
+  blocks later. If she goes offline first, her old kit still exits
+  every note she didn't spend: they're unspent at the old `S`, and
+  nothing later spends them. Only the change is exposed, and only to
+  data withheld in that gap.
+- **After a receipt:** whenever she next comes online. Until then the
+  payment isn't final for her (below).
+- **Otherwise:** nothing. A wallet that happens to be online may
+  refresh anyway, as a convenience, but no liveness is required.
+
+If the operator stops serving, the last kit still works: Alice hasn't
+spent since, so no counter exists.
 
 So withholding data hurts only payments received after the last kit.
 Hence a rule for receivers: **a payment is final once you hold its kit
@@ -258,6 +297,55 @@ counter's proof (about 20 minutes), and posting it. That's 18 blocks on
 mainnet (3 h) and 80 on Mutinynet (40 min). Every dispute gets longer by
 `W_c`.
 
+## An example: an honest exit
+
+Mainnet, contract `c` with a week to run and `V_max` = 0.1 BTC. The
+operator, hub and sequencer, starts censoring Alice.
+
+Before anything goes wrong:
+
+1. **Opening.** She pays `D`, the hub mints `D` tokens to her, and they
+   pre-sign the contract. Her wallet checks the whole pre-signed set.
+2. **Using the L2.** She pays and is paid, and holds three notes: 0.02,
+   0.02 and 0.015 BTC.
+3. **The kit.** After her last spend or receipt, her wallet fetched a
+   kit for a state `S` 10 deep after it (above).
+
+The exit:
+
+4. **The normal way first.** On day 5 she signs a return of her notes
+   with memo `c` and submits it.
+5. **Detect.** About 6 blocks pass, and the return is neither sealed nor
+   folded. Her wallet switches to an exit.
+6. **The claim.** From her kit's `S`, all three notes: `Σ` = 0.055 ≤
+   `V_max`, so `b` = 0.055.
+7. **The exit proof.** From her kit, headers with `W` of work on `S`'s
+   anchor block, and her notes' openings and `nk`. The guest derives the
+   nullifiers, checks paths and non-membership, and outputs
+   `b ‖ c ‖ D ‖ E`. Then the wrap, which she can delegate. About 6
+   blocks (`P`).
+8. **Escalate.** The pre-signed escalation with her one-time-signed
+   input words: proof, journal and nullifiers, its fee paid by CPFP. It
+   confirms by `T_close`, and the default can no longer happen. About
+   18 blocks from detection (`Δ_exit`).
+9. **`W_c`, about 18 blocks.** The operator now knows her nullifiers but
+   has no counter: none was inserted after `S`, and her own return
+   doesn't count. It may fold instead, checking her proof natively and
+   paying `b + r_A`.
+10. **The game,** if it doesn't fold. She commits the trace over her
+    proof and the empty counter, and the program accepts. The operator
+    concedes, bisects and loses, or is absent, and its timeouts pay her.
+    Her tower can play this.
+11. **Payout.** After `δ`, the bit outputs set in `b` (0.055 rounded
+    down to 512 sats) and the reserve output with `r_H`, swept in one
+    transaction.
+12. **After.** The operator posts the exit record with her proof, and
+    her three notes are spent on the L2. The contract is over, and
+    anything she receives now is credit until a new one.
+
+An absent operator changes only steps 9 to 11, which then pay by
+timeout.
+
 ## Costs and open questions
 
 - **ln-gap:**
@@ -283,7 +371,8 @@ mainnet (3 h) and 80 on Mutinynet (40 min). Every dispute gets longer by
   and an honest one would.
 - **No contract, no exit.** Value above a contract's cap stays with the
   operator.
-- **Partial claims** forfeit the rest of the notes claimed.
+- **Claims over the cap** forfeit the rest of the notes claimed; the
+  wallet sizes and consolidates notes to keep this small.
 
 ## Steps
 
@@ -317,6 +406,8 @@ mainnet (3 h) and 80 on Mutinynet (40 min). Every dispute gets longer by
      - a garbage counter (Alice wins);
      - an exit record without a matching exit proof (the chain guest
        rejects it);
+     - Alice's censored return sequenced after her escalation (not a
+       counter; Alice wins);
      - a spend racing a claim.
    - Groth16: a countered exit end to end.
    - Mutinynet: a `HOSTILE` operator censoring; Alice exits, Bob's old
