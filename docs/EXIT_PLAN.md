@@ -26,8 +26,10 @@ counter-claim, as in ln-gap, one step down:
 
 - Alice's proof speaks for `S`.
 - Only the operator can point to something later, and only to
-  something that happened. Alice spends her notes only by knowing their
-  keys, so the operator can't produce a false counter.
+  something that happened. A note's nullifier enters the set in two
+  ways only: a spend, which needs the note's keys, or an exit record,
+  which must carry the owner's own exit proof (After an exit, below).
+  So the operator can't produce a false counter.
 
 The operator can't stop an exit. A censoring operator has no counter to
 a true claim. A vanished one times out, and its timeouts pay Alice. The
@@ -158,9 +160,44 @@ proves cheap.
 The operator, as sequencer, posts an exit record on the L2: a
 hub-signed transaction `(c, nullifiers)`, which inserts them. This is in
 its own interest, since otherwise the exited notes could be spent again
-and withdrawn through another contract. The chain guest accepts exit
-records signed by the hub's key. They're an L2 transaction type like
-mints.
+and withdrawn through another contract. They're an L2 transaction type
+like mints.
+
+**The record must carry the claimant's exit proof.** The chain guest
+accepts an exit record only with an exit receipt whose journal is
+`b ‖ c ‖ D ‖ E` for this deployment's `D`, the record's `c`, and an `E`
+over exactly the record's nullifiers. A hub signature alone isn't
+enough. With only the signature, the operator could forge counters:
+
+1. Bob escalates an honest exit, and his nullifiers become public in his
+   input words.
+2. The operator posts an exit record with Bob's nullifiers under
+   another contract `c'`. The counter excludes only `c`'s own record,
+   so this one counts.
+3. The record anchors 10 deep within `W_c`, and the operator counters
+   Bob with it. Bob loses his contract, and his notes are frozen.
+
+For transparent notes, whose nullifier anyone can compute from the
+commitment, the operator wouldn't even need Bob's claim. It could freeze
+any notes at any time and counter their exits later.
+
+With the proof required, a record exists only for a claim the notes'
+owner made, since only she can prove one (`nk`, or her signature). Then:
+
+- **An honest single claim** can only have a record naming its own `c`,
+  which the counter excludes.
+- **One note through two contracts:** the first claim's proof makes a
+  genuine record, which counters the second.
+- **Nobody's notes can be frozen** by a record, since every record traces
+  back to a claim their owner made.
+
+The operator always has the proof: the dispute puts Alice's Groth16
+proof on chain as her input words, and a folded exit hands it over off
+chain. The chain guest checks it once per exit record. In-guest Groth16
+verification (BN254 pairings) is unmeasured. If it's costly, the record
+could carry the exit's succinct receipt where the operator has it, or
+the claim could carry the owner's signature on `c ‖ E`, made inside the
+exit proof, for the record to show instead. Detail for the design pass.
 
 ## The operator's death
 
@@ -234,6 +271,8 @@ mainnet (3 h) and 80 on Mutinynet (40 min). Every dispute gets longer by
   - the journal layout gains `E` and the nullifier words.
 
   All of this must be measured.
+- **The exit record's proof check** in the chain guest, once per exit:
+  unmeasured.
 - **The input words.** About 1 KB of one-time signatures per nullifier
   on chain in a dispute: 8 notes cost about 8 KB.
 - **Mass exit** against a hostile operator: every contract escalating
@@ -251,8 +290,8 @@ mainnet (3 h) and 80 on Mutinynet (40 min). Every dispute gets longer by
 1. **The exit claim** in `lichen-withdraw` (native, on the mock
    statement): the journal with `E`.
 2. **The counter statement** (native), and the exit record on the L2:
-   `Tx::Exit`, hub-signed, checked by the chain guest. A new chain
-   guest.
+   `Tx::Exit`, hub-signed and carrying the claimant's exit proof, both
+   checked by the chain guest. A new chain guest.
 3. **ln-gap:** the verifier-owned input, the two-proof program (first
    the mock statement's analogue), the layout with `E`. The real work.
 4. **The guests and the verifier ELF;** measure the depths, the
@@ -276,6 +315,8 @@ mainnet (3 h) and 80 on Mutinynet (40 min). Every dispute gets longer by
      - an exit of an old state after a spend (countered, Alice loses);
      - the same note through two contracts (the second countered);
      - a garbage counter (Alice wins);
+     - an exit record without a matching exit proof (the chain guest
+       rejects it);
      - a spend racing a claim.
    - Groth16: a countered exit end to end.
    - Mutinynet: a `HOSTILE` operator censoring; Alice exits, Bob's old
