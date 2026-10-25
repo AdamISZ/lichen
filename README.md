@@ -12,7 +12,7 @@ Just want the idea, no maths, no complex diagrams, no code or demo or blah blah?
 
 Choose your adventure:
 
-*New to the concept and want to understand it* - read this short intro, then go to the main [design paper](./papers/lichen-v0.1.1.pdf)
+*New to the concept and want to understand it* - read this short intro, then go to the main [design paper](./papers/lichen-v0.2.0.pdf)
 
 *Want to run the web demo* - that is, running the stack on regtest locally and playing with it in the browser to see how it operates: go [here](#the-demo).
 
@@ -30,7 +30,7 @@ Worth mentioning these as idiosyncracies: first, this was built without a user-s
 
 ### Things not implemented yet:
 
-* Any attempt at finality through publishing roots on bitcoin; no distribution of the sequencer (just a single entity's key). See the [paper](./papers/lichen-v0.1.1.pdf) for discussion of what could be done here.
+* Any attempt at finality through publishing roots on bitcoin; no distribution of the sequencer (just a single entity's key). See the [paper](./papers/lichen-v0.2.0.pdf) for discussion of what could be done here.
 
 ### High level plan of work to do:
 
