@@ -30,3 +30,6 @@ papers/*.ind
 papers/*.nav
 papers/*.snm
 papers/*.vrb
+
+# other agents' reviews and conversations, kept for reference only
+/docs/other-agent-analysis/
