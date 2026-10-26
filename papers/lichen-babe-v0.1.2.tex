@@ -53,7 +53,9 @@ published measurements and lichen's: a refused withdrawal of about
 31~kvB in six transactions against BitVMX's 100--212~kvB in 23--25, a
 hub able to hold, for a dispute of a given length, about seven times as
 many contracts before congesting the chain pays (three without
-soldering), and a
+soldering), a
+tower for Alice that holds none of her keys, since her only move due in
+a window is a hash preimage, and a
 setup per contract of minutes of computation and about 90~MiB of storage
 for the user. Nothing here is built, and the security argument is a
 sketch.
@@ -406,6 +408,73 @@ timeout. What remains due within a window is, for Alice,
 \tx{wrongly\_challenged} (149~vB) and, for the hub, its response and its
 challenge.
 
+\section{Alice's liveness: a keyless tower}
+\label{sec:tower}
+
+Under BitVMX, Alice cannot delegate her moves without her keys. Each move
+signs, with a one-time key, hashes from her trace at positions the hub's
+last choice selects, so it cannot be signed in advance; a tower that
+plays her side holds her move keys, and by equivocating could lose her
+the contract~\cite[\S 10]{lichenbitvmx}. Making those moves keyless would
+need \texttt{OP\_CAT}. BABE removes the problem rather than shrinking
+it: Alice's only commitments, $b$ and $\pi_1$, are fixed before anything
+she must answer, and her one answer to the hub is a hash preimage, not a
+signature. This is a difference of kind, not of count: a gadget with
+fewer interactive moves would still need someone holding her keys while
+the dispute runs; here no one does.
+
+\paragraph{What she signs, and when.} Two one-time signatures: on $b$,
+for \tx{request}, made when she returns $b$ on the L2; and on $\pi_1$,
+the Lamport signature of \tx{assert}, made once she has the proof. The
+proof needs the hub's signature on $b$, so the second comes after
+\tx{respond}, but before the loose, absolute deadline $T_A$: a second
+visit, not a race. A prover she does not trust with keys can make the
+proof; she checks it (one Groth16 verification) and signs $\pi_1$.
+
+\paragraph{What the tower holds.} The pre-signed transactions, the two
+signed witnesses, the kept garbled instances (about 89~MiB) and the WE
+ciphertext, and her proof, which reveals nothing of the witness. From
+these and the chain it plays everything left to Alice:
+\begin{itemize}[leftmargin=1.5em]
+\item \tx{request\_timeout} and \tx{success}: pre-signed, released by
+  their timelocks;
+\item \tx{wrongly\_challenged}: it reads the hub's labels from
+  \tx{challenge\_assert}, evaluates the garbled circuit to $r\pi_1$,
+  decrypts with $\pi_2$ and $\pi_3$, and posts $\mathit{msg}$.
+\end{itemize}
+Her bit outputs wait $\delta$ for her own key, as under BitVMX, and
+nothing races her for them.
+
+\paragraph{Two changes to make.} First, in BABE, the leaf
+\tx{wrongly\_challenged} spends checks the prover's signature as well as
+the hashlock, $\mathsf{HashLock}(h_{\mathit{msg}}) \wedge
+\mathsf{CheckSig}(pk_P)$, signed when posted (its Appendix~A.1). lichen
+would drop the signature. The leaf exists only to spend the connector \tx{failure}
+needs, so whoever posts $\mathit{msg}$, a tower or a stranger who copies
+it from the mempool, does what Alice wants; the hub, who knows
+$\mathit{msg}$ from the start, would only defeat its own challenge. The
+tower builds the spend when it is needed, with a fee input of its own.
+Second, fees. The terminals (\tx{request\_timeout}, \tx{success}) are signed
+\texttt{ALL|ANYONECANPAY}, and their broadcaster adds a coin of its
+own~\cite[\S 6]{lichenbitvmx}: keyless already. But the links
+(\tx{request}, \tx{assert}) keep their ids and are bumped through an
+anchor only their poster can spend, which lichen today locks to the key
+that also sweeps her winnings. The anchors need a key of their own,
+guarding nothing but 330~sats each, which she can hand the tower with
+the witnesses; or she posts both links herself, since neither is due in
+a window.
+
+\paragraph{A compromised tower can only stay silent.} It holds no key,
+so it cannot sign a wrong move or a second value. That matters here:
+given her Lamport key, a tower that signed two values of $\pi_1$ would
+let the hub combine their bits into a third, signed bit by bit, and
+challenge with labels for it; she could not decrypt, and \tx{failure}
+would take everything. So the tower is not trusted like her own machine,
+as under BitVMX, but like a Lightning watchtower: several can run at
+once, strangers to her and to each other, and any one suffices. Her
+wallet, for its part, signs one $\pi_1$ only, and keeps the proof it
+signed.
+
 \section{Estimates}
 \label{sec:costs}
 
@@ -441,6 +510,7 @@ the hub refuses a true claim to the end & ${\sim}31$~kvB in six transactions (${
 the hub disproves a false claim & ${\sim}28$~kvB (${\sim}53$ unsoldered) & 100.4~kvB \\
 the worst case & the same: there is no separate case for reads & 200--212~kvB, a read lie \\
 Alice's transactions, those due in a window & 4 (request, assert, wrongly challenged, success), one & 13, twelve \\
+keys Alice's tower must hold & none, but an anchor key (Section~\ref{sec:tower}) & her move and hop keys, and her input words' \\
 pre-signed per contract & about 9 & 141 \\
 \bottomrule
 \end{tabularx}

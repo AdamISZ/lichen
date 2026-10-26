@@ -91,6 +91,27 @@ sweep. Today she acts about 13 times: escalate, `inputs`, 10 rounds, the
 record and the proof. Only `wrongly_challenged` (5a) is under real time
 pressure, and it is 149 vB and mechanical, so it suits a tower.
 
+**Alice's tower holds no keys (2026-10-26; the paper's §7).** This is
+the qualitative gain, beyond the count of moves:
+- **Her commitments come before the game.** She signs `b` (request) and
+  π1 (assert, after `respond`, before the loose deadline T_A).
+- **Her one windowed answer is a preimage.** For `wrongly_challenged`, the
+  tower reads the labels off chain, evaluates the garbled circuit and
+  decrypts the WE. It needs no key, given:
+  - the two witnesses;
+  - the kept instances;
+  - the proof.
+- **The worst a tower can do is stay silent.** So several untrusted towers
+  can run at once.
+- **Under BitVMX, by contrast,** each move is signed live, so the tower
+  holds her move keys and can equivocate.
+
+Two changes to BABE's transactions:
+- **Drop `CheckSig(pk_P)` from the `wrongly_challenged` leaf.** That
+  leaves a bare hashlock: whoever posts msg blocks `failure`.
+- **Give the links' anchors a key of their own,** not the payout key.
+  The terminals already use ALL|ANYONECANPAY plus the broadcaster's coin.
+
 **There is no read-lie branch.** The whole verification is inside the
 garbled circuit and the WE. So the worst case (187 kvB, the hub's
 `combine_8`) has no counterpart.
@@ -179,7 +200,7 @@ ladder's largest move to 23.6 kvB, but not its sum. It helps the
 per-window figure only, so the "1.4×" said before does not hold.
 
 The papers use this basis: `papers/lichen-bitvmx-v0.1.1` §9 and
-`papers/lichen-babe-v0.1.1` §7.2.
+`papers/lichen-babe-v0.1.2` §8.2.
 
 **The hub's response** (0.6 kvB) also falls in a window, w_H, and grows
 with N under hostile users: 60,000 contracts need w_H ≥ 36 blocks. That
