@@ -271,3 +271,65 @@ countersign: 8 more words, about +2 kvB on `request` and +2.5 on
   from ln-gap's WOTS words and links, not built.
 - **Duty-Free Bits' 45× is quoted from its abstract** ("encoding size").
   What it means for Alice's storage is unchecked.
+
+## 11. Speculative: Bitcoin's work as the authenticator (2026-10-27)
+
+Not designed, not checked: an idea from comparing with PIPEs v2, kept
+here to come back to.
+
+**What the countersignature is for.** It carries a value posted on
+chain into a statement fixed at setup. The authenticator must be
+something the decryptor can't produce privately, that a false value
+would harm, and that appears on chain once. §2 uses the hub's one-time
+key. Bitcoin's work could do the same.
+
+**The variant.** Put the request's inclusion in the statement:
+
+  ∃ b, w, headers, request: `request` spends the contract's outpoint
+  and carries Alice's WOTS signature on b; it is in a chain from the
+  checkpoint with at least W of work on top; and ValidWithdrawal(c, D,
+  b, w).
+
+To prove with a private b′ ≠ b, Alice would need a fork carrying a
+different request with W of work behind it. The hub signs nothing.
+
+**What it would change:**
+- **`respond` and `request_timeout` go.** BABE already pays Alice by
+  default if the hub never challenges, so the hub's absence is covered
+  without them.
+- **Binding becomes economic, not cryptographic.** It is the same
+  W-bounded assumption, and the same joint exposure across contracts,
+  that anchoring already makes.
+- **Alice waits for W on top of her request** before she can prove.
+- **The guest adds a Merkle inclusion check and parsing of the request
+  transaction.** It already checks headers and work.
+
+**To check before anything else:**
+- **Extraction.** Does BABE's knowledge soundness carry through a
+  statement that includes a header chain? The countersigned version
+  rests on a one-time signature's unforgeability. This one rests on the
+  cost of W, so the security argument has a different shape.
+- **The outpoint.** It must be known when the statement is fixed. It is
+  known at opening, since the funding is built before signing, but
+  check this against BABE's setup timing.
+- **Reorgs.** What happens if a natural reorg removes the request after
+  Alice has proved.
+
+**Why it came up: PIPEs v2.** The same authenticator question decides
+how far PIPEs v2 can go with variable amounts:
+- **BitVM-PIPE (its §6).** The decryptor is the challenger and the
+  party harmed is the operator, which already posts on chain in
+  `AssertTx`. The operator could sign `Hash(w)` there under a one-time
+  key, with the statement ∃ w, σ: Verify(pk_op, Hash(w), σ) ∧ f(w) = 0.
+  That removes PIPEs' need for `h = Hash(w)` at setup, which forces a
+  setup per claim. No countersignature is needed, because the party
+  choosing the value isn't the decryptor. This is worth raising with
+  its authors.
+- **A PIPE used directly for variable withdrawals from a pool.** The
+  countersigner would be the committee, on every claim. Silence can't
+  pay the claimant, so each member gets a veto, which goes against the
+  point of a setup-only committee. Bitcoin's work as the authenticator
+  would avoid that. It would still leave two problems: message binding,
+  which needs a key that pre-signed the payout graph at setup, and the
+  remainder, which would sit under the committee's n-of-n key until a
+  new setup.
