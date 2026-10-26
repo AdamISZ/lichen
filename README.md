@@ -12,7 +12,7 @@ Just want the idea, no maths, no complex diagrams, no code or demo or blah blah?
 
 Choose your adventure:
 
-*New to the concept and want to understand it* - read this short intro, then go to the main [design paper](./papers/lichen-v0.2.0.pdf)
+*Want the full design* - read this short intro, then go to the main [design paper](./papers/lichen-v0.1.1.pdf)
 
 *Want to run the web demo* - that is, running the stack on regtest locally and playing with it in the browser to see how it operates: go [here](#the-demo).
 
@@ -20,17 +20,13 @@ Choose your adventure:
 
 ### General concepts in a few words
 
-A layer 2 ledger whose tokens a hub issues, each user's holdings up to a cap collateralised in her own contract with the hub, and withdrawable on Bitcoin without trusting the hub for anything: not its honesty, not its liveness. A withdrawal is a return of tokens to the hub on the ledger; the hub pays it out in btc in the contract, on the bitcoin blockchain, cooperatively, and if it refuses (or is gone), the user proves the return (RISC Zero, wrapped in Groth16) and enforces it on Bitcoin by BitVMX's search over a Groth16 verifier. No change to Bitcoin is needed. In case you didn't spot the point: the tokens *are* bitcoin because of the 1-1 backing, permissionlessly claimable.
+A layer 2 ledger whose tokens a hub issues, each user's holdings up to a cap collateralised in her own contract with the hub, and withdrawable on Bitcoin without trusting the hub for anything: not its honesty, not its liveness. A withdrawal is a return of tokens to the hub on the ledger; the hub pays it out in btc in the contract, on the bitcoin blockchain, cooperatively, and if it refuses (or is gone), the user proves the return (RISC Zero, wrapped in Groth16) and enforces it on Bitcoin with a verification gadget (currently BitVMX, planned a BABE variant) over a Groth16 verifier. No change to Bitcoin is needed. In case you didn't spot the point: the tokens *are* bitcoin because of the 1-1 backing, permissionlessly claimable.
 
 The contracts and the dispute machinery are in [ln-gap](https://github.com/AdamISZ/ln-gap) (`crates/apps/sessions`); think of that as the backend including both all the bitcoin side and also all the ZKP dispute management side. This repository is the software the parties run.
 
 ### A few operational details that are mostly PoC limitations
 
 Worth mentioning these as idiosyncracies: first, this was built without a user-side bitcoin wallet as that's probably the right choice anyway: you fund an intermediate joint-control address and then from there the contract is funded. Explained in the procedures below. Second: in case you actually want to test *disputes*, and not normal usage, you'll have to create proofs to do withdrawals. The instructions are [here](#disputes-on-the-real-statement), and note that this involves running a proving step on x86 architecture that might take about 5 minutes. Notably, this step is partly delegatable, and that is addressed with the idea of [watchtowers](docs/RUN_A_TOWER.md).
-
-### Things not implemented yet:
-
-* Any attempt at finality through publishing roots on bitcoin; no distribution of the sequencer (just a single entity's key). See the [paper](./papers/lichen-v0.2.0.pdf) for discussion of what could be done here.
 
 ### High level plan of work to do:
 
@@ -42,9 +38,9 @@ Worth mentioning these as idiosyncracies: first, this was built without a user-s
 
 * Making the ZKP prove validity and not only sequencer authorization. :white_check_mark:
 
-* Creating a commitment mechanism (seals) for the L2 sequencer to gain finality from the Bitcoin chain (on a slower timescale)
+* Creating a commitment mechanism (seals) for the L2 sequencer to gain finality from the Bitcoin chain (on a slower timescale) :white_check_mark:
 
-* As per the above, but further strengthening against malicious or disruptive sequencer behavior.
+* As per the above, but further strengthening against malicious or disruptive sequencer behavior. (planned, not implemented)
 
 * LONG TERM: potential replacement of BitVMX with a BABE-style construction. (plans [are in place](https://delvingbitcoin.org/t/variable-payout-amounts-for-babe-as-applied-to-lichen/2963); nothing done)
 
