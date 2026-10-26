@@ -358,11 +358,28 @@ possible later optimisation, not part of the design.
 \label{sec:outcomes}
 
 The dispute only ever decides Alice's withdrawal: $b$ if her claim
-stands, nothing if it fails; the rest of $\vmax$ goes to the hub. The reserves follow the dispute: the loser's goes to the winner, whether
+stands, nothing if it fails; the rest of $\vmax$ goes to the hub. The
+reserves follow the dispute: the loser's goes to the winner, whether
 it lost on the merits, by signing two values of $b$ (\tx{equiv\_b}), or
-by not answering in time. A party the gadget rules against loses the
-whole contract, reserves included, so a provable lie costs the liar
-everything.
+by not answering in time, less the fee floors $F$ of the dispute's
+pre-signed transactions, which the loser's reserve pays. So losing costs
+the two sides differently. Alice, ruled against, loses the whole
+contract, her reserve included. The hub, ruled against, loses its
+reserve and keeps $\vmax - b$, since $b$ was all the dispute decided. Of
+the contract's $\vmax + r_A + r_H$:
+\begin{center}
+\small
+\begin{tabular}{lll}
+\toprule
+outcome & Alice & the hub \\
+\midrule
+fold & $b + r_A$ & $\vmax - b + r_H$ \\
+\tx{default}, no withdrawal by $\Tc$ & $r_A$ & $\vmax + r_H$ \\
+Alice wins a dispute & $b + r_A + r_H - F$ & $\vmax - b$ \\
+Alice loses a dispute & $0$ & $\vmax + r_A + r_H - F$ \\
+\bottomrule
+\end{tabular}
+\end{center}
 
 \paragraph{Paying $b$: the bit outputs.} When Alice wins, the payout
 must send her $b$, a value she chose when she claimed; but the
@@ -398,27 +415,64 @@ cooperative fold none of this appears: the fold simply pays $b$.
 
 \paragraph{The contract reserve.} As in Lightning, a penalty deters only
 a party with something to lose, and here that is not what each party put
-in but what each loses by losing a dispute. Alice risks only her honest
-outcome, the return she could actually prove, which is nothing once she
-has spent her tokens: a false claim of $\vmax$ is then a free option on
-the hub being offline. The hub makes no claims, only refusals, and
-losing a dispute costs it only fees, so it can refuse a valid withdrawal
-and hope Alice cannot play her side in time. Hence a reserve on each
-side, moved only by a lost dispute. A probe that succeeds with chance
-$p$ gains up to $\vmax - b$ and otherwise costs the reserve, so it is
-unprofitable when
+in but what each loses by losing a dispute. Without reserves, Alice
+risks only her honest outcome, the return she could actually prove,
+which is nothing once she has spent her tokens: a false claim of $\vmax$
+is then a free option on the hub being offline. The hub makes no
+claims, only refusals, and losing a dispute would cost it only fees, so
+it could refuse a valid withdrawal and hope Alice cannot play her side
+in time. Hence a reserve on each side, moved only by a lost dispute.
+
+Each reserve deters one side and is the other side's prize. Write
+$S = \vmax + r_A + r_H$ for the contract, and ignore $F$, which only
+shrinks the prizes. Alice, with an honest balance $\beta$, probes with a
+claim of $\vmax$, which succeeds with chance $p$, the chance that the hub
+fails to answer in time: against a fold it gains her
+$\vmax - \beta + r_H$ and otherwise costs her $\beta + r_A$. The hub
+refuses a valid withdrawal of $b$, which succeeds with chance $q$, the
+chance that Alice fails to finish: it gains $b + r_A$ and otherwise
+costs $r_H$. In the worst case for each ($\beta = 0$; $b = \vmax$),
+neither pays when
 \[
-  (1-p)\, r_A > p\,(\vmax - b), \quad\text{that is, for every } p < \frac{m}{1+m} \text{ with } r_A = m\,(\vmax - b).
+  p < \frac{r_A}{S} \qquad\text{and}\qquad q < \frac{r_H}{S}.
 \]
-At $m = 1\%$, the size of a Lightning channel reserve, that deters only
-probes with less than a 1\% chance; at $m = 1$, those with less than even
-odds. Where to sit on that curve depends on what the parties know of
-each other. In any case, a lost dispute should cost the loser at least
-the other side's fees. Part of those is known when the contract is
-signed: the fee floors of its pre-signed transactions, 197,356~sats in
-the deepest dispute under BitVMX~\cite[\S 6]{lichenbitvmx}. So neither
-reserve should be smaller, and lichen's hub takes for its own the larger
-of its share of the cap and that figure.
+Both must hold at once, since the terms are fixed at opening, before
+anyone knows which side, if either, will cheat; and the reserves cannot
+be set independently, since raising $r_H$ to deter a refusing hub also
+raises the prize for probing it. Together the two conditions require
+\[
+  (r_A + r_H)(1 - p - q) > (p + q)\,\vmax .
+\]
+For $p + q < 1$ the reserves must total more than
+$(p + q)\vmax / (1 - p - q)$, about $(p + q)\vmax$ when both are small,
+at the least $r_A = p\vmax/(1 - p - q)$ and $r_H = q\vmax/(1 - p - q)$.
+That grows without bound as $p + q$ approaches 1, and for $p + q \ge 1$
+no reserves deter both. Deterring $p = q = 10\%$ takes $\vmax/8$ on each
+side; $p = q = 1/3$ takes $\vmax$ on each side, twice the cap locked
+beside it.
+
+Reserves that large are rarely worth locking. What sets a floor is fees:
+a lost dispute should cost the loser at least the other side's fees.
+Part of those is known when the contract is signed: the fee floors of
+its pre-signed transactions, 197,356~sats in the deepest dispute under
+BitVMX~\cite[\S 6]{lichenbitvmx}. So neither reserve should be smaller,
+and lichen's hub takes for its own the larger of its share of the cap
+(2\% by default) and that figure. At $K = 24$, with Alice's reserve at
+the floor, that deters probes with less than about a 1\% chance and
+refusals with less than about 2\%. In practice, then, the reserves pay
+for the dispute, and what deters is liveness: the hub's own, which keeps
+$p$ small, and Alice's tower (Section~\ref{sec:watch}), which keeps $q$
+small.
+
+Two cautions on $p$. It is not the hub's average downtime but its
+chance of missing a whole response window at a moment Alice chooses:
+she can wait for an outage she can see, or cause one, though it must
+then outlast the window, which the hub can make hard with redundant
+signers of its own. And an outage is shared by all of the hub's
+contracts, so its users can all probe at once: what an outage puts at
+risk is the sum over its contracts of $\vmax - \beta + r_H$, not one
+contract's worth, part of the mass-exit problem of
+Section~\ref{sec:multihub}.
 
 \paragraph{Who it suits.} A reserve is locked, not spent: an honest
 party loses it only by losing a dispute, which for an honest Alice means

@@ -12,7 +12,7 @@ Background:
 - ln-gap `docs/planning/research/babe-amount-authenticated.md`: the hub's
   countersignature, which this note assumes;
 - ln-gap `docs/planning/MASS_EXIT.md`: the congestion rule;
-- `papers/lichen-v0.2.0.tex`: Tables `exits` and `flood`, and Costs.
+- `papers/lichen-v0.2.1.tex`: Tables `exits` and `flood`, and Costs.
 
 Source for BABE: ePrint 2026/065, the revised version (copy of 19 Oct),
 §6, App. A.1 and §9.
