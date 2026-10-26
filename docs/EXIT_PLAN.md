@@ -177,9 +177,16 @@ ln-gap's game with the operator's counter as a second input, owned by
 the verifier. The program definition already lists inputs by owner. The
 program changes from "verify Alice's proof" to:
 
-> Accept if and only if Alice's proof verifies, and either there is no
-> counter, or the counter doesn't verify, or it names another `D` or
-> `E`.
+> Accept if and only if either a counter was posted and it doesn't
+> verify, or it names another `D` or `E`; or no counter was posted and
+> Alice's proof verifies.
+
+**A failed counter pays Alice, whatever her own proof.** That's the rule
+throughout ln-gap: a party shown to cheat once, anywhere, loses at once.
+It's safe for the hub because a counter is always its choice. Against a
+false claim it never needs one, since it challenges her proof instead;
+against a stale claim it has a true counter, which wins. A counter that
+fails is one the operator chose to post and could have avoided.
 
 Flow:
 
@@ -196,7 +203,7 @@ Flow:
 |---|---|---|---|
 | honest exit | valid | none (none can exist) | Alice is paid |
 | she spent it later | valid at `S` | valid | the program rejects; Alice loses the contract |
-| a garbage counter | valid | invalid | the program accepts; Alice is paid |
+| a garbage counter | any | invalid | the program accepts; Alice is paid |
 | the operator gone | valid | none | timeouts pay Alice |
 | a false claim | invalid | — | rejected, as now |
 
@@ -214,13 +221,15 @@ spend into a counter ladder with the roles reversed. The hub proves its
 counter, Alice checks it, and one Groth16 trace is bisected, as today.
 
 - **The counter holds:** the hub takes the contract.
-- **The counter fails:** the output returns to Alice's game where it
-  left off.
+- **The counter fails,** or names another `D` or `E`: Alice is paid at
+  once, as if she had won her game, which isn't played (the rule above).
 - **No counter:** Alice's game, as now.
 
-With rational play only one game runs. A false counter costs the hub
-only that game's floors, and a true claim survives both games. Each
-game uses today's ELF, depth and rules.
+So exactly one game runs, under any play, not only rational play. A
+false counter costs the hub the contract, as losing Alice's game would,
+so counters can't be used to double a dispute's cost, and in a mass
+exit they can't add load to the chain except at the operator's own
+expense. Each game uses today's ELF, depth and rules.
 
 What it needs:
 
@@ -229,7 +238,7 @@ What it needs:
   decision functions underneath don't care who plays which side;
 - the branch leaf, signed at opening. The pre-signed set roughly doubles
   (about 90 transactions on the mock), but the reserve doesn't, since
-  only one game's floors are ever paid;
+  only one game's floors are ever paid, under any play;
 - one cross-game check that the counter names Alice's `E`: she
   re-reveals her `E` words beside the hub's, and the hub's output is
   taken if they differ.
@@ -653,8 +662,22 @@ timeout.
 - **The input words.** About 1 KB of one-time signatures per nullifier
   on chain in a dispute: 8 notes cost about 8 KB.
 - **Mass exit** against a hostile operator: every contract escalating
-  by its `T_close`, each dispute with a counter window. The congestion
-  table again.
+  by its `T_close`. The congestion table again. What the counter design
+  changes:
+  - **Not the number of games:** one gadget run per contract at most,
+    since a failed counter pays Alice. An operator that has gone dark
+    posts no counters, and every exit is won by timeouts. One that is
+    hostile but present can refuse to fold and force a full run on
+    every honest claim, as it can today; so the limit is still the
+    worst-case size of one run, which is where BABE's small dispute
+    matters most.
+  - **A larger escalation:** the nullifiers as input words, about 1 KB
+    per note. Low note counts matter, which needs consolidation, which
+    is safe only with a data-availability option such as sender
+    acknowledgment.
+  - **A longer schedule:** `W_c` before Alice's game. Time, not bytes,
+    but it tightens every deadline against `T_close` under
+    congestion.
 - **Exits are disputes:** hours and fees, against a cooperative fold
   today. The operator can fold an exit too, after checking it natively,
   and an honest one would.

@@ -197,11 +197,14 @@ The operator claims its counter, and Alice challenges.
   the signed words, and a mismatch loses the counter game at once.
 - **If the counter holds,** Alice spent after `S`: the operator takes the
   contract, as from any false claim.
-- **If the counter fails,** the output returns to Alice's game.
+- **If the counter fails,** Alice is paid at once, and her own game is
+  never played. The party shown to cheat loses immediately, as
+  everywhere in lichen's disputes. This is safe for the hub because a
+  counter is always its choice: against a false claim it challenges her
+  proof instead, and against a stale one it has a true counter.
 
-**Alice's game.** With no counter, or after a failed one: a second
-instance of the gadget, with Alice claiming her exit proof and the
-operator challenging.
+**Alice's game.** With no counter: a second instance of the gadget,
+with Alice claiming her exit proof and the operator challenging.
 
 - **If her proof holds,** or the operator misses a window, Alice is paid
   `b` and the reserves, and the hub keeps `V_max − b`.
@@ -213,12 +216,12 @@ proof itself, in milliseconds, and sign the cooperative payout instead.
 That's what a rational operator does against an honest claim: a game it
 must lose only costs it fees and its reserve.
 
-**Only one game runs, with rational play:**
+**Exactly one game runs, under any play:**
 
 | Alice's claim | a counter | what's played | result |
 |---|---|---|---|
 | true | none can exist | nothing, or Alice's game | Alice is paid |
-| true | a false one, posted anyway | the counter game, then Alice's | Alice is paid; the operator paid for a game it had to lose |
+| any | a false one, posted anyway | the counter game | Alice is paid; the operator loses the contract as from a lost game |
 | she spent since `S` | true | the counter game | the operator takes the contract |
 | false (a bad proof) | — | Alice's game | the operator takes the contract |
 | true, operator gone | none | Alice's game, by timeouts | Alice is paid |
@@ -226,8 +229,9 @@ must lose only costs it fees and its reserve.
 Both games are pre-signed at opening, so the gadget is never asked to do
 anything new: in each, one party claims one proof and the other
 challenges it. Using the gadget in one of two places costs a larger
-pre-signed set, but the reserve needn't double: with rational play only
-one game's fees are ever paid.
+pre-signed set, but the reserve needn't double: only one game's fees
+are ever paid. In a mass exit, counters add no load to the chain except
+at the operator's own expense.
 
 ## What a hostile operator can try
 
@@ -240,7 +244,7 @@ one game's fees are ever paid.
 | seals a spend of hers, then withholds its new notes' data | she loses: the data-availability gap, see Limits |
 | vanishes | no counter; the timeouts in Alice's game pay her |
 | waits out `T_close` | her escalation confirms first; then no default is possible |
-| posts a garbage counter | she challenges it, the gadget rejects it, and her game goes on |
+| posts a garbage counter | she challenges it, the gadget rejects it, and she is paid |
 | forges an insertion | it can't: a spend needs her keys, an exit record her proof |
 | counters with her own return | excluded |
 | floods the chain | congestion: see Limits |
@@ -265,9 +269,10 @@ keep the gadget a black box, so this note describes them.
 - **Exits are disputes.** Hours, and fees, against the fold's 193 vB,
   unless the operator folds.
 - **Mass exit.** A hostile operator can refuse every user at once. Each
-  exit is a dispute with a counter window, all competing for block space.
-  How many contracts a hub can safely hold is the congestion question
-  again, with longer disputes.
+  exit is one gadget run at most, after a counter window, all competing
+  for block space. How many contracts a hub can safely hold is the
+  congestion question again, with longer schedules and larger
+  escalations (about 1 KB per note claimed).
 - **Data availability: the one substantial gap.** With the cutoff, the
   exit is safe exactly when Alice can read the anchored data she needs.
   The gap affects senders as well as receivers. In the consolidation

@@ -160,11 +160,10 @@ def graph():
     s.path("M 602 144 C 602 280, 700 380, 742 380", stroke=ALICE)
     s.text(608, 250, "no counter", 11, ALICE, 600)
     # the counter game's outcomes
-    box(s, 744, 200, 140, 72, "counter holds", ["she spent since S:", "the operator takes all"], HUB_L, HUB)
-    box(s, 896, 200, 140, 72, "counter fails", ["Alice's game", "goes on"], OK_L, OK)
+    box(s, 744, 200, 140, 88, "counter holds", ["she spent since S:", "the operator takes all"], HUB_L, HUB)
+    box(s, 896, 200, 140, 88, "counter fails", ["the cheat loses:", "Alice b + r_A + r_H,", "the hub V_max − b"], OK_L, OK)
     s.line(814, 178, 814, 198)
     s.line(966, 178, 966, 198)
-    s.line(966, 272, 966, 324, stroke=OK)
     # Alice's game's outcomes
     box(s, 744, 470, 140, 88, "proof holds", ["(or a timeout):", "Alice b + r_A + r_H,", "the hub V_max − b"], OK_L, OK)
     box(s, 896, 470, 140, 88, "proof fails", ["a false claim:", "the operator takes all"], HUB_L, HUB)
@@ -179,11 +178,11 @@ def graph():
     s.text(470, 240, "the operator may still fold", 11, INK2, 400, "middle", italic=True)
     s.text(470, 256, "after checking her proof itself", 11, INK2, 400, "middle", italic=True)
     # note
-    s.text(24, 470, "With rational play at most one game is played:", 12, INK, 700)
+    s.text(24, 470, "Exactly one game is played, under any play:", 12, INK, 700)
     lines(s, 24, 490, [
-        ("• a true counter wins its game, so the operator plays it, and Alice loses;", INK2, 400, False),
-        ("• a true claim with no counter wins Alice's game, so the operator folds;", INK2, 400, False),
-        ("• a false counter only costs the operator its game.", INK2, 400, False),
+        ("• a true counter wins its game, and Alice loses;", INK2, 400, False),
+        ("• a false counter loses its game, and Alice is paid at once;", INK2, 400, False),
+        ("• with no counter, Alice's game, which the operator folds if her claim is true.", INK2, 400, False),
     ], size=11.5, step=18)
     s.text(24, 560, "Each game is one instance of the gadget, pre-signed at opening;", 11.5, INK2)
     s.text(24, 577, "its moves, windows and timeouts are the gadget's own.", 11.5, INK2)
