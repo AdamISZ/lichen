@@ -73,7 +73,8 @@ hub puts in `V_max − D` plus its reserve. In the story, `D` = $100 and
 
 ### Why printing can't touch a covered balance
 
-Alice can always take out the smaller of her balance and her cap. Her
+Alice can always take out the smaller of her balance and her cap, once
+the sequencer has anchored and proved the tokens she hands back.[^final] Her
 contract output pays it, and that output is on Bitcoin, out of reach of
 anything that happens on the L2. It can be spent in only three ways:
 
@@ -149,3 +150,14 @@ two differences:
 - **A payment beyond a holder's room doesn't fail,** as it would on
   Lightning. It goes through, and the excess is simply not covered.
   That is why it's the holder's job to watch their room.
+
+[^final]: Two qualifications. Her tokens are only as final as the L2's
+    history: a payment is final once the sequencer has anchored its
+    height on Bitcoin and that anchor is buried, about 10 blocks deep
+    (`lichen balance` shows how much of a balance is). And a withdrawal
+    needs her return to be sealed, anchored and proved. A sequencer that
+    censors the return, or stops anchoring or proving, leaves her
+    without a dispute to make, and at `T_close` the default pays the hub.
+    A planned exit, not yet implemented, closes that gap: Alice claims
+    from any anchored state she can prove from, and the operator can
+    answer only by showing that one of her notes was spent later.

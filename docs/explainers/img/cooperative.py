@@ -82,7 +82,7 @@ def overview():
     s.path(f"M {bx + 150} {fy + 25} L {px} {fy + 25} L {px} {my + 9}")
     s.text(bx + 162, fy + 18, "19,500", 11.5, ALICE, 600)
     s.text(px - 10, fy - 6, "59,500 in all", 11.5, ALICE, 700, "end")
-    s.text(24, 505, "The dispute machinery (169 pre-signed transactions each way) was exchanged at opening and never used.", 11.5, INK2)
+    s.text(24, 505, "The dispute machinery (141 pre-signed transactions, 169 signatures each way) was exchanged at opening and never used.", 11.5, INK2)
     s.save("overview")
 
 

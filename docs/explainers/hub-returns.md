@@ -52,7 +52,10 @@ whole input back together: 51 words, 204 bytes.
 **What it checked, in order:**
 
 1. **The 18 checked words:** the journal's length, the memo, the image id
-   and the deployment. Had any been wrong, it would have taken the
+   and the deployment. (Since 2026-10-20, in a deployment that anchors,
+   the last eight are the contract's own `D`, which also binds the
+   sequencer's genesis seal and the work asked on top of an anchor.)
+   Had any been wrong, it would have taken the
    contract at once, using that word's check leaf on the ladder output.
 2. **The proof.** It verifies the Groth16 proof directly, with lngap-zk's
    verifier, in milliseconds. The verifier program on chain makes the
@@ -64,7 +67,8 @@ whole input back together: 51 words, 204 bytes.
    Conceding means posting nothing and letting Alice's timeout pay her.
 4. **It watches the ladder output.** When her timeout spent it, the hub
    logged the contract `settled: the user's timeout paid the claim` and
-   closed it.
+   closed it. (Since 2026-10-17 it first collects its bit outputs from
+   the payout, then closes the contract.)
 
 **Why concede, and not play.** An honest hub disputes only a claim the
 program rejects. Against a true claim, a search ends with Alice's last
@@ -83,6 +87,13 @@ before its window closes, 80 blocks after `inputs`. That gives it the
 same 40 minutes to react as in Test B. It came back with 76 blocks to
 spare. The window is the hub's liveness requirement, and on Mutinynet it
 is short on purpose.
+
+Since 2026-10-17 a contract's windows depend on the obligation. On
+Mutinynet a new contract gives Alice 80 blocks for each of her moves,
+the hub 20 blocks (10 minutes) for each of its choices, move 2 among
+them, and 80 for its heavy moves. Contract 1002 predates this and has
+one 80-block window for every move. `lichen contracts` prints each
+contract's windows.
 
 The same restart had already caught the hub up on contract 1001
 (Test B). There it found the payout already spent, so it logged that
@@ -186,14 +197,18 @@ mattered against a false claim.
 ## Reproducing it
 
 As in Test B ([hub-absent.md](hub-absent.md#reproducing-it)), with the
-hub started again after the escalation:
+hub started again after the escalation. Since this run the proof also
+needs the sequencer's chain receipt at the return's height:
 
 ```sh
+L="./target/release/lichen --network mutinynet --statement groth16"
 docker compose -f deploy/hub/docker-compose.yml stop hub
-L --wallet alice.json withdraw 1002 30000              # the return; the fold fails
-L --wallet alice.json withdraw-input 1002 > withdraw-input.json
-#   on an x86 machine: scripts/linux-claim.sh withdraw-input.json claim-1002.hex
-L --wallet alice.json dispute 1002 30000 --input claim-1002.hex
+$L --wallet alice.json withdraw 1002 30000             # the return; the fold fails
+$L --wallet alice.json withdraw-input 1002 > withdraw-input.json
+$L --wallet alice.json chain-receipt 1002 chain.receipt
+#   on x86 Linux with Docker (lichen-r0, r0/host):
+lichen-r0 claim withdraw-input.json chain.receipt claim-1002.hex
+$L --wallet alice.json dispute 1002 30000 --input claim-1002.hex
 #   once it prints "escalated, confirmed at …":
 docker compose -f deploy/hub/docker-compose.yml start hub
 ```

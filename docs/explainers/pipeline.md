@@ -21,7 +21,10 @@ passes through four machines:
 
 Most withdrawals never touch any of this. In the normal case the hub sees
 Alice's return on the L2 and signs the fold
-([cooperative.md](cooperative.md)): no proof is made. If the hub
+([cooperative.md](cooperative.md)), and Alice proves nothing. On the
+real statement the hub first checks the withdrawal statement itself,
+natively and in milliseconds, against the sequencer's chain receipt
+(below), so it folds only what Alice could win by dispute. If the hub
 refuses, Alice makes the proof and escalates. The hub checks the proof
 natively, and if the claim is true it concedes
 ([hub-returns.md](hub-returns.md)). The search is only for a claim the
@@ -68,48 +71,90 @@ elements, and Groth16 has three.
 ## 1. The guest
 
 The statement is an ordinary Rust program compiled for RISC Zero's zkVM,
-a 32-bit RISC-V machine (RV32IM). Lichen's withdrawal guest is three
-lines around a shared check (ln-gap,
-`crates/apps/sessions/r0/methods/guest`):
+a 32-bit RISC-V machine (RV32IM). Lichen's withdrawal guest
+(`r0/withdraw-guest`) reads its input as raw bytes and runs on it the
+same check the hub runs natively:
 
 ```rust
+const CHAIN_ID: &str = include_str!("../../guests/chain.id"); // the chain guest's image id
+
 fn main() {
-    let input: WithdrawInput = env::read();               // private input
-    let journal = check(&input).expect("the withdrawal statement must hold");
-    env::commit_slice(&journal);                          // public output
+    let n: u32 = env::read();                                  // private input: its length,
+    let mut words = vec![0u32; (n as usize).div_ceil(4)];      // then its bytes
+    env::read_slice(&mut words);
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).take(n as usize).collect();
+    let input = WithdrawInput::from_bytes(&bytes).expect("the statement's input");
+    let chain_id = hex32(CHAIN_ID);
+    let journal = check(&input, &chain_id, &mut |j| env::verify(Digest::from_bytes(chain_id), j).is_ok())
+        .expect("the withdrawal statement");
+    env::commit_slice(&journal);                               // public output
 }
 ```
 
-`check` (`lngap_r0_core`) takes the return note, its Merkle path, the
-state root's height and nullifier root, the sequencer's signature, and
-the deployment's two keys. It accepts if:
+`check` (`lichen_withdraw`, in `crates/withdraw`) takes the return note,
+its Merkle path, the state root's height and nullifier root, the
+sequencer's signature, the deployment's two keys, the rest of the chain
+receipt's journal (its anchoring state among it), the Bitcoin headers on
+top of the anchor's block, and the work W the contract asks. It accepts
+if:
 
 - the note is owned by the hub's key;
 - the path has the tree's depth (16);
 - the note's value fits in 32 bits;
 - the root rebuilt from the note and its path is the one the sequencer
-  signed (BIP340).
+  signed (BIP340);
+- that root is the last one anchored on Bitcoin: the anchoring state's
+  last anchor committed it, at its height, under the same sequencer key;
+- a chain receipt with that journal verifies under the chain guest's
+  image id;
+- the headers follow the anchor's block, each within its own target,
+  and their work sums to at least W.
 
-It then commits the journal **`b ‖ c ‖ D`**: the amount, the memo (the
-contract's id) and the deployment id D = SHA256(sequencer key ‖ hub key).
-If any check fails, the guest panics and nothing can be proved.
+It then commits the journal **`b ‖ c ‖ D`**, 40 bytes: the amount, the
+memo (the contract's number) and the contract identifier
+D = SHA256("lichen/contract" ‖ deployment id ‖ genesis seal ‖ W). The
+deployment id is SHA256("lngap/deployment" ‖ sequencer key ‖ hub key),
+and the genesis seal is the Bitcoin output the sequencer's anchors
+descend from. If any check fails, the guest panics and nothing can be
+proved.
 
-The keys are input, not constants, so one guest serves every deployment.
-A contract pins its own D, just as it pins its memo.
+The keys, the genesis seal and W are input, not constants, so one guest
+serves every deployment and every contract. A contract pins its own D,
+just as it pins its memo: the claim is bound to that deployment, its
+anchored history, and the depth the contract asked for.
+
+**The chain receipt.** The guest doesn't take the signed root on trust.
+The sequencer's chain prover proves each sealed height with the chain
+guest: the block is valid, each shielded transaction's own proof checked
+inside it, and so was the history before it, back to genesis, each
+receipt verifying the last. Its journal carries the height, the roots, a
+hash of the history and the anchoring state: the last anchor recorded on
+the L2 and the Bitcoin block it is in. The withdrawal guest's
+`env::verify` of that journal is an *assumption*: its own proof holds
+only given a chain receipt with that journal, and the prover resolves it
+with the sequencer's receipt at the first height that carries the
+return's anchor (section 2). The chain guest's image id is built into the
+withdrawal guest, and the spend guest's into the chain guest, so the
+withdrawal guest's image id pins all three. The spend and chain proofs,
+and anchoring, are in [SHIELDED.md](../SHIELDED.md).
 
 **The image id.** A compiled guest is identified by its *image id*, a
 hash of its memory image. A proof is always about one image id: "the
 program with image id X output J". So the contract checks that X is the
 withdrawal guest's. Otherwise Alice could prove the output of any program
 she liked. The image id changes with any change to the code or the
-toolchain, so the canonical guest is built reproducibly, in RISC Zero's
-pinned builder image (`build-guest.sh` in ln-gap), and committed. Its
-image id is `e0cd81a7…298e`.
+toolchain, so the guest is built reproducibly, in RISC Zero's pinned
+builder image (`r0/build-guest.sh`), and committed
+(`r0/guests/withdraw.bin` and `withdraw.id`). Its image id is
+`11a9f930…4e67`. A new build is a new deployment's contracts.
 
 **Its size.** The guest uses RISC Zero's accelerated `sha2`, `k256` and
 `crypto-bigint`, which hand the hashing and the curve arithmetic to
-built-in circuits. It runs in about 446k cycles. Without the
-accelerators, it took 5.9M.
+built-in circuits. With ten headers on the anchor it runs in about 393k
+user cycles, and it grows with the number of headers. The guest only
+records the chain receipt's claim; checking that receipt is left to the
+recursion. (ln-gap's earlier guest, without the chain receipt or
+anchoring, took 5.9M cycles without the accelerators.)
 
 ## 2. The STARK
 
@@ -126,16 +171,18 @@ in a smaller circuit made for checking STARKs (*recursion*):
 
 The result is a *succinct receipt*: one STARK of about 220 kB, the same
 size however long the execution. Our guest is a single segment, so it's
-one lift and no joins.
+one lift and no joins. One more recursion step, the *resolve*, takes the
+sequencer's chain receipt (itself a succinct receipt) and discharges the
+guest's assumption, so the receipt that comes out holds unconditionally.
 
 The recursion programs are identified by *control ids*. The set of
 allowed ones is committed to by a Merkle root, the *control root*, which
 is fixed per RISC Zero release. That's why the version is pinned:
 lichen uses RISC Zero 3.0.6.
 
-**Where and how long.** On any machine: 30 s on an M4 Pro, using its CPU
-(RISC Zero 3.x has no Metal prover for segments; its GPU prover is CUDA
-only).
+**Where and how long.** On any machine, on its CPU: about 75 s on a Mac
+in Docker with 8 cores (RISC Zero 3.x has no Metal prover for segments;
+its GPU prover is CUDA only), 361 s on a 4-vCPU x86 server.
 
 ## 3. The shrink-wrap into Groth16
 
@@ -166,8 +213,8 @@ how it is proved changes, so that the next step can take it.
 
 **Where and how long.** RISC Zero runs the Groth16 prover (gnark) in a
 Docker image built for x86 only, so this step needs x86 Linux. On a
-12-core laptop the whole claim, STARK and wrap, took 2 min 24 s, with a
-peak of 4.8 GB. The wrap is most of that.
+4-vCPU x86 server the wrap took 258 s, after 361 s for the STARK, and it
+uses about 8 GB of memory.
 
 ## 4. The verifier's input
 
@@ -324,8 +371,9 @@ step.
 | step | who | where | measured |
 |---|---|---|---|
 | build the guest | anyone (the image id is the contract's) | x86 Docker, RISC Zero's builder image | reproducible |
-| prove (STARK) | Alice, only if the hub refuses | any machine | 446k cycles; 30 s on an M4 Pro CPU |
-| wrap (identity_p254 + Groth16) | Alice | x86 Linux, Docker | the whole claim: 2 min 24 s, 4.8 GB (12 cores) |
+| prove each height (the chain receipt) | the sequencer's prover | any machine | 1 to 2.5 min a small block on a Mac ([SHIELDED.md](../SHIELDED.md)) |
+| prove (STARK) | Alice, only if the hub refuses | any machine | about 393k user cycles; 75 s on a Mac (Docker, 8 cores), 361 s on 4 x86 vCPUs |
+| wrap (identity_p254 + Groth16) | Alice | x86 Linux, Docker | 258 s on 4 vCPUs, about 8 GB |
 | check the proof | the hub | any machine | about 1.5 ms |
 | emulate the verifier | both, only to play the search | any machine | 477.8M steps, about 2 minutes |
 | the search | both | Bitcoin, one link per move | 21 moves; on regtest, both engines, 725 s |
@@ -335,24 +383,45 @@ step.
 
 - **Pin RISC Zero** to the release whose constants the verifier carries:
   3.0.x (lichen uses 3.0.6). The image id depends on the toolchain too,
-  so build the guest in the builder image.
-- **The Groth16 step needs x86 and Docker.** In ln-gap,
-  `crates/apps/sessions/r0/scripts/linux-claim.sh` turns a wallet's
-  `withdraw-input` JSON into the 204-byte claim. On a Mac,
-  `lngap-r0 prove-input` makes the STARK, and the wrap runs on Linux.
+  so build the guest in the builder image (`r0/build-guest.sh`).
+- **The claim needs the chain receipt.** The wallet prints the
+  withdrawal input, with the headers on the anchor, and fetches the
+  sequencer's chain receipt:
+
+  ```sh
+  lichen --wallet alice.json withdraw-input <memo> > withdraw-input.json
+  lichen --wallet alice.json chain-receipt <memo> chain.receipt
+  ```
+
+  They refuse, saying what is missing, until the return's root is
+  anchored, the anchor has the work W on top (`withdraw-input`), and the
+  sequencer has proved the height that carries the anchor
+  (`chain-receipt`).
+- **The Groth16 step needs x86 and Docker.** On x86 Linux,
+  `lichen-r0 claim withdraw-input.json chain.receipt claim.hex` proves,
+  wraps and writes the 204-byte input as hex (`r0/host`, or the prover
+  image with `r0/withdraw-prover.sh claim …`). On a Mac,
+  `r0/withdraw-prover.sh withdraw withdraw-input.json chain.receipt <out>`
+  makes the STARK only; `lichen-r0 wrap` and `lichen-r0 bitvmx-input`
+  finish it on Linux.
 - **Snap-installed Docker can't see `/tmp`**, where RISC Zero hands the
-  Groth16 step its files. Point RISC Zero's work directory at a
-  directory under your home.
-- **Memory:** budget a few GB for the wrap. It peaked at 4.8 GB here,
-  and it was killed on a 2 GB Docker VM.
+  Groth16 step its files. Point RISC Zero's work directory
+  (`RISC0_WORK_DIR`) at a directory under your home.
+- **Memory:** budget about 8 GB for the wrap; a 16 GB machine is
+  comfortable. It was killed on a 2 GB Docker VM.
 
 ## Glossary
 
+- **assumption:** a receipt that a guest's proof depends on
+  (`env::verify`), discharged by a *resolve* step in the recursion.
 - **BabyBear:** the 31-bit prime field 15 · 2^27 + 1 that RISC Zero's
   STARKs compute in.
 - **BN254:** the pairing-friendly curve that the Groth16 proof lives on.
 - **BitVMX:** a protocol and RISC-V emulator for disputing a program's
   execution on Bitcoin by searching it, by FairgateLabs.
+- **chain receipt:** the sequencer's proof, made for each sealed height,
+  that the L2's history up to it is valid; it carries the anchoring
+  state.
 - **claim digest:** a hash of the image id, the journal and the exit
   status. It's what a RISC Zero proof is about.
 - **control id, control root:** RISC Zero's recursion programs, and the

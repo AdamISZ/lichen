@@ -133,19 +133,20 @@ transaction would have carried the same outputs.
 `split_UserWins` leaf with the two pre-signed signatures; and a
 2,000-sat coin from Alice's fee budget, all of it the fee.
 
-**Out**, as read from Mutinynet's Esplora on 2026-10-14:
+**Out**, as read from Mutinynet's Esplora on 2026-10-14, and what spent
+them later:
 
-| # | sats | bit of `b` | whose | on chain |
-|---|---|---|---|---|
-| 0 | 512 | bit 9 = 0 | the hub's | unspent |
-| 1 | 1,024 | bit 10 = 0 | the hub's | unspent |
-| 2 | 2,048 | bit 11 = 1 | Alice's | spent by her sweep |
-| 3 | 4,096 | bit 12 = 0 | the hub's | unspent |
-| 4 | 8,192 | bit 13 = 0 | the hub's | unspent |
-| 5 | 16,384 | bit 14 = 0 | the hub's | unspent |
-| 6 | 32,768 | bit 15 = 1 | Alice's | spent by her sweep |
-| 7 | 195,153 | the reserves, less the links' floors and anchors | Alice's | spent by her sweep |
-| 8 | 511 | bits 0 to 8 of `V_max` | the hub's address | unspent |
+| # | sats | bit of `b` | whose | on chain, 2026-10-14 | later |
+|---|---|---|---|---|---|
+| 0 | 512 | bit 9 = 0 | the hub's | unspent | the hub's sweep, block 3,513,196 |
+| 1 | 1,024 | bit 10 = 0 | the hub's | unspent | the hub's sweep |
+| 2 | 2,048 | bit 11 = 1 | Alice's | spent by her sweep | |
+| 3 | 4,096 | bit 12 = 0 | the hub's | unspent | the hub's sweep |
+| 4 | 8,192 | bit 13 = 0 | the hub's | unspent | the hub's sweep |
+| 5 | 16,384 | bit 14 = 0 | the hub's | unspent | the hub's sweep |
+| 6 | 32,768 | bit 15 = 1 | Alice's | spent by her sweep | |
+| 7 | 195,153 | the reserves, less the links' floors and anchors | Alice's | spent by her sweep | |
+| 8 | 511 | bits 0 to 8 of `V_max` | the hub's address | unspent | the hub's wallet, block 3,519,232 |
 
 ![the timeout's payout](img/hub-absent-payout.svg)
 
@@ -221,13 +222,19 @@ bases uses. Most of it is the 787-byte script, mostly the signature
 check, and the ten pairs it consumes. The reserve input is cheap: just a
 key signature after `δ`.
 
-### What is still on chain
+### The hub's outputs
 
-The hub's six outputs, 30,719 sats, are unspent. That is not a fault of
-the payout: the zero-bit leaves have no timelock, so the hub can collect
-them whenever it likes. But the hub has no code for it yet. It would be
-one transaction of five bit inputs at about 320 vB each, plus the 511
-already at its address.
+The hub's six outputs, 30,719 sats, were still unspent on 2026-10-14:
+the zero-bit leaves have no timelock, but the hub had no code to collect
+them. Since 2026-10-17 it sweeps its bit outputs itself once a dispute
+settles, and on upgrading it collected those its earlier disputes had
+left. For 1001 that was
+[032413dc…](https://mutinynet.com/tx/032413dc31861b05d69bcb8192416819de92de5386f6ad14bc0a6297c3fae4b1)
+(block 3,513,196): the five bit outputs, 30,208 sats, in one
+transaction of 1,722 vB, fee 1,724, about 344 vB an input. The 511 was
+already at its address, and its wallet spent it as an ordinary coin in
+[fb2fb609…](https://mutinynet.com/tx/fb2fb609cc7b754f7d38cfd6225a351f87a4e7295adbe8646323129db47cf3e7)
+(block 3,519,232).
 
 The 512-sat output shows the case for a higher base. Spending it costs
 about 320 vB, so above 1.6 sat/vB it is worth less than its fee. With a

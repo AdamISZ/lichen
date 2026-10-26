@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""The diagrams of ../pipeline.md, from the canonical withdrawal guest
-(image id e0cd81a7…) and Mutinynet contract 1002 (2026-10-13). Standard
+"""The diagrams of ../pipeline.md, from lichen's withdrawal guest with
+anchoring (image id 11a9f930…, 2026-10-21) and, for the dispute,
+Mutinynet contract 1002 (2026-10-13). Standard
 library only:
     python3 docs/explainers/img/pipeline.py
 writes docs/explainers/img/pipeline-*.svg."""
@@ -28,14 +29,14 @@ def overview():
     s = Svg(1060, 576)
     s.text(24, 32, "A withdrawal claim, from a Rust program to one instruction checked on Bitcoin", 16, INK, 700)
     s.rect(24, 50, 1012, 40, fill=OK_L, stroke=OK, sw=1.3)
-    s.text(40, 75, "The normal case needs no proof: the hub sees Alice's return on the L2 and signs the fold (cooperative.md).", 12.5, INK, 600)
+    s.text(40, 75, "The normal case needs no proof from Alice: the hub checks her return natively and signs the fold (cooperative.md).", 12.5, INK, 600)
     # row 1: Alice's machine
     s.text(24, 122, "only if the hub refuses the fold: on Alice's machine, once", 12, ALICE, 700)
     y, w, h = 134, 220, 78
     xs = [24, 288, 552, 816]
     rows = [
-        ("1. the guest", ["Rust, compiled to RISC-V", "446k cycles"]),
-        ("2. the STARK", ["RISC Zero: a succinct receipt", "about 220 kB"]),
+        ("1. the guest", ["Rust, compiled to RISC-V", "about 393k cycles"]),
+        ("2. the STARK", ["about 220 kB, with the", "chain receipt resolved"]),
         ("3. the Groth16 proof", ["RISC Zero + gnark", "128 bytes"]),
         ("4. the verifier's input", ["204 bytes: 51 words,", "the proof and the journal"]),
     ]
@@ -90,8 +91,10 @@ def wrap():
     s.text(184, 249, "join", 11, INK2, 600, "middle")
     s.line(99, 209, 174, 230)
     s.line(269, 209, 194, 230)
-    s.text(24, 290, "Ours is one segment (446k cycles): one lift, no joins.", 11.5, ALICE, 600)
-    s.text(24, 307, "Dashed: what a longer guest would add.", 11.5, INK2)
+    s.text(288, 236, "resolve", 10, INK2, 600, "middle")
+    s.text(24, 290, "Ours is one segment (about 393k cycles): one lift, no joins;", 11.5, ALICE, 600)
+    s.text(24, 307, "then a resolve takes in the sequencer's chain receipt.", 11.5, ALICE, 600)
+    s.text(24, 324, "Dashed: what a longer guest would add.", 11.5, INK2)
     # the chain of receipts
     y, w, h = 214, 180, 92
     xs = [380, 610, 840]
@@ -107,8 +110,8 @@ def wrap():
     s.text(380, 112, "“the program with image id X ran and output journal J”.", 12.5, INK)
     s.text(380, 136, "Each step changes only how it is proved, so that the next step can take it:", 11.5, INK2)
     s.text(380, 153, "any length → one STARK → a STARK a BN254 circuit can check → Groth16.", 11.5, INK2)
-    s.text(380, 340, "Measured: the STARK in 30 s on an M4 Pro (CPU); the whole claim, STARK and wrap,", 11.5, INK2)
-    s.text(380, 357, "in 2 min 24 s and 4.8 GB on a 12-core x86 laptop. The wrap is most of it.", 11.5, INK2)
+    s.text(380, 340, "Measured: the STARK in 75 s on a Mac (Docker, 8 cores), 361 s on a 4-vCPU x86 server;", 11.5, INK2)
+    s.text(380, 357, "the wrap in 258 s on that server, with about 8 GB of memory.", 11.5, INK2)
     s.save("wrap")
 
 

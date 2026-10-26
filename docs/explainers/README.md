@@ -1,6 +1,7 @@
 # Explainers
 
-How lichen's contracts work, from real runs.
+How lichen's contracts work, from real runs. For the idea without the
+details, start with [the 1,000-foot view](../1000-ft-view.md).
 
 - [Why the hub may print tokens](minting.md): conceptual, for anyone.
   A hub that can mint without limit still can't touch a covered
@@ -27,6 +28,11 @@ How lichen's contracts work, from real runs.
 - [How a dispute pays out](payout.md): how one pre-signed transaction
   pays Alice exactly `b`, in bits, and the hub the rest. A toy example,
   then Test B's payout traced down to the witness.
+
+"Anchor" means two things in these notes. A dispute's links carry
+330-sat **anchor outputs**, which a child spends to pay the fee. A
+sequencer may also **anchor** the L2's history on Bitcoin: a chain of
+its own transactions, each committing to a root of the L2's state.
 
 The diagrams are SVG, drawn by the scripts in `img/` (Python, standard
 library only); rerun a script after changing its numbers.

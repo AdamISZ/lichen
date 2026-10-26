@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """The diagrams of ../opening.md, from the opening of Mutinynet contract
-1001 (Test B, 2026-10-12). Standard library only:
+1001 (Test B, 2026-10-12). The sequence is drawn in today's order (the
+mint locked to the funding, from 2026-10-16) with the run's figures; the
+run itself minted after the funding. Standard library only:
     python3 docs/explainers/img/opening.py
 writes docs/explainers/img/opening-*.svg."""
 
@@ -17,10 +19,10 @@ class Svg(hub_absent.Svg):
 
 # ---------------------------------------------------------------- the messages
 def sequence():
-    s = Svg(1060, 700)
-    s.text(24, 32, "Opening contract 1001: four requests, two transactions, then the mint", 16, INK, 700)
+    s = Svg(1060, 800)
+    s.text(24, 32, "Opening a contract, with contract 1001's figures: four requests, two transactions, one swap", 16, INK, 700)
     lanes = [(180, "Alice's wallet", ALICE, ALICE_L), (470, "the hub", HUB, HUB_L), (760, "Bitcoin", CON, CON_L), (950, "the L2", OK, OK_L)]
-    top, bottom = 56, 676
+    top, bottom = 56, 776
     for x, name, col, fill in lanes:
         s.rect(x - 70, top, 140, 32, fill=fill, stroke=col, rx=6)
         s.text(x, top + 21, name, 13, INK, 700, "middle")
@@ -54,18 +56,21 @@ def sequence():
     msg(y, "A", "B", "3. 71,000 to the deposit address (from any wallet)", "deposit dc089a53…, block 3,500,811")
     y += 58
     msg(y, "A", "H", "4. /open: the terms she asks, her addresses,", "her one-time keys (51 input words, her moves, 8 hops), the deposit coin")
-    y += 58
-    msg(y, "H", "A", "the offer: T_close, r_H, the hub's keys, the funding,", dash="5 3")
-    s.text((X["A"] + X["H"]) / 2, y + 16, "and its 169 signatures on the 141 pre-signed transactions", 11, INK2, 400, "middle")
-    y += 34
-    y = note(y, "A", ["checks the terms, the funding's outputs", "and every one of the hub's signatures;", "then signs the 141, and the deposit input"], ALICE, ALICE_L, 270) + 26
-    msg(y, "A", "H", "5. /accept: her 169 signatures, her deposit signature")
-    y += 26
-    y = note(y, "H", ["checks them; signs its own input"], HUB, HUB_L, 230) + 26
-    msg(y, "H", "B", "the funding", "418b42cc…, block 3,500,812")
     y += 52
-    y = note(y, "H", ["sees the funding confirm"], HUB, HUB_L, 200) + 24
-    msg(y, "H", "L", "mint 30,000 tokens to Alice's L2 address")
+    msg(y, "H", "L", "mint 30,000 to P = H(A ‖ T)·A + T", "locked: spending it takes t")
+    y += 50
+    msg(y, "H", "A", "the offer: T_close, r_H, the windows, the hub's keys, the funding,", dash="5 3")
+    s.text((X["A"] + X["H"]) / 2, y + 16, "its 169 signatures on the 141 pre-signed transactions, T and the mint", 11, INK2, 400, "middle")
+    y += 34
+    y = note(y, "A", ["checks the terms, the funding's outputs,", "every one of the hub's signatures", "and the fee budget; signs the 141;", "sees the mint sealed; pre-signs", "the deposit input, locked to T"], ALICE, ALICE_L, 270) + 26
+    msg(y, "A", "H", "5. /accept: her 169 signatures, her pre-signature")
+    y += 26
+    y = note(y, "H", ["checks them; completes her", "pre-signature with t; signs its input"], HUB, HUB_L, 250) + 26
+    msg(y, "H", "B", "the funding: its witness reveals t", "418b42cc…, block 3,500,812")
+    y += 46
+    msg(y, "H", "A", "the funding's txid, and t", dash="5 3")
+    y += 46
+    msg(y, "A", "L", "Alice moves the 30,000 to her own key, with t")
     s.save("sequence")
 
 

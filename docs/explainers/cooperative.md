@@ -39,7 +39,8 @@ The terms are the same as those of contract 1001 (see [its table](hub-absent.md#
 The contract output holds `V_max + r_A + r_H` = **282,891 sats**. On the
 cooperative path none of the dispute machinery appears on chain. At
 opening, though, the two sides still exchange every pre-signed
-transaction a dispute could need: 169 signatures each way. Alice's
+transaction a dispute could need: 141 transactions, 169 signatures
+each way. Alice's
 ability to dispute is what makes the hub agree to a fold.
 
 ## Opening
@@ -69,7 +70,9 @@ And three outputs:
 - **the hub's change**, 465,964. It later funded contract 1001.
 
 Once the funding had one confirmation, the hub minted 30,000 tokens to
-Alice on the L2.
+Alice on the L2. (Since 2026-10-16 the hub mints with its offer, before
+the funding, and the funding unlocks the mint: see
+[the mint](opening.md#the-mint).)
 
 The 24 blocks between the deposit and the funding were not the
 protocol's. The first attempt to open failed after the deposit was paid,
@@ -109,6 +112,21 @@ note from the sequencer's state and checks four things:
 - it carries memo 1000;
 - its value is exactly the `b` she asks for;
 - `b` is within the cap.
+
+Since this run, on the real statement, the hub folds only what Alice
+could win by dispute. It refuses any fold once the sequencer has signed
+two roots at one height. Otherwise it also:
+
+- takes the return under the first root the sequencer anchored on
+  Bitcoin, with 10 blocks' work on the anchor;
+- fetches the sequencer's chain receipt for that height, which shows
+  the history up to it is valid;
+- runs the withdrawal statement on these natively, in milliseconds, and
+  checks that its output is this withdrawal: `b`, the memo and the
+  contract.
+
+Alice's wallet waits for the anchor and the receipt before it asks. When
+the hub answers, the wallet checks that the txid is the fold's.
 
 Then the hub checks her signature, adds its own, and broadcasts. Nothing
 about the fold was pre-signed: both sides sign it at the time, for the
@@ -217,7 +235,7 @@ tokens are then in the same position as her 5,000 now.
 - **The cooperative path is cheap:**
   - one transaction to close, 193 vB;
   - an exact amount;
-  - none of the dispute's 169 pre-signed transactions used.
+  - none of the dispute's 141 pre-signed transactions used.
 
   Alice's on-chain costs were 1,669 sats: her payer's 169, her funding
   share of 1,000, and the sweep's 500. The hub paid 2,000.
@@ -225,8 +243,12 @@ tokens are then in the same position as her 5,000 now.
   - the L2 steps take seconds;
   - the fold needs one confirmation;
   - Alice's bitcoin was at her payout address 25 blocks (13 minutes)
-    after the funding confirmed. The protocol needs one confirmation
+    after the funding confirmed. The protocol needed one confirmation
     for the mint and one for the fold; the rest was Alice's own time.
+  - Today the mint comes before the funding. On the real statement the
+    fold also waits for the return's anchor and 10 blocks on it (about
+    6 minutes on Mutinynet), and for the sequencer's chain receipt (a
+    few minutes).
 - **To tidy:**
   - **The fold's fee is a fixed 1,000.** It could be sized to the
     transaction and the network's feerate, as the dispute's timeouts now
@@ -240,13 +262,25 @@ tokens are then in the same position as her 5,000 now.
 ## Reproducing it
 
 With a deployment as in [deploy/README.md](../../deploy/README.md) and
-the wallet built natively:
+the wallet built natively. The real statement now needs the sequencer
+anchoring and its chain prover running
+([RUN_A_SEQUENCER.md](../RUN_A_SEQUENCER.md)):
+
+```sh
+# the sequencer, anchoring through the hub's node (fund its wallet first)
+docker compose -f deploy/sequencer/docker-compose.yml -f deploy/sequencer/anchor.yml up -d
+# the chain prover, in the prover image (docker build -f r0/Dockerfile -t lichen-r0 .)
+r0/chain-prover.sh deploy/sequencer/data/mutinynet/ledger.json.blocks
+```
+
+Then Alice:
 
 ```sh
 L="./target/release/lichen --network mutinynet --statement groth16"
 $L --wallet alice.json init
 $L --wallet alice.json open 30000 --bits 16 --reserve 20000 --payout <an address of yours>
-#   it prints "pay 71000 sats to tb1p…": pay that from any wallet
+#   it prints "pay 81000 sats to tb1p…": pay that from any wallet
+#   (71,000 in this run; the fee budget on Mutinynet is now 30,000)
 $L --wallet alice.json balance                    # 30000, once the funding confirms
 $L --wallet bob.json init                         # prints Bob's L2 address
 $L --wallet alice.json send <Bob's address> 5000

@@ -293,7 +293,7 @@ def payout():
         s.text(152, y + 18, f"{k}", 11.5, INK2, 400, mono=True)
         s.text(176, y + 18, f"{n(v)}", 12.5, INK, 700)
         s.text(260, y + 18, f"bit {i} = {a}", 12, INK)
-        s.text(360, y + 18, "Alice's: spent by the sweep" if a else "the hub's: unspent, waiting for it", 12, ALICE if a else HUB, 600)
+        s.text(360, y + 18, "Alice's: spent by the sweep" if a else "the hub's: collected at 3,513,196", 12, ALICE if a else HUB, 600)
         y += 30
     for k, (v, lab, who) in enumerate([(195153, "both reserves less the floors: Alice's, spent by the sweep", ALICE), (511, "bits 0 to 8 of V_max: the hub's payout address", HUB)]):
         s.rect(140, y, 520, 26, fill=ALICE_L if who == ALICE else HUB_L, stroke=who, rx=5)
@@ -351,7 +351,7 @@ def money():
 
 # ---------------------------------------------------------------- the timeline
 def timeline():
-    s = Svg(1060, 300)
+    s = Svg(1060, 318)
     s.text(24, 32, "The dispute in blocks (30 s apart on Mutinynet), and the windows that set the pace", 16, INK, 700)
     lo, hi = 3500805, 3500998
     x0, W = 50, 960
@@ -380,6 +380,7 @@ def timeline():
     s.text(x0, 236, "Funding to escalation (30 min) was Alice's: the return on the L2, the proof, the trace (~2 min) and her decision to go.", 12, INK2)
     s.text(x0, 254, "Escalation to sweep (67 min) is the protocol's: one block between the links, then two windows the hub had to let pass.", 12, INK2)
     s.text(x0, 272, "A window counts from the block of the output it guards: the timeout could first be mined in 3,500,948 (it was in 949), the sweep in 989 (990).", 12, INK2)
+    s.text(x0, 290, "Since 2026-10-17 the hub's window for a choice like move 2 is 20 blocks on Mutinynet, not 80: the same dispute would take about 30 min.", 12, INK2)
     s.save("timeline")
 
 

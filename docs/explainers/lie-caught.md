@@ -13,8 +13,9 @@ sizes and fees as mined.
 | 1004 | a read: one word read near the end has a bit flipped | that step, 5 before the halt | a 66-hop path, then `disprove_read_2` | 25 txs, 200,493 vB | 200,832 |
 
 The contracts' terms are those of Tests B and C
-([opening.md](opening.md)): a cap of 2^16, `D` = 30,000, `r_A` = 20,000,
-`r_H` = 197,357, δ = δ′ = 40 blocks (20 minutes each).
+([opening.md](opening.md)), but for one sat of the hub's reserve: a cap
+of 2^16, `D` = 30,000, `r_A` = 20,000, `r_H` = 197,357 (197,356 in B and
+C), δ = δ′ = 40 blocks (20 minutes each).
 
 ## The claim: a proof that doesn't verify
 
@@ -65,9 +66,12 @@ is Alice's signed record of the disputed step.
 
 From `escalate` to Alice's record took 27 blocks in 1003 and 26 in
 1004: about 13 minutes for 21 moves. Each side answered within a block
-or two of the other's move, far inside its 40-block window. The hub's
-first move came five blocks after `inputs`, the time it took to run the
-whole verifier once.
+or two of the other's move, far inside its window of δ + δ′ = 80 blocks.
+The hub's first move came five blocks after `inputs`, the time it took
+to run the whole verifier once. Contracts opened since 2026-10-17 have a
+window per kind of move: on Mutinynet 80 blocks for each of Alice's
+moves, 20 for each of the hub's choices, and 80 for the hub's heavy
+moves at the last step (its disprove, its path, its verdict).
 
 To follow a dispute on the explorer, start at `escalate` and keep
 following output 0's "spent by": each link spends output 0 of the one
@@ -149,7 +153,8 @@ from 36 down to 7.
   path's 66 hashes go about ten to a chunk: each input's witness is
   about 45 kB, near the limit.
 
-**Alice's window.** For the next 80 blocks (δ + δ′), Alice may challenge
+**Alice's window.** For the next 80 blocks (δ + δ′ then; her window
+now, also 80 on Mutinynet), Alice may challenge
 any one hop. The hub would then have to reveal that hash's preimage, and
 a forged hop couldn't be revealed. Her wallet checked all 66 against its
 own history and found them genuine, so it didn't challenge.
@@ -222,10 +227,15 @@ runs the execution once, flips a read in its last steps, and plays the
 search off chain to check where it lands. The read lie was rehearsed
 first on regtest (`crates/hub/tests/groth16_read.rs`, opt-in).
 
-With `--sequencer` and `--hub` as in [deploy/README.md](../../deploy/README.md):
+The runs used Test B's input. The withdrawal guest has since been
+rebuilt (most recently on 2026-10-21), so Test B's image id no longer
+passes the input-word checks: start instead from a claim made for the
+new contract ([README](../../README.md#disputes-on-the-real-statement)).
+With `--sequencer` and `--hub` as for a tester
+([RUN_A_HUB.md](../RUN_A_HUB.md#testers)):
 
 ```sh
-# the input: Test B's with b and the memo changed (here 1004)
+# the input: a valid claim's, with b and the memo changed (here 1004)
 cargo run --release -p lichen-hub --example read_lie -- lie-1004.hex /tmp/rl > lie-1004-lie.json
 lichen --network mutinynet --wallet lie.json open 30000 --bits 16 --payout <address>
 lichen --network mutinynet --wallet lie.json return 10000 1004

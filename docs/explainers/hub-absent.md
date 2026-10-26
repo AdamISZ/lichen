@@ -33,7 +33,7 @@ of 193 vB ([cooperative.md](cooperative.md)).
 | `low_bits` | 9 | on the dispute path, bits of `b` below 2^9 (512 sats) get no output |
 | `T_close` | 3,520,971 | after it, with no claim, the contract closes by default |
 | `to_self_delay` | 10 blocks | the escalation waits this long after funding |
-| `δ`, `δ′` | 40, 40 blocks | the response windows (20 min each at 30 s blocks) |
+| `δ`, `δ′` | 40, 40 blocks | the response windows (20 min each at 30 s blocks): each move had `δ + δ′` to answer. Contracts now have a window per kind of move ([the hub's window](#the-hubs-window)) |
 | statement | Groth16 | BitVMX's Groth16 verifier, run over a RISC Zero proof of the withdrawal |
 
 The contract output holds `V_max + r_A + r_H` = 65,535 + 20,000 + 197,356 =
@@ -50,11 +50,15 @@ floors were 21,543.
 
 **Deposit.** Lichen has no wallet of its own. The hub gives Alice a
 deposit address and an amount, and she pays it from any wallet (here, a
-faucet-funded one). The amount is 71,000 = `D` 30,000 + `r_A` 20,000 + her
-half of the funding fee 1,000 + a fee budget of 20,000 for a dispute. The
-deposit output's tree has two leaves: the hub and Alice together (the
-funding spends it this way), or Alice alone after 2,880 blocks (a refund,
-if the hub never funds).
+faucet-funded one). The amount is 71,000 = `D` 30,000 + `r_A` 20,000 +
+her half of the funding fee 1,000 + a fee budget of 20,000 for a
+dispute. Since 2026-10-18 the budget on Mutinynet is 30,000, so the same
+deposit would be 81,000: enough for Alice's heaviest terminal
+transaction, a last step's proof of about 26,800 sats at 1 sat/vB; the
+wallet checks the budget covers it at opening. The deposit output's tree
+has two leaves: the hub and Alice together (the funding spends it this
+way), or Alice alone after 2,880 blocks (a refund, if the hub never
+funds).
 
 **Funding** (305 vB, 2,000 sats of fee, half each) spends Alice's deposit
 and a hub coin. It creates three outputs:
@@ -67,7 +71,9 @@ and a hub coin. It creates three outputs:
 Before signing the funding, the two sides exchanged every pre-signed
 transaction a dispute could need: 169 of the hub's signatures, and as
 many of Alice's. When the funding confirmed, the hub minted 30,000 tokens
-to Alice on the L2.
+to Alice on the L2. Since 2026-10-16 the order is the other way round:
+the hub mints first, and only the funding lets it take her deposit
+([opening.md](opening.md#the-mint)).
 
 ## Off chain: the return, the proof, the trace
 
@@ -191,6 +197,14 @@ have done this whether Alice's claim was true or false: the search finds
 the first step where they disagree, and a true claim survives it. The
 hub is off, so the window runs out.
 
+A contract opened today would make Alice wait less here. Since
+2026-10-17 each kind of move has its own window. On Mutinynet that is 80
+blocks for each of Alice's moves, 20 for each of the hub's choices
+(`w_H`), and 80 for the hub's heavy moves at the last step. Move 2 is a
+choice of a few hundred bytes, so `split_UserWins` would wait 20 blocks
+(10 minutes), not 80. `δ` stays 40: the bit outputs and the reserve
+output below still wait it.
+
 ![the dispute in blocks](img/hub-absent-timeline.svg)
 
 ## 3 and 4. The fee coin, and the timeout
@@ -259,7 +273,7 @@ on `b` gives nothing away: it is the same signature, already on chain.
 | Alice received at her payout address | 228,769 |
 | still hers: the fee budget's remainder, for `sweep-fees` | 17,840 |
 | still hers: two anchors, unspent | 660 |
-| the hub's: five bit outputs and 511, waiting for it | 30,719 |
+| the hub's: five bit outputs and 511, since collected | 30,719 |
 | the hub's reserve: forfeited | 197,356 |
 | fees in all: the floors 21,543, the split 160, the timeout 2,000, the sweep 1,200 | 24,903 |
 
@@ -270,18 +284,23 @@ For her 35,000 returned tokens, Alice got:
 - the hub's reserve less the dispute's floors and anchors, 175,153.
 
 The hub keeps its share of `V_max`, 30,719. It can collect that whenever
-it comes back, since the bit leaves for zero bits have no timelock. What
-the hub loses by vanishing is its reserve.
+it comes back, since the bit leaves for zero bits have no timelock. Since
+2026-10-17 the hub does this itself once a dispute settles, and on
+upgrading it swept 1001's five bit outputs in
+[032413dc…](https://mutinynet.com/tx/032413dc31861b05d69bcb8192416819de92de5386f6ad14bc0a6297c3fae4b1)
+(block 3,513,196; [payout.md](payout.md#the-hubs-outputs) has the
+details). What the hub loses by vanishing is its reserve.
 
 ## What this run shows, and what to tidy
 
 - **The hub can't stop a withdrawal by disappearing.** Alice was paid
   about 67 minutes after she escalated: one block between the two links,
-  then the hub's 80-block window, then the 40-block `δ`. All of it was
-  pre-signed, apart from three things: her one-time signatures (made from
-  her wallet's seed), her fee coin, and her final sweep. She needed no
-  part of the hub, and no node of her own (the wallet reads Mutinynet
-  through mutinynet.com's Esplora).
+  then the hub's 80-block window, then the 40-block `δ`. Under today's
+  windows, with the hub's 20 blocks, it would be about 30 minutes. All
+  of it was pre-signed, apart from three things: her one-time signatures
+  (made from her wallet's seed), her fee coin, and her final sweep. She
+  needed no part of the hub, and no node of her own (the wallet reads
+  Mutinynet through mutinynet.com's Esplora).
 - **A disappearance costs the hub its reserve.** That is the incentive
   that keeps disputes rare. This one was cheap, because the hub forfeited
   in the first window.
@@ -296,17 +315,22 @@ the hub loses by vanishing is its reserve.
     (about 590 sats here), for the hub's timeouts too;
   - the fee budget's rest needed `sweep-fees`: a won dispute's sweep now
     takes it, and `sweep-fees` is left for folds, refunds and lost
-    disputes.
+    disputes;
+  - the hub had no code to collect its bit outputs: it now sweeps them
+    itself once a dispute settles.
 
-  A rerun would show a timeout fee of about 590 sats, and one sweep
-  paying out the winnings, the anchors and the budget's rest together.
+  A rerun would show a timeout fee of about 590 sats, one sweep paying
+  out the winnings, the anchors and the budget's rest together, and the
+  hub collecting its bits.
 
 ## Reproducing it
 
-This is Test B of the local Mutinynet trials ([TESTNET_PLAN.md](../TESTNET_PLAN.md),
-T5): a deployment as in [deploy/README.md](../../deploy/README.md), with
-Alice's wallet on the same machine (but reading the chain through
-Esplora). With the hub stopped, after her return, Alice runs:
+This is Test B of our Mutinynet trials: a deployment as in
+[deploy/README.md](../../deploy/README.md), with Alice's wallet set up
+as a tester's
+([RUN_A_HUB.md](../RUN_A_HUB.md#testers)) on the same machine (but
+reading the chain through Esplora). With the hub stopped, after her
+return, Alice runs:
 
 ```sh
 lichen --network mutinynet --statement groth16 --wallet alice.json \
@@ -314,6 +338,8 @@ lichen --network mutinynet --statement groth16 --wallet alice.json \
 ```
 
 `claim.hex` is the verifier's 204-byte input, made by the withdrawal
-prover. From there, the wallet posts each transaction above as it falls
-due. The diagrams are drawn by `img/hub_absent.py` from the numbers
-above.
+prover. The steps that make it today, from the return to the Groth16
+wrap, are in the repository's
+[README](../../README.md#disputes-on-the-real-statement). From there,
+the wallet posts each transaction above as it falls due. The diagrams
+are drawn by `img/hub_absent.py` from the numbers above.

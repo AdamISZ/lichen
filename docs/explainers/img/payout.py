@@ -150,7 +150,7 @@ def read():
             "nibble 5 = 8; reduce mod 4: 8 − 8 = 0",
             "0 ≥ 2?  no: the bit is 0, and OP_NOT makes that a pass",
             "→ the 512 output is the hub's (no wait)",
-            "not spent yet: the hub has no sweep for its bits",
+            "collected by the hub's sweep of its bits, block 3,513,196",
         ]),
     ]
     for k, (name, col, fill, lines) in enumerate(cards):
