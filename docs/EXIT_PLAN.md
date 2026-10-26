@@ -113,6 +113,28 @@ contract with her own transaction. Excluding it costs the hub nothing:
 if the return is sequenced, the hub has her tokens, and contract `c`
 still pays only once.
 
+**Considered and rejected: Lightning-style revocation** (2026-10-27).
+Claim and counter mirror Lightning's old state and penalty. So could
+Alice hand the operator a revocation secret per note when she spends
+it, making the counter a hash preimage instead of a proof? No:
+
+- **It can't be atomic with sequencing.** Lightning revokes only once
+  the new state is enforceable, and an update there exists as soon as
+  both sides sign. Here the spend exists only once the operator
+  sequences and anchors it. A secret handed over at spend time lets the
+  operator refute her exit of `s` without ever sequencing the spend.
+- **So it could only follow the anchor,** say at the kit fetch after a
+  spend. Until then Alice holds both `s` and her change, and the proof
+  is the only counter. The proof stays, and revocation becomes an
+  optimization of the rare case where a dishonest Alice is countered.
+- **Anchoring already gives the ordering that revocation stands in for.**
+  Lightning needs revocation because Bitcoin can't tell which of two
+  commitments is newer. Lichen's anchored history can, so "spent later"
+  is provable directly.
+- **It would also cost non-interactive receiving.** `H(rev)` must be in
+  the note's commitment, and the sender who makes the note must not know
+  `rev`, so the recipient would have to supply it, as with an invoice.
+
 ## The game
 
 ln-gap's game with the operator's counter as a second input, owned by
