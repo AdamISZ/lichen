@@ -159,7 +159,10 @@ anchored at least a few blocks before her escalation confirmed. The
 counter proves that height from Bitcoin itself, so neither side chooses
 it. Everything a counter can use was then already final on Bitcoin when
 she claimed. This covers her return too, but the return stays excluded
-in any case.
+in any case. Another contract's exit record is the one thing a counter
+may cite whenever it was anchored: it needs Alice's own exit proof for
+that contract, which she makes only if she's claiming the same notes
+twice.
 
 The history can't be rewritten either. Each anchor spends the previous
 anchor's output on Bitcoin, so there is one anchored history, and `S`
@@ -271,9 +274,12 @@ keep the gadget a black box, so this note describes them.
   attack, Alice merges her covered notes into one new note. The operator
   seals that and withholds the new note's data: the old notes are
   countered, and the new one has no kit. Any spend that leaves her with
-  change works the same way. EXIT_PLAN.md lists the options: publishing
-  each batch's nullifiers and new commitments on Bitcoin (about 64
-  bytes per L2 transaction), or transaction expiry with a claim that
-  covers her own recent transactions, or accepting the gap.
+  change works the same way. EXIT_PLAN.md lists the options, most of
+  them rules about what a counter must show. The leading one is the
+  sender's acknowledgment: a spend can counter Alice only once she has
+  signed that she holds its data, and its outputs stay locked until
+  then. Others are publishing each batch's nullifiers and new
+  commitments on Bitcoin (about 24 vB per L2 transaction), a data
+  committee whose signatures the anchors need, or accepting the gap.
 - **Whole notes.** A claim spends whole notes. Alice claims everything
   up to `V_max`, and above the cap the claimed notes' excess is forfeit.
