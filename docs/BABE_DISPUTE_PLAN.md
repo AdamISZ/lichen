@@ -200,7 +200,7 @@ ladder's largest move to 23.6 kvB, but not its sum. It helps the
 per-window figure only, so the "1.4×" said before does not hold.
 
 The papers use this basis: `papers/lichen-bitvmx-v0.1.1` §9 and
-`papers/lichen-babe-v0.1.2` §8.2.
+`papers/lichen-babe-v0.1.3` §8.2.
 
 **The hub's response** (0.6 kvB) also falls in a window, w_H, and grows
 with N under hostile users: 60,000 contracts need w_H ≥ 36 blocks. That
@@ -250,6 +250,42 @@ All per contract, the paper's figures at (N_CC, M_CC) = (2,268, 4) on a
 **Fewer instances mean more label sets.** (78, 10) sets up in 6 s, but
 needs 10 label sets on chain without soldering (~92 kvB, est). Soldering
 makes the setup cost and the on-chain cost independent.
+
+**VSSS instead of soldering is the setup to aim for (2026-10-26; the
+paper's §8.5).**
+- **Most of the soldered setup is soldering:** about 14 min in all, 745 s
+  of it the SNARK.
+- **About 14 min per contract, at every opening and renewal, is probably
+  unworkable.** About 40 s is not.
+
+How VSSS works (Glock §3.4, BABE §9.4):
+- **The labels are shared.** The hub Shamir-shares each label across the
+  N instances, threshold N − M + 1, under Feldman commitments.
+- **One label set goes on chain**, the secrets. With the opened shares,
+  Alice interpolates the kept instances' labels.
+- **So M stops costing chain space, and the cost moves to N.** Choose a
+  small N.
+
+| (N, M) | setup | Alice stores |
+|---|---|---|
+| (78, 10) | ~40 s (BABE's estimate) | ~220 MiB |
+| (124, 8) | ~1 min | ~180 MiB |
+| (181, 7) | ~1.5 min | ~155 MiB |
+
+- **A hub opening 10,000 contracts:** ~110 laptop-hours, against ~2,300
+  soldered.
+- **Storage:** Duty-Free Bits' 45× would bring M = 10 to ~5 MiB.
+
+On chain, there is no design yet:
+- **It needs adaptor signatures.** A hashlock can't be tied to the
+  Feldman commitment without a proof.
+- **How:** Alice pre-signs `challenge_assert` per (bit, value) under
+  one-time keys A_{i,β}, adapted to the label points. The script picks the
+  key by her Lamport bit, and the hub's completion reveals the label.
+- **The cost:** about 135 B a bit against about 65 for a hashed label, so
+  `challenge_assert` is ~26 kvB (est.), against 17.4 soldered. Hostile
+  users: ~37,000 contracts for a week's dispute, against 56,000.
+- **The keyless tower survives:** A_{i,β} is used only at setup.
 
 ## 9. What changes with EXIT_PLAN's counter-proof
 
