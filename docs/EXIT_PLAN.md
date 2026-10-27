@@ -51,7 +51,7 @@ A second mode of the withdrawal statement, with one image id.
   - all of that checks;
   - the notes are distinct;
   - `b ≤ Σ`.
-- **Journal:** `b ‖ c ‖ D ‖ E`, with `E = H(h_S ‖ SR_S ‖ nullifiers)`.
+- **Journal:** `b ‖ c ‖ D ‖ E`, with `E = H(c ‖ h_S ‖ SR_S ‖ nullifiers)`.
 
 The nullifiers are part of her input words, and the program checks them
 against `E`. They have to be: the operator can only search for a later
@@ -82,11 +82,14 @@ A new statement, proved by the operator, a Groth16 proof of about 256
 bytes:
 
 - **Inputs:**
-  - Alice's claim (`D`, `E`, the nullifier list);
+  - Alice's claim (`D`, and `E` with its preimage: `c`, `h_S`, `SR_S`
+    and the nullifier list);
   - a later anchored state `S'`, 10 deep, in the same history as `S`;
   - one of the claim's nullifiers, inserted at a height `h_S < h ≤ h_S'`
     by a transaction that isn't contract `c`'s own: neither its exit
-    record (below) nor a return with memo `c`.
+    record (below) nor a return with memo `c`;
+  - the escalation's confirmation at Bitcoin height `H_esc` (below), and
+    the insertion's anchor confirmed at or before `H_esc − m`.
 - **Journal:** `D ‖ E ‖ ok`.
 
 "The same history": the counter's chain receipt passes through `S`.
@@ -99,10 +102,53 @@ The counter covers three cases:
   state): the spend.
 - **The same note through two contracts:** the first claim's exit
   record (below) inserted the nullifier, and the second claim's counter
-  shows it.
-- **A claim racing a spend:** the operator either refuses to sequence a
-  spend of nullifiers whose claim is pending, or sequences it and
-  counters.
+  shows it, even if the record was anchored after the cutoff (exit
+  records are exempt, below).
+- **A claim racing a spend:** the operator, as sequencer, refuses to
+  sequence a spend of nullifiers whose claim is pending. A spend
+  anchored after the cutoff can't counter (below), so a sequenced one
+  is the operator's loss: the exit record then can't retire notes
+  already spent, and both the claim and the spend's receiver can be
+  paid.
+
+**The cutoff: only what was final before the claim.** A counter may
+cite only an insertion whose anchor confirmed at least `m` blocks before
+Alice's escalation. Without it, any transaction Alice has signed and the
+operator holds is a counter in waiting: the operator includes it during
+`W_c`, after she has committed to her claim, and takes her contract.
+Excluding her own return fixed one instance of this; the cutoff fixes
+all of them. With it, everything a counter can use was already final,
+on Bitcoin, when she claimed, so an honest Alice who can read the
+anchored data before escalating can't be countered. That leaves data
+availability as the only gap (Data availability, below).
+
+- **`H_esc` must be proved, not chosen.** If Alice named her own cutoff,
+  she could pick a stale one and hide a spend anchored after it. So the
+  counter guest proves the height: the transaction spending contract
+  `c`'s funding outpoint, in a block by Merkle path, on headers that
+  continue the anchors' chain. The guest must know the outpoint for
+  this: if `c` stays a memo number, `E`'s preimage gains the outpoint,
+  checked on chain against the contract's terms like `c`. Detail for
+  the design pass.
+- **The margin `m`.** Alice checks the anchored data up to the tip, then
+  broadcasts. Anchors confirmed between her check and `H_esc − m` could
+  be cited without her having seen them, so `m` covers her escalation's
+  confirmation time: `e` in the Timing table, 6 blocks on mainnet and 20
+  on Mutinynet. If her escalation takes longer, she fee-bumps it.
+- **The hub loses nothing it can't avoid.** A spend that races the
+  claim is one the operator, as sequencer, can refuse (above), and the
+  exit record retires the notes afterwards.
+- **Exit records are exempt.** Two claims of the same notes through two
+  contracts can escalate together. Each one's exit record is posted
+  only once its claimant's proof is on chain, at its escalation, so it
+  is anchored past both cutoffs, and neither claim could be countered.
+  So a counter may cite another contract's exit record anchored at any
+  height up to `h_S'`. This doesn't reopen the attack the cutoff closes:
+  a record needs an exit proof by the notes' owner for that other
+  contract, and an honest Alice never makes one for notes she is
+  claiming through `c`. The two claims counter each other, and the
+  double claimer loses both contracts. (Found while designing the
+  sender acknowledgment below, which relies on it.)
 
 **Why contract `c`'s own return doesn't count.** An honest Alice tries
 the cooperative way first: she signs a return of her notes with memo
@@ -112,6 +158,18 @@ the operator could sequence it after her escalation and take her whole
 contract with her own transaction. Excluding it costs the hub nothing:
 if the return is sequenced, the hub has her tokens, and contract `c`
 still pays only once.
+
+**Why `c` is inside `E`.** Both exclusions depend on `c`, so the counter
+must be about one contract's claim, fixed on chain. If `E` left `c`
+out, the operator could post Alice's genuine exit record for `c_A`, then
+prove a counter that applies the exclusion for some other `c_B`. To that
+counter, `c_A`'s record is an admissible insertion, and with the same
+`D` and `E` it would defeat her honest claim through `c_A`. Her censored
+return could be used the same way. With `c` in `E`, the counter guest
+recomputes `E` from its preimage and excludes for that `c`, so matching
+`E` on chain forces the exclusion to be for her contract. A double claim
+through `c'` is still countered: its `E` holds `c'`, and `c`'s record
+isn't `c'`'s own.
 
 **Considered and rejected: Lightning-style revocation** (2026-10-27).
 Claim and counter mirror Lightning's old state and penalty. So could
@@ -141,9 +199,16 @@ ln-gap's game with the operator's counter as a second input, owned by
 the verifier. The program definition already lists inputs by owner. The
 program changes from "verify Alice's proof" to:
 
-> Accept if and only if Alice's proof verifies, and either there is no
-> counter, or the counter doesn't verify, or it names another `D` or
-> `E`.
+> Accept if and only if either a counter was posted and it doesn't
+> verify, or it names another `D` or `E`; or no counter was posted and
+> Alice's proof verifies.
+
+**A failed counter pays Alice, whatever her own proof.** That's the rule
+throughout ln-gap: a party shown to cheat once, anywhere, loses at once.
+It's safe for the hub because a counter is always its choice. Against a
+false claim it never needs one, since it challenges her proof instead;
+against a stale claim it has a true counter, which wins. A counter that
+fails is one the operator chose to post and could have avoided.
 
 Flow:
 
@@ -160,7 +225,7 @@ Flow:
 |---|---|---|---|
 | honest exit | valid | none (none can exist) | Alice is paid |
 | she spent it later | valid at `S` | valid | the program rejects; Alice loses the contract |
-| a garbage counter | valid | invalid | the program accepts; Alice is paid |
+| a garbage counter | any | invalid | the program accepts; Alice is paid |
 | the operator gone | valid | none | timeouts pay Alice |
 | a false claim | invalid | — | rejected, as now |
 
@@ -178,13 +243,15 @@ spend into a counter ladder with the roles reversed. The hub proves its
 counter, Alice checks it, and one Groth16 trace is bisected, as today.
 
 - **The counter holds:** the hub takes the contract.
-- **The counter fails:** the output returns to Alice's game where it
-  left off.
+- **The counter fails,** or names another `D` or `E`: Alice is paid at
+  once, as if she had won her game, which isn't played (the rule above).
 - **No counter:** Alice's game, as now.
 
-With rational play only one game runs. A false counter costs the hub
-only that game's floors, and a true claim survives both games. Each
-game uses today's ELF, depth and rules.
+So exactly one game runs, under any play, not only rational play. A
+false counter costs the hub the contract, as losing Alice's game would,
+so counters can't be used to double a dispute's cost, and in a mass
+exit they can't add load to the chain except at the operator's own
+expense. Each game uses today's ELF, depth and rules.
 
 What it needs:
 
@@ -193,7 +260,7 @@ What it needs:
   decision functions underneath don't care who plays which side;
 - the branch leaf, signed at opening. The pre-signed set roughly doubles
   (about 90 transactions on the mock), but the reserve doesn't, since
-  only one game's floors are ever paid;
+  only one game's floors are ever paid, under any play;
 - one cross-game check that the counter names Alice's `E`: she
   re-reveals her `E` words beside the hub's, and the hub's output is
   taken if they differ.
@@ -233,7 +300,8 @@ owner made, since only she can prove one (`nk`, or her signature). Then:
 - **An honest single claim** can only have a record naming its own `c`,
   which the counter excludes.
 - **One note through two contracts:** the first claim's proof makes a
-  genuine record, which counters the second.
+  genuine record, which counters the second, whenever it's anchored
+  (exit records are exempt from the cutoff).
 - **Nobody's notes can be frozen** by a record, since every record traces
   back to a claim their owner made.
 
@@ -273,11 +341,10 @@ append-only, so a path to `T_S` stays valid, and non-membership in
 so the wallet fetches one after events, not on a schedule:
 
 - **After a spend:** a kit at a state after the spend, 10 deep, covering
-  her change. She was online to sign, so this is a fetch about 10
-  blocks later. If she goes offline first, her old kit still exits
-  every note she didn't spend: they're unspent at the old `S`, and
-  nothing later spends them. Only the change is exposed, and only to
-  data withheld in that gap.
+  the new notes. She was online to sign, so this is a fetch about 10
+  blocks later. Until she has it, the new notes aren't exit-safe, and an
+  operator that withholds their data can keep them so (Data
+  availability, below).
 - **After a receipt:** whenever she next comes online. Until then the
   payment isn't final for her (below).
 - **Otherwise:** nothing. A wallet that happens to be online may
@@ -286,15 +353,242 @@ so the wallet fetches one after events, not on a schedule:
 If the operator stops serving, the last kit still works: Alice hasn't
 spent since, so no counter exists.
 
-So withholding data hurts only payments received after the last kit.
 Hence a rule for receivers: **a payment is final once you hold its kit
 at an anchored state 10 deep.** The wallet's "final" already means
-anchored 10 deep, and now it also requires the kit in hand. This
-narrows data availability to a per-receiver question. It doesn't solve
-it.
+anchored 10 deep, and now it also requires the kit in hand.
 
 The tower's package carries the kit, so a tower can exit with no
 operator.
+
+## Data availability: the one remaining gap
+
+With the cutoff, the exit is safe exactly when Alice can read the
+anchored data she needs. An earlier version of this plan said the
+receiver rule narrows data availability to a per-receiver question. It
+doesn't: senders are exposed too, through their own new notes.
+
+**The consolidation attack** (found by a reviewer). Alice's whole
+balance is covered by her kit. She signs a consolidation of her notes
+into one new note, of the same value, as the wallet recommends. The
+operator sequences and anchors it, and withholds the new note's data.
+Now:
+
+- the old notes are countered: the consolidation really spent them,
+  before the cutoff;
+- the new note has no kit, so she can't claim it;
+- at `T_close` the hub takes the contract.
+
+No payment to anyone else was needed, and the same works on any spend
+that leaves her with change. Her protection is lost the moment the
+operator anchors one of her transactions and withholds its outputs'
+data.
+
+The cutoff has already removed the timing half of the problem (a held
+transaction included after her claim). What's left is purely that
+anchors are public on Bitcoin but their contents aren't. If nothing has
+been anchored since her kit, she's safe. If something has and she can't
+read it, she can't tell whether her transactions are in it, or prove
+her new notes.
+
+Data availability is a hard problem for a system like this, but the aim
+is that it's the only substantial one, and with the cutoff it is.
+
+**Where it can be enforced.** The operator wins a contract only with a
+counter. So withholding is harmless whenever a spend whose data Alice
+can't read can't be cited. Most options below are rules of that kind:
+what a counter must show besides the insertion. Several follow John
+Light's survey of data availability for Bitcoin rollups
+([bitcoinrollups.org](https://bitcoinrollups.org), Appendices C and D,
+2022). The options, still open:
+
+1. **Publish just enough with each anchor** (a rollup's data, trimmed).
+   An exit needs only each batch's inserted nullifiers and new note
+   commitments, not the transactions: a sender knows her own outputs,
+   and a receiver gets his openings off chain. With them on Bitcoin,
+   Alice can rebuild both trees, see whether her notes were spent, and
+   prove her new notes. At 32 bytes each, a 1-in-2-out transaction is
+   96 bytes: about 24 vB in a script-path envelope in the anchor's
+   witness, against 269 vB per batch today. Light's full-rollup figures
+   are 113.5 WU per transparent transaction and 659 WU per shielded one,
+   530 WU of which is encrypted note data, so trimming gets under even
+   the transparent figure. Enforced in the counter: a spend counts only
+   if its anchor, and every anchor before it, carries its batch's data. The Shielded CSV end of the
+   trade-off: no trust, and a cost per transaction on Bitcoin.
+2. **Volition: publish some.** Light's per-transaction choice: a flag on
+   the transaction puts its nullifiers and commitments in the anchor's
+   witness, and the wallet sets it on consolidations and spends with
+   change. A path needs every leaf of its batch, though, so published
+   outputs would need their own subtree per anchor, all of whose leaves
+   are on chain. Option 3 does the same job with nothing on chain.
+3. **Sender acknowledgment** (below): a spend can be cited only once its
+   sender has said she holds its data. No trust and nothing on chain,
+   at the price of two-phase payment finality.
+4. **Transaction expiry and a two-branch claim.** Each L2 transaction is
+   valid only if anchored by a Bitcoin height it names, so a held
+   authorisation dies, and Alice knows exactly which of her
+   transactions could be inside anchors she can't read. Her claim then
+   lists them: "my notes `N` were unspent at `S`; since then I signed
+   only these, and my outputs among them are `O`." A counter showing a
+   listed transaction was included switches her claim to `O` instead of
+   taking the contract. That's two possible amounts, under two one-time
+   keys, with the payout following the counter game's verdict. A
+   consolidation is worth the same either way, and a payment pays her
+   the full notes if it wasn't included and her change if it was.
+   Option 3 reaches the same outcomes with L2 rules in place of a
+   second payout branch on chain.
+5. **A data committee in the seal.** Light's validium, with the
+   attestation enforced by Bitcoin rather than by a contract. Each
+   anchor spends the previous anchor's seal output. If that output's key
+   is a threshold key of the operator and a committee (FROST, so the
+   anchor is still one signature and no larger), an anchor exists only
+   if a quorum signed it. Members sign only once they hold the batch's
+   data and will serve it, and only if the new seal output pays the
+   same key, which the counter's history check can verify too.
+   Withholding then needs the operator and a whole quorum to collude:
+   one honest signer can serve Alice's kit. A committee that stops
+   signing stops anchoring, which harms no one's exit, since stalled
+   sealing isn't a counter. The towers, which already hold users'
+   packages, are natural members. Nothing on chain; the cost is the
+   trust assumption, and the committee's liveness for progress.
+6. **Spentness filters** (after Zendoo's certificates, which carry a
+   bit vector of the UTXO slots changed each epoch, about 106 KB for 4
+   million slots). A compact per-anchor filter of inserted nullifiers
+   would tell Alice whether her notes were spent, but not let her prove
+   her new notes. Detection only.
+7. **Accept the gap and document it.** A user is exit-safe only while
+   the operator serves data for her latest transactions; a wallet that
+   spends while the operator misbehaves can lose its whole contract.
+
+Not useful here:
+
+- **Collateral that is forfeited for withholding** (Light's "validity
+  valutia", zkPorter's guardians). It needs a proof on chain that data
+  was withheld, and none exists: anyone can claim it was withheld, and
+  anyone can publish late (the fisherman's dilemma). The counter rules
+  above get the effect without one: withholding doesn't win the
+  contract.
+- **Data-availability sampling** (LazyLedger, now Celestia) needs a
+  network of light-node samplers; it fits a chain, not one operator.
+
+| option | trust | on Bitcoin | cost to users |
+|---|---|---|---|
+| 1. publish | none | ~24 vB per L2 tx | none |
+| 2. volition | none, for published spends | ~24 vB per published tx | a choice per tx; a subtree per anchor |
+| 3. sender acknowledgment | none | nothing | two-phase finality |
+| 4. expiry, two-branch claim | none | a second payout branch in the game | transactions expire |
+| 5. data committee | one honest signer per quorum | nothing | committee liveness for progress |
+| 6. filters | — | a few bytes per tx | detection only |
+| 7. accept | the operator serves data | nothing | spending is unsafe while it misbehaves |
+
+Sender acknowledgment looks the strongest: no trust and no bytes on
+Bitcoin. A committee could be added to it so that payments keep going
+through while the operator misbehaves, but safety doesn't need one.
+
+### Sender acknowledgment
+
+After Light's "adamantium", in which each power user signs every state
+root, attesting that she holds its data, and is withdrawn to the parent
+chain if she doesn't. Here only a sender signs, only for her own spends,
+and silence is the safe default: an unacknowledged spend can't be used
+against her, so nobody needs withdrawing.
+
+The rules:
+
+- **Every spend names an acknowledgment key** `ak`, a one-time key its
+  sender chooses. It is sequenced and anchored as today: its nullifiers
+  enter the spent set and its outputs the tree. But its outputs are
+  **locked**: the chain guest refuses any spend of them until the
+  acknowledgment is sequenced.
+- **The acknowledgment** is a signature under `ak` on the spend, carried
+  by any later L2 transaction or on its own. The wallet signs it once
+  it holds its kit at the anchored state `S_T` that contains the spend:
+  the step "after a spend" in the exit kit becomes a signed statement.
+  It unlocks the outputs.
+- **A counter may cite a spend only with its acknowledgment,** both
+  anchored before the cutoff. Exit records need none, since they carry
+  their owner's proof.
+- **Only the sender may claim a locked output.** Her exit proof, from
+  `S_T`, may include outputs of a spend she hasn't acknowledged, by
+  showing that she knows the secret of its `ak`. Her exit record then
+  counts as the acknowledgment. If anyone else could claim one, an
+  operator playing the receiver could acknowledge Alice's spend for
+  her.
+- **An exit that retires an unacknowledged spend's inputs voids it:**
+  its outputs stay locked for good, a later acknowledgment is invalid,
+  and that exit record counters any claim on its outputs. As with a
+  spend racing a claim, the operator refuses to sequence the
+  acknowledgment of a spend whose inputs are in a pending claim.
+- **Transactions the hub signs** (mints, exit records) are acknowledged
+  by their own signature. A return is Alice's spend like any other: its
+  change is locked until she acknowledges it.
+
+The consolidation attack again:
+
+- **The operator anchors the consolidation and withholds its data.**
+  Alice has no kit at `S_T`, so she doesn't acknowledge. A counter on
+  her old notes needs an acknowledgment that doesn't exist, so she
+  claims them from her old kit.
+- **It serves the data, she acknowledges, and it withholds everything
+  after.** She already holds her kit at `S_T`, and claims the new note
+  from there.
+- **It censors her acknowledgment:** the same as the first case.
+- **It holds the acknowledgment and seals it during `W_c`:** past the
+  cutoff, so not a counter.
+
+Withholding now costs her a stalled spend, not her contract.
+
+Why the hub is still safe:
+
+- **Alice pays Bob, never acknowledges, and claims her old notes.** No
+  counter exists, so she is paid. But Bob's output is locked, and her
+  exit record voids the spend for good. The notes are paid once.
+- **Alice acknowledges, then claims her old notes.** A counter cites
+  the spend and its acknowledgment. If the acknowledgment was anchored
+  after the cutoff, the operator should have refused it, as for any
+  racing spend.
+- **Alice claims her locked change and never acknowledges.** Her exit
+  record acknowledges the spend, and Bob's output unlocks. The change
+  and Bob are paid, which is what the old notes were worth.
+- **Both at once, through two contracts:** old notes through `c1`,
+  locked change through `c2`. The operator posts one record first. If
+  it's `c2`'s, it acknowledges the spend, which counters `c1`. If it's
+  `c1`'s, it voids the spend, which counters `c2`. Either way one claim
+  is paid. This relies on exit records being exempt from the cutoff
+  (The counter, above).
+
+The costs:
+
+- **Two-phase finality.** Bob's payment is final once he holds a kit at
+  a state that includes the acknowledgment, 10 deep. That's roughly one
+  more anchor interval, plus Alice's round trip.
+- **The sender's liveness now matters to the receiver.** Alice must come
+  back after her spend's anchor, which she already should, to fetch her
+  kit. But until she does, Bob waits. Nothing is lost, only delayed.
+- **A per-spend choice.** A sender can acknowledge at once, when she
+  signs, if a payee won't wait. That gives up the protection of her own
+  outputs, the change, and only for that spend: it's the design without
+  this option.
+- **Unacknowledged funds are exit-only.** Notes spent by a spend she
+  never acknowledges can't be spent again on the L2, only claimed. This
+  arises only against a hostile operator.
+- **Privacy.** `ak` is fresh per spend, so an acknowledgment shows only
+  that the spend's sender has come back, and when: timing the sequencer
+  already sees.
+- **The guests.**
+  - The chain guest gains a lock per output, the acknowledgment, and
+    voiding by exit records.
+  - The exit guest gains locked outputs with `ak`.
+  - The counter guest gains the acknowledgment beside the insertion, and
+    voiding as a second ground.
+
+**The receiver, if the acknowledgment waits for him.** The operator can
+serve Alice her data and withhold Bob's. If her wallet acknowledges only
+once Bob confirms that he holds his kit, by an off-chain message as for
+an invoice, the payment fails safely: unacknowledged, it can't counter
+her, and her old notes stay claimable. If she acknowledges without
+waiting, her payment is gone, Bob can't prove his note, and its value
+stays with the hub. So the wallet waits for the payee by default, and
+then withholding can only stop payments, not take funds.
 
 ## Timing
 
@@ -314,8 +608,9 @@ covered for 84% of its life (162 of 1,008 blocks short), a month's for
 96%.
 
 The counter window `W_c` runs after the escalation, so `T_close` doesn't
-bound it. It must fit: the latest spend's anchor, 10 blocks on it, the
-counter's proof (about 20 minutes), and posting it. That's 18 blocks on
+bound it. Any spend it can cite was anchored before the cutoff, so it
+must fit only the rest: 10 blocks on that anchor, the counter's proof
+(about 20 minutes), and posting it. That's 18 blocks on
 mainnet (3 h) and 80 on Mutinynet (40 min). Every dispute gets longer by
 `W_c`.
 
@@ -370,6 +665,9 @@ timeout.
 
 ## Costs and open questions
 
+- **Data availability,** the main open question: which of the options
+  above, or which combination. Sender acknowledgment is the leading
+  candidate.
 - **ln-gap:**
   - a verifier-owned input link, the counter, with the hub's input-word
     keys signed at opening;
@@ -386,21 +684,38 @@ timeout.
 - **The input words.** About 1 KB of one-time signatures per nullifier
   on chain in a dispute: 8 notes cost about 8 KB.
 - **Mass exit** against a hostile operator: every contract escalating
-  by its `T_close`, each dispute with a counter window. The congestion
-  table again.
+  by its `T_close`. The congestion table again. What the counter design
+  changes:
+  - **Not the number of games:** one gadget run per contract at most,
+    since a failed counter pays Alice. An operator that has gone dark
+    posts no counters, and every exit is won by timeouts. One that is
+    hostile but present can refuse to fold and force a full run on
+    every honest claim, as it can today; so the limit is still the
+    worst-case size of one run, which is where BABE's small dispute
+    matters most.
+  - **A larger escalation:** the nullifiers as input words, about 1 KB
+    per note. Low note counts matter, which needs consolidation, which
+    is safe only with a data-availability option such as sender
+    acknowledgment.
+  - **A longer schedule:** `W_c` before Alice's game. Time, not bytes,
+    but it tightens every deadline against `T_close` under
+    congestion.
 - **Exits are disputes:** hours and fees, against a cooperative fold
   today. The operator can fold an exit too, after checking it natively,
   and an honest one would.
 - **No contract, no exit.** Value above a contract's cap stays with the
   operator.
 - **Claims over the cap** forfeit the rest of the notes claimed; the
-  wallet sizes and consolidates notes to keep this small.
+  wallet sizes and consolidates notes to keep this small, but only while
+  the operator serves data, since a consolidation is itself a spend
+  (the consolidation attack).
 
 ## Steps
 
 1. **The exit claim** in `lichen-withdraw` (native, on the mock
    statement): the journal with `E`.
-2. **The counter statement** (native), and the exit record on the L2:
+2. **The counter statement** (native), with the cutoff and its proof of
+   `H_esc`, and the exit record on the L2:
    `Tx::Exit`, hub-signed and carrying the claimant's exit proof, both
    checked by the chain guest. A new chain guest.
 3. **ln-gap:** the verifier-owned input, the two-proof program (first
@@ -408,7 +723,7 @@ timeout.
 4. **The guests and the verifier ELF;** measure the depths, the
    pre-signed set and the reserve.
 5. **The wallet:**
-   - the exit kit, refreshed at each anchor;
+   - the exit kit, fetched after each spend or receipt;
    - "final" requires the kit;
    - `lichen exit <contract>`.
 
@@ -430,7 +745,12 @@ timeout.
        rejects it);
      - Alice's censored return sequenced after her escalation (not a
        counter; Alice wins);
-     - a spend racing a claim.
+     - any spend of hers anchored after the cutoff (not a counter);
+     - the consolidation attack (Alice loses: the data-availability gap,
+       until one of its options is built);
+     - a spend racing a claim;
+     - two claims of the same notes escalated together (both countered,
+       by each other's exit records, past the cutoff).
    - Groth16: a countered exit end to end.
    - Mutinynet: a `HOSTILE` operator censoring; Alice exits, Bob's old
      state is countered.

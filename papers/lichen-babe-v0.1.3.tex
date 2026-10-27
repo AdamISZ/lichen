@@ -53,9 +53,12 @@ published measurements and lichen's: a refused withdrawal of about
 31~kvB in six transactions against BitVMX's 100--212~kvB in 23--25, a
 hub able to hold, for a dispute of a given length, about seven times as
 many contracts before congesting the chain pays (three without
-soldering), and a
-setup per contract of minutes of computation and about 90~MiB of storage
-for the user. Nothing here is built, and the security argument is a
+soldering), a
+tower for Alice that holds none of her keys, since her only move due in
+a window is a hash preimage, and a
+setup per contract of about 14 minutes of computation with BABE's
+soldering, or, we estimate, about 40 seconds with verifiable secret
+sharing in its place, and 90--220~MiB of storage for the user. Nothing here is built, and the security argument is a
 sketch.
 \end{abstract}
 
@@ -136,7 +139,8 @@ for example 2,268 instances of which 4 are kept, 1~min~37~s and 1.8~GB at
 peak on a 16-thread laptop (BABE). Without more, the verifier must then
 post 4 sets of labels; \emph{soldering}, a SNARK proving the kept
 instances' labels consistent, brings it back to one at about 12~minutes
-more of setup (BABE). The WE is extractable, proved in the generic group
+more of setup (BABE); verifiable secret sharing could do the same in
+seconds (Section~\ref{sec:vsss}). The WE is extractable, proved in the generic group
 model, and the protocol is proved robust (an honest prover is paid) and
 knowledge-sound (a prover who is paid knows a witness), for an honest
 setup; cut-and-choose extends the setup to a malicious verifier.
@@ -406,6 +410,73 @@ timeout. What remains due within a window is, for Alice,
 \tx{wrongly\_challenged} (149~vB) and, for the hub, its response and its
 challenge.
 
+\section{Alice's liveness: a keyless tower}
+\label{sec:tower}
+
+Under BitVMX, Alice cannot delegate her moves without her keys. Each move
+signs, with a one-time key, hashes from her trace at positions the hub's
+last choice selects, so it cannot be signed in advance; a tower that
+plays her side holds her move keys, and by equivocating could lose her
+the contract~\cite[\S 10]{lichenbitvmx}. Making those moves keyless would
+need \texttt{OP\_CAT}. BABE removes the problem rather than shrinking
+it: Alice's only commitments, $b$ and $\pi_1$, are fixed before anything
+she must answer, and her one answer to the hub is a hash preimage, not a
+signature. This is a difference of kind, not of count: a gadget with
+fewer interactive moves would still need someone holding her keys while
+the dispute runs; here no one does.
+
+\paragraph{What she signs, and when.} Two one-time signatures: on $b$,
+for \tx{request}, made when she returns $b$ on the L2; and on $\pi_1$,
+the Lamport signature of \tx{assert}, made once she has the proof. The
+proof needs the hub's signature on $b$, so the second comes after
+\tx{respond}, but before the loose, absolute deadline $T_A$: a second
+visit, not a race. A prover she does not trust with keys can make the
+proof; she checks it (one Groth16 verification) and signs $\pi_1$.
+
+\paragraph{What the tower holds.} The pre-signed transactions, the two
+signed witnesses, the kept garbled instances (about 89~MiB) and the WE
+ciphertext, and her proof, which reveals nothing of the witness. From
+these and the chain it plays everything left to Alice:
+\begin{itemize}[leftmargin=1.5em]
+\item \tx{request\_timeout} and \tx{success}: pre-signed, released by
+  their timelocks;
+\item \tx{wrongly\_challenged}: it reads the hub's labels from
+  \tx{challenge\_assert}, evaluates the garbled circuit to $r\pi_1$,
+  decrypts with $\pi_2$ and $\pi_3$, and posts $\mathit{msg}$.
+\end{itemize}
+Her bit outputs wait $\delta$ for her own key, as under BitVMX, and
+nothing races her for them.
+
+\paragraph{Two changes to make.} First, in BABE, the leaf
+\tx{wrongly\_challenged} spends checks the prover's signature as well as
+the hashlock, $\mathsf{HashLock}(h_{\mathit{msg}}) \wedge
+\mathsf{CheckSig}(pk_P)$, signed when posted (its Appendix~A.1). lichen
+would drop the signature. The leaf exists only to spend the connector \tx{failure}
+needs, so whoever posts $\mathit{msg}$, a tower or a stranger who copies
+it from the mempool, does what Alice wants; the hub, who knows
+$\mathit{msg}$ from the start, would only defeat its own challenge. The
+tower builds the spend when it is needed, with a fee input of its own.
+Second, fees. The terminals (\tx{request\_timeout}, \tx{success}) are signed
+\texttt{ALL|ANYONECANPAY}, and their broadcaster adds a coin of its
+own~\cite[\S 6]{lichenbitvmx}: keyless already. But the links
+(\tx{request}, \tx{assert}) keep their ids and are bumped through an
+anchor only their poster can spend, which lichen today locks to the key
+that also sweeps her winnings. The anchors need a key of their own,
+guarding nothing but 330~sats each, which she can hand the tower with
+the witnesses; or she posts both links herself, since neither is due in
+a window.
+
+\paragraph{A compromised tower can only stay silent.} It holds no key,
+so it cannot sign a wrong move or a second value. That matters here:
+given her Lamport key, a tower that signed two values of $\pi_1$ would
+let the hub combine their bits into a third, signed bit by bit, and
+challenge with labels for it; she could not decrypt, and \tx{failure}
+would take everything. So the tower is not trusted like her own machine,
+as under BitVMX, but like a Lightning watchtower: several can run at
+once, strangers to her and to each other, and any one suffices. Her
+wallet, for its part, signs one $\pi_1$ only, and keeps the proof it
+signed.
+
 \section{Estimates}
 \label{sec:costs}
 
@@ -422,6 +493,7 @@ transaction & size \\
 \tx{assert} & 9.24~kvB (BABE) \\
 \tx{challenge\_assert}, one label set (soldered) & 17.4~kvB (BABE) \\
 \tx{challenge\_assert}, four label sets & ${\sim}42$~kvB (est.: one set is about $17.4 - 9.2 = 8.2$~kvB) \\
+\tx{challenge\_assert}, one label set by adaptor signatures (VSSS) & ${\sim}26$~kvB (est., Section~\ref{sec:vsss}) \\
 \tx{wrongly\_challenged} & 0.15~kvB (BABE); ${\sim}0.21$ with a fee input \\
 a timeout, \tx{failure}, \tx{success} & ${\sim}0.3$--$0.8$~kvB (est.) \\
 the payout and Alice's sweep of her bits & ${\sim}3$~kvB (lichen) \\
@@ -441,6 +513,7 @@ the hub refuses a true claim to the end & ${\sim}31$~kvB in six transactions (${
 the hub disproves a false claim & ${\sim}28$~kvB (${\sim}53$ unsoldered) & 100.4~kvB \\
 the worst case & the same: there is no separate case for reads & 200--212~kvB, a read lie \\
 Alice's transactions, those due in a window & 4 (request, assert, wrongly challenged, success), one & 13, twelve \\
+keys Alice's tower must hold & none, but an anchor key (Section~\ref{sec:tower}) & her move and hop keys, and her input words' \\
 pre-signed per contract & about 9 & 141 \\
 \bottomrule
 \end{tabularx}
@@ -519,9 +592,84 @@ a hub opening 10,000 contracts & ${\sim}270$ laptop-hours, ${\sim}2{,}300$ with 
 \end{tabularx}
 \end{center}
 Fewer instances trade setup for chain space: keeping 10 of 78 sets up in
-6~s but, unsoldered, puts 10 label sets on chain. A verifiable
-secret-sharing variant (BABE, §9.4) aims at one label set without
-soldering, but has no transaction design yet.
+6~s but, unsoldered, puts 10 label sets on chain. Nearly all of the
+soldered setup's 14 minutes is the soldering, not the cut-and-choose.
+
+\subsection{Setup by verifiable secret sharing}
+\label{sec:vsss}
+
+Fourteen minutes of computation per contract, paid again at every
+renewal, is probably more than opening a contract can bear; forty
+seconds is not. Glock~\cite{glock} replaces soldering with verifiable
+secret sharing (VSSS), and BABE's authors have prototyped that layer for
+BABE's 508 input bits (BABE, §9.4), without a transaction design. This
+is the setup we would want, and what it needs on chain is sketched
+below.
+
+\paragraph{Why BABE keeps 4 of 2,268.} Cut-and-choose fails only if
+every kept instance is bad and every opened one good, so the error is
+$\binom{N}{M}^{-1}$, held to $2^{-40}$. Unsoldered, each kept instance
+puts a label set on chain; soldered, the proof's time grows with $M$
+(745, 866 and 969~s for 4, 5 and 6, BABE). Either way $M$ must be small,
+and a small $M$ forces a large $N$.
+
+\paragraph{Secret sharing reverses that.} The hub shares each input
+label, for each bit and each value, across the $N$ instances, with
+threshold $N - M + 1$, and publishes commitments to the polynomials
+(Feldman's, over secp256k1). Alice checks the opened instances' shares
+against them. At proving time one label per bit goes on chain, the
+shared secret itself; with the $N - M$ opened shares, Alice
+interpolates the labels of every kept instance. The value Alice did not
+assert stays hidden, since only $N - M$ points of its polynomial are
+known. The chain carries one label set whatever $M$ is, and the cost
+moves to $N$, the shares to commit and check. So the right choice is
+now a small $N$:
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{30mm}LL}
+\toprule
+$(N, M)$ & setup, both roles & Alice stores and receives \\
+\midrule
+(2,268, 4), soldered & ${\sim}14$~min (BABE) & ${\sim}89$~MiB \\
+(78, 10), VSSS & ${\sim}40$~s (BABE's estimate: 33~s for the VSSS layer) & ${\sim}220$~MiB \\
+(124, 8), VSSS & ${\sim}1$~min (54~s for the layer) & ${\sim}180$~MiB \\
+(181, 7), VSSS & ${\sim}1.5$~min (84~s for the layer) & ${\sim}155$~MiB \\
+\bottomrule
+\end{tabularx}
+\end{center}
+That is about twenty times faster than soldering, and a hub opening
+10,000 contracts spends about 110 laptop-hours rather than 2,300. The
+bill moves to storage and transfer: Alice keeps every finalized instance,
+22~MiB each, since she cannot know which one is honest. Glock's even
+split, about 44 instances with 22 kept, would be the wrong end of that
+trade here, at nearly 500~MiB. Duty-Free Bits' 45-fold smaller
+encoding~\cite{dutyfree}, if it holds for these instances, would bring
+even $M = 10$ to about 5~MiB.
+
+\paragraph{On chain: adaptor signatures.} The label posted on chain
+must be the secret Alice checked against the commitments, and the
+chain must check that. A hashlock cannot: tying a hash to a committed
+point $s G$ needs a proof, which is what soldering is. Glock uses
+adaptor signatures instead. At setup Alice gives the hub, for each bit
+$i$ and value $\beta$, a pre-signature on \tx{challenge\_assert} under
+her own one-time key $A_{i,\beta}$, adapted to the committed label point.
+The script selects $A_{i,\beta}$ by the bit of her Lamport signature, and
+the hub can satisfy it only by completing her pre-signature, which
+hands her the label. In Glock the garbler is also the prover, so its
+adaptor signatures are its assertion; in BABE the prover asserts and the
+verifier reveals, so both are paid for. Per bit that is a 64-byte
+signature and two 32-byte keys in the leaf, about 135~bytes of witness
+against about 65 for a hashed label, so \tx{challenge\_assert} grows to
+about 9.2 + 17 $\approx$ 26~kvB (est.), against 17.4 soldered and about
+91 for ten label sets unsoldered. Against hostile users, the hub's
+windowed sum becomes about 27~kvB: about 37,000 contracts for a week's
+dispute, against 56,000 soldered (Section~\ref{sec:costs}). The
+pre-signatures, about a thousand, are a small transfer.
+
+\paragraph{The keyless tower survives.} Alice's keys $A_{i,\beta}$ are
+used once, at setup, to make the pre-signatures, and never again. To
+read the labels the tower needs the pre-signatures and the opened
+shares, neither of them a key, and it interpolates as Alice would.
 
 \section{With a counter-proof}
 \label{sec:counter}
@@ -550,8 +698,10 @@ the hub countersigns: about 2~kvB more on each (est.).
 \begin{itemize}[leftmargin=1.5em]
 \item The security argument of Section~\ref{sec:security}, written as a
   proof.
-\item Soldering against four label sets on chain, or the secret-sharing
-  variant, once it has a transaction design.
+\item The secret-sharing setup of Section~\ref{sec:vsss}: the
+  transaction design, built and measured, and BABE's 40-second estimate
+  confirmed end to end; its security argument with the shares and
+  adaptor signatures in place of soldering.
 \item What Duty-Free Bits' smaller encoding means for what Alice must
   store and receive.
 \item The response transaction's script and size, and the guest's
@@ -571,6 +721,8 @@ the hub countersigns: about 2~kvB more on each (est.).
 \bibitem{gkpw24} S.~Garg, D.~Kolonelos, G.-V.~Policharla and M.~Wang. Threshold encryption with silent setup. CRYPTO 2024.
 
 \bibitem{argo} L.~Eagen and Y.~T.~Lai. Argo MAC: garbling with elliptic curve MACs. ePrint 2026/049. \url{https://eprint.iacr.org/2026/049}
+
+\bibitem{glock} L.~Eagen. Glock: garbled locks for Bitcoin. ePrint 2025/1485. \url{https://eprint.iacr.org/2025/1485}
 
 \bibitem{dutyfree} A.~Khambhati, S.~Bhattacharya and D.~Heath. Duty-free bits. ePrint 2026/476. \url{https://eprint.iacr.org/2026/476}
 
