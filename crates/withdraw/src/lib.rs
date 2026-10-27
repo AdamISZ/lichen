@@ -32,6 +32,8 @@ use lichen_validity::btc::{work, Header};
 use lichen_validity::{state_root, AnchorState, ChainJournal, OutPoint, TNote};
 use sha2::{Digest, Sha256};
 
+pub mod fixed;
+
 pub type Hash = [u8; 32];
 
 /// The commitment tree's depth (the withdrawal statement's).
@@ -105,6 +107,9 @@ pub enum Reject {
     /// The headers don't follow the anchor's block, or their work falls
     /// short.
     Depth,
+    /// The hub's signature on `b` doesn't verify (the fixed statement's,
+    /// [`fixed`]).
+    HubAuth,
     Encoding,
 }
 
@@ -154,6 +159,17 @@ pub fn work_on(from: &Hash, headers: &[[u8; 80]]) -> Option<u128> {
 /// The statement: check `input` against its deployment's keys and a chain
 /// receipt of `chain_id`; on success, the journal `b ‖ c ‖ D`.
 pub fn check(input: &WithdrawInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<[u8; JOURNAL_LEN], Reject> {
+    let (b, c, d) = withdrawal(input, chain_id, verify_chain)?;
+    let mut journal = [0u8; JOURNAL_LEN];
+    journal[..4].copy_from_slice(&b.to_le_bytes());
+    journal[4..8].copy_from_slice(&c.to_le_bytes());
+    journal[8..].copy_from_slice(&d);
+    Ok(journal)
+}
+
+/// The withdrawal `input` proves, checked as [`check`] does: its `b`, `c`
+/// and `D`.
+pub fn withdrawal(input: &WithdrawInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<(u32, u32, Hash), Reject> {
     if input.note.owner != input.hub {
         return Err(Reject::NotTheHubs);
     }
@@ -175,11 +191,7 @@ pub fn check(input: &WithdrawInput, chain_id: &Hash, verify_chain: &mut dyn FnMu
     if input.headers.is_empty() || work_on(&a.block, &input.headers).is_none_or(|w| w < input.work) {
         return Err(Reject::Depth);
     }
-    let mut journal = [0u8; JOURNAL_LEN];
-    journal[..4].copy_from_slice(&b.to_le_bytes());
-    journal[4..8].copy_from_slice(&input.note.memo.to_le_bytes());
-    journal[8..].copy_from_slice(&contract_id(&deployment_id(&input.sequencer, &input.hub), &a.genesis, input.work));
-    Ok(journal)
+    Ok((b, input.note.memo, contract_id(&deployment_id(&input.sequencer, &input.hub), &a.genesis, input.work)))
 }
 
 // ----- the encoding: what the withdrawal guest reads -----
@@ -251,7 +263,7 @@ impl WithdrawInput {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     extern crate std;
     use super::*;
     use k256::schnorr::SigningKey;
@@ -293,9 +305,14 @@ mod tests {
     /// siblings), its root signed at height 3 and anchored, the chain
     /// receipt at height 5; ten headers on the anchor's block, the
     /// contract asking for the work of ten; a chain id.
-    fn input() -> (WithdrawInput, Hash) {
+    pub(crate) fn input() -> (WithdrawInput, Hash) {
+        (input_of(9), [8; 32])
+    }
+
+    /// As [`input`], a return of `value`.
+    pub(crate) fn input_of(value: u64) -> WithdrawInput {
         let (seq, hub) = (key(1), key(2));
-        let note = TNote { owner: xonly(&hub), value: 9, memo: 42, rho: [7; 32] };
+        let note = TNote { owner: xonly(&hub), value, memo: 42, rho: [7; 32] };
         let path = lichen_validity::tree_empties()[..TREE_DEPTH].to_vec();
         let nullifiers = [5; 32];
         let root = state_root(3, &root_from_path(note.commitment(), 0, &path), &nullifiers);
@@ -303,7 +320,7 @@ mod tests {
         let genesis = OutPoint { txid: [3; 32], vout: 1 };
         let anchor = AnchorState { genesis, sequencer: xonly(&seq), seal: OutPoint { txid: [4; 32], vout: 0 }, height: 3, root, block: [9; 32] };
         let headers = headers_on(&anchor.block, 10);
-        (WithdrawInput { height: 3, nullifiers, signature, note, index: 0, path, sequencer: xonly(&seq), hub: xonly(&hub), chain_height: 5, chain_root: [8; 32], recent: [6; 32], hist: [10; 32], anchor, headers, work: 10 * work(0x207fffff) }, [8; 32])
+        WithdrawInput { height: 3, nullifiers, signature, note, index: 0, path, sequencer: xonly(&seq), hub: xonly(&hub), chain_height: 5, chain_root: [8; 32], recent: [6; 32], hist: [10; 32], anchor, headers, work: 10 * work(0x207fffff) }
     }
 
     #[test]

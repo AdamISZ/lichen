@@ -22,18 +22,23 @@
 //!   receipt the sequencer proved at its root's height as an assumption;
 //!   writes the succinct receipt, which resolves it; `exec-withdraw`, as
 //!   `withdraw`, runs the guest without proving;
+//! - `babe <withdraw input> <hub auth> <chain receipt> <out>`: prove the
+//!   fixed statement (`lichen_withdraw::fixed`, BABE's), as `withdraw`
+//!   with the hub's signature on `b` (JSON: its `key` and `sig`, ten
+//!   20-byte hashes each, hex); prints the claim digest, the same for
+//!   every amount; `exec-babe` runs it without proving;
 //! - `wrap <receipt> <out>`: the Groth16 receipt of a succinct withdrawal
-//!   receipt (x86 Linux with Docker: RISC Zero's gnark step);
+//!   (or BABE) receipt (x86 Linux with Docker: RISC Zero's gnark step);
 //!   `bitvmx-input <Groth16 receipt> <out.hex>`: as the BitVMX verifier's
 //!   input;
 //! - `claim <withdraw input> <chain receipt> <out.hex>`: a claim, whole:
 //!   `withdraw`, `wrap`, `bitvmx-input` (what the tower runs);
-//! - `image-id [spend|chain|withdraw]`: a committed guest's image id;
+//! - `image-id [spend|chain|withdraw|babe]`: a committed guest's image id;
 //!   `check-id`: that each is its committed `.id`; `pack-id <bin>`: a
 //!   packed binary's.
 //!
-//! The guests proved are the committed `r0/guests/spend.bin`, `chain.bin`
-//! and `withdraw.bin`.
+//! The guests proved are the committed `r0/guests/spend.bin`, `chain.bin`,
+//! `withdraw.bin` and `babe.bin`.
 
 mod bitvmx;
 
@@ -44,7 +49,7 @@ use risc0_zkvm::{compute_image_id, default_executor, default_prover, Digest, Exe
 
 const GUESTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../guests");
 
-/// A committed guest (`spend`, `chain`, `withdraw`).
+/// A committed guest (`spend`, `chain`, `withdraw`, `babe`).
 fn committed(name: &str) -> Result<Vec<u8>> {
     let p = format!("{GUESTS}/{name}.bin");
     std::fs::read(&p).with_context(|| format!("the committed guest, {p}"))
@@ -174,9 +179,9 @@ fn load(p: &str) -> Result<Receipt> {
 /// The withdrawal statement's input for ln-gap's (`json`, at the anchored
 /// height, with the headers and `W`) under the chain receipt `chain`: the
 /// rest of the receipt's journal, whose last anchor must be the input's
-/// root (checked natively, with the receipt). The input's bytes, the
-/// statement's journal.
-fn withdraw_input(json: &str, chain: &Receipt) -> Result<(Vec<u8>, [u8; lichen_withdraw::JOURNAL_LEN])> {
+/// root (checked natively, with the receipt). The input, the chain
+/// guest's image id.
+fn withdraw_input(json: &str, chain: &Receipt) -> Result<(lichen_withdraw::WithdrawInput, [u8; 32])> {
     let i: LnGapInput = serde_json::from_slice(&read(json)?).with_context(|| format!("{json}: a withdrawal input"))?;
     let id = image_id(&committed("chain")?)?;
     chain.verify(id).context("the chain receipt")?;
@@ -204,17 +209,50 @@ fn withdraw_input(json: &str, chain: &Receipt) -> Result<(Vec<u8>, [u8; lichen_w
         headers,
         work,
     };
-    let journal = lichen_withdraw::check(&input, &chain_id, &mut |j| j == chain.journal.bytes.as_slice()).map_err(|r| anyhow::anyhow!("the withdrawal statement rejects the input: {r:?}"))?;
     eprintln!("lichen-r0: the return of {} with memo {} at index {}, under the root of height {}", n.value, n.memo, input.index, input.height);
-    Ok((input.to_bytes(), journal))
+    Ok((input, chain_id))
+}
+
+/// The hub's signature on `b` (`babe`'s), as JSON.
+#[derive(serde::Deserialize)]
+struct HubAuthJson {
+    key: Vec<String>,
+    sig: Vec<String>,
+}
+
+fn hub_auth(path: &str) -> Result<lichen_withdraw::fixed::HubAuth> {
+    let a: HubAuthJson = serde_json::from_slice(&read(path)?).with_context(|| format!("{path}: the hub's signature"))?;
+    let hashes = |v: &[String]| -> Result<[lichen_withdraw::fixed::Hash160; lichen_withdraw::fixed::DIGITS]> {
+        let v = v.iter().map(|h| hex::decode(h).ok().and_then(|b| b.try_into().ok()).context("a hash: 20 bytes, hex")).collect::<Result<Vec<_>>>()?;
+        v.try_into().map_err(|v: Vec<_>| anyhow::anyhow!("{} hashes, not {}", v.len(), lichen_withdraw::fixed::DIGITS))
+    };
+    Ok(lichen_withdraw::fixed::HubAuth { key: hashes(&a.key)?, sig: hashes(&a.sig)? })
 }
 
 /// Prove the withdrawal statement (or, `execute_only`, run it): the
 /// succinct receipt, checked.
 fn prove_withdraw(json: &str, chain: Receipt, execute_only: bool) -> Result<Option<Receipt>> {
-    let guest = committed("withdraw")?;
+    let (input, chain_id) = withdraw_input(json, &chain)?;
+    let journal = lichen_withdraw::check(&input, &chain_id, &mut |j| j == chain.journal.bytes.as_slice()).map_err(|r| anyhow::anyhow!("the withdrawal statement rejects the input: {r:?}"))?;
+    prove_guest("withdraw", &input.to_bytes(), &journal, chain, execute_only)
+}
+
+/// Prove the fixed statement (BABE's; or, `execute_only`, run it): the
+/// succinct receipt, checked.
+fn prove_babe(json: &str, auth: &str, chain: Receipt, execute_only: bool) -> Result<Option<Receipt>> {
+    let (withdraw, chain_id) = withdraw_input(json, &chain)?;
+    let input = lichen_withdraw::fixed::FixedInput { withdraw, auth: hub_auth(auth)? };
+    let journal = lichen_withdraw::fixed::check(&input, &chain_id, &mut |j| j == chain.journal.bytes.as_slice()).map_err(|r| anyhow::anyhow!("the fixed statement rejects the input: {r:?}"))?;
+    let claim = risc0_zkvm::ReceiptClaim::ok(image_id(&committed("babe")?)?, journal.to_vec());
+    eprintln!("lichen-r0: the claim digest, the Groth16 public input's: {}", risc0_zkvm::sha::Digestible::digest(&claim));
+    prove_guest("babe", &input.to_bytes(), &journal, chain, execute_only)
+}
+
+/// Prove the guest `name` (the withdrawal's or BABE's) on `input`, the
+/// chain receipt an assumption, its journal to be `journal`.
+fn prove_guest(name: &str, input: &[u8], journal: &[u8], chain: Receipt, execute_only: bool) -> Result<Option<Receipt>> {
+    let guest = committed(name)?;
     let id = image_id(&guest)?;
-    let (input, journal) = withdraw_input(json, &chain)?;
     let mut env = ExecutorEnv::builder();
     env.write(&(input.len() as u32))?.write_slice(&words(&input));
     env.add_assumption(chain);
@@ -223,20 +261,25 @@ fn prove_withdraw(json: &str, chain: Receipt, execute_only: bool) -> Result<Opti
         let s = default_executor().execute(env, &guest)?;
         ensure!(s.journal.bytes == journal, "the execution's journal isn't the statement's");
         let user: u64 = s.segments.iter().map(|g| g.cycles as u64).sum();
-        eprintln!("lichen-r0: executed the withdrawal ({} user cycles, {} segments)", user, s.segments.len());
+        eprintln!("lichen-r0: executed {name} ({} user cycles, {} segments)", user, s.segments.len());
         return Ok(None);
     }
     let t = std::time::Instant::now();
     let info = default_prover().prove_with_opts(env, &guest, &ProverOpts::succinct())?;
-    eprintln!("lichen-r0: proved the withdrawal in {:.1}s ({} user cycles, {} segments)", t.elapsed().as_secs_f64(), info.stats.user_cycles, info.stats.segments);
+    eprintln!("lichen-r0: proved {name} in {:.1}s ({} user cycles, {} segments)", t.elapsed().as_secs_f64(), info.stats.user_cycles, info.stats.segments);
     info.receipt.verify(id)?;
     ensure!(info.receipt.journal.bytes == journal, "the receipt's journal isn't the statement's");
     Ok(Some(info.receipt))
 }
 
-/// The Groth16 receipt of a succinct withdrawal receipt, checked.
+/// The Groth16 receipt of a succinct withdrawal (or BABE) receipt,
+/// checked.
 fn wrap(r: &Receipt) -> Result<Receipt> {
-    let id = image_id(&committed("withdraw")?)?;
+    let withdraw = image_id(&committed("withdraw")?)?;
+    let id = match r.verify(withdraw) {
+        Ok(()) => withdraw,
+        Err(_) => image_id(&committed("babe")?)?,
+    };
     let t = std::time::Instant::now();
     let g = default_prover().compress(&ProverOpts::groth16(), r)?;
     eprintln!("lichen-r0: wrapped in Groth16 in {:.1}s", t.elapsed().as_secs_f64());
@@ -289,6 +332,10 @@ fn main() -> Result<()> {
             Some(r) => write(out, &bincode::serialize(&r)?),
             None => Ok(()),
         },
+        [cmd @ ("babe" | "exec-babe"), json, auth, chain, out] => match prove_babe(json, auth, load(chain)?, *cmd == "exec-babe")? {
+            Some(r) => write(out, &bincode::serialize(&r)?),
+            None => Ok(()),
+        },
         ["wrap", receipt, out] => write(out, &bincode::serialize(&wrap(&load(receipt)?)?)?),
         ["bitvmx-input", receipt, out] => write(out, hex::encode(bitvmx_input(&load(receipt)?)?).as_bytes()),
         ["claim", json, chain, out] => {
@@ -320,7 +367,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         ["check-id"] => {
-            for name in ["spend", "chain", "withdraw"] {
+            for name in ["spend", "chain", "withdraw", "babe"] {
                 // a guest not built yet has neither file
                 if !std::path::Path::new(&format!("{GUESTS}/{name}.bin")).exists() && !std::path::Path::new(&format!("{GUESTS}/{name}.id")).exists() {
                     continue;
@@ -331,6 +378,6 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        _ => bail!("usage: lichen-r0 spend <input> <receipt> | verify <receipt> <journal hex> | chain <block input> <out> [--prev <receipt>] [<spend receipt>...] | verify-chain <receipt> | withdraw|exec-withdraw <withdraw input> <chain receipt> <out> | wrap <receipt> <out> | bitvmx-input <receipt> <out.hex> | claim <withdraw input> <chain receipt> <out.hex> | pack <guest ELF> <out> | pack-id <bin> | image-id [spend|chain|withdraw] | check-id"),
+        _ => bail!("usage: lichen-r0 spend <input> <receipt> | verify <receipt> <journal hex> | chain <block input> <out> [--prev <receipt>] [<spend receipt>...] | verify-chain <receipt> | withdraw|exec-withdraw <withdraw input> <chain receipt> <out> | babe|exec-babe <withdraw input> <hub auth> <chain receipt> <out> | wrap <receipt> <out> | bitvmx-input <receipt> <out.hex> | claim <withdraw input> <chain receipt> <out.hex> | pack <guest ELF> <out> | pack-id <bin> | image-id [spend|chain|withdraw|babe] | check-id"),
     }
 }

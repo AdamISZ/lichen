@@ -16,6 +16,10 @@ is its image id (`lichen-r0 image-id <g>` recomputes it from the file;
   reaches). It holds `chain.id`, so it is rebuilt after the chain guest.
   The contracts pin `withdraw.id` (`lichen_proto::IMAGE_ID`): a new build
   is a new deployment's contracts.
+- `babe`: the fixed statement of `crates/withdraw` (`fixed`), for BABE
+  (docs/BABE_GADGET_PLAN.md, step 1): the withdrawal's, `b` in the
+  witness under the hub's signature, its journal `c ‖ D ‖ H(pk_H)`. It
+  holds `chain.id`. Not built yet.
 
 | guest | built by | image id |
 |---|---|---|

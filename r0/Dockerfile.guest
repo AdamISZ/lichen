@@ -1,5 +1,5 @@
 # A guest (GUEST_DIR: r0/guest, the spend guest; r0/chain-guest;
-# r0/withdraw-guest), in RISC
+# r0/withdraw-guest, r0/babe-guest), in RISC
 # Zero's pinned builder image (x86; on Apple silicon, emulated). Context:
 # lichen's root. r0/build-guest.sh runs it.
 FROM --platform=linux/amd64 risczero/risc0-guest-builder:r0.1.88.0
