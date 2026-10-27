@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 exclude = ["r0"]
-members = ["crates/ledger", "crates/shielded", "crates/validity", "crates/withdraw", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/demo"]
+members = ["crates/ledger", "crates/shielded", "crates/validity", "crates/withdraw", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/demo", "crates/babe"]
 
 [workspace.package]
 version = "0.1.0"
@@ -34,6 +34,7 @@ lichen-chain = { path = "crates/chain" }
 lichen-proto = { path = "crates/proto" }
 lichen-hub = { path = "crates/hub" }
 lichen-wallet = { path = "crates/wallet" }
+lichen-babe = { path = "crates/babe" }
 # the contract and the dispute (ln-gap)
 lngap-sessions = { path = "../ln-gap/crates/apps/sessions" }
 lngap-zk = { path = "../ln-gap/crates/apps/zk" }
@@ -50,6 +51,11 @@ lichen-sequencer = { path = "crates/sequencer" }
 # profile applies only from the top-level workspace, so lichen repeats
 # ln-gap's. Our own crates stay at debug for fast rebuilds.
 [profile.dev.package."*"]
+opt-level = 2
+
+# BABE's garbling, the exception: half a million gates and field
+# elements, half a minute a test at opt-level 0, seconds at 2.
+[profile.dev.package.lichen-babe]
 opt-level = 2
 
 # BitVMX-CPU as ln-gap builds it: the `lngap` branch of a public fork

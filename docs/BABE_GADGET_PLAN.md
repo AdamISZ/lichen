@@ -108,15 +108,15 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
     (`ark-bn254`, `ark-ec`, `ark-ff`; MIT/Apache-2.0, already in the lock
     file). For the WE, the setup, the DRE's encoding and decoding, and as
     the reference the gate-level circuits are tested against.
-  - **Fq in Boolean gates**: only where there are garbled tables, the
-    point-validation gadget (lichen-babe: all but it is a DRE without
-    tables). The feature vector `(1, x, y, x², y², xy)` is quadratic in
-    π1's bits, so its products are the DRE's, over Fq, not gates'. What
-    the gadget needs in gates (the range checks x, y < q certainly; the
-    curve equation, or is it the DRE's too?) is to read off BABE's
-    construction. Written here, tested against `ark-ff`. BitVM's
-    `garbled-snark-verifier` has BN254 gadgets but is GPL-3.0: a
-    reference, not code to take.
+  - **Fq in Boolean gates**: the Boolean part of the circuit (BABE §5.6,
+    steps 1 and 2), garbled privacy-free (π1 is public): the range
+    checks x, y < p, the curve equation, *and* the feature products
+    x², y², xy, whose bits it outputs (the generator's, for a point that
+    fails). The DRE is linear in those bits, so the products can't be
+    its: an earlier reading here had them there, wrongly. The paper's
+    split: 6.35 MiB of gates, 15.77 MiB of DRE tables. Written here,
+    tested against `ark-ff`. BitVM's `garbled-snark-verifier` has BN254
+    gadgets but is GPL-3.0: a reference, not code to take.
   - **Half-gates and free-XOR**: swanky's `fancy-garbling` (MIT) or
     tlsnotary's `mpz` (licence to check). But the input labels are ours:
     Lamport preimages checked in script, revealed under VSSS by adaptor
@@ -156,5 +156,20 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         another `b` refused; claim digest printed
 - [ ] 2 scripts and graph (stand-in)
 - [ ] 3 lichen integration (stand-in)
-- [ ] 4 the garbling
+- [ ] 4 the garbling (begun before 2 and 3: it doesn't need them)
+  - [x] honest setup, `crates/babe`: the witness encryption
+        (Construction 1), the garbled circuit for `r·π1` (Construction 2:
+        the point gadget privacy-free with free XOR, the DRE's tables with
+        Remark 4's hashed shifts); a Groth16 proof (arkworks, a toy
+        statement) decrypts `msg`, a valid proof of another statement
+        doesn't; an invalid point gets `r·g`
+  - [x] measured (release, a laptop): 528k ANDs, 8.06 MiB (the paper's
+        6.35: schoolbook products, not Karatsuba); DRE 516,890 field
+        elements, 15.77 MiB, as the paper's; 23.83 MiB an instance;
+        garbling 1.2 s, evaluating 0.6 s (the paper's 175 and 127 ms:
+        blake3 here, not fixed-key AES; one thread)
+  - [ ] RISC Zero's verifying key and claim (the statement of step 1)
+  - [ ] cut-and-choose, then VSSS
+  - [ ] the setup exchange, Alice's storage
+  - [ ] `challenge_assert`'s label reveal (labels as Lamport keys)
 - [ ] 5 end to end

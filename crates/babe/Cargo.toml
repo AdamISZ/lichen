@@ -1,0 +1,19 @@
+[package]
+name = "lichen-babe"
+description = "BABE's garbling: the witness encryption for Groth16 and the garbled circuit for r·π1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ark-bn254 = "0.5"
+ark-ec = "0.5"
+ark-ff = "0.5"
+ark-groth16 = { version = "0.5", default-features = false, features = ["std"] }
+ark-serialize = "0.5"
+ark-std = "0.5"
+blake3 = "1"
+
+[dev-dependencies]
+ark-relations = "0.5"
+ark-snark = "0.5"
