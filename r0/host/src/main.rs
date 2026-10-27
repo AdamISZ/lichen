@@ -287,10 +287,16 @@ fn wrap(r: &Receipt) -> Result<Receipt> {
     Ok(g)
 }
 
-/// The BitVMX verifier's input for a Groth16 withdrawal receipt.
+/// The BitVMX verifier's input for a Groth16 receipt of either
+/// withdrawal guest (BABE's reads it too: the image id, the points, the
+/// journal).
 fn bitvmx_input(r: &Receipt) -> Result<Vec<u8>> {
     let InnerReceipt::Groth16(g) = &r.inner else { bail!("not a Groth16 receipt") };
-    let id = image_id(&committed("withdraw")?)?;
+    let withdraw = image_id(&committed("withdraw")?)?;
+    let id = match r.verify(withdraw) {
+        Ok(()) => withdraw,
+        Err(_) => image_id(&committed("babe")?)?,
+    };
     r.verify(id)?;
     bitvmx::input(&id.as_bytes().try_into()?, &g.seal, &r.journal.bytes)
 }

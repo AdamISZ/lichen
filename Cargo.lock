@@ -1763,6 +1763,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 name = "lichen-babe"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "ark-bn254",
  "ark-ec",
  "ark-ff",
@@ -1772,6 +1773,12 @@ dependencies = [
  "ark-snark",
  "ark-std",
  "blake3",
+ "hex",
+ "k256",
+ "lngap-zk",
+ "rand_chacha",
+ "rand_core 0.6.4",
+ "sha2",
 ]
 
 [[package]]

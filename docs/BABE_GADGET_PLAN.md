@@ -168,8 +168,20 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         elements, 15.77 MiB, as the paper's; 23.83 MiB an instance;
         garbling 1.2 s, evaluating 0.6 s (the paper's 175 and 127 ms:
         blake3 here, not fixed-key AES; one thread)
-  - [ ] RISC Zero's verifying key and claim (the statement of step 1)
-  - [ ] cut-and-choose, then VSSS
+  - [ ] RISC Zero's verifying key and claim (`lichen_babe::risc0`, from
+        ln-gap's `lngap_zk::groth16`, made public for it): step 1's real
+        receipt (60, memo 42) decrypts `msg`; another contract's journal
+        doesn't
+  - [x] cut-and-choose over VSSS-shared input secrets (`setup`, `vsss`):
+        an instance a function of its seed and its secrets, committed by
+        hash; the secrets Shamir-shared over secp256k1 (degree N − M,
+        Feldman, `C_0` the adaptor point), the circuit's free-XOR labels
+        reached through a translation table (two labels an input bit). A
+        lie in an opened instance is caught; with one in a kept instance
+        Alice opens another. At (78, 10), one machine, 14 cores: 19 s in
+        all (dealing 1.3 s, the hub's 78 instances 9.4 s, Alice's checks
+        1.5 + 8.1 s); she stores 238 MiB, and downloads it first
+        (`examples/setup_cost.rs`)
   - [ ] the setup exchange, Alice's storage
   - [ ] `challenge_assert`'s label reveal (labels as Lamport keys)
 - [ ] 5 end to end
