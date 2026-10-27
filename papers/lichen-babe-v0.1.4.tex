@@ -141,9 +141,11 @@ post 4 sets of labels; \emph{soldering}, a SNARK proving the kept
 instances' labels consistent, brings it back to one at about 12~minutes
 more of setup (BABE); verifiable secret sharing could do the same in
 seconds (Section~\ref{sec:vsss}). The WE is extractable, proved in the generic group
-model, and the protocol is proved robust (an honest prover is paid) and
-knowledge-sound (a prover who is paid knows a witness), for an honest
-setup; cut-and-choose extends the setup to a malicious verifier.
+model. The protocol is proved robust (an honest prover is paid) and
+knowledge-sound (a prover who is paid knows a witness) for a setup that
+both parties run honestly. Against a verifier who garbles wrongly,
+cut-and-choose is argued, failing with probability at most $2^{-40}$ for
+the parameters above, but not proved (BABE).
 
 \section{Where BABE fits in lichen}
 \label{sec:fit}
@@ -170,6 +172,13 @@ each contract; Alice checks the garbling by cut-and-choose and keeps the
 finalized instances. This replaces nothing in lichen's trust model: as
 under BitVMX, the contract is set up by its two parties alone. What it
 adds is cost at opening (Section~\ref{sec:setup}).
+
+The two parties' conduct at setup protects different funds. A hub that
+garbles wrongly could refuse a valid withdrawal, since Alice could never
+decrypt; cut-and-choose is what rules this out, so Alice's funds rest on
+it. Alice's part in setup is small (her keys, her pre-signatures, and
+which instances to keep), and every secret is the hub's, so the hub's
+funds rest on the proving phase, where BABE's proofs apply.
 
 \paragraph{One-shot.} Revealing labels spends a garbled circuit's
 security, so a BABE instance settles one claim. A lichen contract has at
@@ -303,17 +312,20 @@ key should use them.
 \subsection{Security, as a sketch}
 \label{sec:security}
 
-The statement is \emph{true} for any Alice holding any valid withdrawal:
-for every amount, a hub signature on it exists mathematically. So
-security cannot rest on the statement being false; it must rest on
-extraction, that whoever is paid knows a witness, which then contains a
-hub signature, which unforgeability then forces to be on the asserted
-amount.
+The statement cannot say that the hub signed $b$, only that a valid hub
+signature on $b$ exists, and one exists for every $b$; only the hub can
+compute it. So what binds the amount is not that a false statement
+cannot be proved but that the prover must \emph{know} a witness: that
+whoever is paid knows one, which then contains a hub signature, which
+unforgeability then forces to be on the asserted amount. The pipeline
+already relies on this: the chain proof's checks of users' signatures
+bind in the same way.
 
 BABE gives the first step. Its knowledge soundness (Definition 9 of
 \cite{babe}) states that for any NP relation, a prover who gets the
 Success transaction onto the chain knows a witness, in the sense that an
-extractor recovers one from its view. Here the relation is the
+extractor recovers one from its view; it is proved for an honestly run
+setup (its Definition 16 and Theorem 8). Here the relation is the
 statement above, through two more layers: Groth16 is knowledge-sound
 (in the generic or algebraic group model), so the Groth16 proof yields
 a valid RISC Zero receipt; RISC Zero's STARKs are arguments of knowledge
@@ -324,8 +336,10 @@ hub signed exactly one: a forgery against a one-time signature.
 
 What remains to be written properly:
 \begin{itemize}[leftmargin=1.5em]
-\item BABE's theorems are proved for an honest setup; the malicious-setup
-  case rests on cut-and-choose, as for BABE itself.
+\item BABE proves knowledge soundness for an honestly run setup, not yet
+  for one in which the prover takes part. Alice's part is small and
+  every secret is the hub's (Section~\ref{sec:fit}), so we expect the
+  extension to be routine.
 \item The hub's signature arrives during the proving phase, after the
   statement is fixed, and depends on Alice's own assertion: the
   extraction must hold with the signature in the prover's view, which
@@ -698,6 +712,8 @@ the hub countersigns: about 2~kvB more on each (est.).
 \begin{itemize}[leftmargin=1.5em]
 \item The security argument of Section~\ref{sec:security}, written as a
   proof.
+\item A proof of robustness under cut-and-choose, against a hub that
+  garbles wrongly. It is BABE's to give, but lichen's users rely on it.
 \item The secret-sharing setup of Section~\ref{sec:vsss}: the
   transaction design, built and measured, and BABE's 40-second estimate
   confirmed end to end; its security argument with the shares and

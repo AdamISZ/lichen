@@ -200,7 +200,7 @@ ladder's largest move to 23.6 kvB, but not its sum. It helps the
 per-window figure only, so the "1.4×" said before does not hold.
 
 The papers use this basis: `papers/lichen-bitvmx-v0.1.1` §9 and
-`papers/lichen-babe-v0.1.3` §8.2.
+`papers/lichen-babe-v0.1.4` §8.2.
 
 **The hub's response** (0.6 kvB) also falls in a window, w_H, and grows
 with N under hostile users: 60,000 contracts need w_H ≥ 36 blocks. That
