@@ -117,9 +117,11 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
     tlsnotary's `mpz` (licence to check). But the input labels are ours:
     Lamport preimages checked in script, revealed under VSSS by adaptor
     signatures. Probably our own garbler, the library a cross-check.
-  - **The DRE's MACs (Argo)**: elliptic-curve; which curve to read off
-    Argo (2026/049). One whose scalar field is BN254's Fq (Grumpkin)
-    would be the natural one.
+  - **The DRE (Argo MAC, 2026/049)**: no second curve. The MAC of π1 is
+    φ(π1) + K in BN254's G1 itself (φ small multiples or the curve's
+    endomorphism, K a point), its encoding a degree-3 polynomial in π1's
+    coordinates, garbled arithmetically (ITPG) over Fq. Bits to field
+    labels is a Yao step. So arkworks' Fq and G1 cover it.
 
 ## Open questions
 
