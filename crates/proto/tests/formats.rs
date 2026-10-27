@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::secp256k1::{SecretKey, SECP256K1};
 use bitcoin::{Amount, OutPoint, Transaction, TxOut, Txid};
-use lichen_proto::{all_moves, params, tail_keys, windows, Checkpoint, Net, OpenOffer, OpenRequest, Record, Statement};
+use lichen_proto::bitvmx::{all_moves, tail_keys, windows};
+use lichen_proto::{params, BitVmxKeys, BitVmxOffer, BitVmxRequest, Checkpoint, DisputeKeys, Net, OfferKeys, OpenOffer, OpenRequest, Record, RequestKeys, Statement};
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
 use lngap_lamport::winternitz::{WotsParams, WotsSecret};
@@ -49,9 +50,7 @@ fn build(program: &Program) -> (Record, OpenRequest, OpenOffer) {
         deposit: 30_000,
         bits: 16,
         reserve: 250_000,
-        moves: a_moves.clone(),
-        inputs: inputs.clone(),
-        hops: hops.clone(),
+        dispute: RequestKeys::BitVmx(BitVmxRequest { moves: a_moves.clone(), inputs: inputs.clone(), hops: hops.clone() }),
         cid: 1000,
         deposit_coin: (OutPoint { txid: Txid::from_byte_array([3; 32]), vout: 0 }, TxOut { value: Amount::from_sat(311_000), script_pubkey: bitcoin::ScriptBuf::from_bytes(vec![0x51, 0x20, 1, 2]) }),
         fee_spk: bitcoin::ScriptBuf::from_bytes(vec![0x51, 0x20, 4, 5]),
@@ -65,16 +64,13 @@ fn build(program: &Program) -> (Record, OpenRequest, OpenOffer) {
         checkpoint: Some(checkpoint),
         terms,
         pubs: [alice.public(), hub.public()],
-        moves: all_moves(&a_moves, &h_moves),
-        inputs,
-        tail: tail_keys(program, &path, &hops).unwrap(),
         l2_address: req.l2_address,
         funding: OutPoint { txid: Txid::from_byte_array([8; 32]), vout: 0 },
         hub_sigs: HashMap::new(),
         alice_sigs: HashMap::new(),
-        windows: Some(windows(Net::Regtest)),
+        dispute: DisputeKeys::BitVmx(BitVmxKeys { moves: all_moves(&a_moves, &h_moves), inputs, tail: tail_keys(program, &path, &hops).unwrap(), windows: Some(windows(Net::Regtest)) }),
     };
-    let c = record.contract(&statement(), program).unwrap();
+    let c = record.build(&statement(), program).unwrap();
     let set = c.presign(record.funding).unwrap();
     record.hub_sigs = sign_all(&set, &hub.payment).unwrap();
     record.alice_sigs = sign_all(&set, &alice.payment).unwrap();
@@ -89,14 +85,12 @@ fn build(program: &Program) -> (Record, OpenRequest, OpenOffer) {
         t_close: 5_000,
         reserve_hub: 300_000,
         hub: hub.public(),
-        moves: h_moves,
-        path,
+        dispute: OfferKeys::BitVmx(BitVmxOffer { moves: h_moves, path, windows: record.bitvmx().unwrap().windows }),
         funding,
         hub_coins: vec![],
         hub_sigs: record.hub_sigs.clone(),
         mint_point: SecretKey::from_slice(&[0x11; 32]).unwrap().public_key(SECP256K1),
         mint_index: 4,
-        windows: record.windows,
         checkpoint: Some(checkpoint),
     };
     let _ = params(Net::Regtest);
@@ -106,7 +100,7 @@ fn build(program: &Program) -> (Record, OpenRequest, OpenOffer) {
 /// The contract a record rebuilds: its address and its pre-signed set,
 /// hashed.
 fn contract_of(record: &Record, program: &Program) -> String {
-    let c = record.contract(&statement(), program).unwrap();
+    let c = record.build(&statement(), program).unwrap();
     let set = record.presigned(&c).unwrap();
     let mut e = sha256::Hash::engine();
     for p in &set {
@@ -158,7 +152,7 @@ fn the_formats_kept() {
         old.as_object_mut().unwrap().remove(k);
     }
     let old: Record = serde_json::from_value(old).unwrap();
-    assert!(old.windows.is_none() && old.checkpoint.is_none() && old.network == Net::default());
+    assert!(old.bitvmx().unwrap().windows.is_none() && old.checkpoint.is_none() && old.network == Net::default());
     // the record rebuilds the same contract, and its signatures verify
     let want = std::fs::read_to_string(data().join("contract.txt")).unwrap();
     assert_eq!(contract_of(&record, &program), want.trim());

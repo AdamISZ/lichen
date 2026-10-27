@@ -5,6 +5,13 @@ BitVMX integration are in [ln-gap](https://github.com/AdamISZ/ln-gap)
 (`crates/apps/sessions` and the crates it uses), checked out beside this
 repository at the revision in `LNGAP_REV`.
 
+A contract's dispute runs on a verification gadget, today BitVMX's
+search. What every gadget shares (the contract output with its fold and
+default, the payout, the pre-signed links' floors and anchors) is ln-gap's
+`sessions::skeleton`; each gadget's keys and play are their own modules:
+`proto::bitvmx`, the hub's `dispute::bitvmx`, the wallet's
+`engine::bitvmx` (docs/GADGET_PLAN.md).
+
 ## Crates
 
 | crate | binary | who runs it |
@@ -17,7 +24,7 @@ repository at the revision in `LNGAP_REV`.
 | `l2` | | wallet and hub: the sequencer's API and its client |
 | `wallet` | `lichen` | the user; also `lichen tower`, a dispute played from a package |
 | `chain` | | each party: its own bitcoind wallet over RPC, or Esplora |
-| `proto` | | wallet and hub: the opening messages, the contract record, the statement's layout |
+| `proto` | | wallet and hub: the opening messages, the contract record, the contract built by its verification gadget (`Built`); BitVMX's keys, statement layout and dispute plumbing (`bitvmx`) |
 | `hub` | `lichen-hub` | the hub: opens contracts, issues tokens, folds withdrawals, answers disputes |
 | `demo` | `lichen-demo` | the local web demo of all of the above |
 

@@ -12,7 +12,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use lichen_hub::{Config, Hub};
 use lichen_ledger::{fresh_rho, load_or_create_key, regtest_hub, xonly};
-use lichen_proto::{Statement, Windows};
+use lichen_proto::bitvmx::Windows;
+use lichen_proto::Statement;
 
 #[derive(Parser)]
 #[command(about = "A lichen hub")]

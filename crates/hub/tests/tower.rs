@@ -121,7 +121,7 @@ fn a_tower_plays_the_dispute_from_a_package() {
     let text = std::fs::read_to_string(&path).unwrap();
     let nonce = &held.nonce;
     assert!(!text.contains(&hex::encode(w.contract_keys(nonce).payment.secret_bytes())), "no payment key in the package");
-    let b_word = held.record.spec(&statement()).b_word;
+    let b_word = held.record.spec(&statement()).unwrap().b_word;
     assert!(pkg.inputs[b_word].is_none() && !text.contains(&hex::encode(w.secrets(nonce).input_entropy(b_word))), "no key for b's word");
     let reloaded = Package::load(&path).unwrap();
     assert_eq!(reloaded.cid(), cid);

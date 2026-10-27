@@ -11,15 +11,12 @@ use std::time::Duration;
 use anyhow::{bail, ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use lichen_chain::{Chain, Fees};
-use lichen_proto::{anchor_vout, Disputed, Statement};
+use lichen_proto::{anchor_vout, Built, Gadget, Statement};
 use lngap_btc::taptree::TapTree;
-use lngap_channel::Role;
-use lngap_sessions::contract::anchor_tree_for;
+use lngap_sessions::contract::{anchor_tree_for, Presign};
 use lngap_btc::sighash::sign_tapscript;
 use lngap_btc::witness::tapscript_witness;
-use lngap_ladder::script::wots_wire;
 use lngap_sessions::session::{bit_tree, reserve_tree};
-use lngap_zk::final_d60::input_message;
 
 pub use crate::engine::Outcome;
 use crate::engine::{wait_confirmed, Engine, Options, Store, WalletSigner};
@@ -97,8 +94,7 @@ impl Wallet {
         if outcome.payout().is_none() {
             return Ok((outcome, None));
         }
-        let d = Disputed::new(&held.record, statement, dir)?;
-        self.won(chain, &d, k, b, outcome)
+        self.won(chain, statement, dir, k, b, outcome)
     }
 
     /// A tower played contract `cid`'s dispute (the claim of `b`) and was
@@ -110,21 +106,39 @@ impl Wallet {
         let tx = chain.get_tx(&payout).with_context(|| format!("the payout {payout} is not on chain"))?;
         // a terminal of this contract's dispute (one of its links' outputs
         // spent), with the outputs a payout has, checked before it is kept
-        let d = Disputed::new(&self.contracts[k].record, statement, dir)?;
-        let links: std::collections::HashSet<_> = d.set.values().map(|p| p.tx.compute_txid()).collect();
+        let (_, set) = self.presigned(k, statement, dir)?;
+        let links: std::collections::HashSet<_> = set.iter().map(|p| p.tx.compute_txid()).collect();
         ensure!(tx.input.first().is_some_and(|i| links.contains(&i.previous_output.txid)), "{payout} is no terminal of contract {cid}'s dispute");
-        let t = &d.contract.spec.terms;
+        let t = &self.contracts[k].record.terms;
         ensure!(tx.output.len() as u32 > t.bits - t.low_bits, "{payout} hasn't a payout's outputs");
         self.contracts[k].payout = Some(outcome.clone());
         self.save()?;
-        self.won(chain, &d, k, b, outcome)
+        self.won(chain, statement, dir, k, b, outcome)
+    }
+
+    /// Contract `k`, built by its gadget, and its pre-signed set (both
+    /// signatures checked).
+    fn presigned(&self, k: usize, statement: &Statement, dir: &Path) -> Result<(Built, Vec<Presign>)> {
+        let record = &self.contracts[k].record;
+        let c = record.build(statement, &statement.program(dir)?)?;
+        let set = record.presigned(&c)?;
+        Ok((c, set))
+    }
+
+    /// Her signature on `b`, as the payout's leaves take it (the gadget's
+    /// key for it).
+    fn b_wire(&self, k: usize, statement: &Statement, b: u32) -> Result<Vec<Vec<u8>>> {
+        let held = &self.contracts[k];
+        match held.record.gadget() {
+            Gadget::BitVmx => crate::engine::bitvmx::b_wire(&self.secrets(&held.nonce), &held.record, statement, b),
+        }
     }
 
     /// She won: once the payout confirms and her outputs' delay passes,
     /// sweep to her payout address her bit outputs and the reserves, and
     /// what else of the contract's is hers: the anchors of her links (left
     /// unspent where no fee child was needed) and the fee budget's rest.
-    fn won(&mut self, chain: &Chain, d: &Disputed, k: usize, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
+    fn won(&mut self, chain: &Chain, statement: &Statement, dir: &Path, k: usize, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
         let txid = match &outcome {
             Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) => *t,
             Outcome::Lost | Outcome::Paused => bail!("not a win"),
@@ -132,12 +146,13 @@ impl Wallet {
         let at = wait_confirmed(chain, &txid)?;
         let payout = chain.get_tx(&txid).context("the payout")?;
         let held = self.contracts[k].clone();
-        let t = &d.contract.spec.terms;
-        let ctx = d.contract.ctx();
-        let b_key = d.contract.b_key().clone();
-        let b_sig = self.input_secret(&held.nonce, d.contract.spec.b_word).sign(&input_message(b))?;
+        let (c, set) = self.presigned(k, statement, dir)?;
+        let core = c.core();
+        let (t, ctx) = (core.terms, core.ctx());
+        let b_key = c.b_key().clone();
+        let b_wire = self.b_wire(k, statement, b)?;
         let kp = self.contract_keys(&held.nonce).payment;
-        let delta = d.contract.spec.params.delta;
+        let delta = core.params.delta;
         let mut ins: Vec<SweepIn> = vec![];
         // her outputs: the bits set in b, then the reserves
         let at_delta = Sequence::from_height(delta);
@@ -150,23 +165,24 @@ impl Wallet {
         let vout = t.bits - t.low_bits;
         ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), at_delta, Some((reserve_tree(&ctx, t, &b_key)?, "alice_reserve".to_string(), false))));
         let winnings: Amount = ins.iter().map(|i| i.1.value).sum();
-        // her links' anchors, where they are unspent
+        // her links' anchors (a link of the set with an anchor of hers is
+        // hers), where they are unspent
         let mine = kp.x_only_public_key().0;
         let anchor = anchor_tree_for(&mine)?;
-        let link = |n: &str| n == "escalate" || n == "inputs" || n.starts_with("move_") || n.starts_with("hop_");
-        let mut names: Vec<&String> = d.set.keys().filter(|n| link(n) && d.contract.poster(n) == Role::User).collect();
-        names.sort();
-        for name in names {
-            let id = d.txid(name);
+        let mut links: Vec<&Presign> = set.iter().filter(|p| p.link).collect();
+        links.sort_by(|a, b| a.name.cmp(&b.name));
+        for p in links {
+            let id = p.tx.compute_txid();
             let Some(tx) = chain.get_tx(&id) else { continue };
-            let op = OutPoint { txid: id, vout: anchor_vout(&tx, &mine)? };
+            let Ok(vout) = anchor_vout(&tx, &mine) else { continue };
+            let op = OutPoint { txid: id, vout };
             if chain.unspent(&op)? {
                 ins.push((op, tx.output[op.vout as usize].clone(), Sequence::ENABLE_RBF_NO_LOCKTIME, Some((anchor.clone(), "fee".to_string(), false))));
             }
         }
         let anchors: Amount = ins.iter().map(|i| i.1.value).sum::<Amount>() - winnings;
         // the fee budget's rest
-        let fees = self.fees_for(d.contract.spec.cid)?;
+        let fees = self.fees_for(held.record.cid())?;
         for (op, out, _) in chain.coins_of(&fees.spk())? {
             ins.push((op, out, Sequence::ENABLE_RBF_NO_LOCKTIME, None));
         }
@@ -185,7 +201,7 @@ impl Wallet {
             for (n, i) in ins.iter().enumerate() {
                 if let Some((tree, name, with_b)) = &i.3 {
                     let leaf = tree.leaf(name)?;
-                    let mut w = if *with_b { wots_wire(&b_sig) } else { vec![] };
+                    let mut w = if *with_b { b_wire.clone() } else { vec![] };
                     w.push(sign_tapscript(&kp, &sweep, n, &prevouts, &leaf.script)?.as_ref().to_vec());
                     sweep.input[n].witness = tapscript_witness(&w, &leaf.script, &tree.control_block(name)?);
                 }

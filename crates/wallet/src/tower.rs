@@ -164,13 +164,26 @@ pub struct PackageSigner {
 
 impl PackageSigner {
     pub fn new(p: Package, statement: &Statement) -> Result<PackageSigner> {
-        let b_word = p.record.spec(statement).b_word;
+        let b_word = p.record.spec(statement)?.b_word;
         ensure!(p.inputs.get(b_word).is_some_and(|e| e.is_none()), "the package must not carry b's key");
         Ok(PackageSigner { p, b_word })
     }
 }
 
 impl Signer for PackageSigner {
+    fn fees(&self) -> KeyFees {
+        let sk = SecretKey::from_slice(&hex::decode(&self.p.fee_key).expect("the fee key, hex")).expect("the fee key");
+        KeyFees { keypair: Keypair::from_secret_key(SECP256K1, &sk), feerate: lichen_proto::feerate(self.p.network()) }
+    }
+    fn anchor(&self) -> Option<Keypair> {
+        None
+    }
+    fn bitvmx(&self) -> Result<&dyn crate::engine::bitvmx::Secrets> {
+        Ok(self)
+    }
+}
+
+impl crate::engine::bitvmx::Secrets for PackageSigner {
     fn move_secrets(&self, program: &Program, d: u32) -> Vec<WotsSecret> {
         let es = &self.p.moves[(d - 1) as usize];
         program.field_bytes(d).into_iter().zip(es).map(|(n, e)| WotsSecret::from_entropy(WotsParams::for_bytes(n), entropy(e).expect("a move key's entropy"))).collect()
@@ -185,13 +198,6 @@ impl Signer for PackageSigner {
     }
     fn hop_secret(&self, k: usize) -> WotsSecret {
         WotsSecret::from_entropy(WotsParams::for_bytes(1), entropy(&self.p.hops[k - 1]).expect("a hop key's entropy"))
-    }
-    fn fees(&self) -> KeyFees {
-        let sk = SecretKey::from_slice(&hex::decode(&self.p.fee_key).expect("the fee key, hex")).expect("the fee key");
-        KeyFees { keypair: Keypair::from_secret_key(SECP256K1, &sk), feerate: lichen_proto::feerate(self.p.network()) }
-    }
-    fn anchor(&self) -> Option<Keypair> {
-        None
     }
 }
 
@@ -284,7 +290,7 @@ impl Wallet {
         };
         let b = u32::try_from(b).context("b fits in a u32")?;
         let s = self.secrets(&h.nonce);
-        let spec = h.record.spec(statement);
+        let spec = h.record.spec(statement)?;
         let b_wire = wots_wire(&s.input_secret(spec.b_word).sign(&input_message(b))?).iter().map(hex::encode).collect();
         let inputs = (0..program.info.input_words).map(|j| (j != spec.b_word).then(|| hex::encode(s.input_entropy(j)))).collect();
         let moves = (1..=program.depths())

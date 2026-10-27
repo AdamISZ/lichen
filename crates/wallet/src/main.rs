@@ -343,12 +343,14 @@ fn main() -> Result<()> {
                 println!("  funding     {}", h.record.funding);
                 println!("  payout      {}", addr(&h.record.pubs[0].payout_spk));
                 println!("  fee budget  {}", addr(&w.fees(&h.nonce, h.record.network).spk()));
-                match h.record.windows {
-                    Some(win) => println!("  windows     {} blocks for each of the user's moves, {} for the hub's choices, {} for its heavy moves", win.user, win.hub, win.path),
-                    None => {
-                        let p = lichen_proto::params(h.record.network);
-                        println!("  windows     {} blocks for every move (a contract from before windows by obligation)", p.delta + p.delta_prime);
-                    }
+                match &h.record.dispute {
+                    lichen_proto::DisputeKeys::BitVmx(k) => match k.windows {
+                        Some(win) => println!("  windows     {} blocks for each of the user's moves, {} for the hub's choices, {} for its heavy moves", win.user, win.hub, win.path),
+                        None => {
+                            let p = lichen_proto::params(h.record.network);
+                            println!("  windows     {} blocks for every move (a contract from before windows by obligation)", p.delta + p.delta_prime);
+                        }
+                    },
                 }
             }
             for d in &w.deposits {

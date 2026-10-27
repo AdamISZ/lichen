@@ -24,11 +24,11 @@ use lngap_btc::adaptor::{adaptor_complete, adaptor_verify, AdaptorSig};
 use lichen_chain::Chain;
 use lichen_ledger::{files, note, xonly, Mint, Tx};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_proto::{all_moves, broadcast_deadline, check_funding, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, tail_keys, contributions, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, Windows, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
+use lichen_proto::bitvmx::Windows;
+use lichen_proto::{broadcast_deadline, check_funding, contributions, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Gadget, Info, Net, OpenOffer, OpenRequest, Opened, Record, RequestKeys, Statement, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
 use lichen_l2::Client;
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
-use lngap_lamport::winternitz::{WotsParams, WotsSecret};
 use lngap_sessions::contract::{sign_all, Program};
 use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Response, Server};
@@ -81,22 +81,6 @@ pub(crate) fn deposit_key(seed: &str, cid: u32) -> bitcoin::key::Keypair {
 /// the one funding that can confirm reveals the `t` of its own mint only.
 pub(crate) fn mint_adaptor(seed: &str, cid: u32, l2_address: &lichen_ledger::Hash, funding: &bitcoin::Txid) -> SecretKey {
     Seed::from_label(&format!("{seed}/contract/{cid}/mint/{}/{funding}", hex::encode(l2_address))).keypair("adaptor").secret_key()
-}
-
-/// The hub's move keys for depth `d` of contract `cid`, one per field.
-pub fn move_secrets(seed: &str, cid: u32, program: &Program, d: u32) -> Vec<WotsSecret> {
-    let at = |f: usize, n: u32| WotsSecret::from_entropy(WotsParams::for_bytes(n), Seed::from_label(&format!("{seed}/contract/{cid}/move/{d}/{f}")).derive_bytes("wots"));
-    program.field_bytes(d).into_iter().enumerate().map(|(f, n)| at(f, n)).collect()
-}
-
-/// The hub's keys for its path under a jump list, by chunk and field
-/// (empty without one).
-pub fn path_secrets(seed: &str, cid: u32, program: &Program) -> Vec<Vec<WotsSecret>> {
-    if program.schedule.jump.is_none() {
-        return vec![];
-    }
-    let at = |c: usize, f: usize, n: usize| WotsSecret::from_entropy(WotsParams::for_bytes(n as u32), Seed::from_label(&format!("{seed}/contract/{cid}/path/{c}/{f}")).derive_bytes("wots"));
-    (0..lngap_ladder::tail::CHUNKS).map(|c| lngap_ladder::tail::chunk_fields(c).into_iter().enumerate().map(|(f, n)| at(c, f, n)).collect()).collect()
 }
 
 /// For tests: a fault in the opening, at the hub's end.
@@ -176,8 +160,9 @@ pub(crate) struct Inner {
     opening_fault: Mutex<OpeningFault>,
     log: Mutex<Vec<String>>,
     /// The most the links' floors and anchors take from the hub's reserve
-    /// on a dispute it loses (the statement's, found at the first opening).
-    floors: std::sync::OnceLock<u64>,
+    /// on a dispute it loses, by gadget (the statement's, found at the
+    /// first opening).
+    floors: Mutex<HashMap<Gadget, u64>>,
 }
 
 pub struct Hub {
@@ -192,7 +177,7 @@ impl Hub {
     pub fn start(cfg: Config) -> Result<Hub> {
         if let Some(w) = cfg.windows {
             w.check(lichen_proto::params(cfg.network).delta, lngap_sessions::contract::POST_CSV).map_err(|e| anyhow!(e))?;
-            let least = lichen_proto::windows(cfg.network).user;
+            let least = lichen_proto::bitvmx::windows(cfg.network).user;
             ensure!(w.user >= least, "windows {w:?}: wallets refuse fewer than {least} blocks for each of the user's moves");
         }
         std::fs::create_dir_all(cfg.dir.join("contracts"))?;
@@ -231,7 +216,7 @@ impl Hub {
         ensure!(!(cfg_refuse || cfg_dispute) || cfg.network.is_test(), "a hub refuses withdrawals or disputes true claims on test networks only, not {}", cfg.network);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let inner = Arc::new(Inner { cfg, program, chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: std::sync::OnceLock::new() });
+        let inner = Arc::new(Inner { cfg, program, chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()) });
         let stop = Arc::new(AtomicBool::new(false));
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
@@ -381,11 +366,7 @@ impl Inner {
     }
 
     fn open(&self, req: OpenRequest) -> Result<OpenOffer> {
-        let m = self.program.depths();
         ensure!(req.bits <= self.cfg.max_bits, "a cap above 2^{} sats", self.cfg.max_bits);
-        ensure!(req.moves.len() as u32 == m.div_ceil(2), "{} move keys for the odd depths of {m}", req.moves.len());
-        lichen_proto::check_request_keys(&self.program, &req)?;
-        let program = &self.program;
         let cid = req.cid;
         ensure!(!self.open.lock().unwrap().contains_key(&cid), "contract {cid} is open already");
         // one offer pending a contract: a new one replaces it (its answer
@@ -408,9 +389,10 @@ impl Inner {
         hub.payout_spk = self.chain.new_spk()?;
         let v_max = (1u64 << req.bits) - 1;
         let t_close = self.chain.height()? + self.cfg.duration;
-        let pub_of = |ks: Vec<WotsSecret>| ks.iter().map(|k| k.public()).collect::<Vec<_>>();
-        let hub_moves: Vec<_> = (1..=m).filter(|d| d % 2 == 0).map(|d| pub_of(move_secrets(&self.cfg.seed, cid, program, d))).collect();
-        let path: Vec<_> = path_secrets(&self.cfg.seed, cid, program).into_iter().map(pub_of).collect();
+        // the dispute's keys: Alice's, checked, and the hub's, by gadget
+        let (dispute, offer_keys) = match &req.dispute {
+            RequestKeys::BitVmx(k) => dispute::bitvmx::open_keys(&self.cfg.seed, cid, &self.program, k, self.cfg.windows.unwrap_or(lichen_proto::bitvmx::windows(self.cfg.network)))?,
+        };
         // an anchored deployment's contract: its checkpoint, the tip now
         let checkpoint = match self.seq.deployment.seal {
             Some(_) => Some(lichen_proto::Checkpoint::tip(&self.chain)?),
@@ -426,28 +408,27 @@ impl Inner {
             // isn't, for a small one); the real one below
             terms: terms(cid, &req, t_close, v_max.max(100_000_000))?,
             pubs: [req.alice.clone(), hub.clone()],
-            moves: all_moves(&req.moves, &hub_moves),
-            inputs: req.inputs.clone(),
-            tail: tail_keys(program, &path, &req.hops)?,
             l2_address: req.l2_address,
             funding: OutPoint::null(),
             hub_sigs: HashMap::new(),
             alice_sigs: HashMap::new(),
-            windows: Some(self.cfg.windows.unwrap_or(lichen_proto::windows(self.cfg.network))),
+            dispute,
         };
         // the hub's reserve: its share of the cap, and at least what the
         // floors of a dispute it loses take from it
-        let floors = match self.floors.get() {
-            Some(f) => *f,
+        let known = self.floors.lock().unwrap().get(&record.gadget()).copied();
+        let floors = match known {
+            Some(f) => f,
             None => {
                 // the deepest output any dispute reaches, against the
                 // contract's value (the same for every contract of the
-                // statement: the links' sizes don't depend on the amounts)
-                let c = record.contract(&self.cfg.statement, &self.program)?;
+                // statement and gadget: the links' sizes don't depend on
+                // the amounts)
+                let c = self.built(&record)?;
                 let set = c.presign(OutPoint::null())?;
                 let f = set.iter().map(|p| (c.value() - p.prevout.value).to_sat()).max().unwrap_or(0);
                 self.note(format!("a dispute's floors take up to {f} sats from the reserve of the side that loses"));
-                *self.floors.get_or_init(|| f)
+                *self.floors.lock().unwrap().entry(record.gadget()).or_insert(f)
             }
         };
         let reserve_hub = (v_max * self.cfg.reserve_ppm / 1_000_000).max(floors);
@@ -461,7 +442,7 @@ impl Inner {
         let hub_coins = self.chain.select(hub_in + FEE_SHARE + margin)?;
         let hub_spent: Amount = hub_coins.iter().map(|c| c.1.value).sum();
         let hub_change = TxOut { value: hub_spent - hub_in - FEE_SHARE, script_pubkey: self.chain.new_spk()? };
-        let c = record.contract(&self.cfg.statement, &self.program)?;
+        let c = self.built(&record)?;
         let ins: Vec<(OutPoint, Sequence)> = std::iter::once(&req.deposit_coin).chain(&hub_coins).map(|c| (c.0, Sequence::ENABLE_RBF_NO_LOCKTIME)).collect();
         let outs = vec![TxOut { value: c.value(), script_pubkey: c.tree()?.script_pubkey() }, fee_out, hub_change.clone()];
         let funding = lngap_btc::tx::build_tx(&ins, outs, bitcoin::absolute::LockTime::ZERO);
@@ -477,7 +458,7 @@ impl Inner {
         let owner = mint_owner(&req.l2_address, &mint_point)?;
         let mint_index = self.seq.submit(&Tx::Mint(Mint::new(&self.cfg.l2_key, &self.seq.deployment, vec![note(owner, d, 0)])))?[0];
         self.note(format!("contract {cid}: offered; minted {d} sats to the user, locked to the funding"));
-        let offer = OpenOffer { cid, t_close, reserve_hub, hub, moves: hub_moves, path, funding, hub_coins, hub_sigs: record.hub_sigs.clone(), mint_point, mint_index, windows: record.windows, checkpoint: record.checkpoint };
+        let offer = OpenOffer { cid, t_close, reserve_hub, hub, dispute: offer_keys, funding, hub_coins, hub_sigs: record.hub_sigs.clone(), mint_point, mint_index, checkpoint: record.checkpoint };
         let replaced = self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t, made: std::time::Instant::now() });
         if let Some(old) = replaced {
             let _ = self.chain.unlock(&old.offer.hub_coins.iter().map(|c| c.0).collect::<Vec<_>>());
@@ -499,7 +480,7 @@ impl Inner {
     fn fund(&self, a: Accept, p: Pending) -> Result<Opened> {
         let mut record = p.record;
         record.alice_sigs = a.alice_sigs;
-        let c = record.contract(&self.cfg.statement, &self.program)?;
+        let c = self.built(&record)?;
         record.presigned(&c).context("Alice's signatures")?;
         // the deposit input: Alice's signature and the hub's, then the hub's coins
         let prevouts: Vec<(OutPoint, TxOut)> = std::iter::once(&p.req.deposit_coin).chain(&p.offer.hub_coins).cloned().collect();
@@ -582,7 +563,7 @@ impl Inner {
         let state = self.state()?;
         let input = state.withdraw_input(f.index, &self.seq.deployment)?;
         ensure!(input.note.memo == f.cid && input.note.value == f.b, "note {} is not a return of {} with memo {}", f.index, f.b, f.cid);
-        if let Statement::Groth16 { .. } = self.cfg.statement {
+        if self.cfg.statement.is_real() {
             let checkpoint = o.record.checkpoint.context("the real statement needs an anchored deployment's contract (a checkpoint)")?;
             let (input, a) = state.anchored_input(f.index, &self.seq.deployment)?;
             let h = a.from;
@@ -595,7 +576,7 @@ impl Inner {
             want.extend(o.record.deployment);
             ensure!(j[..] == want[..], "note {}: the statement's journal is not this withdrawal's", f.index);
         }
-        let c = o.record.contract(&self.cfg.statement, &self.program)?;
+        let c = self.built(&o.record)?;
         let p = c.fold(o.record.funding, Amount::from_sat(f.b), FOLD_FEE)?;
         p.verify(&o.record.pubs[0].payment, &f.alice_sig).context("Alice's signature on the fold")?;
         let mine = p.sign(&contract_keys(&self.cfg.seed, f.cid).payment)?;
@@ -690,7 +671,7 @@ impl Inner {
             return Ok(());
         }
         {
-            let c = o.record.contract(&self.cfg.statement, &self.program)?;
+            let c = self.built(&o.record)?;
             let set = o.record.presigned(&c)?;
             let p = set.iter().find(|p| p.name == "default").context("no default")?;
             let mut tx = p.finish(vec![], &o.record.hub_sigs["default"], &o.record.alice_sigs["default"]);

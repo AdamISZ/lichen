@@ -19,7 +19,7 @@ use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{fresh_rho, mint_secret, note, sign, xonly, Deployment, Hash, Note, Spend, Transfer, Tx, WithdrawInput};
 use lichen_chain::{Chain, KeyFees};
 use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
-use lichen_proto::{all_moves, check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, mint_owner, Presig, fee_budget_of, tail_keys, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, mint_owner, Presig, fee_budget_of, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, OfferKeys, OpenOffer, OpenRequest, Opened, Record, RequestKeys, Statement, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
 use lichen_l2::{Client, Equivocation, Seen, State};
 use lngap_btc::adaptor::{adaptor_extract, adaptor_sign, AdaptorSig};
 use lngap_channel::PartyKeys;
@@ -537,17 +537,14 @@ impl Wallet {
         let (nonce, payout) = (dep.nonce.clone(), dep.payout.clone());
         let dep_kp = self.deposit_key(&nonce);
         let dep_tree = deposit_tree(&dep_kp.x_only_public_key().0, &dep.hub, dep.timeout)?;
-        let m = program.depths();
 
         let keys = self.contract_keys(&nonce);
         let mut alice = keys.public();
         alice.payout_spk = payout;
-        let pub_of = |ks: Vec<WotsSecret>| ks.iter().map(|k| k.public()).collect::<Vec<_>>();
-        let moves: Vec<_> = (1..=m).filter(|d| d % 2 == 1).map(|d| pub_of(self.move_secrets(&nonce, program, d))).collect();
-        let hops: Vec<_> = if program.schedule.jump.is_some() { (1..=lngap_ladder::tail::CHUNKS).map(|k| self.hop_secret(&nonce, k).public()).collect() } else { vec![] };
-        let inputs: Vec<_> = (0..program.info.input_words).map(|j| self.input_secret(&nonce, j).public()).collect();
+        // her keys for the dispute, its gadget's
+        let dispute = RequestKeys::BitVmx(engine::bitvmx::request_keys(&self.secrets(&nonce), program));
         let fees = self.fees(&nonce, net);
-        let req = OpenRequest { alice, l2_address: self.address(), deposit, bits, reserve, moves: moves.clone(), inputs: inputs.clone(), hops: hops.clone(), cid: dep.cid, deposit_coin: coin.clone(), fee_spk: fees.spk() };
+        let req = OpenRequest { alice, l2_address: self.address(), deposit, bits, reserve, dispute, cid: dep.cid, deposit_coin: coin.clone(), fee_spk: fees.spk() };
         let offer: OpenOffer = hub_call(&format!("{hub}/open"), Some(serde_json::to_string(&req)?))?;
         // the contract as the offer makes it, checked before signing
         ensure!(offer.cid == dep.cid, "the offer is for contract {}, the deposit for {}", offer.cid, dep.cid);
@@ -555,12 +552,10 @@ impl Wallet {
         // time to withdraw, and to dispute, before the default
         let least = chain.height()? + lichen_proto::min_duration(net);
         ensure!(offer.t_close >= least, "the hub's T_close, block {}, is too soon (at least block {least})", offer.t_close);
-        // the hub's windows: never less time for her moves than the
-        // network's (longer ones only slow a dispute)
-        if let Some(w) = offer.windows {
-            let least = lichen_proto::windows(net).user;
-            ensure!(w.user >= least, "the hub offers {} blocks for each of the user's moves, under the network's {least}", w.user);
-        }
+        // the contract's keys for the dispute: ours and the hub's, checked
+        let dispute = match (&req.dispute, &offer.dispute) {
+            (RequestKeys::BitVmx(ours), OfferKeys::BitVmx(theirs)) => engine::bitvmx::record_keys(program, net, ours, theirs)?,
+        };
         // an anchored deployment's contract: a checkpoint on our own view of
         // the chain (a stale or forked one could ask work no withdrawal
         // shows)
@@ -574,16 +569,13 @@ impl Wallet {
             checkpoint: offer.checkpoint,
             terms: t,
             pubs: [req.alice.clone(), offer.hub.clone()],
-            moves: all_moves(&moves, &offer.moves),
-            inputs,
-            tail: tail_keys(program, &offer.path, &hops)?,
             l2_address: self.address(),
             funding: bitcoin::OutPoint { txid: offer.funding.compute_txid(), vout: 0 },
             hub_sigs: offer.hub_sigs.clone(),
             alice_sigs: Default::default(),
-            windows: offer.windows,
+            dispute,
         };
-        let c = record.contract(statement, program)?;
+        let c = record.build(statement, program)?;
         let fee_out = bitcoin::TxOut { value: fee_budget_of(coin.1.value, &t)?, script_pubkey: fees.spk() };
         check_deposit_funding(&offer.funding, &c, &coin.0, &fee_out)?;
         let set = c.presign(record.funding)?;
@@ -597,7 +589,7 @@ impl Wallet {
         // the budget pays for her heaviest terminal (a guard: the
         // network's budget is sized for the statement's, and the deposit
         // is paid already)
-        let need = lichen_proto::terminal_need(&c, &set, net)?;
+        let need = c.terminal_need(&set, net)?;
         ensure!(fee_out.value >= need, "the fee budget, {}, can't pay for the heaviest transaction a dispute may need of the user, {need}", fee_out.value);
         record.alice_sigs = sign_all(&set, &keys.payment)?;
         // D, minted already to a key we can spend once this funding is out:

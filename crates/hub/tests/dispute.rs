@@ -83,7 +83,7 @@ fn disputes_on_the_mock_statement() {
         rt.fund(&chain(name).new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
     }
     // hub B offers windows of its own, not the network's
-    let hub_b_windows = lichen_proto::Windows { user: 16, hub: 8, path: 20 };
+    let hub_b_windows = lichen_proto::bitvmx::Windows { user: 16, hub: 8, path: 20 };
     let (hub_a, hub_b) = (Hub::start(hub_config("hub-a", false)).unwrap(), Hub::start(Config { windows: Some(hub_b_windows), ..hub_config("hub-b", true) }).unwrap());
     // blocks every 150 ms from here on
     let miner = {
@@ -103,8 +103,8 @@ fn disputes_on_the_mock_statement() {
         w.progress = Some(Arc::new(move |m: String| println!("LICHEN {label}: {m}")));
         let held = w.open_contract(&hub.url, &ch, &statement(), &wdir, ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
         let cid = held.record.cid();
-        let want = if label == "B" { hub_b_windows } else { lichen_proto::windows(lichen_proto::Net::Regtest) };
-        assert_eq!(held.record.windows, Some(want), "{label}: the contract records its hub's windows");
+        let want = if label == "B" { hub_b_windows } else { lichen_proto::bitvmx::windows(lichen_proto::Net::Regtest) };
+        assert_eq!(held.record.bitvmx().unwrap().windows, Some(want), "{label}: the contract records its hub's windows");
         let start = Instant::now();
         while w.balance().unwrap() < ask.deposit {
             assert!(start.elapsed() < Duration::from_secs(60), "{label}: the deposit");

@@ -160,12 +160,54 @@ and in what order.
 
 ## Status
 
-- [ ] 1.1 fingerprint
-- [ ] 1.2 skeleton
-- [ ] 2.1 fixtures
-- [ ] 2.2 proto
-- [ ] 2.3 hub
-- [ ] 2.4 wallet
-- [ ] 2.5 suite
-- [ ] 3 LNGAP_REV
-- [ ] 4 BABE plan
+- [x] 1.1 fingerprint (ln-gap 378d513)
+- [x] 1.2 skeleton (ln-gap 70b04f8)
+- [x] 2.1 fixtures
+- [x] 2.2 proto
+- [x] 2.3 hub
+- [x] 2.4 wallet
+- [x] 2.5 suite
+- [x] 3 LNGAP_REV (ln-gap's `gadget`: to push before CI can run)
+- [x] 4 BABE plan: BABE_GADGET_PLAN.md
+
+## As built (2026-10-27)
+
+- **ln-gap** `sessions::skeleton`: `Core<'a>` (a view of `terms`,
+  `params`, `pubs`), `Core::{ctx, value, tree, fold, default_tx,
+  pay_alice, pay_hub, link}`, `wots_shape`, and what moved from
+  `contract.rs`. `Contract::core()`; the rest of `Contract` delegates.
+  The fingerprint is unchanged, and so are lichen's fixtures' contract.
+- **proto**:
+  - `bitvmx.rs`: what was BitVMX's in `lib.rs`, moved whole, plus
+    `BitVmxKeys`, `BitVmxRequest`, `BitVmxOffer`, and `Record::spec` and
+    `Record::contract` (BitVMX's `Contract`).
+  - `lib.rs`: `Gadget`; the untagged `DisputeKeys`, `RequestKeys`,
+    `OfferKeys`, flattened into `Record`, `OpenRequest` and `OpenOffer`
+    (each with a `bitvmx()` accessor); `Built` (`core`, `value`, `tree`,
+    `fold`, `presign`, `b_key`, `terminal_need`, `bitvmx`);
+    `Record::{gadget, bitvmx, build}`; `presigned` and the funding checks
+    take a `Built`; `Statement::is_real` (the hub's native fold check and
+    the wallet's waits are the real statement's, not BitVMX's).
+  - `Info` is unchanged: its `depths` is BitVMX's. A hub offering two
+    gadgets would change it (BABE_GADGET_PLAN.md, open questions).
+- **hub**:
+  - `dispute/mod.rs`: the tick (dispatching by gadget), `State`
+    (`BitVmx(bitvmx::State)`, `Collect`, `Done`), collecting the bit
+    outputs (`b` from the gadget's `claimed_b`), `spend_leaf`, `post`,
+    `built`;
+  - `dispute/bitvmx.rs`: the verifier as before, its states, and the
+    hub's BitVMX keys (`move_secrets`, `path_secrets`, `open_keys`);
+  - `open()` takes the dispute's keys from the gadget; the floors are
+    kept per gadget.
+- **wallet**:
+  - `engine/mod.rs`: `Signer` (`fees`, `anchor`, `bitvmx()`), `Store`,
+    `post_link` and `post_terminal` on finished transactions,
+    `wait_link`, `run` dispatching by gadget;
+  - `engine/bitvmx.rs`: the prover as before, `Secrets` (her move,
+    input-word and hop secrets), `request_keys`, `record_keys`, `b_wire`;
+  - `won()` finds her anchors by their outputs, not by link names, and
+    takes `b`'s signature from the gadget;
+  - the tower's `PackageSigner` is a `Signer` and BitVMX `Secrets`; the
+    package is unchanged (BitVMX's).
+- **Tests**: the format fixtures read back unchanged after the
+  refactor and rebuild the same contract; the whole suite passes.
