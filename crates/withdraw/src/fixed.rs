@@ -183,21 +183,3 @@ mod tests {
         assert_eq!(digits(0x0102_0304), [0, 1, 0, 2, 0, 3, 0, 4, 6, 14], "120 − 10 = 0x6e");
     }
 }
-
-#[cfg(test)]
-mod lngap {
-    use super::*;
-    use lngap_lamport::winternitz::{WotsParams, WotsSecret};
-
-    /// The digits and checksum are ln-gap's (as `request`'s signature on
-    /// `b`, an input word's: 4 bytes, big-endian), so `respond`'s script
-    /// can compare the two signatures digit by digit, whatever each
-    /// chain's hash.
-    #[test]
-    fn the_digits_are_ln_gaps() {
-        let sk = WotsSecret::from_entropy(WotsParams::for_bytes(4), [3; 32]);
-        for b in [0u32, 9, 0x0102_0304, 1_000_000, u32::MAX] {
-            assert_eq!(sk.sign(&b.to_be_bytes()).unwrap().digits, digits(b));
-        }
-    }
-}

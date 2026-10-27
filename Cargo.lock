@@ -1867,6 +1867,7 @@ dependencies = [
  "hex",
  "lichen-chain",
  "lichen-ledger",
+ "lichen-withdraw",
  "lngap-btc",
  "lngap-channel",
  "lngap-ladder",
@@ -1947,7 +1948,6 @@ version = "0.1.0"
 dependencies = [
  "k256",
  "lichen-validity",
- "lngap-lamport",
  "sha2",
 ]
 

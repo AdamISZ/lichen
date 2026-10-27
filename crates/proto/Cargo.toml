@@ -19,3 +19,7 @@ lngap-btc.workspace = true
 lngap-lamport.workspace = true
 lichen-ledger.workspace = true
 lichen-chain.workspace = true
+
+[dev-dependencies]
+# the fixed statement's digits checked against ln-gap's (tests/fixed.rs)
+lichen-withdraw.workspace = true
