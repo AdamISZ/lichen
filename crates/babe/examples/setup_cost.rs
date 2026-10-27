@@ -58,8 +58,7 @@ fn main() {
     let t = Instant::now();
     let (dealer, dealing) = deal(2 * BITS, n - m, rng);
     println!("hub: dealt {} polynomials of degree {} in {:.1?}", 4 * BITS, n - m, t.elapsed());
-    let seeds: Vec<[u8; 32]> =
-        (0..n).map(|i| [(i % 256) as u8, (i / 256) as u8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).collect();
+    let seeds: Vec<[u8; 32]> = (0..n as u64).map(|i| core::array::from_fn(|k| i.to_le_bytes().get(k).copied().unwrap_or(1))).collect();
     let shares: Vec<Vec<[Secret; 2]>> = (1..=n as u64).map(|i| dealer.shares(i)).collect();
     let t = Instant::now();
     let commitments = par(n, |i| instance(&seeds[i], &shares[i], &vk, &y).0.commitment());

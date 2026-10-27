@@ -168,7 +168,7 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         elements, 15.77 MiB, as the paper's; 23.83 MiB an instance;
         garbling 1.2 s, evaluating 0.6 s (the paper's 175 and 127 ms:
         blake3 here, not fixed-key AES; one thread)
-  - [ ] RISC Zero's verifying key and claim (`lichen_babe::risc0`, from
+  - [x] RISC Zero's verifying key and claim (`lichen_babe::risc0`, from
         ln-gap's `lngap_zk::groth16`, made public for it): step 1's real
         receipt (60, memo 42) decrypts `msg`; another contract's journal
         doesn't
