@@ -110,9 +110,13 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
     the reference the gate-level circuits are tested against.
   - **Fq in Boolean gates**: only where there are garbled tables, the
     point-validation gadget (lichen-babe: all but it is a DRE without
-    tables). A few Fq multiplications and range checks; written here,
-    tested against `ark-ff`. BitVM's `garbled-snark-verifier` has BN254
-    gadgets but is GPL-3.0: a reference, not code to take.
+    tables). The feature vector `(1, x, y, x², y², xy)` is quadratic in
+    π1's bits, so its products are the DRE's, over Fq, not gates'. What
+    the gadget needs in gates (the range checks x, y < q certainly; the
+    curve equation, or is it the DRE's too?) is to read off BABE's
+    construction. Written here, tested against `ark-ff`. BitVM's
+    `garbled-snark-verifier` has BN254 gadgets but is GPL-3.0: a
+    reference, not code to take.
   - **Half-gates and free-XOR**: swanky's `fancy-garbling` (MIT) or
     tlsnotary's `mpz` (licence to check). But the input labels are ours:
     Lamport preimages checked in script, revealed under VSSS by adaptor
