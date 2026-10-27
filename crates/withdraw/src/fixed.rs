@@ -6,16 +6,18 @@
 //! the contract's one-time key `pk_H`: the hub signs only in `respond`,
 //! the `b` her `request` signed.
 //!
-//! The signature is ln-gap's (`lngap_lamport::winternitz`), as Script
-//! checks it: `b` big-endian in 4-bit digits, 8 of them and 2 of checksum,
-//! each a HASH160 chain of 15.
+//! The signature is Winternitz, laid out as ln-gap's
+//! (`lngap_lamport::winternitz`): `b` big-endian in 4-bit digits, 8 of
+//! them and 2 of checksum, each a chain of 15. But the chains are SHA-256,
+//! not HASH160: RISC Zero accelerates SHA-256, and up to 150 RIPEMD-160s
+//! in software would add about half the withdrawal's cycles again, against
+//! 60 vB more in `respond` (12 bytes a digit in the signature, 12 in the
+//! key).
 
 use alloc::vec::Vec;
 use sha2::{Digest, Sha256};
 
 use crate::{withdrawal, Hash, Reject, WithdrawInput};
-
-pub type Hash160 = [u8; 20];
 
 /// The signature's digits: 8 of `b`, 2 of checksum.
 pub const DIGITS: usize = 10;
@@ -30,8 +32,8 @@ pub const JOURNAL_LEN: usize = 68;
 /// (each digit's secret hashed as often as the digit).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HubAuth {
-    pub key: [Hash160; DIGITS],
-    pub sig: [Hash160; DIGITS],
+    pub key: [Hash; DIGITS],
+    pub sig: [Hash; DIGITS],
 }
 
 /// The fixed statement's input: the withdrawal and the hub's signature on
@@ -40,10 +42,6 @@ pub struct HubAuth {
 pub struct FixedInput {
     pub withdraw: WithdrawInput,
     pub auth: HubAuth,
-}
-
-pub fn hash160(data: &[u8]) -> Hash160 {
-    ripemd::Ripemd160::digest(Sha256::digest(data)).into()
 }
 
 /// `b`'s digits as the hub signs them: big-endian nibbles, then the
@@ -60,15 +58,16 @@ pub fn digits(b: u32) -> [u8; DIGITS] {
     d
 }
 
-fn chain(mut h: Hash160, n: u8) -> Hash160 {
+/// `h` hashed `n` times.
+pub fn chain(mut h: Hash, n: u8) -> Hash {
     for _ in 0..n {
-        h = hash160(&h);
+        h = Sha256::digest(h).into();
     }
     h
 }
 
 /// The hub's key `pk_H`, as the journal commits it.
-pub fn key_digest(key: &[Hash160; DIGITS]) -> Hash {
+pub fn key_digest(key: &[Hash; DIGITS]) -> Hash {
     let mut h = Sha256::new();
     h.update(b"lichen/babe/pk_H");
     for k in key {
@@ -110,11 +109,11 @@ impl FixedInput {
     }
 
     pub fn from_bytes(b: &[u8]) -> Result<FixedInput, Reject> {
-        const AUTH: usize = 2 * DIGITS * 20;
+        const AUTH: usize = 2 * DIGITS * 32;
         if b.len() < AUTH {
             return Err(Reject::Encoding);
         }
-        let h = |i: usize| -> Hash160 { b[20 * i..20 * i + 20].try_into().unwrap() };
+        let h = |i: usize| -> Hash { b[32 * i..32 * i + 32].try_into().unwrap() };
         let auth = HubAuth { key: core::array::from_fn(h), sig: core::array::from_fn(|i| h(DIGITS + i)) };
         Ok(FixedInput { withdraw: WithdrawInput::from_bytes(&b[AUTH..])?, auth })
     }
@@ -128,7 +127,7 @@ mod tests {
 
     /// The hub's key from `seed`, and its signature on `b`.
     fn auth(seed: u8, b: u32) -> HubAuth {
-        let secret = |i: usize| hash160(&[seed, i as u8]);
+        let secret = |i: usize| -> Hash { Sha256::digest([seed, i as u8]).into() };
         HubAuth { key: core::array::from_fn(|i| chain(secret(i), MAX_DIGIT)), sig: core::array::from_fn(|i| chain(secret(i), digits(b)[i])) }
     }
 
@@ -171,7 +170,7 @@ mod tests {
         // a digit raised by hashing on (anyone can): the checksum's
         // digits can't follow, so no other b verifies
         let mut forged = auth(1, 9);
-        forged.sig[7] = hash160(&forged.sig[7]);
+        forged.sig[7] = chain(forged.sig[7], 1);
         assert!(!verify(&forged, 10) && !verify(&forged, 9));
         // the withdrawal's own checks still apply
         assert_eq!(check(&i, &id, &mut |_| false), Err(Reject::Chain));
@@ -187,22 +186,18 @@ mod tests {
 
 #[cfg(test)]
 mod lngap {
-    extern crate std;
     use super::*;
     use lngap_lamport::winternitz::{WotsParams, WotsSecret};
 
-    /// ln-gap's signature on `b` (as `respond`'s script checks it, an
-    /// input word's: 4 bytes, big-endian) verifies here, and only on `b`.
+    /// The digits and checksum are ln-gap's (as `request`'s signature on
+    /// `b`, an input word's: 4 bytes, big-endian), so `respond`'s script
+    /// can compare the two signatures digit by digit, whatever each
+    /// chain's hash.
     #[test]
-    fn the_signature_is_ln_gaps() {
+    fn the_digits_are_ln_gaps() {
         let sk = WotsSecret::from_entropy(WotsParams::for_bytes(4), [3; 32]);
-        let pk = sk.public();
         for b in [0u32, 9, 0x0102_0304, 1_000_000, u32::MAX] {
-            let sig = sk.sign(&b.to_be_bytes()).unwrap();
-            assert_eq!(sig.digits, digits(b));
-            let auth = HubAuth { key: pk.digits.clone().try_into().unwrap(), sig: sig.hashes.try_into().unwrap() };
-            assert!(verify(&auth, b));
-            assert!(!verify(&auth, b ^ 1));
+            assert_eq!(sk.sign(&b.to_be_bytes()).unwrap().digits, digits(b));
         }
     }
 }

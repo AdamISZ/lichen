@@ -25,7 +25,7 @@
 //! - `babe <withdraw input> <hub auth> <chain receipt> <out>`: prove the
 //!   fixed statement (`lichen_withdraw::fixed`, BABE's), as `withdraw`
 //!   with the hub's signature on `b` (JSON: its `key` and `sig`, ten
-//!   20-byte hashes each, hex); prints the claim digest, the same for
+//!   32-byte hashes each, hex); prints the claim digest, the same for
 //!   every amount; `exec-babe` runs it without proving;
 //! - `wrap <receipt> <out>`: the Groth16 receipt of a succinct withdrawal
 //!   (or BABE) receipt (x86 Linux with Docker: RISC Zero's gnark step);
@@ -222,8 +222,8 @@ struct HubAuthJson {
 
 fn hub_auth(path: &str) -> Result<lichen_withdraw::fixed::HubAuth> {
     let a: HubAuthJson = serde_json::from_slice(&read(path)?).with_context(|| format!("{path}: the hub's signature"))?;
-    let hashes = |v: &[String]| -> Result<[lichen_withdraw::fixed::Hash160; lichen_withdraw::fixed::DIGITS]> {
-        let v = v.iter().map(|h| hex::decode(h).ok().and_then(|b| b.try_into().ok()).context("a hash: 20 bytes, hex")).collect::<Result<Vec<_>>>()?;
+    let hashes = |v: &[String]| -> Result<[lichen_withdraw::Hash; lichen_withdraw::fixed::DIGITS]> {
+        let v = v.iter().map(|h| hex::decode(h).ok().and_then(|b| b.try_into().ok()).context("a hash: 32 bytes, hex")).collect::<Result<Vec<_>>>()?;
         v.try_into().map_err(|v: Vec<_>| anyhow::anyhow!("{} hashes, not {}", v.len(), lichen_withdraw::fixed::DIGITS))
     };
     Ok(lichen_withdraw::fixed::HubAuth { key: hashes(&a.key)?, sig: hashes(&a.sig)? })

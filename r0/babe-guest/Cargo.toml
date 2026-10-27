@@ -18,9 +18,8 @@ resolver = "3"
 lichen-withdraw = { path = "../../crates/withdraw" }
 risc0-zkvm = { version = "=3.0.6", default-features = false, features = ["std"] }
 
-# RISC Zero's accelerated crypto: the path is SHA-256, the sequencer's
-# signature on the root BIP340 (RIPEMD-160, of the hub's signature, has no
-# accelerator)
+# RISC Zero's accelerated crypto: the path and the hub's signature on `b`
+# are SHA-256, the sequencer's signature on the root BIP340
 [patch.crates-io]
 sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.9-risczero.0" }
 k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256/v0.13.4-risczero.1" }

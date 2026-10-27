@@ -11,10 +11,7 @@ license = "MIT"
 lichen-validity = { path = "../validity" }
 sha2 = { version = "0.10", default-features = false }
 k256 = { version = "0.13", default-features = false, features = ["schnorr"] }
-# the hub's Winternitz signature on `b` (the fixed statement): HASH160, as
-# Script checks it
-ripemd = { version = "0.1", default-features = false }
 
 [dev-dependencies]
-# the hub's signature checked against ln-gap's own (what Script checks)
+# the hub's signature's digits checked against ln-gap's
 lngap-lamport.workspace = true
