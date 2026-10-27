@@ -98,12 +98,31 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
    label reveal by adaptor signatures.
 5. **End to end on a real proof**, then Mutinynet; measured.
 
+## Decided (2026-10-27)
+
+- **Where BABE's code lives: lichen**, a crate of its own (the graph, its
+  scripts, the garbling). The BitVMX ladder in ln-gap is that project's
+  proof of concept, not a pattern; ln-gap's skeleton stays shared.
+- **BABE is implemented here**: there is no library. What it needs:
+  - **BN254 natively** (Fq, Fr, G1, G2, the pairing): arkworks
+    (`ark-bn254`, `ark-ec`, `ark-ff`; MIT/Apache-2.0, already in the lock
+    file). For the WE, the setup, the DRE's encoding and decoding, and as
+    the reference the gate-level circuits are tested against.
+  - **Fq in Boolean gates**: only where there are garbled tables, the
+    point-validation gadget (lichen-babe: all but it is a DRE without
+    tables). A few Fq multiplications and range checks; written here,
+    tested against `ark-ff`. BitVM's `garbled-snark-verifier` has BN254
+    gadgets but is GPL-3.0: a reference, not code to take.
+  - **Half-gates and free-XOR**: swanky's `fancy-garbling` (MIT) or
+    tlsnotary's `mpz` (licence to check). But the input labels are ours:
+    Lamport preimages checked in script, revealed under VSSS by adaptor
+    signatures. Probably our own garbler, the library a cross-check.
+  - **The DRE's MACs (Argo)**: elliptic-curve; which curve to read off
+    Argo (2026/049). One whose scalar field is BN254's Fq (Grumpkin)
+    would be the natural one.
+
 ## Open questions
 
-- **Where BABE's code lives.** The ladder is ln-gap's (`apps/ladder`);
-  BABE's graph could be ln-gap's too, or lichen's own crate.
-- **BABE's implementation.** Ask the authors for their prototype (and
-  its licence), or write the circuit and the encryption here.
 - **The countersignature or the work-bound request** (BABE_DISPUTE_PLAN
   §2 or §11): the countersignature is designed; the other is
   speculative. Build the first; keep the second as an experiment.
