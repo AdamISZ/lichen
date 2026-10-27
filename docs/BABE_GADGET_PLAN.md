@@ -140,7 +140,7 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
 
 ## Status
 
-- [ ] 1 statement
+- [x] 1 statement
   - [x] `lichen_withdraw::fixed`: the withdrawal's checks, then the hub's
         Winternitz signature on `b` (ln-gap's digits and checksum, checked
         against its signer, but SHA-256 chains: accelerated in the guest;
@@ -150,7 +150,10 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
   - [x] `r0/babe-guest`, `build-guest.sh babe`; `lichen-r0
         babe|exec-babe <withdraw input> <hub auth> <chain receipt> <out>`
         (prints the claim digest), `wrap` of either guest
-  - [ ] built (x86), executed (its cycles), proved and wrapped
+  - [x] built (x86, lichen-vps), image id `74b95bb4…`; executed: 482k
+        user cycles against the withdrawal's 333k, one segment; proved
+        (660 s) and wrapped (258 s) on a real return; a signature on
+        another `b` refused; claim digest printed
 - [ ] 2 scripts and graph (stand-in)
 - [ ] 3 lichen integration (stand-in)
 - [ ] 4 the garbling
