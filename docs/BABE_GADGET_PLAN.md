@@ -265,7 +265,7 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         Alice reads each digit's secret from the mined transaction. The
         1,000-element limit, checked: 1,000 pass, 1,017 (bit by bit) don't
         (`tests/reveal.rs`)
-- [ ] 5 end to end
+- [x] 5 end to end
   - [x] the proof after `respond`: the real statement proves the hub's
         signature on `b`, which `respond` carries. With no proof the
         wallet requests, and once the hub responds writes its signature
@@ -284,5 +284,26 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         true claims is answered from a kept instance; step 1's proof
         (another hub's key) is challenged, opens nothing, and `failure`
         takes the contract. 34 s in all
-  - [ ] Mutinynet: a hub with `STATEMENT=babe`, a return proved on
-        lichen-vps after `respond`; measured
+  - [x] Mutinynet (2026-10-29), a fresh deployment (`0dde353e…`: a new
+        sequencer key, genesis seal `6b4efbec…:1`; `8c971e86…` archived),
+        anchoring through the hub's node, the chain prover on the Mac; the
+        hub hostile, `babe`, at (78, 10): its setup 9.5 s, Alice's kept
+        instances 243 MB. Contract 1000, deposit 400,000; a withdrawal of
+        300,000 returned and refused after its anchor and chain receipt
+        (7 min 44 s). The dispute: `request` (449 vB), the hub's `respond`
+        a block later (759 vB), her proof due 34 s after she requested.
+        Proved on lichen-vps from the hub's signature: 476k user cycles,
+        640 s, the wrap 254 s (895 s in all). `assert` (7,725 vB), the
+        hub's `challenge_assert` the next block (20,717 vB); kept instance
+        9 opened on the real proof, `wrongly_challenged` (821 vB, v3) five
+        blocks after the challenge; the hub collected its 8 bit outputs;
+        her sweep after δ, 358,260 sats (b's bits and reserves 330,482,
+        anchors 660, the fee budget's rest 28,857, fee 1,739). Each link
+        went at its floor (1 sat/vB, no fee child needed); her links'
+        floors 8,183 sats, the hub's 21,478.
+        Found: the deployment's Mutinynet node (`deploy/hub/bitcoind`, a
+        25.99 build) rejects TRUC (`version`); its peers (29.x) relay it,
+        so the answer went out through mutinynet.com's Esplora (the
+        wallet resumed with `--esplora`), within `Δ1`. The node image
+        wants the current Mutinynet build (29.2); mainnet relays TRUC from
+        Core 28
