@@ -227,7 +227,7 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         claims: answered, paid in 2.2 s, a rerun stops at the payout, the
         wallet sweeps. Links at their floors and the fee budget's key, as
         BitVMX's tower; the anchors' own key is still to come
-- [ ] 4 the garbling (begun before 2 and 3: it doesn't need them)
+- [x] 4 the garbling (begun before 2 and 3: it doesn't need them)
   - [x] honest setup, `crates/babe`: the witness encryption
         (Construction 1), the garbled circuit for `r·π1` (Construction 2:
         the point gadget privacy-free with free XOR, the DRE's tables with
@@ -254,7 +254,8 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         all (dealing 1.3 s, the hub's 78 instances 9.4 s, Alice's checks
         1.5 + 8.1 s); she stores 239 MiB (238 before digits), and downloads it first
         (`examples/setup_cost.rs`)
-  - [ ] the setup exchange, Alice's storage
+  - [x] the setup exchange, Alice's storage (built in step 3: `POST
+        /babe/setup`, the kept instances as files beside the wallet)
   - [x] `challenge_assert`'s reveal by adaptor signatures (`reveal`; the
         note's v0.1.5): π1 Lamport-signed in 2-bit digits; Alice's one-time
         keys, a pre-signature a digit and value, adapted to the dealing's
