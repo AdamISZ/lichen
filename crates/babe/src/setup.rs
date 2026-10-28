@@ -9,9 +9,12 @@
 //!
 //! The input secrets are not the circuit's labels: the circuit's input
 //! labels are free-XOR's (`L¹ = L⁰ ⊕ Δ`), the secrets are shares
-//! ([`crate::vsss`]), independent. A translation table maps one to the
-//! other: `T_{j,β} = H(s_{j,β}) ⊕ L^β_j`, two labels an input bit, so a
-//! secret revealed on chain gives its bit's label and no other.
+//! ([`crate::vsss`]), independent. And they are per digit, not per bit:
+//! π1 is signed and revealed two bits a step (papers/lichen-babe v0.1.5
+//! §8.5, as tapscript's stack needs). A translation table maps one to the
+//! other: for digit `d` of value `v`, `T_{d,v,k} = H(s_{d,v}, k) ⊕
+//! L_{2d+k}^{v_k}`, the labels of its two bits, so a secret revealed on
+//! chain gives its digit's labels and no others.
 
 use ark_bn254::{Bn254, Fr};
 use ark_ff::{BigInteger, PrimeField, UniformRand};
@@ -27,45 +30,69 @@ use crate::we::{encrypt, Msg, Setup};
 /// An input secret: a share's 32 bytes.
 pub type Secret = [u8; 32];
 
+/// The values of an input digit: two of the circuit's input bits, `2d` and
+/// `2d + 1`, of value `b_{2d} + 2·b_{2d+1}`.
+pub const VALUES: usize = 4;
+
+/// π1's digits: its 508 bits, two a digit.
+pub const DIGITS: usize = crate::field::BITS;
+
+/// The circuit's input bits as digits.
+pub fn digits(bits: &[bool]) -> Vec<u8> {
+    bits.chunks(2).map(|c| c[0] as u8 | (c[1] as u8) << 1).collect()
+}
+
 pub type Hash = [u8; 32];
 
 /// What Alice keeps of an instance.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Instance {
     pub gc: Garbled,
-    /// Each input bit's translation, for 0 and for 1.
-    pub table: Vec<[Label; 2]>,
+    /// Each input digit's translation, for each value: its two bits' labels.
+    pub table: Vec<[[Label; 2]; VALUES]>,
     pub ct: Setup,
     /// `SHA-256(msg)`: the hashlock `wrongly_challenged` opens.
     pub hmsg: Hash,
 }
 
-fn translate(s: &Secret, bit: usize, value: bool) -> Label {
+/// The mask on bit `k` of digit `d`'s label, for the secret of value `v`.
+fn translate(s: &Secret, d: usize, v: usize, k: usize) -> Label {
     let mut h = blake3::Hasher::new();
     h.update(b"lichen/babe/input");
     h.update(s);
-    h.update(&(bit as u32).to_le_bytes());
-    h.update(&[value as u8]);
+    h.update(&(d as u32).to_le_bytes());
+    h.update(&[v as u8, k as u8]);
     u128::from_le_bytes(h.finalize().as_bytes()[..16].try_into().unwrap())
 }
 
-/// The instance of `seed` and `secrets` (one pair an input bit), for the
-/// statement `public`; and its `msg`.
-pub fn instance(seed: &[u8; 32], secrets: &[[Secret; 2]], vk: &VerifyingKey<Bn254>, public: &[Fr]) -> (Instance, Msg) {
+/// The instance of `seed` and `secrets` (one an input digit and value),
+/// for the statement `public`; and its `msg`.
+pub fn instance(seed: &[u8; 32], secrets: &[[Secret; VALUES]], vk: &VerifyingKey<Bn254>, public: &[Fr]) -> (Instance, Msg) {
     let rng = &mut ChaCha20Rng::from_seed(*seed);
     let r = Fr::rand(rng);
     let msg: Msg = rng.gen();
     let (gc, ek) = garble(r, rng);
-    assert_eq!(secrets.len(), ek.0.len(), "a secret pair an input bit");
-    let table = ek.0.iter().zip(secrets).enumerate().map(|(j, (l, s))| [l[0] ^ translate(&s[0], j, false), l[1] ^ translate(&s[1], j, true)]).collect();
+    assert_eq!(2 * secrets.len(), ek.0.len(), "a secret an input digit and value");
+    let table = secrets
+        .iter()
+        .enumerate()
+        .map(|(d, s)| core::array::from_fn(|v| core::array::from_fn(|k| ek.0[2 * d + k][(v >> k) & 1] ^ translate(&s[v], d, v, k))))
+        .collect();
     let ct = encrypt(vk, public, &msg, r);
     (Instance { gc, table, ct, hmsg: Sha256::digest(msg).into() }, msg)
 }
 
 impl Instance {
-    /// The circuit's input labels for `bits`, from their secrets.
+    /// The circuit's input labels for `bits`, from their digits' secrets.
     pub fn labels(&self, bits: &[bool], secrets: &[Secret]) -> Vec<Label> {
-        bits.iter().zip(secrets).zip(&self.table).enumerate().map(|(j, ((b, s), t))| t[*b as usize] ^ translate(s, j, *b)).collect()
+        let digits = digits(bits);
+        digits
+            .iter()
+            .zip(secrets)
+            .zip(&self.table)
+            .enumerate()
+            .flat_map(|(d, ((v, s), t))| (0..2).map(move |k| t[*v as usize][k] ^ translate(s, d, *v as usize, k)))
+            .collect()
     }
 
     /// Whether `msg` opens the hashlock: a decryption that succeeded.
@@ -77,7 +104,7 @@ impl Instance {
     pub fn commitment(&self) -> Hash {
         let mut h = blake3::Hasher::new();
         h.update(b"lichen/babe/instance");
-        for l in self.gc.ands.iter().chain(self.table.iter().flatten()) {
+        for l in self.gc.ands.iter().chain(self.table.iter().flatten().flatten()) {
             h.update(&l.to_le_bytes());
         }
         for f in self.gc.dre.iter().chain(self.gc.constant.iter().flatten()) {
@@ -93,7 +120,7 @@ impl Instance {
 }
 
 /// Whether an opened instance (its seed and secrets) is the one committed.
-pub fn check_opened(commitment: &Hash, seed: &[u8; 32], secrets: &[[Secret; 2]], vk: &VerifyingKey<Bn254>, public: &[Fr]) -> bool {
+pub fn check_opened(commitment: &Hash, seed: &[u8; 32], secrets: &[[Secret; VALUES]], vk: &VerifyingKey<Bn254>, public: &[Fr]) -> bool {
     instance(seed, secrets, vk, public).0.commitment() == *commitment
 }
 

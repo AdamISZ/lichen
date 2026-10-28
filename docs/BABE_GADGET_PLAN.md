@@ -175,16 +175,22 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         an instance a function of its seed and its secrets, committed by
         hash; the secrets Shamir-shared over secp256k1 (degree N − M,
         Feldman, `C_0` the adaptor point), the circuit's free-XOR labels
-        reached through a translation table (two labels an input bit). A
+        reached through a translation table (since the reveal: a secret a
+        2-bit digit and value, mapped to both its bits' labels). A
         lie in an opened instance is caught; with one in a kept instance
         Alice opens another. At (78, 10), one machine, 14 cores: 19 s in
         all (dealing 1.3 s, the hub's 78 instances 9.4 s, Alice's checks
-        1.5 + 8.1 s); she stores 238 MiB, and downloads it first
+        1.5 + 8.1 s); she stores 239 MiB (238 before digits), and downloads it first
         (`examples/setup_cost.rs`)
   - [ ] the setup exchange, Alice's storage
-  - [ ] `challenge_assert`'s reveal by adaptor signatures (the note's
-        v0.1.5: Alice's own one-time keys, one pre-signature a digit and
-        value; 2-bit digits, as tapscript's 1,000-element stack needs):
-        the leaf script, pre-signing and completion on a real sighash,
-        extraction; `vsss` and the table by digit
+  - [x] `challenge_assert`'s reveal by adaptor signatures (`reveal`; the
+        note's v0.1.5): π1 Lamport-signed in 2-bit digits; Alice's one-time
+        keys, a pre-signature a digit and value, adapted to the dealing's
+        `f(0)·G`; the leaf selects the key by her preimage. On regtest,
+        mainnet's relay policy: `assert` 7,598 vB, `challenge_assert`
+        20,640 vB (its leaf 60,232 B, 509 witness elements), as the note
+        estimated (7.8, 21 kvB); a completion for another value refused;
+        Alice reads each digit's secret from the mined transaction. The
+        1,000-element limit, checked: 1,000 pass, 1,017 (bit by bit) don't
+        (`tests/reveal.rs`)
 - [ ] 5 end to end

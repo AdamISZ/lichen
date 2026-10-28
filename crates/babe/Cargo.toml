@@ -9,6 +9,8 @@ license.workspace = true
 anyhow.workspace = true
 # RISC Zero's verifying key and claim, as ln-gap checks them natively
 lngap-zk.workspace = true
+# the reveal on chain: adaptor signatures, scripts, keys
+lngap-btc.workspace = true
 ark-bn254 = "0.5"
 ark-ec = "0.5"
 ark-ff = "0.5"

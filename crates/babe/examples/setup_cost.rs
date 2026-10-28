@@ -13,8 +13,7 @@ use ark_relations::lc;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use ark_snark::SNARK;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
-use lichen_babe::field::BITS;
-use lichen_babe::setup::{check_opened, instance, Secret};
+use lichen_babe::setup::{check_opened, instance, Secret, DIGITS, VALUES};
 use lichen_babe::vsss::deal;
 
 struct One;
@@ -56,17 +55,17 @@ fn main() {
     println!("(N, M) = ({n}, {m}), {} cores", std::thread::available_parallelism().map_or(1, |c| c.get()));
 
     let t = Instant::now();
-    let (dealer, dealing) = deal(2 * BITS, n - m, rng);
-    println!("hub: dealt {} polynomials of degree {} in {:.1?}", 4 * BITS, n - m, t.elapsed());
+    let (dealer, dealing) = deal(DIGITS, n - m, rng);
+    println!("hub: dealt {} polynomials of degree {} in {:.1?}", VALUES * DIGITS, n - m, t.elapsed());
     let seeds: Vec<[u8; 32]> = (0..n as u64).map(|i| core::array::from_fn(|k| i.to_le_bytes().get(k).copied().unwrap_or(1))).collect();
-    let shares: Vec<Vec<[Secret; 2]>> = (1..=n as u64).map(|i| dealer.shares(i)).collect();
+    let shares: Vec<Vec<[Secret; VALUES]>> = (1..=n as u64).map(|i| dealer.shares(i)).collect();
     let t = Instant::now();
     let commitments = par(n, |i| instance(&seeds[i], &shares[i], &vk, &y).0.commitment());
     let hub = t.elapsed();
     println!("hub: {n} instances built and committed in {hub:.1?}");
 
     // Alice keeps the last M; the hub opens the first N − M
-    let opened: Vec<(u64, Vec<[Secret; 2]>)> = (0..n - m).map(|i| (i as u64 + 1, shares[i].clone())).collect();
+    let opened: Vec<(u64, Vec<[Secret; VALUES]>)> = (0..n - m).map(|i| (i as u64 + 1, shares[i].clone())).collect();
     let t = Instant::now();
     assert!(dealing.verify(&opened, rng));
     let vsss = t.elapsed();
@@ -77,8 +76,8 @@ fn main() {
     println!("alice: {} opened shares checked in {vsss:.1?}, the instances rebuilt in {alice:.1?}", n - m);
 
     let one = instance(&seeds[n - 1], &shares[n - 1], &vk, &y).0;
-    let size = one.gc.size() + 32 * one.table.len() + 128 + 32;
-    let commit_bytes = dealing.commitments.len() * 2 * (n - m + 1) * 33;
+    let size = one.gc.size() + std::mem::size_of_val(&one.table[..]) + 128 + 32;
+    let commit_bytes = dealing.commitments.len() * VALUES * (n - m + 1) * 33;
     println!(
         "alice stores {m} instances: {:.0} MiB, and the commitments: {:.1} MiB",
         (m * size) as f64 / (1 << 20) as f64,

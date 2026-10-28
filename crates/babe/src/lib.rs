@@ -11,12 +11,15 @@
 //!
 //! The setup is checked by cut-and-choose ([`setup`]), the instances'
 //! input secrets shared ([`vsss`]) so that one set revealed on chain
-//! opens every kept instance. The statement is RISC Zero's ([`risc0`]).
+//! opens every kept instance; the hub reveals it in `challenge_assert`
+//! by completing Alice's adaptor pre-signatures ([`reveal`]). The
+//! statement is RISC Zero's ([`risc0`]).
 
 pub mod circuit;
 pub mod field;
 pub mod gadget;
 pub mod garble;
+pub mod reveal;
 pub mod risc0;
 pub mod setup;
 pub mod vsss;
@@ -26,7 +29,7 @@ pub mod we;
 mod tests {
     use crate::gadget::input;
     use crate::garble::{evaluate, garble};
-    use crate::setup::{check_opened, choose, instance, Secret};
+    use crate::setup::{check_opened, choose, digits, instance, Secret, DIGITS, VALUES};
     use crate::vsss::{deal, interpolate, scalar};
     use crate::we::{decrypt, encrypt, pi1};
     use ark_bn254::{Bn254, Fr};
@@ -103,10 +106,9 @@ mod tests {
         let y = [x * x * x];
         let proof = Groth16::<Bn254>::prove(&pk, Cube { x: Some(x), y: Some(y[0]) }, rng).unwrap();
         let (n, m) = (6u64, 2u64);
-        let bits = 2 * crate::field::BITS;
 
         // the hub: the sharing, N instances, their commitments
-        let (dealer, dealing) = deal(bits, (n - m) as usize, rng);
+        let (dealer, dealing) = deal(DIGITS, (n - m) as usize, rng);
         let seeds: Vec<[u8; 32]> = (0..n).map(|i| [i as u8 + 1; 32]).collect();
         // instance 1 a lie, under another statement: cut-and-choose can't
         // tell a kept one, so Alice keeps it below
@@ -122,7 +124,7 @@ mod tests {
         }
         let opened: Vec<u64> = (1..=n).filter(|i| !kept.contains(i)).collect();
         // the hub opens the others: Alice checks their shares, rebuilds them
-        let shares: Vec<(u64, Vec<[Secret; 2]>)> = opened.iter().map(|i| (*i, dealer.shares(*i))).collect();
+        let shares: Vec<(u64, Vec<[Secret; VALUES]>)> = opened.iter().map(|i| (*i, dealer.shares(*i))).collect();
         assert!(dealing.verify(&shares, rng));
         for (i, s) in &shares {
             assert!(check_opened(&commitments[*i as usize - 1], &seeds[*i as usize - 1], s, &vk, &y));
@@ -134,18 +136,19 @@ mod tests {
             assert_eq!(made[*k as usize - 1].0.commitment(), commitments[*k as usize - 1]);
         }
 
-        // the dispute: π1's bits signed, the hub reveals their secrets
+        // the dispute: π1's digits signed, the hub reveals their secrets
         let pi = input(&pi1(&proof));
-        let revealed: Vec<Secret> = pi.iter().enumerate().map(|(j, b)| dealer.reveal(j, *b)).collect();
-        for (j, b) in pi.iter().enumerate() {
-            assert_eq!(ProjectivePoint::GENERATOR * scalar(&revealed[j]).unwrap(), dealing.point(j, *b), "the adaptor point's");
+        let ds = digits(&pi);
+        let revealed: Vec<Secret> = ds.iter().enumerate().map(|(j, v)| dealer.reveal(j, *v)).collect();
+        for (j, v) in ds.iter().enumerate() {
+            assert_eq!(ProjectivePoint::GENERATOR * scalar(&revealed[j]).unwrap(), dealing.point(j, *v), "the adaptor point's");
         }
-        let of_bits: Vec<(u64, Vec<Secret>)> = shares.iter().map(|(i, s)| (*i, s.iter().zip(&pi).map(|(p, b)| p[*b as usize]).collect())).collect();
+        let of_digits: Vec<(u64, Vec<Secret>)> = shares.iter().map(|(i, s)| (*i, s.iter().zip(&ds).map(|(p, v)| p[*v as usize]).collect())).collect();
         let opens: Vec<bool> = kept
             .iter()
             .map(|k| {
                 let (inst, _) = &made[*k as usize - 1];
-                let secrets = interpolate(*k, &of_bits, &revealed).unwrap();
+                let secrets = interpolate(*k, &of_digits, &revealed).unwrap();
                 let r_pi1 = evaluate(&inst.gc, &pi, &inst.labels(&pi, &secrets));
                 inst.is_msg(&decrypt(&inst.ct, &r_pi1, &proof))
             })
