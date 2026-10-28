@@ -486,7 +486,7 @@ impl Wallet {
         ensure!(info.network == net, "the hub is on {}, this wallet's coins on {net}", info.network);
         let d = self.sequencer.deployment;
         ensure!(info.deployment == d, "the hub is in another deployment (sequencer {}, hub {}) than this wallet's (sequencer {}, hub {})", hex::encode(info.deployment.sequencer), hex::encode(info.deployment.hub), hex::encode(d.sequencer), hex::encode(d.hub));
-                ensure!(info.statement == statement.id(), "the hub runs {}, this wallet {}", info.statement, statement.id());
+        ensure!(info.statement == statement.id(), "the hub runs {}, this wallet {}", info.statement, statement.id());
         let program = statement.program_if(dir)?;
         if let Some(p) = &program {
             ensure!(info.depths == p.depths(), "the hub's statement has {} depths, ours {}", info.depths, p.depths());
@@ -507,7 +507,7 @@ impl Wallet {
         chain.watch(&dep_spk)?;
         let amount = Wallet::deposit_amount(&ask, net);
         pay(&bitcoin::Address::from_script(&dep_spk, net.bitcoin())?, amount)?;
-                let coin = self.wait_deposit(chain, &dep_spk, amount)?;
+        let coin = self.wait_deposit(chain, &dep_spk, amount)?;
         self.open_with(hub, chain, statement, dir, program.as_ref(), ask, dep, coin)
     }
 
@@ -524,7 +524,7 @@ impl Wallet {
         }
         let info: Info = hub_call(&format!("{hub}/info"), None)?;
         ensure!(info.network == chain.network, "the hub is on {}, this wallet's coins on {}", info.network, chain.network);
-                let program = statement.program_if(dir)?;
+        let program = statement.program_if(dir)?;
         let dep_spk = deposit_tree(&self.deposit_key(&dep.nonce).x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();
         chain.watch(&dep_spk)?;
         let coin = self.wait_deposit(chain, &dep_spk, Wallet::deposit_amount(&ask, chain.network))?;
@@ -545,7 +545,7 @@ impl Wallet {
         let keys = self.contract_keys(&nonce);
         let mut alice = keys.public();
         alice.payout_spk = payout;
-                // her keys for the dispute, its gadget's (under BABE, with the
+        // her keys for the dispute, its gadget's (under BABE, with the
         // instances she keeps of the setup's)
         let secrets = self.secrets(&nonce);
         let (dispute, setup) = match statement.gadget() {
@@ -565,7 +565,7 @@ impl Wallet {
         let least = chain.height()? + lichen_proto::min_duration(net);
         ensure!(offer.t_close >= least, "the hub's T_close, block {}, is too soon (at least block {least})", offer.t_close);
         // the contract's keys for the dispute: ours and the hub's, checked
-                let dispute = match (&req.dispute, &offer.dispute, &setup) {
+        let dispute = match (&req.dispute, &offer.dispute, &setup) {
             (RequestKeys::BitVmx(ours), OfferKeys::BitVmx(theirs), _) => engine::bitvmx::record_keys(program.context("the statement's program")?, net, ours, theirs)?,
             (RequestKeys::Babe(ours), OfferKeys::Babe(theirs), Some(setup)) => Wallet::babe_record_keys(net, offer.t_close, ours, setup, theirs)?,
             _ => bail!("the hub's offer is for another gadget than the request"),
@@ -605,7 +605,7 @@ impl Wallet {
         // is paid already)
         let need = c.terminal_need(&set, net)?;
         ensure!(fee_out.value >= need, "the fee budget, {}, can't pay for the heaviest transaction a dispute may need of the user, {need}", fee_out.value);
-                // under BABE: the cut-and-choose, and her adaptor pre-signatures
+        // under BABE: the cut-and-choose, and her adaptor pre-signatures
         let adaptor = match (&offer.dispute, &setup) {
             (OfferKeys::Babe(theirs), Some(setup)) => self.babe_check(hub, dir, statement, &mut record, &secrets, setup, theirs, &set)?,
             _ => vec![],
@@ -628,7 +628,7 @@ impl Wallet {
         }
         self.save()?;
         chain.watch(&fees.spk())?;
-                // what she keeps from the hub stays hers (under BABE,
+        // what she keeps from the hub stays hers (under BABE,
         // wrongly_challenged's signature: for her towers)
         let shown = record.alice_sigs.iter().filter(|(n, _)| !c.withheld(n)).map(|(n, s)| (n.clone(), s.clone())).collect();
         let accept = Accept { cid: offer.cid, alice_sigs: shown, deposit_presig: locked.presig.clone(), adaptor };
@@ -810,7 +810,7 @@ impl Wallet {
         // on the real statement the hub folds only a return anchored on
         // Bitcoin under a root the sequencer has proved, the anchor deep
         // enough (what a dispute would need)
-                if statement.is_real() {
+        if statement.is_real() {
             let progress = self.progress.clone();
             let say = |m: String| {
                 if let Some(p) = &progress {
@@ -840,7 +840,7 @@ impl Wallet {
             }
             self.chain_receipt(cid)?;
         }
-                let program = statement.program_if(dir)?;
+        let program = statement.program_if(dir)?;
         let c = held.record.build(statement, program.as_ref())?;
         let fold = c.fold(held.record.funding, bitcoin::Amount::from_sat(b), FOLD_FEE)?;
         let alice_sig = fold.sign(&self.contract_keys(&held.nonce).payment)?;

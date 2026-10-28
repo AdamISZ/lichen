@@ -27,7 +27,7 @@ pub(crate) mod bitvmx;
 
 /// A dispute's state at the hub.
 pub(crate) enum State {
-        /// In play, the gadget's.
+    /// In play, the gadget's.
     BitVmx(bitvmx::State),
     Babe(babe::State),
     /// The user won and the payout is posted, spending the output of
@@ -75,7 +75,7 @@ impl Inner {
             let state = self.disputes.lock().unwrap().remove(&cid);
             let next = match state {
                 None => match record.gadget() {
-                                        Gadget::BitVmx => self.bitvmx_start(&record),
+                    Gadget::BitVmx => self.bitvmx_start(&record),
                     Gadget::Babe => self.babe_start(&record),
                 },
                 Some(State::BitVmx(s)) => self.bitvmx_tick(&record, s),
@@ -98,7 +98,7 @@ impl Inner {
 
     /// The contract, built by its gadget.
     pub(crate) fn built(&self, record: &Record) -> Result<Built> {
-                record.build(&self.cfg.statement, self.program.as_ref())
+        record.build(&self.cfg.statement, self.program.as_ref())
     }
 
     /// The payout of a dispute the user won (spending `link`'s output):
@@ -128,7 +128,7 @@ impl Inner {
     fn collect_closed(&self, record: &Record) -> Result<()> {
         let cid = record.cid();
         let disputed = match record.gadget() {
-                        Gadget::BitVmx => self.bitvmx_escalated(record)?,
+            Gadget::BitVmx => self.bitvmx_escalated(record)?,
             Gadget::Babe => self.babe_requested(record)?,
         };
         if disputed {
@@ -143,7 +143,7 @@ impl Inner {
     /// signature as a witness wire (the gadget's).
     fn claimed_b(&self, record: &Record) -> Result<(u32, Vec<Vec<u8>>)> {
         match record.gadget() {
-                        Gadget::BitVmx => self.bitvmx_claimed_b(record),
+            Gadget::BitVmx => self.bitvmx_claimed_b(record),
             Gadget::Babe => self.babe_claimed_b(record),
         }
     }
@@ -240,7 +240,7 @@ impl Inner {
 impl State {
     pub(crate) fn describe(&self) -> String {
         match self {
-                        State::BitVmx(s) => s.describe(),
+            State::BitVmx(s) => s.describe(),
             State::Babe(s) => s.describe(),
             State::Collect { .. } => "the user won: collecting the hub's bit outputs".into(),
             State::Done => "settled".into(),

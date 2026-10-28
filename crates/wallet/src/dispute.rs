@@ -120,7 +120,7 @@ impl Wallet {
     /// signatures checked).
     fn presigned(&self, k: usize, statement: &Statement, dir: &Path) -> Result<(Built, Vec<Presign>)> {
         let record = &self.contracts[k].record;
-                let c = record.build(statement, statement.program_if(dir)?.as_ref())?;
+        let c = record.build(statement, statement.program_if(dir)?.as_ref())?;
         let set = record.presigned(&c)?;
         Ok((c, set))
     }
@@ -130,7 +130,7 @@ impl Wallet {
     fn b_wire(&self, k: usize, statement: &Statement, b: u32) -> Result<Vec<Vec<u8>>> {
         let held = &self.contracts[k];
         match held.record.gadget() {
-                        Gadget::BitVmx => crate::engine::bitvmx::b_wire(&self.secrets(&held.nonce), &held.record, statement, b),
+            Gadget::BitVmx => crate::engine::bitvmx::b_wire(&self.secrets(&held.nonce), &held.record, statement, b),
             Gadget::Babe => crate::engine::babe::b_wire(&self.secrets(&held.nonce), b),
         }
     }
@@ -141,7 +141,7 @@ impl Wallet {
     /// unspent where no fee child was needed) and the fee budget's rest.
     fn won(&mut self, chain: &Chain, statement: &Statement, dir: &Path, k: usize, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
         let txid = match &outcome {
-                        Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) => *t,
+            Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) => *t,
             Outcome::Lost | Outcome::Paused => bail!("not a win"),
         };
         let at = wait_confirmed(chain, &txid)?;

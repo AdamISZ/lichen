@@ -47,7 +47,7 @@ impl Outcome {
     /// The payout's txid, for a win.
     pub fn payout(&self) -> Option<Txid> {
         match self {
-                        Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) => Some(*t),
+            Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) => Some(*t),
             Outcome::Lost | Outcome::Paused => None,
         }
     }
@@ -124,7 +124,7 @@ impl Signer for WalletSigner {
     fn anchor(&self) -> Option<Keypair> {
         Some(self.secrets.keys().payment)
     }
-        fn bitvmx(&self) -> Result<&dyn bitvmx::Secrets> {
+    fn bitvmx(&self) -> Result<&dyn bitvmx::Secrets> {
         Ok(self)
     }
     fn babe(&self) -> Result<&dyn babe::Secrets> {
@@ -282,7 +282,7 @@ impl Engine<'_> {
             ensure!(b0 == b && i0 == hex::encode(input), "contract {} is already disputed with another claim", record.cid());
         }
         match record.gadget() {
-                        Gadget::BitVmx => self.run_bitvmx(chain, record, statement, dir, b, input),
+            Gadget::BitVmx => self.run_bitvmx(chain, record, statement, dir, b, input),
             Gadget::Babe => self.run_babe(chain, record, statement, dir, b, input),
         }
     }

@@ -173,11 +173,11 @@ impl std::str::FromStr for Statement {
     fn from_str(s: &str) -> Result<Statement> {
         match s.split_once(':') {
             None if s == "mock" => Ok(Statement::Mock { session: 0, returns: vec![] }),
-                        None if s == "groth16" => Statement::groth16(),
+            None if s == "groth16" => Statement::groth16(),
             None if s == "babe" => Ok(Statement::Babe { mock: false }),
             None if s == "babe-mock" => Ok(Statement::Babe { mock: true }),
             Some(("groth16", pdf)) => Ok(Statement::Groth16 { pdf: PathBuf::from(pdf) }),
-                        _ => bail!("a statement is `mock`, `groth16`, `groth16:<pdf>`, `babe` or `babe-mock`"),
+            _ => bail!("a statement is `mock`, `groth16`, `groth16:<pdf>`, `babe` or `babe-mock`"),
         }
     }
 }
@@ -185,7 +185,7 @@ impl std::str::FromStr for Statement {
 impl Statement {
     pub fn id(&self) -> &'static str {
         match self {
-                        Statement::Groth16 { .. } => "groth16",
+            Statement::Groth16 { .. } => "groth16",
             Statement::Mock { .. } => "mock",
             Statement::Babe { mock: false } => "babe",
             Statement::Babe { mock: true } => "babe-mock",
@@ -202,7 +202,7 @@ impl Statement {
     /// than the mock: the hub then checks a withdrawal natively before
     /// folding, and the wallet waits for the anchor and the chain receipt.
     pub fn is_real(&self) -> bool {
-                matches!(self, Statement::Groth16 { .. } | Statement::Babe { mock: false })
+        matches!(self, Statement::Groth16 { .. } | Statement::Babe { mock: false })
     }
 }
 
@@ -532,7 +532,7 @@ pub enum OfferKeys {
 impl RequestKeys {
     pub fn bitvmx(&self) -> Result<&BitVmxRequest> {
         match self {
-                        RequestKeys::BitVmx(k) => Ok(k),
+            RequestKeys::BitVmx(k) => Ok(k),
             _ => bail!("not a BitVMX request"),
         }
     }
@@ -541,7 +541,7 @@ impl RequestKeys {
 impl OfferKeys {
     pub fn bitvmx(&self) -> Result<&BitVmxOffer> {
         match self {
-                        OfferKeys::BitVmx(k) => Ok(k),
+            OfferKeys::BitVmx(k) => Ok(k),
             _ => bail!("not a BitVMX offer"),
         }
     }
@@ -553,14 +553,14 @@ impl Record {
     }
     pub fn gadget(&self) -> Gadget {
         match self.dispute {
-                        DisputeKeys::BitVmx(_) => Gadget::BitVmx,
+            DisputeKeys::BitVmx(_) => Gadget::BitVmx,
             DisputeKeys::Babe(_) => Gadget::Babe,
         }
     }
     /// The BitVMX keys, for a BitVMX contract.
     pub fn bitvmx(&self) -> Result<&BitVmxKeys> {
         match &self.dispute {
-                        DisputeKeys::BitVmx(k) => Ok(k),
+            DisputeKeys::BitVmx(k) => Ok(k),
             _ => bail!("contract {} is not a BitVMX contract", self.cid()),
         }
     }
@@ -598,13 +598,13 @@ pub enum Built {
 impl Built {
     pub fn gadget(&self) -> Gadget {
         match self {
-                        Built::BitVmx(_) => Gadget::BitVmx,
+            Built::BitVmx(_) => Gadget::BitVmx,
             Built::Babe(_) => Gadget::Babe,
         }
     }
     pub fn core(&self) -> Core<'_> {
         match self {
-                        Built::BitVmx(c) => c.core(),
+            Built::BitVmx(c) => c.core(),
             Built::Babe(c) => c.core(),
         }
     }
@@ -615,7 +615,7 @@ impl Built {
     /// The contract output's tree.
     pub fn tree(&self) -> Result<TapTree> {
         match self {
-                        Built::BitVmx(c) => c.tree(),
+            Built::BitVmx(c) => c.tree(),
             Built::Babe(c) => c.tree(),
         }
     }
@@ -627,7 +627,7 @@ impl Built {
     /// `funding`: the default and the dispute's.
     pub fn presign(&self, funding: OutPoint) -> Result<Vec<Presign>> {
         match self {
-                        Built::BitVmx(c) => c.presign(funding),
+            Built::BitVmx(c) => c.presign(funding),
             Built::Babe(c) => c.presign(funding),
         }
     }
@@ -640,7 +640,7 @@ impl Built {
     /// read it.
     pub fn b_key(&self) -> &WotsPublic {
         match self {
-                        Built::BitVmx(c) => c.b_key(),
+            Built::BitVmx(c) => c.b_key(),
             Built::Babe(c) => &c.spec.b_key,
         }
     }
@@ -648,14 +648,14 @@ impl Built {
     /// pre-signed `set`) needs from her fee budget on `net`.
     pub fn terminal_need(&self, set: &[Presign], net: Net) -> Result<Amount> {
         match self {
-                        Built::BitVmx(c) => bitvmx::terminal_need(c, set, net),
+            Built::BitVmx(c) => bitvmx::terminal_need(c, set, net),
             Built::Babe(_) => babe::terminal_need(set, net),
         }
     }
     /// The BitVMX contract, for a BitVMX contract.
     pub fn bitvmx(&self) -> Result<&Contract> {
         match self {
-                        Built::BitVmx(c) => Ok(c),
+            Built::BitVmx(c) => Ok(c),
             Built::Babe(_) => bail!("not a BitVMX contract"),
         }
     }
@@ -789,7 +789,7 @@ mod tests {
             deposit_coin: (OutPoint::null(), TxOut { value: Amount::ZERO, script_pubkey: bitcoin::ScriptBuf::new() }),
             fee_spk: bitcoin::ScriptBuf::new(),
         };
-                let RequestKeys::BitVmx(keys) = &mut req.dispute else { unreachable!() };
+        let RequestKeys::BitVmx(keys) = &mut req.dispute else { unreachable!() };
         check_request_keys(&program, keys).unwrap();
         // a key of other parameters panicked in pre-signing
         keys.inputs[0] = input(0, WotsParams::for_bytes(2));

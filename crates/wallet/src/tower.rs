@@ -178,7 +178,7 @@ impl Signer for PackageSigner {
     fn anchor(&self) -> Option<Keypair> {
         None
     }
-        fn bitvmx(&self) -> Result<&dyn crate::engine::bitvmx::Secrets> {
+    fn bitvmx(&self) -> Result<&dyn crate::engine::bitvmx::Secrets> {
         Ok(self)
     }
     fn babe(&self) -> Result<&dyn crate::engine::babe::Secrets> {

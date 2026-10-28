@@ -185,7 +185,7 @@ impl Hub {
             ensure!(w.user >= least, "windows {w:?}: wallets refuse fewer than {least} blocks for each of the user's moves");
         }
         std::fs::create_dir_all(cfg.dir.join("contracts"))?;
-                let program = cfg.statement.program_if(&cfg.dir)?;
+        let program = cfg.statement.program_if(&cfg.dir)?;
         let chain = Chain::connect_on(&cfg.rpc_url, &cfg.cookie, &cfg.wallet, cfg.network)?;
         // coins locked for offers that didn't survive the restart
         chain.unlock(&[])?;
@@ -220,11 +220,11 @@ impl Hub {
         ensure!(!(cfg_refuse || cfg_dispute) || cfg.network.is_test(), "a hub refuses withdrawals or disputes true claims on test networks only, not {}", cfg.network);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-                let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()) });
+        let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()) });
         let stop = Arc::new(AtomicBool::new(false));
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
-                        for mut req in srv.incoming_requests() {
+            for mut req in srv.incoming_requests() {
                 // an instance: bytes, not JSON
                 if *req.method() == Method::Get && req.url().starts_with("/babe/instance/") {
                     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| i1.babe_instance_at(req.url())));
@@ -250,7 +250,7 @@ impl Hub {
                         Err(_) => error(500, "the request failed".into()),
                     },
                 };
-                                                let ct = Header::from_bytes("Content-Type", "application/json").unwrap();
+                let ct = Header::from_bytes("Content-Type", "application/json").unwrap();
                 let _ = req.respond(Response::from_string(json).with_status_code(code).with_header(ct));
             }
         });
@@ -334,9 +334,8 @@ impl Drop for Hub {
 fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String> {
     Ok(match (method, url) {
         (Method::Get, "/info") => serde_json::to_string(&inner.info())?,
-                (Method::Post, "/deposit") => serde_json::to_string(&inner.deposit(serde_json::from_str(body)?)?)?,
+        (Method::Post, "/deposit") => serde_json::to_string(&inner.deposit(serde_json::from_str(body)?)?)?,
         (Method::Post, "/babe/setup") => serde_json::to_string(&inner.babe_setup(serde_json::from_str(body)?)?)?,
-        
         (Method::Post, "/open") => serde_json::to_string(&inner.open(serde_json::from_str(body)?)?)?,
         (Method::Post, "/accept") => serde_json::to_string(&inner.accept(serde_json::from_str(body)?)?)?,
         (Method::Post, "/fold") => serde_json::to_string(&inner.fold(serde_json::from_str(body)?)?)?,
@@ -406,7 +405,7 @@ impl Inner {
         hub.payout_spk = self.chain.new_spk()?;
         let v_max = (1u64 << req.bits) - 1;
         let t_close = self.chain.height()? + self.cfg.duration;
-                // the dispute's keys: Alice's, checked, and the hub's, by gadget
+        // the dispute's keys: Alice's, checked, and the hub's, by gadget
         let gadget = match &req.dispute {
             RequestKeys::BitVmx(_) => Gadget::BitVmx,
             RequestKeys::Babe(_) => Gadget::Babe,
@@ -510,7 +509,7 @@ impl Inner {
     }
 
     fn fund(&self, a: Accept, p: Pending) -> Result<Opened> {
-                let mut record = p.record;
+        let mut record = p.record;
         record.alice_sigs = a.alice_sigs;
         if record.gadget() == Gadget::Babe {
             self.babe_accept(&mut record, &a.adaptor)?;

@@ -177,7 +177,7 @@ impl Engine<'_> {
             }
             self.step(format!("kept instance {i} doesn't open"));
         }
-                // no instance opens: the proof is false (or every kept instance
+        // no instance opens: the proof is false (or every kept instance
         // was, against odds of 1 in C(N, M)); failure takes the contract
         self.step("no kept instance opens on this proof: failure will take the contract".into());
         let c_op = OutPoint { txid: d.txid("challenge_assert"), vout: 0 };

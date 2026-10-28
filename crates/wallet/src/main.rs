@@ -348,7 +348,7 @@ fn main() -> Result<()> {
                         Some(win) => println!("  windows     {} blocks for each of the user's moves, {} for the hub's choices, {} for its heavy moves", win.user, win.hub, win.path),
                         None => {
                             let p = lichen_proto::params(h.record.network);
-                                                        println!("  windows     {} blocks for every move (a contract from before windows by obligation)", p.delta + p.delta_prime);
+                        println!("  windows     {} blocks for every move (a contract from before windows by obligation)", p.delta + p.delta_prime);
                         }
                     },
                     lichen_proto::DisputeKeys::Babe(k) => {
@@ -382,7 +382,7 @@ fn main() -> Result<()> {
             let (amount, input) = match (kept, amount, input) {
                 (Some((b, i)), _, _) => (b, hex::decode(i)?),
                 (None, Some(b), Some(p)) => (b, hex::decode(std::fs::read_to_string(p)?.trim())?),
-                                (None, Some(b), None) if a.statement == lichen_proto::Statement::Babe { mock: true } => (b, w.babe_mock_input(contract)?),
+                (None, Some(b), None) if a.statement == lichen_proto::Statement::Babe { mock: true } => (b, w.babe_mock_input(contract)?),
                 (None, Some(b), None) => (b, a.statement.mock_input(b, contract).context("--input: the claim's input (a proof's, for groth16 and babe)")?),
                 (None, None, _) => anyhow::bail!("the amount withdrawn"),
             };
