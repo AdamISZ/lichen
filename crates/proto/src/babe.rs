@@ -284,6 +284,24 @@ impl Disputed {
     pub fn alice_b(request: &bitcoin::Transaction) -> Result<lngap_lamport::winternitz::WotsSig> {
         lngap_lamport::winternitz::WotsSig::from_consumption_order(WotsParams::for_bytes(4), &Self::args(request))
     }
+    /// The hub's signature on `b`, from `respond` (its arguments first).
+    pub fn hub_b(respond: &bitcoin::Transaction) -> Result<lngap_lamport::winternitz::Wots256Sig> {
+        let args = Self::args(respond);
+        let n = 2 * WotsParams::for_bytes(4).total_digits() as usize;
+        ensure!(args.len() >= n, "respond's arguments are too few");
+        lngap_lamport::winternitz::Wots256Sig::from_consumption_order(WotsParams::for_bytes(4), &args[..n])
+    }
+    /// The hub's key and its signature on `b` from `respond`, as the BABE
+    /// prover takes them (`lichen-r0 babe`'s hub auth: JSON, `key` and
+    /// `sig`, ten 32-byte hashes each, hex), checked.
+    pub fn hub_auth(&self, respond: &bitcoin::Transaction) -> Result<serde_json::Value> {
+        let sig = Self::hub_b(respond)?;
+        let key = &self.record.babe()?.hub_b;
+        ensure!(sig.hashes.len() == key.digits.len(), "the hub's signature and key differ in length");
+        key.verify(&sig).context("respond's signature on b, under the hub's key")?;
+        let h = |v: &[[u8; 32]]| v.iter().map(hex::encode).collect::<Vec<_>>();
+        Ok(serde_json::json!({ "key": h(&key.digits), "sig": h(&sig.hashes) }))
+    }
     /// What `assert` put on chain: π1's digits (read under Alice's Lamport
     /// key), their preimages, and the proof, if its points are points.
     pub fn asserted(&self, assert: &bitcoin::Transaction) -> Result<Asserted> {

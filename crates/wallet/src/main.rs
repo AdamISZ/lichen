@@ -216,7 +216,12 @@ fn escalate_note(a: &Args, cid: u32, b: u64, t_close: u32, height: Option<u32>) 
         }
         None => format!("Escalate so that it confirms by block {t_close}, the contract's T_close. After it the hub may broadcast the contract's default instead, which pays you your reserve and not the withdrawal."),
     };
-    let (proving, yourself) = if a.statement.mock_input(0, cid).is_some() {
+    let (proving, yourself) = if matches!(a.statement, lichen_proto::Statement::Babe { mock: false }) {
+        (
+            "The escalation has to confirm; then the hub signs b and you prove (10 to 15 minutes on 4 x86 cores) before T_A",
+            format!("  yourself, then proving on x86 Linux with Docker as it tells you once the hub has signed b:\n    lichen dispute {cid} {b}"),
+        )
+    } else if a.statement.mock_input(0, cid).is_some() || a.statement == (lichen_proto::Statement::Babe { mock: true }) {
         ("The escalation has to confirm", format!("  yourself:\n    lichen dispute {cid} {b}"))
     } else {
         (
@@ -224,8 +229,13 @@ fn escalate_note(a: &Args, cid: u32, b: u64, t_close: u32, height: Option<u32>) 
             format!("  yourself, proving on x86 Linux with Docker (the README, \"Disputes on the real statement\"):\n    lichen withdraw-input {cid} > withdraw-input.json\n    lichen chain-receipt {cid} chain.receipt\n    lichen-r0 claim withdraw-input.json chain.receipt claim.hex\n    lichen dispute {cid} {b} --input claim.hex"),
         )
     };
+    let tower = match a.statement {
+        lichen_proto::Statement::Babe { mock: false } => format!("  or, once you have proved, with a tower, which asserts the proof and answers the hub's challenge while you are away (it holds your signatures, none of your keys):\n    lichen export-dispute {cid} --input claim.hex --out package.json"),
+        lichen_proto::Statement::Babe { mock: true } => format!("  or with a tower, which plays it while you are away (it holds your signatures, none of your keys):\n    lichen export-dispute {cid} --out package.json"),
+        _ => format!("  or with a tower, which proves and plays it while you are away (docs/RUN_A_TOWER.md):\n    lichen export-dispute {cid} --out package.json"),
+    };
     format!(
-        "contract {cid}: your {b} sats are returned to the hub on the L2 and not folded, so only a dispute on Bitcoin gets them back (if the hub was only unreachable, `withdraw` again asks with the same return).\n{when} {proving}: don't leave it to the last blocks.\nWith this command's --network, --wallet and --statement:\n{yourself}\n  or with a tower, which proves and plays it while you are away (docs/RUN_A_TOWER.md):\n    lichen export-dispute {cid} --out package.json"
+        "contract {cid}: your {b} sats are returned to the hub on the L2 and not folded, so only a dispute on Bitcoin gets them back (if the hub was only unreachable, `withdraw` again asks with the same return).\n{when} {proving}: don't leave it to the last blocks.\nWith this command's --network, --wallet and --statement:\n{yourself}\n{tower}"
     )
 }
 
@@ -380,10 +390,20 @@ fn main() -> Result<()> {
         Cmd::Dispute { contract, amount, ref input, ref lie } => {
             let chain = chain(&a)?;
             let kept = w.contracts.iter().find(|h| h.record.cid() == contract).and_then(|h| h.claim.clone());
+            let real_babe = matches!(a.statement, lichen_proto::Statement::Babe { mock: false });
+            // under babe, a RISC Zero claim (lichen-r0 babe-claim's) becomes its proof
+            let read = |p: &PathBuf, w: &lichen_wallet::Wallet| -> Result<Vec<u8>> {
+                let data = hex::decode(std::fs::read_to_string(p)?.trim())?;
+                if real_babe { w.babe_claim_input(contract, &data) } else { Ok(data) }
+            };
             let (amount, input) = match (kept, amount, input) {
+                // the proof, made once the hub responded
+                (Some((b, i)), _, Some(p)) if i.is_empty() => (b, read(p, &w)?),
                 (Some((b, i)), _, _) => (b, hex::decode(i)?),
-                (None, Some(b), Some(p)) => (b, hex::decode(std::fs::read_to_string(p)?.trim())?),
+                (None, Some(b), Some(p)) => (b, read(p, &w)?),
                 (None, Some(b), None) if a.statement == lichen_proto::Statement::Babe { mock: true } => (b, w.babe_mock_input(contract)?),
+                // proved once the hub responds, with its signature on b
+                (None, Some(b), None) if real_babe => (b, vec![]),
                 (None, Some(b), None) => (b, a.statement.mock_input(b, contract).context("--input: the claim's input (a proof's, for groth16 and babe)")?),
                 (None, None, _) => anyhow::bail!("the amount withdrawn"),
             };
@@ -392,13 +412,25 @@ fn main() -> Result<()> {
             }
             w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
             let (outcome, swept) = w.dispute(&chain, &a.statement, &a.wallet.with_extension("d"), contract, amount, &input)?;
-            println!("{outcome:?}; swept {swept:?}");
+            match outcome {
+                lichen_wallet::dispute::Outcome::ProofDue(t_a) => {
+                    let auth = lichen_wallet::engine::babe::data_dir(&a.wallet.with_extension("d"), contract).join("hub-auth.json");
+                    println!(
+                        "The hub signed b. Your proof is due: assert it before block {t_a} (T_A), after which the hub may take the contract. Prove on x86 Linux with Docker (the README, \"Disputes on the real statement\"), with this command's --network, --wallet and --statement:\n    lichen withdraw-input {contract} > withdraw-input.json\n    lichen chain-receipt {contract} chain.receipt\n    lichen-r0 babe-claim withdraw-input.json {} chain.receipt claim.hex\n    lichen dispute {contract} --input claim.hex\nor, once proved, with a tower: lichen export-dispute {contract} --input claim.hex --out package.json",
+                        auth.display()
+                    );
+                }
+                _ => println!("{outcome:?}; swept {swept:?}"),
+            }
         }
         Cmd::Tower { .. } => unreachable!(),
         Cmd::ExportDispute { contract, ref out, ref input } => {
             let dir = a.wallet.with_extension("d");
             let program = a.statement.program_if(&dir)?;
             let mut claim = input.as_ref().map(|p| -> Result<Vec<u8>> { Ok(hex::decode(std::fs::read_to_string(p)?.trim())?) }).transpose()?;
+            if let (Some(c), lichen_proto::Statement::Babe { mock: false }) = (&claim, &a.statement) {
+                claim = Some(w.babe_claim_input(contract, c)?);
+            }
             if claim.is_none() && matches!(a.statement, lichen_proto::Statement::Babe { mock: true }) {
                 claim = Some(w.babe_mock_input(contract)?);
             }

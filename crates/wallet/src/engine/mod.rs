@@ -39,6 +39,11 @@ pub enum Outcome {
     /// Under BABE: she answered the hub's challenge with a kept
     /// instance's `msg`; `wrongly_challenged` paid her.
     Answered(Txid),
+    /// Under BABE, on the real statement: the hub responded, so her proof
+    /// is due, by `T_A` (this block). Its signature on `b`, which the
+    /// proof takes, is written beside the instances (`hub-auth.json`).
+    /// Run again with the proof.
+    ProofDue(u32),
     /// The hub disproved her claim (or she lost by timeout).
     Lost,
 }
@@ -48,7 +53,7 @@ impl Outcome {
     pub fn payout(&self) -> Option<Txid> {
         match self {
             Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) => Some(*t),
-            Outcome::Lost | Outcome::Paused => None,
+            Outcome::Lost | Outcome::Paused | Outcome::ProofDue(_) => None,
         }
     }
 }
@@ -279,7 +284,8 @@ impl Engine<'_> {
             // the payout is posted: nothing left to play
             return Ok(o);
         }
-        if let Some((b0, i0)) = self.store.claim() {
+        // (under BABE the proof may come after the request, its own check)
+        if let (Some((b0, i0)), Gadget::BitVmx) = (self.store.claim(), record.gadget()) {
             ensure!(b0 == b && i0 == hex::encode(input), "contract {} is already disputed with another claim", record.cid());
         }
         match record.gadget() {

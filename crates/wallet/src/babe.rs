@@ -104,6 +104,18 @@ impl Wallet {
         Ok(presigs)
     }
 
+    /// Under the real BABE statement, the claim's input for contract `cid`
+    /// from a RISC Zero claim (`lichen-r0 bitvmx-input`'s, or `babe-claim`'s;
+    /// its bytes): its proof, checked to be the BABE guest's for the
+    /// contract's journal.
+    pub fn babe_claim_input(&self, cid: u32, claim: &[u8]) -> Result<Vec<u8>> {
+        let h = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
+        let journal = h.record.babe_journal()?;
+        let proof = lichen_babe::statement::risc0_claim(claim, &journal)?;
+        ensure!(lichen_babe::statement::Kind::Risc0.verify(&journal, &proof), "the claim's proof doesn't verify");
+        Ok(lichen_babe::statement::proof_to_bytes(&proof))
+    }
+
     /// Under the mock BABE statement, the claim's input for contract
     /// `cid`: a proof of the toy circuit for its journal.
     pub fn babe_mock_input(&self, cid: u32) -> Result<Vec<u8>> {

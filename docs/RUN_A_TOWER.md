@@ -94,6 +94,29 @@ Nothing forces you to export at once: the dispute has to be under way
 well before the contract closes (on Mutinynet a week after it opened),
 so get the machine ready first.
 
+### Under BABE
+
+On a BABE contract (`--statement babe`) the tower holds none of your
+keys, only signatures: on the amount, on your proof, and (made when the
+contract opened) on the transaction that answers a wrong challenge. At
+worst it stays silent. Since it can't sign a proof, you prove first: run
+`lichen dispute <contract> <amount>` yourself until the hub responds and
+the proof falls due, prove as it tells you (about 15 minutes on 4 x86
+cores), then export with the proof:
+
+```sh
+lichen --network mutinynet --wallet alice.json --statement babe \
+  export-dispute <contract> --input claim.hex --out package.json
+scp -r package.json package.d <you>@<machine>:lichen/deploy/tower/data/
+```
+
+`package.d` holds the contract's kept garbled circuits (about 240 MB),
+which the tower needs to answer a challenge. Set `STATEMENT=babe` in
+`deploy/tower/.env`. The tower asserts your
+proof (a resumed dispute: what you already posted it finds on chain),
+then waits for the hub: if it doesn't challenge, the tower collects; if
+it does, the tower answers from the circuits.
+
 ### Your sequencer
 
 The package carries what the tower proves from: the return's note, its

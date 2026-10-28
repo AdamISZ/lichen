@@ -100,6 +100,17 @@ pub fn mock_prove(journal: &[u8]) -> Proof<Bn254> {
 }
 
 /// A proof's bytes: its three points, compressed (128 bytes).
+/// A RISC Zero claim as `lichen-r0 bitvmx-input` writes it (the image id,
+/// the points, the journal): its proof, once the image is the BABE guest's
+/// and the journal `journal`.
+pub fn risc0_claim(data: &[u8], journal: &[u8]) -> anyhow::Result<Proof<Bn254>> {
+    let (id, points, j) = lngap_zk::groth16::split_input(data)?;
+    let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    anyhow::ensure!(id == IMAGE_ID.trim(), "a claim of image {id}, not the BABE guest's");
+    anyhow::ensure!(j == journal, "the claim's journal is not the contract's");
+    crate::risc0::proof(points)
+}
+
 pub fn proof_to_bytes(p: &Proof<Bn254>) -> Vec<u8> {
     let mut v = Vec::new();
     p.serialize_compressed(&mut v).expect("serialize");

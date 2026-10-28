@@ -142,7 +142,7 @@ impl Wallet {
     fn won(&mut self, chain: &Chain, statement: &Statement, dir: &Path, k: usize, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
         let txid = match &outcome {
             Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) => *t,
-            Outcome::Lost | Outcome::Paused => bail!("not a win"),
+            Outcome::Lost | Outcome::Paused | Outcome::ProofDue(_) => bail!("not a win"),
         };
         let at = wait_confirmed(chain, &txid)?;
         let payout = chain.get_tx(&txid).context("the payout")?;

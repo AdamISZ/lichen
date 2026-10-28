@@ -266,3 +266,23 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         1,000-element limit, checked: 1,000 pass, 1,017 (bit by bit) don't
         (`tests/reveal.rs`)
 - [ ] 5 end to end
+  - [x] the proof after `respond`: the real statement proves the hub's
+        signature on `b`, which `respond` carries. With no proof the
+        wallet requests, and once the hub responds writes its signature
+        (`hub-auth.json`, `lichen-r0 babe`'s format, checked under its key)
+        and stops with the proof due by `T_A` (`Outcome::ProofDue`); run
+        again with the claim (`lichen-r0 babe-claim`: `babe`, `wrap`,
+        `bitvmx-input`), which the wallet reads as the BABE guest's proof
+        for the contract's journal. The CLI prints the steps; a tower
+        takes over once proved
+  - [x] a real proof on regtest (`hub/tests/babe_risc0.rs`, opt-in): the
+        toy deployment's return of 60 with memo 42, contract 42, the hubs
+        of one seed (one key for `b`, one journal); the hub's signature as
+        `respond` carried it, proved on lichen-vps (662 s, the wrap 257 s,
+        482k user cycles), canned (`proto/tests/data/babe-claim-60-42.*`).
+        An honest hub doesn't challenge, `success` pays; a hub challenging
+        true claims is answered from a kept instance; step 1's proof
+        (another hub's key) is challenged, opens nothing, and `failure`
+        takes the contract. 34 s in all
+  - [ ] Mutinynet: a hub with `STATEMENT=babe`, a return proved on
+        lichen-vps after `respond`; measured

@@ -92,14 +92,36 @@ impl Engine<'_> {
     /// contract `record`, `input` her Groth16 proof (its bytes). Blocks
     /// until the dispute ends, at the payout for a win. Resumable: what is
     /// on chain is replayed, not posted again.
+    ///
+    /// On the real statement the proof takes the hub's signature on `b`,
+    /// from `respond`: with `input` empty (and none kept) she requests,
+    /// and once the hub responds the dispute stops at
+    /// [`Outcome::ProofDue`]; run again with the proof.
     pub(super) fn run_babe(&mut self, chain: &Chain, record: &Record, statement: &Statement, dir: &Path, b: u32, input: &[u8]) -> Result<Outcome> {
         let cid = record.cid();
         let d = Disputed::new(record, statement)?;
-        let proof = proof_from_bytes(input).context("the claim's input is not a Groth16 proof")?;
-        match self.store.claim() {
-            Some((b0, i0)) => ensure!(b0 == b && i0 == hex::encode(input), "contract {cid} is already disputed with another claim"),
-            None => self.store.set_claim(b, input)?,
-        }
+        // the claim: b, and the proof once made
+        let input = match self.store.claim() {
+            Some((b0, i0)) => {
+                ensure!(b0 == b, "contract {cid} is already disputed with a claim of {b0}");
+                match (i0.is_empty(), input.is_empty()) {
+                    (_, true) => hex::decode(&i0)?,
+                    (true, false) => {
+                        self.store.set_claim(b, input)?;
+                        input.to_vec()
+                    }
+                    (false, false) => {
+                        ensure!(i0 == hex::encode(input), "contract {cid} is already disputed with another proof");
+                        input.to_vec()
+                    }
+                }
+            }
+            None => {
+                self.store.set_claim(b, input)?;
+                input.to_vec()
+            }
+        };
+        let proof = if input.is_empty() { None } else { Some(proof_from_bytes(&input).context("the claim's input is not a Groth16 proof")?) };
         let w = d.babe.spec.windows;
         let secrets = self.signer.babe()?;
         // requesting waits to_self_delay after the contract's funding
@@ -131,6 +153,16 @@ impl Engine<'_> {
             self.step(format!("no assertion by T_A, block {}: respond_timeout took the contract", w.t_a));
             return self.lost(s_op.txid);
         }
+        let Some(proof) = proof else {
+            // the hub's signature on b, for the proof
+            let auth = d.hub_auth(&chain.get_tx(&d.txid("respond")).context("respond")?)?;
+            let data = data_dir(dir, cid);
+            std::fs::create_dir_all(&data)?;
+            let path = data.join("hub-auth.json");
+            std::fs::write(&path, serde_json::to_vec_pretty(&auth)?)?;
+            self.step(format!("the hub responded: its signature on b is in {}; the proof is due by T_A, block {}", path.display(), w.t_a));
+            return Ok(Outcome::ProofDue(w.t_a));
+        };
         ensure!(chain.height()? < w.t_a || chain.get_tx(&d.txid("assert")).is_some(), "T_A, block {}, has passed: the assertion is too late", w.t_a);
         let bits = lichen_babe::gadget::input(&proof.a);
         let (pi2, pi3) = pi23_to_bytes(&proof);

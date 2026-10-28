@@ -33,6 +33,8 @@
 //!   input;
 //! - `claim <withdraw input> <chain receipt> <out.hex>`: a claim, whole:
 //!   `withdraw`, `wrap`, `bitvmx-input` (what the tower runs);
+//!   `babe-claim <withdraw input> <hub auth> <chain receipt> <out.hex>`,
+//!   BABE's: `babe`, `wrap`, `bitvmx-input` (`lichen dispute` takes it);
 //! - `image-id [spend|chain|withdraw|babe]`: a committed guest's image id;
 //!   `check-id`: that each is its committed `.id`; `pack-id <bin>`: a
 //!   packed binary's.
@@ -351,6 +353,13 @@ fn main() -> Result<()> {
             eprintln!("lichen-r0: {out}: the claim's input for the BitVMX verifier, {} bytes", bytes.len());
             Ok(())
         }
+        ["babe-claim", json, auth, chain, out] => {
+            let r = prove_babe(json, auth, load(chain)?, false)?.context("a receipt")?;
+            let bytes = bitvmx_input(&wrap(&r)?)?;
+            write(out, hex::encode(&bytes).as_bytes())?;
+            eprintln!("lichen-r0: {out}: the BABE claim (the image id, the proof's points, the journal), {} bytes", bytes.len());
+            Ok(())
+        }
         ["verify-chain", receipt] => {
             let r: Receipt = bincode::deserialize(&read(receipt)?).context("a receipt")?;
             let id = image_id(&committed("chain")?)?;
@@ -384,6 +393,6 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        _ => bail!("usage: lichen-r0 spend <input> <receipt> | verify <receipt> <journal hex> | chain <block input> <out> [--prev <receipt>] [<spend receipt>...] | verify-chain <receipt> | withdraw|exec-withdraw <withdraw input> <chain receipt> <out> | babe|exec-babe <withdraw input> <hub auth> <chain receipt> <out> | wrap <receipt> <out> | bitvmx-input <receipt> <out.hex> | claim <withdraw input> <chain receipt> <out.hex> | pack <guest ELF> <out> | pack-id <bin> | image-id [spend|chain|withdraw|babe] | check-id"),
+        _ => bail!("usage: lichen-r0 spend <input> <receipt> | verify <receipt> <journal hex> | chain <block input> <out> [--prev <receipt>] [<spend receipt>...] | verify-chain <receipt> | withdraw|exec-withdraw <withdraw input> <chain receipt> <out> | babe|exec-babe <withdraw input> <hub auth> <chain receipt> <out> | wrap <receipt> <out> | bitvmx-input <receipt> <out.hex> | claim <withdraw input> <chain receipt> <out.hex> | babe-claim <withdraw input> <hub auth> <chain receipt> <out.hex> | pack <guest ELF> <out> | pack-id <bin> | image-id [spend|chain|withdraw|babe] | check-id"),
     }
 }

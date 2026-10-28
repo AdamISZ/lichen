@@ -48,6 +48,8 @@ hub's signature on 60 (120 SHA-256 chain steps): 482k user cycles, one
 segment; on lichen-vps (4 vCPUs) proved in 660 s, wrapped in Groth16 in
 258 s. The withdrawal guest, on an earlier return: 333k, 360 s there. (Above 2^19
 cycles with the paging, perhaps: the time grows more than the cycles.)
+Again with a regtest hub's signature, as its `respond` carried it (the
+claim `crates/proto/tests/data/babe-claim-60-42.hex`): 662 s and 257 s.
 
 Measured with the spend guest (Mac, Docker, 8 cores; composite
 receipts): shielding 10,163 user cycles, 6.4 s; a payment (1 in, 2 out)
