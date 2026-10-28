@@ -7,6 +7,13 @@
 //! wins (each link goes at its floor until anchors get a key of their own).
 //! The tower stops at the payout; the wallet sweeps it
 //! ([`crate::Wallet::sweep_dispute`]).
+//!
+//! Under BABE the package holds none of her keys, only signatures: on `b`
+//! and on π1 (the claim's proof, made before the export), and, in the
+//! contract, on `wrongly_challenged` (made at the opening, kept from the
+//! hub). Her answer to a challenge is a kept instance's `msg`, which takes
+//! the instances (beside the package, in its work directory) and the
+//! chain, no key. At worst a tower stays silent.
 
 use std::path::{Path, PathBuf};
 
@@ -14,8 +21,11 @@ use anyhow::{ensure, Context, Result};
 use bitcoin::key::Keypair;
 use bitcoin::secp256k1::{SecretKey, SECP256K1};
 use bitcoin::Txid;
+use lichen_babe::graph::Babe;
+use lichen_babe::reveal::Preimage;
+use lichen_babe::setup::digits;
 use lichen_chain::{Chain, KeyFees, Net};
-use lichen_proto::{Record, Statement};
+use lichen_proto::{Gadget, Record, Statement};
 use lngap_ladder::script::wots_wire;
 use lngap_lamport::winternitz::{WotsParams, WotsSecret};
 use lngap_sessions::contract::Program;
@@ -40,7 +50,8 @@ pub struct Package {
     /// The withdrawal: its amount, and the note returning it to the hub.
     pub b: u32,
     pub note: u32,
-    /// Her signature on `b` (its input word's), as a witness wire, hex.
+    /// Her signature on `b`, hex: under BitVMX its input word's, as a
+    /// witness wire; under BABE as `request` takes it.
     pub b_wire: Vec<String>,
     /// The entropy of her key for each input word, hex; none for `b`'s.
     pub inputs: Vec<Option<String>>,
@@ -66,6 +77,10 @@ pub struct Package {
     /// height whose chain receipt first carries it).
     #[serde(default)]
     pub anchor: Option<lichen_ledger::Anchored>,
+    /// Under BABE, her Lamport signature on π1 (the claim's): a preimage
+    /// a digit, hex.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi1: Option<Vec<String>>,
 }
 
 fn entropy(h: &str) -> Result<[u8; 32]> {
@@ -84,6 +99,12 @@ impl Package {
         ensure!(p.version == VERSION, "a package of version {}, this tower reads {VERSION}", p.version);
         Ok(p)
     }
+}
+
+/// The work directory of the package at `package` (under BABE, the kept
+/// instances go there, [`Wallet::export_instances`]).
+pub fn work_dir(package: &Path) -> PathBuf {
+    package.with_extension("d")
 }
 
 /// The withdrawal statement's input for the package's return: as packed,
@@ -142,11 +163,13 @@ pub fn prove(p: &Package, chain: &Chain, work: &Path, prover: &Path) -> Result<V
 }
 
 /// The claim's input: as exported, or as made before (a resumed tower),
-/// or the mock's, or proved.
+/// or the mock's, or proved. Under BABE, as exported: her signature on it
+/// is in the package, her key isn't.
 fn claim_input(p: &Package, chain: &Chain, statement: &Statement, kept: Option<&(u32, String)>, work: &Path, prover: &Path) -> Result<Vec<u8>> {
     if let Some(h) = &p.claim {
         return Ok(hex::decode(h)?);
     }
+    ensure!(p.record.gadget() == Gadget::BitVmx, "a BABE package carries its claim, the proof she signed");
     if let Some((_, h)) = kept {
         return Ok(hex::decode(h)?);
     }
@@ -159,13 +182,24 @@ fn claim_input(p: &Package, chain: &Chain, statement: &Statement, kept: Option<&
 /// A package as a dispute's signer.
 pub struct PackageSigner {
     p: Package,
-    b_word: usize,
+    /// Under BitVMX, `b`'s input word.
+    b_word: Option<usize>,
 }
 
 impl PackageSigner {
     pub fn new(p: Package, statement: &Statement) -> Result<PackageSigner> {
-        let b_word = p.record.spec(statement)?.b_word;
-        ensure!(p.inputs.get(b_word).is_some_and(|e| e.is_none()), "the package must not carry b's key");
+        let b_word = match p.record.gadget() {
+            Gadget::BitVmx => {
+                let b_word = p.record.spec(statement)?.b_word;
+                ensure!(p.inputs.get(b_word).is_some_and(|e| e.is_none()), "the package must not carry b's key");
+                Some(b_word)
+            }
+            Gadget::Babe => {
+                ensure!(p.inputs.is_empty() && p.moves.is_empty() && p.hops.is_empty(), "a BABE package carries no keys");
+                ensure!(p.claim.is_some() && p.pi1.is_some(), "a BABE package carries the claim and her signature on it");
+                None
+            }
+        };
         Ok(PackageSigner { p, b_word })
     }
 }
@@ -182,7 +216,28 @@ impl Signer for PackageSigner {
         Ok(self)
     }
     fn babe(&self) -> Result<&dyn crate::engine::babe::Secrets> {
-        anyhow::bail!("a tower plays BitVMX disputes only, so far")
+        Ok(self)
+    }
+}
+
+impl crate::engine::babe::Secrets for PackageSigner {
+    fn request_wire(&self, b: u32) -> Result<Vec<Vec<u8>>> {
+        ensure!(b == self.p.b, "the claim's b is {b}, the package's {}", self.p.b);
+        self.p.b_wire.iter().map(|h| Ok(hex::decode(h)?)).collect()
+    }
+    fn sign_pi1(&self, digits: &[u8]) -> Result<Vec<Preimage>> {
+        let pi1 = self.p.pi1.as_ref().context("no signature on π1 in the package")?;
+        let lamport = &self.p.record.babe()?.lamport;
+        ensure!(pi1.len() == digits.len(), "{} preimages for {} digits", pi1.len(), digits.len());
+        pi1.iter()
+            .zip(digits)
+            .enumerate()
+            .map(|(d, (h, v))| {
+                let p: Preimage = hex::decode(h)?.try_into().ok().context("a preimage is 20 bytes")?;
+                ensure!(lamport.read(d, &p) == Some(*v), "the package's signature on π1 is not on this proof (digit {d})");
+                Ok(p)
+            })
+            .collect()
     }
 }
 
@@ -192,7 +247,7 @@ impl crate::engine::bitvmx::Secrets for PackageSigner {
         program.field_bytes(d).into_iter().zip(es).map(|(n, e)| WotsSecret::from_entropy(WotsParams::for_bytes(n), entropy(e).expect("a move key's entropy"))).collect()
     }
     fn input_wire(&self, j: usize, word: u32) -> Result<Vec<Vec<u8>>> {
-        if j == self.b_word {
+        if Some(j) == self.b_word {
             ensure!(word == self.p.b, "the claim's b is {word}, the package's {}", self.p.b);
             return self.p.b_wire.iter().map(|h| Ok(hex::decode(h)?)).collect();
         }
@@ -268,6 +323,10 @@ pub fn run(chain: &Chain, statement: &Statement, package: &Path, dir: &Path, pro
         }
     }
     let input = claim_input(&p, chain, statement, store.state.claim.as_ref(), &dir.join("proof"), prover)?;
+    if p.record.gadget() == Gadget::Babe {
+        let data = crate::engine::babe::data_dir(dir, p.cid());
+        ensure!(data.join("opened.json").exists(), "no instances in {}: copy them there with the package", data.display());
+    }
     let (record, b) = (p.record.clone(), p.b);
     let signer = PackageSigner::new(p, statement)?;
     Engine { signer: &signer, store: &mut store, opts }.run(chain, &record, statement, dir, b, &input)
@@ -278,15 +337,22 @@ impl Wallet {
     /// withdrawal returned on the L2 (its note found among the wallet's
     /// returns) with its input and chain receipt as far as the wallet has
     /// them, and `claim` if made already (else the tower builds the mock's,
-    /// or proves).
-    pub fn export_dispute(&mut self, statement: &Statement, program: &Program, cid: u32, claim: Option<&[u8]>) -> Result<Package> {
+    /// or proves). Under BABE the claim is needed, and the package carries
+    /// her signatures on it and on `b`, no key; its instances are copied
+    /// beside it by [`Wallet::export_instances`]. `program` is BitVMX's.
+    pub fn export_dispute(&mut self, statement: &Statement, program: Option<&Program>, cid: u32, claim: Option<&[u8]>) -> Result<Package> {
         let note = self.returned(cid).with_context(|| format!("no return to the hub with memo {cid}: return the withdrawal first"))?;
+        let h = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
+        ensure!(h.closed.is_none(), "contract {cid} is closed");
+        if h.record.gadget() == Gadget::Babe {
+            return self.export_babe(statement, cid, note, claim.context("a BABE package carries the claim (her proof), signed: prove first")?);
+        }
+        let program = program.context("a BitVMX package needs the statement's program")?;
         // as far as the sequencer has them; what it hasn't, the tower asks for
         let input = self.withdraw_input(cid).ok();
         let chain = input.as_ref().and_then(|_| self.chain_receipt(cid).ok()).map(hex::encode);
         let anchor = self.kept(note).and_then(|k| k.anchor);
         let h = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
-        ensure!(h.closed.is_none(), "contract {cid} is closed");
         let b = match &input {
             Some(i) => i.note.value,
             None => self.state()?.note(note).with_context(|| format!("no note {note}"))?.value,
@@ -301,6 +367,53 @@ impl Wallet {
             .collect();
         let hops = if program.schedule.jump.is_some() { (1..=lngap_ladder::tail::CHUNKS).map(|k| hex::encode(s.hop_entropy(k))).collect() } else { vec![] };
         let fee_key = hex::encode(s.fees(h.record.network).keypair.secret_bytes());
-        Ok(Package { version: VERSION, sequencer: self.sequencer.url.clone(), record: h.record.clone(), b, note, b_wire, inputs, moves, hops, fee_key, claim: claim.map(hex::encode), input, chain, anchor })
+        Ok(Package { version: VERSION, sequencer: self.sequencer.url.clone(), record: h.record.clone(), b, note, b_wire, inputs, moves, hops, fee_key, claim: claim.map(hex::encode), input, chain, anchor, pi1: None })
+    }
+
+    /// A BABE contract's package: her signatures on `b` (the return's) and
+    /// on the claim's π1, the claim checked first (a proof the hub would
+    /// challenge and win against is refused).
+    fn export_babe(&mut self, statement: &Statement, cid: u32, note: u32, claim: &[u8]) -> Result<Package> {
+        let b = u32::try_from(self.state()?.note(note).with_context(|| format!("no note {note}"))?.value).context("b fits in a u32")?;
+        let h = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
+        let proof = lichen_babe::statement::proof_from_bytes(claim).context("the claim is not a Groth16 proof")?;
+        let kind = statement.babe_kind().context("not a BABE statement")?;
+        ensure!(kind.verify(&h.record.babe_journal()?, &proof), "the proof doesn't verify for contract {cid}'s journal: the hub would challenge it and win");
+        let s = self.secrets(&h.nonce);
+        let b_wire = Babe::request_wire(&s.babe_b().sign(&b.to_be_bytes())?).iter().map(hex::encode).collect();
+        let pi1 = s.babe_lamport().sign(&digits(&lichen_babe::gadget::input(&proof.a))).iter().map(hex::encode).collect();
+        let fee_key = hex::encode(s.fees(h.record.network).keypair.secret_bytes());
+        Ok(Package {
+            version: VERSION,
+            sequencer: self.sequencer.url.clone(),
+            record: h.record.clone(),
+            b,
+            note,
+            b_wire,
+            inputs: vec![],
+            moves: vec![],
+            hops: vec![],
+            fee_key,
+            claim: Some(hex::encode(claim)),
+            input: None,
+            chain: None,
+            anchor: None,
+            pi1: Some(pi1),
+        })
+    }
+
+    /// Under BABE, copy contract `cid`'s instances (the kept ones and the
+    /// opened ones' shares, under the wallet's `dir`) to the work
+    /// directory of the package at `package`, where its tower reads them;
+    /// the bytes copied.
+    pub fn export_instances(&self, dir: &Path, cid: u32, package: &Path) -> Result<u64> {
+        let (from, to) = (crate::engine::babe::data_dir(dir, cid), crate::engine::babe::data_dir(&work_dir(package), cid));
+        std::fs::create_dir_all(&to)?;
+        let mut n = 0;
+        for e in std::fs::read_dir(&from).with_context(|| format!("contract {cid}'s instances, {}", from.display()))? {
+            let e = e?;
+            n += std::fs::copy(e.path(), to.join(e.file_name()))?;
+        }
+        Ok(n)
     }
 }

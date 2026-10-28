@@ -109,7 +109,7 @@ fn shielded_deposits_a_fold_and_a_dispute_input() {
     let journal = lichen_ledger::check(&input).unwrap();
     assert_eq!(journal[..8], [0x50, 0xc3, 0, 0, (cid & 0xff) as u8, (cid >> 8) as u8, 0, 0], "b = 50,000 and memo c");
     let program = mock().program(&dir.join("bob")).unwrap();
-    let pkg = w.export_dispute(&mock(), &program, cid, None).unwrap();
+    let pkg = w.export_dispute(&mock(), Some(&program), cid, None).unwrap();
     assert_eq!(serde_json::to_value(lichen_wallet::tower::withdraw_input(&pkg).unwrap()).unwrap(), serde_json::to_value(&input).unwrap());
     // the package carries the input: the tower needs no sequencer for it
     let mut gone = pkg.clone();

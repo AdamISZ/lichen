@@ -144,7 +144,7 @@ fn a_withdrawal_under_an_anchor() {
 
     // the tower's package carries the anchor
     let program = mock().program(&dir.join("alice")).unwrap();
-    let pkg = w.export_dispute(&mock(), &program, cid, None).unwrap();
+    let pkg = w.export_dispute(&mock(), Some(&program), cid, None).unwrap();
     assert_eq!(pkg.anchor, Some(a));
     let mut gone = pkg.clone();
     gone.sequencer = "http://127.0.0.1:9".into();

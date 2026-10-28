@@ -198,7 +198,8 @@ pub struct Options {
     /// Progress, one line a step.
     pub progress: Option<Arc<dyn Fn(String) + Send + Sync>>,
     /// For tests: stop after posting this move, the last too, before its
-    /// proof (a resume picks it up).
+    /// proof (a resume picks it up). Under BABE, 1 is `request` and 2
+    /// `assert`.
     pub pause_after: Option<u32>,
     /// For tests: escalate a claim that breaks a check.
     pub unchecked_claims: bool,

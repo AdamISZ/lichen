@@ -158,7 +158,8 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
         /// The claim's input, hex, if made already (a proof's, for
-        /// groth16); the tower builds the mock's.
+        /// groth16); the tower builds the mock's. Needed under babe: the
+        /// package carries her signature on it, not her key.
         #[arg(long)]
         input: Option<PathBuf>,
     },
@@ -239,7 +240,7 @@ fn main() -> Result<()> {
         let chain = chain(&a)?;
         let progress: std::sync::Arc<dyn Fn(String) + Send + Sync> = std::sync::Arc::new(|m: String| println!("{m}"));
         let opts = lichen_wallet::engine::Options { progress: Some(progress), ..Default::default() };
-        let outcome = lichen_wallet::tower::run(&chain, &a.statement, package, &package.with_extension("d"), prover, opts)?;
+        let outcome = lichen_wallet::tower::run(&chain, &a.statement, package, &lichen_wallet::tower::work_dir(package), prover, opts)?;
         match outcome.payout() {
             Some(txid) => {
                 let cid = lichen_wallet::tower::Package::load(package)?.cid();
@@ -395,12 +396,23 @@ fn main() -> Result<()> {
         }
         Cmd::Tower { .. } => unreachable!(),
         Cmd::ExportDispute { contract, ref out, ref input } => {
-            let program = a.statement.program(&a.wallet.with_extension("d"))?;
-            let claim = input.as_ref().map(|p| -> Result<Vec<u8>> { Ok(hex::decode(std::fs::read_to_string(p)?.trim())?) }).transpose()?;
-            let p = w.export_dispute(&a.statement, &program, contract, claim.as_deref())?;
+            let dir = a.wallet.with_extension("d");
+            let program = a.statement.program_if(&dir)?;
+            let mut claim = input.as_ref().map(|p| -> Result<Vec<u8>> { Ok(hex::decode(std::fs::read_to_string(p)?.trim())?) }).transpose()?;
+            if claim.is_none() && matches!(a.statement, lichen_proto::Statement::Babe { mock: true }) {
+                claim = Some(w.babe_mock_input(contract)?);
+            }
+            let p = w.export_dispute(&a.statement, program.as_ref(), contract, claim.as_deref())?;
             // a tower package holds the contract's one-time secrets
             lichen_ledger::files::write_private(out, &serde_json::to_vec_pretty(&p)?)?;
-            println!("wrote {}: contract {contract}'s dispute (a claim of {} sats) for a tower; it holds this contract's one-time secrets", out.display(), p.b);
+            if p.pi1.is_some() {
+                // under BABE: her signatures, no key; the instances beside it
+                let n = w.export_instances(&dir, contract, out)?;
+                let to = lichen_wallet::tower::work_dir(out);
+                println!("wrote {}: contract {contract}'s dispute (a claim of {} sats) for a tower; it holds her signatures, none of her keys. The kept instances, {} MiB, are in {}: copy it with the package", out.display(), p.b, n >> 20, to.display());
+            } else {
+                println!("wrote {}: contract {contract}'s dispute (a claim of {} sats) for a tower; it holds this contract's one-time secrets", out.display(), p.b);
+            }
         }
         Cmd::SweepDispute { contract, ref tower_state } => {
             let s: lichen_wallet::tower::TowerState = serde_json::from_slice(&std::fs::read(tower_state)?).context("a tower's state")?;

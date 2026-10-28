@@ -113,7 +113,7 @@ fn a_tower_plays_the_dispute_from_a_package() {
     // the package: this contract's one-time secrets, not her payment key
     // nor b's key
     let program = statement().program(&wdir).unwrap();
-    let pkg = w.export_dispute(&statement(), &program, cid, None).unwrap();
+    let pkg = w.export_dispute(&statement(), Some(&program), cid, None).unwrap();
     assert_eq!(pkg.b, B);
     let path = dir.join("tower").join("contract.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();

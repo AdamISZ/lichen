@@ -34,6 +34,7 @@ fn write_fixture() {
         input: None,
         chain: None,
         anchor: None,
+        pi1: None,
         record,
     };
     std::fs::write(data().join("package.json"), serde_json::to_string(&pkg).unwrap() + "\n").unwrap();

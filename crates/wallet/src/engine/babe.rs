@@ -9,9 +9,10 @@
 //! decrypts: a valid proof opens `msg`, which she posts in
 //! `wrongly_challenged`, and it pays her.
 //!
-//! Also her BABE keys ([`Secrets`], under her contract's seed), the keys
-//! an opening exchanges ([`request_keys`]), and where she keeps the
-//! instances ([`data_dir`]).
+//! Also what the dispute signs with ([`Secrets`]: her keys under her
+//! contract's seed, or a tower's package of her signatures, keyless), the
+//! keys an opening exchanges ([`request_keys`]), and where the instances
+//! are kept ([`data_dir`]).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -20,7 +21,7 @@ use anyhow::{ensure, Context, Result};
 use bitcoin::{OutPoint, Txid};
 use lichen_babe::garble::evaluate;
 use lichen_babe::graph::Babe;
-use lichen_babe::reveal::{extract, AdaptorKeys, LamportKey};
+use lichen_babe::reveal::{extract, AdaptorKeys, LamportKey, Preimage};
 use lichen_babe::setup::{digits, Instance, Secret, DIGITS};
 use lichen_babe::statement::{pi23_to_bytes, proof_from_bytes};
 use lichen_babe::vsss::interpolate;
@@ -34,12 +35,15 @@ use lngap_lamport::winternitz::{WotsParams, WotsSecret};
 
 use super::{confirmed_at, wait_link, ContractSecrets, Engine, Next, Outcome, WalletSigner};
 
-/// Her one-time secrets for a BABE contract's dispute.
+/// What a BABE dispute signs with: her two signatures, on `b` and on π1.
+/// Nothing after `assert` is hers to sign (her signature on
+/// `wrongly_challenged` was made at the opening), so a tower can play it
+/// from the signatures alone.
 pub trait Secrets {
-    /// Her key for `b`.
-    fn b_secret(&self) -> WotsSecret;
-    /// Her Lamport key for π1.
-    fn lamport(&self) -> LamportKey;
+    /// Her signature on `b`, as `request` takes it.
+    fn request_wire(&self, b: u32) -> Result<Vec<Vec<u8>>>;
+    /// Her Lamport signature on π1's digits: a preimage a digit.
+    fn sign_pi1(&self, digits: &[u8]) -> Result<Vec<Preimage>>;
 }
 
 impl ContractSecrets {
@@ -58,11 +62,11 @@ impl ContractSecrets {
 }
 
 impl Secrets for WalletSigner {
-    fn b_secret(&self) -> WotsSecret {
-        self.secrets.babe_b()
+    fn request_wire(&self, b: u32) -> Result<Vec<Vec<u8>>> {
+        Ok(Babe::request_wire(&self.secrets.babe_b().sign(&b.to_be_bytes())?))
     }
-    fn lamport(&self) -> LamportKey {
-        self.secrets.babe_lamport()
+    fn sign_pi1(&self, digits: &[u8]) -> Result<Vec<Preimage>> {
+        Ok(self.secrets.babe_lamport().sign(digits))
     }
 }
 
@@ -76,8 +80,9 @@ pub fn b_wire(s: &ContractSecrets, b: u32) -> Result<Vec<Vec<u8>>> {
     Ok(lngap_ladder::script::wots_wire(&s.babe_b().sign(&b.to_be_bytes())?))
 }
 
-/// Where contract `cid`'s instances are kept, under `dir`: each kept one
-/// (`instance-<i>.bin`) and the opened ones' shares (`opened.json`).
+/// Where contract `cid`'s instances are kept, under the dispute's `dir`:
+/// each kept one (`instance-<i>.bin`) and the opened ones' shares
+/// (`opened.json`).
 pub fn data_dir(dir: &Path, cid: u32) -> PathBuf {
     dir.join(format!("babe-{cid}"))
 }
@@ -104,7 +109,10 @@ impl Engine<'_> {
             std::thread::sleep(Duration::from_millis(200));
         }
         self.step(format!("requesting {b} sats, {}", d.txid("request")));
-        let at = self.post_link(chain, "request", d.finish("request", Babe::request_wire(&secrets.b_secret().sign(&b.to_be_bytes())?))?)?;
+        let at = self.post_link(chain, "request", d.finish("request", secrets.request_wire(b)?)?)?;
+        if self.opts.pause_after == Some(1) {
+            return Ok(Outcome::Paused);
+        }
         // the hub signs the same b, or her timeout pays her
         self.step(format!("waiting for the hub's response: its window ends at block {}", at + u32::from(w.w_h)));
         match wait_link(chain, &d.txid("respond"), &OutPoint { txid: d.txid("request"), vout: 0 }, at + u32::from(w.w_h))? {
@@ -116,12 +124,21 @@ impl Engine<'_> {
             }
             Next::Taken => return self.lost(d.txid("request")),
         }
-        // her proof, before T_A
+        // her proof, before T_A; past it, respond_timeout may have taken
+        // the contract
+        let s_op = OutPoint { txid: d.txid("respond"), vout: 0 };
+        if !chain.unspent(&s_op)? && chain.get_tx(&d.txid("assert")).is_none() {
+            self.step(format!("no assertion by T_A, block {}: respond_timeout took the contract", w.t_a));
+            return self.lost(s_op.txid);
+        }
         ensure!(chain.height()? < w.t_a || chain.get_tx(&d.txid("assert")).is_some(), "T_A, block {}, has passed: the assertion is too late", w.t_a);
         let bits = lichen_babe::gadget::input(&proof.a);
         let (pi2, pi3) = pi23_to_bytes(&proof);
         self.step(format!("the hub responded: asserting the proof, {}", d.txid("assert")));
-        let asserted = self.post_link(chain, "assert", d.finish("assert", Babe::assert_wire(&secrets.lamport().sign(&digits(&bits)), &pi2, &pi3))?)?;
+        let asserted = self.post_link(chain, "assert", d.finish("assert", Babe::assert_wire(&secrets.sign_pi1(&digits(&bits))?, &pi2, &pi3))?)?;
+        if self.opts.pause_after == Some(2) {
+            return Ok(Outcome::Paused);
+        }
         // the hub's challenge, or after Δ2 her success
         let deadline = asserted + u32::from(w.delta2);
         self.step(format!("asserted at {asserted}: the hub may challenge until block {deadline}"));

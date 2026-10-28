@@ -210,11 +210,23 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         a true claim unchallenged; a true claim challenged and answered; a
         false one taken by `failure`; the hub gone. TRUC: the fee coin of
         `wrongly_challenged` confirms before it (`Chain::post_terminal`)
-  - [ ] Alice gone after `respond` (`respond_timeout`) through the
-        engines (the graph's test plays it); a resumed dispute
-  - [ ] the tower: a BABE package (the kept instances, the opened shares,
-        the pre-signatures, the proof, her signature on
-        `wrongly_challenged`), keyless
+  - [x] restarts and Alice gone (`hub/tests/babe_resume.rs`): her
+        wallet stops after `assert`, the hub restarts from its data
+        directory, the wallet reopens from its file; both replay the chain,
+        the hub challenges, she answers and is paid. Her wallet stops after
+        `request` and she never asserts: at `T_A` the hub takes
+        `respond_timeout`, and her wallet, resumed, finds the contract lost
+  - [x] the keyless tower (`tower.rs`, `hub/tests/babe_tower.rs`): the
+        package holds her signatures, none of her keys: on `b` (`request`'s
+        wire), on π1 (a preimage a digit, checked against her Lamport key
+        before `assert`), and in the contract on `wrongly_challenged`; the
+        proof made before export (one the hub would win against is
+        refused). The kept instances and the opened shares are copied to
+        the package's work directory (`export_instances`; 48 MiB at (4, 2),
+        239 at (78, 10)). Played against a hub that challenges true
+        claims: answered, paid in 2.2 s, a rerun stops at the payout, the
+        wallet sweeps. Links at their floors and the fee budget's key, as
+        BitVMX's tower; the anchors' own key is still to come
 - [ ] 4 the garbling (begun before 2 and 3: it doesn't need them)
   - [x] honest setup, `crates/babe`: the witness encryption
         (Construction 1), the garbled circuit for `r·π1` (Construction 2:
