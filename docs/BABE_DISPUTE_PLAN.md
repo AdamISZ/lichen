@@ -200,7 +200,7 @@ ladder's largest move to 23.6 kvB, but not its sum. It helps the
 per-window figure only, so the "1.4×" said before does not hold.
 
 The papers use this basis: `papers/lichen-bitvmx-v0.1.1` §9 and
-`papers/lichen-babe-v0.1.4` §8.2.
+`papers/lichen-babe-v0.1.5` §8.2.
 
 **The hub's response** (0.6 kvB) also falls in a window, w_H, and grows
 with N under hostile users: 60,000 contracts need w_H ≥ 36 blocks. That
@@ -276,16 +276,29 @@ How VSSS works (Glock §3.4, BABE §9.4):
   soldered.
 - **Storage:** Duty-Free Bits' 45× would bring M = 10 to ~5 MiB.
 
-On chain, there is no design yet:
+On chain (2026-10-28, the paper's v0.1.5):
 - **It needs adaptor signatures.** A hashlock can't be tied to the
   Feldman commitment without a proof.
 - **How:** Alice pre-signs `challenge_assert` per (bit, value) under
-  one-time keys A_{i,β}, adapted to the label points. The script picks the
-  key by her Lamport bit, and the hub's completion reveals the label.
-- **The cost:** about 135 B a bit against about 65 for a hashed label, so
-  `challenge_assert` is ~26 kvB (est.), against 17.4 soldered. Hostile
-  users: ~37,000 contracts for a week's dispute, against 56,000.
-- **The keyless tower survives:** A_{i,β} is used only at setup.
+  one-time keys A_{i,β}, adapted to C_0 = f(0)·G. The script picks the
+  key by her Lamport signature (copied by the hub from `assert`), and
+  the hub's completion reveals f(0). Each secret adapts exactly one
+  pre-signature: no point is reused.
+- **Bit by bit it doesn't fit one input:** tapscript's initial stack is
+  at most 1,000 elements (BIP 342), and each bit needs two (signature,
+  preimage): 1,017 in all.
+- **So 2-bit digits:** Alice's Lamport over 2-bit digits (one of four
+  independent preimages, no checksum), one shared secret per (digit,
+  value). The polynomials, keys and hashes number the same; signatures
+  and preimages halve. 509 stack elements; ~237 B leaf and 86 B witness
+  a digit.
+- **The cost (est.):** `challenge_assert` ~21 kvB (26 bit by bit, 17.4
+  soldered), `assert` ~7.8 (9.24). Disproving a false claim ~30 kvB
+  (28 soldered). Hostile users: ~47,000 contracts for a week's dispute,
+  against 56,000 soldered.
+- **The keyless tower survives:** A_{i,β} is used only at setup. The
+  tower also needs the pre-signatures' scalars and the opened shares of
+  both values (~2 MiB at (78, 10)).
 
 ## 9. What changes with EXIT_PLAN's counter-proof
 
@@ -318,7 +331,8 @@ countersign: 8 more words, about +2 kvB on `request` and +2.5 on
 - **BABE's figures are its prototype's:**
   - honest setup on chain, one label set;
   - M = 4 needs soldering (an SP1 proof) or four label sets on chain;
-  - VSSS (§9.4) could replace soldering, but has no on-chain design yet.
+  - VSSS (§9.4) could replace soldering; its on-chain design (§8 above,
+    2-bit digits and adaptor signatures) is estimated, not built.
 - **The countersignature construction is a sketch.** Its security needs
   knowledge soundness through Groth16, RISC Zero's STARK and the WE
   (babe-amount-authenticated.md, C4).

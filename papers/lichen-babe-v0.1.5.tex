@@ -507,7 +507,7 @@ transaction & size \\
 \tx{assert} & 9.24~kvB (BABE) \\
 \tx{challenge\_assert}, one label set (soldered) & 17.4~kvB (BABE) \\
 \tx{challenge\_assert}, four label sets & ${\sim}42$~kvB (est.: one set is about $17.4 - 9.2 = 8.2$~kvB) \\
-\tx{challenge\_assert}, one label set by adaptor signatures (VSSS) & ${\sim}26$~kvB (est., Section~\ref{sec:vsss}) \\
+\tx{challenge\_assert}, one secret set by adaptor signatures (VSSS), in 2-bit digits & ${\sim}21$~kvB (est., Section~\ref{sec:vsss}), with \tx{assert} ${\sim}7.8$ \\
 \tx{wrongly\_challenged} & 0.15~kvB (BABE); ${\sim}0.21$ with a fee input \\
 a timeout, \tx{failure}, \tx{success} & ${\sim}0.3$--$0.8$~kvB (est.) \\
 the payout and Alice's sweep of her bits & ${\sim}3$~kvB (lichen) \\
@@ -631,9 +631,13 @@ and a small $M$ forces a large $N$.
 label, for each bit and each value, across the $N$ instances, with
 threshold $N - M + 1$, and publishes commitments to the polynomials
 (Feldman's, over secp256k1). Alice checks the opened instances' shares
-against them. At proving time one label per bit goes on chain, the
-shared secret itself; with the $N - M$ opened shares, Alice
-interpolates the labels of every kept instance. The value Alice did not
+against them. The labels of a free-XOR garbling are related
+($L^1 = L^0 \oplus \Delta$), so they cannot themselves be independent
+shares: the shared values are secrets of their own, which each instance
+maps to its labels through a small table, $H(s) \oplus L$. At proving
+time one secret per bit goes on chain, $f(0)$ of its polynomial; with
+the $N - M$ opened shares, Alice interpolates the secrets, and so the
+labels, of every kept instance. The value Alice did not
 assert stays hidden, since only $N - M$ points of its polynomial are
 known. The chain carries one label set whatever $M$ is, and the cost
 moves to $N$, the shares to commit and check. So the right choice is
@@ -660,30 +664,78 @@ trade here, at nearly 500~MiB. Duty-Free Bits' 45-fold smaller
 encoding~\cite{dutyfree}, if it holds for these instances, would bring
 even $M = 10$ to about 5~MiB.
 
-\paragraph{On chain: adaptor signatures.} The label posted on chain
-must be the secret Alice checked against the commitments, and the
-chain must check that. A hashlock cannot: tying a hash to a committed
-point $s G$ needs a proof, which is what soldering is. Glock uses
-adaptor signatures instead. At setup Alice gives the hub, for each bit
-$i$ and value $\beta$, a pre-signature on \tx{challenge\_assert} under
-her own one-time key $A_{i,\beta}$, adapted to the committed label point.
-The script selects $A_{i,\beta}$ by the bit of her Lamport signature, and
-the hub can satisfy it only by completing her pre-signature, which
-hands her the label. In Glock the garbler is also the prover, so its
-adaptor signatures are its assertion; in BABE the prover asserts and the
-verifier reveals, so both are paid for. Per bit that is a 64-byte
-signature and two 32-byte keys in the leaf, about 135~bytes of witness
-against about 65 for a hashed label, so \tx{challenge\_assert} grows to
-about 9.2 + 17 $\approx$ 26~kvB (est.), against 17.4 soldered and about
-91 for ten label sets unsoldered. Against hostile users, the hub's
-windowed sum becomes about 27~kvB: about 37,000 contracts for a week's
-dispute, against 56,000 soldered (Section~\ref{sec:costs}). The
-pre-signatures, about a thousand, are a small transfer.
+\paragraph{On chain: adaptor signatures.} The secret posted on chain
+must be the one Alice checked against the commitments, and the chain
+must check that. A hashlock cannot: tying a hash to a committed point
+$s G$ needs a proof, which is what soldering is. Glock uses adaptor
+signatures instead. At setup Alice gives the hub, for each bit $i$ and
+value $\beta$, a pre-signature on \tx{challenge\_assert} under her own
+one-time key $A_{i,\beta}$, adapted to the committed point $C_0 =
+f_{i,\beta}(0)\,G$. The script selects $A_{i,\beta}$ by her Lamport
+signature, which the hub copies from \tx{assert}, and the hub can
+satisfy it only by completing her pre-signature, which hands her
+$f_{i,\beta}(0)$. The selection matters both ways: the other value's
+secret would leave Alice unable to decrypt, and both values' would let
+her evaluate the circuit on points other than $\pi_1$. In Glock the
+garbler is also the prover, so its adaptor signatures are its
+assertion; in BABE the prover asserts and the verifier reveals, so both
+are paid for.
+
+Each secret is the adaptor of exactly one pre-signature, under a key
+used for nothing else. Nothing is adapted twice to one point, so the
+setting is adaptor signatures' basic one-time case; one secret serves
+all $M$ kept instances, but by interpolation off chain, not through
+$M$ signatures. The pre-signatures are all on one sighash, under
+different keys, which BIP340's challenge includes. Alice makes them
+once the kept instances are chosen: their hashlocks are in
+\tx{challenge\_assert}'s output, and so in the sighash.
+
+\paragraph{Two bits a step.} Bit by bit, this does not fit in one
+input. Tapscript limits an input's initial stack to 1,000 elements
+(BIP~342), and each bit needs two, the hub's signature and Alice's
+preimage: 1,016 for $\pi_1$'s 508 bits, 1,017 with the hub's own
+signature. Splitting \tx{challenge\_assert} over two inputs would do,
+but a better fix also saves bytes. Alice signs $\pi_1$ in 2-bit digits,
+revealing one of four independent preimages per digit: Lamport over a
+larger alphabet, which, unlike Winternitz's chains, needs no checksum.
+The hub shares one secret per digit and value, which each instance maps
+to both bits' labels. The polynomials number the same, $254 \times 4 =
+508 \times 2$, as do the keys and hashes in the leaf, but the hub's
+signatures and Alice's preimages halve, to 254 each, and the stack
+holds 509 elements. Per digit the leaf is about 237~bytes (four hashes,
+four keys and the selection) and the witness 86 (a signature and a
+preimage):
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{50mm}LL}
+\toprule
+& bit by bit & 2-bit digits \\
+\midrule
+\tx{challenge\_assert}'s stack & 1,017 elements: two inputs & 509 \\
+\tx{challenge\_assert} & ${\sim}26$~kvB (est.) & ${\sim}21$~kvB (est.) \\
+\tx{assert} & 9.24~kvB (BABE) & ${\sim}7.8$~kvB (est.) \\
+a false claim disproved & ${\sim}37$~kvB & ${\sim}30$~kvB \\
+a true claim refused to the end & ${\sim}39$~kvB & ${\sim}33$~kvB \\
+the hub's windowed sum & ${\sim}27$~kvB & ${\sim}22$~kvB \\
+contracts for a week's dispute & 37,000 & 47,000 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Soldered, the same rows are 17.4, 9.24, 28, 31 and 18~kvB with 56,000
+contracts; ten label sets unsoldered put about 91~kvB in
+\tx{challenge\_assert}. \tx{assert}'s figure scales BABE's by our
+count of script and witness, 118~bytes a digit against 70 a bit. Wider
+digits do not pay: at three bits the keys
+and hashes per bit rise from two to $8/3$. The pre-signatures, 1,016,
+are a small transfer, about 100~KB.
 
 \paragraph{The keyless tower survives.} Alice's keys $A_{i,\beta}$ are
 used once, at setup, to make the pre-signatures, and never again. To
-read the labels the tower needs the pre-signatures and the opened
-shares, neither of them a key, and it interpolates as Alice would.
+read the secrets the tower needs, beyond what Section~\ref{sec:tower}
+lists, her pre-signatures (32~KiB of their scalars) and the opened
+shares of both values (about 2~MiB at $(78, 10)$), none of them a key,
+and it extracts and interpolates as Alice would. The kept instances it
+holds are now $M$ of them, about 220~MiB at $(78, 10)$ rather than 89.
 
 \section{With a counter-proof}
 \label{sec:counter}
@@ -714,7 +766,7 @@ the hub countersigns: about 2~kvB more on each (est.).
   proof.
 \item A proof of robustness under cut-and-choose, against a hub that
   garbles wrongly. It is BABE's to give, but lichen's users rely on it.
-\item The secret-sharing setup of Section~\ref{sec:vsss}: the
+\item The secret-sharing setup of Section~\ref{sec:vsss}: its
   transaction design, built and measured, and BABE's 40-second estimate
   confirmed end to end; its security argument with the shares and
   adaptor signatures in place of soldering.
