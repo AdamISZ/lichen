@@ -816,11 +816,20 @@ impl Chain {
         self.broadcast(&child).context("the link's fee child")?;
         Ok(())
     }
-    /// Broadcast a transaction that ends a chain (pre-signed
+        /// Broadcast a transaction that ends a chain (pre-signed
     /// ALL|ANYONECANPAY at zero fee, its input 0 spending `prevout`), adding
-    /// a coin of exactly `fee` from `fees`.
+    /// a coin of exactly `fee` from `fees`. A TRUC (version 3) transaction
+    /// spends no unconfirmed parent of another version, so for one the coin
+    /// confirms first.
     pub fn post_terminal(&self, tx: &Transaction, prevout: &TxOut, fee: Amount, fees: &dyn Fees) -> Result<Txid> {
         let (op, coin) = fees.exact_coin(self, fee)?;
+        if tx.version.0 == 3 {
+            let mut stall = Stall::new(self.height()?, self.network);
+            while self.confirmations(&op.txid)? == 0 {
+                ensure!(!stall.stalled(self.height()?), "the chain stalled before the fee coin confirmed");
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
         let mut tx = tx.clone();
         tx.input.push(bitcoin::TxIn { previous_output: op, sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME, ..Default::default() });
         let tx = fees.sign(self, &tx, &[(tx.input[0].previous_output, prevout.clone()), (op, coin)])?;

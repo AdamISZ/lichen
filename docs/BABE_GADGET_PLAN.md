@@ -181,7 +181,40 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
       `wrongly_challenged` 805 with its fee coin (the note's 0.21: it
       now carries the payout), the timeouts and `failure` 221–780
       (`tests/graph.rs`)
-- [ ] 3 lichen integration (stand-in)
+- [x] 3 lichen integration, on the mock statement (a Groth16 proof of
+      a toy circuit for the contract's journal; `babe-mock`, and `babe`
+      for RISC Zero's)
+  - [x] proto: `Statement::Babe`, `Gadget::Babe`, the keys and `Built`
+        variants, `Accept`'s adaptor pre-signatures; the program an
+        `Option` (BABE has none); `babe::Disputed`; Alice's signature on
+        `wrongly_challenged` kept from the hub, the set checked without it
+  - [x] the opening's setup: `POST /babe/setup` (the hub deals and
+        commits to `N` instances; everything derives from its seed, it
+        keeps the commitments and hashlocks), Alice chooses `M`, the offer
+        opens the rest (seeds, shares), she checks them (shares on the
+        dealing, each rebuilt to its hash), downloads the kept (`GET
+        /babe/instance/<cid>/<i>`, bytes) to their hashes and hashlocks,
+        keeps them beside the wallet, and pre-signs the reveal. (4, 2) on
+        regtest, (78, 10) elsewhere; the wallet refuses less than 2^40
+        soundness off regtest
+  - [x] the hub (`dispute/babe.rs`): responds to `request`; checks the
+        proof from `assert` (π1 from the digits, π2 and π3 beside); lets a
+        valid one stand, challenges a false one (or, misbehaving, any);
+        `failure` after `Δ1`, `respond_timeout` from `T_A`; collects its
+        bit outputs after a loss
+  - [x] the wallet (`engine/babe.rs`): request, assert before `T_A`,
+        `success` after `Δ2`; on a challenge, extracts π1's secrets,
+        interpolates each kept instance's, evaluates, decrypts, and answers
+        with `msg`; `request_timeout` if the hub is gone; the sweep
+  - [x] on regtest through the hub and the wallet (`hub/tests/babe.rs`):
+        a true claim unchallenged; a true claim challenged and answered; a
+        false one taken by `failure`; the hub gone. TRUC: the fee coin of
+        `wrongly_challenged` confirms before it (`Chain::post_terminal`)
+  - [ ] Alice gone after `respond` (`respond_timeout`) through the
+        engines (the graph's test plays it); a resumed dispute
+  - [ ] the tower: a BABE package (the kept instances, the opened shares,
+        the pre-signatures, the proof, her signature on
+        `wrongly_challenged`), keyless
 - [ ] 4 the garbling (begun before 2 and 3: it doesn't need them)
   - [x] honest setup, `crates/babe`: the witness encryption
         (Construction 1), the garbled circuit for `r·π1` (Construction 2:

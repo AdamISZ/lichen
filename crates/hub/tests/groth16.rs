@@ -105,7 +105,7 @@ fn disputes_on_the_groth16_verifier() {
         if label == "G1" {
             // the test networks' budgets pay for the heaviest of her
             // terminals on this statement (the sizes are the statement's)
-            let c = held.record.build(&statement, &statement.program(&dir.join(&user)).unwrap()).unwrap();
+            let c = held.record.build(&statement, Some(&statement.program(&dir.join(&user)).unwrap())).unwrap();
             let set = c.presign(held.record.funding).unwrap();
             for net in [lichen_proto::Net::Mutinynet, lichen_proto::Net::Signet] {
                 let need = c.terminal_need(&set, net).unwrap();

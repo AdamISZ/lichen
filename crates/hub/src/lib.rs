@@ -1,8 +1,9 @@
 //! The hub: opens contracts with users, issues their deposits as tokens on
 //! the L2, and (later) pays withdrawals and answers disputes.
 //!
-//! HTTP (JSON): `GET /info`, `POST /open` ([`OpenRequest`] to
-//! [`OpenOffer`]), `POST /accept` ([`Accept`] to [`Opened`]), `POST /fold`
+//! HTTP (JSON): `GET /info`, under BABE `POST /babe/setup` (the
+//! cut-and-choose's commitments) and `GET /babe/instance/<cid>/<i>` (an
+//! instance's bytes), `POST /open` ([`OpenRequest`] to [`OpenOffer`]), `POST /accept` ([`Accept`] to [`Opened`]), `POST /fold`
 //! ([`FoldRequest`] to [`Folded`]: the cooperative withdrawal, once the
 //! hub has seen Alice's return sealed on the L2). An offer mints the
 //! deposit to a key Alice can spend only once the funding is broadcast
@@ -136,7 +137,10 @@ pub(crate) struct Open {
 
 pub(crate) struct Inner {
     cfg: Config,
-    program: Program,
+    /// The statement's program, under BitVMX.
+    program: Option<Program>,
+    /// Under BABE, the setups made (`babe/<cid>.json`).
+    babe: Mutex<HashMap<u32, dispute::babe::Prepared>>,
     chain: Chain,
     seq: Client,
     /// Every signed root the hub has checked, by height (`seen.json`): a
@@ -181,7 +185,7 @@ impl Hub {
             ensure!(w.user >= least, "windows {w:?}: wallets refuse fewer than {least} blocks for each of the user's moves");
         }
         std::fs::create_dir_all(cfg.dir.join("contracts"))?;
-        let program = cfg.statement.program(&cfg.dir)?;
+                let program = cfg.statement.program_if(&cfg.dir)?;
         let chain = Chain::connect_on(&cfg.rpc_url, &cfg.cookie, &cfg.wallet, cfg.network)?;
         // coins locked for offers that didn't survive the restart
         chain.unlock(&[])?;
@@ -216,11 +220,22 @@ impl Hub {
         ensure!(!(cfg_refuse || cfg_dispute) || cfg.network.is_test(), "a hub refuses withdrawals or disputes true claims on test networks only, not {}", cfg.network);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let inner = Arc::new(Inner { cfg, program, chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()) });
+                let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()) });
         let stop = Arc::new(AtomicBool::new(false));
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
-            for mut req in srv.incoming_requests() {
+                        for mut req in srv.incoming_requests() {
+                // an instance: bytes, not JSON
+                if *req.method() == Method::Get && req.url().starts_with("/babe/instance/") {
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| i1.babe_instance_at(req.url())));
+                    let resp = match r {
+                        Ok(Ok(bytes)) => Response::from_data(bytes).with_header(Header::from_bytes("Content-Type", "application/octet-stream").unwrap()),
+                        Ok(Err(e)) => Response::from_data(format!("{e:#}").into_bytes()).with_status_code(400),
+                        Err(_) => Response::from_data(b"the request failed".to_vec()).with_status_code(500),
+                    };
+                    let _ = req.respond(resp);
+                    continue;
+                }
                 let mut body = String::new();
                 let read = req.as_reader().take(MAX_BODY as u64 + 1).read_to_string(&mut body);
                 let error = |code: u16, e: String| (code, serde_json::json!({ "error": e }).to_string());
@@ -235,7 +250,7 @@ impl Hub {
                         Err(_) => error(500, "the request failed".into()),
                     },
                 };
-                let ct = Header::from_bytes("Content-Type", "application/json").unwrap();
+                                                let ct = Header::from_bytes("Content-Type", "application/json").unwrap();
                 let _ = req.respond(Response::from_string(json).with_status_code(code).with_header(ct));
             }
         });
@@ -319,7 +334,9 @@ impl Drop for Hub {
 fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String> {
     Ok(match (method, url) {
         (Method::Get, "/info") => serde_json::to_string(&inner.info())?,
-        (Method::Post, "/deposit") => serde_json::to_string(&inner.deposit(serde_json::from_str(body)?)?)?,
+                (Method::Post, "/deposit") => serde_json::to_string(&inner.deposit(serde_json::from_str(body)?)?)?,
+        (Method::Post, "/babe/setup") => serde_json::to_string(&inner.babe_setup(serde_json::from_str(body)?)?)?,
+        
         (Method::Post, "/open") => serde_json::to_string(&inner.open(serde_json::from_str(body)?)?)?,
         (Method::Post, "/accept") => serde_json::to_string(&inner.accept(serde_json::from_str(body)?)?)?,
         (Method::Post, "/fold") => serde_json::to_string(&inner.fold(serde_json::from_str(body)?)?)?,
@@ -343,7 +360,7 @@ impl Inner {
     }
 
     fn info(&self) -> Info {
-        Info { network: self.cfg.network, deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.depths(), reserve_ppm: self.cfg.reserve_ppm, max_bits: self.cfg.max_bits, duration: self.cfg.duration }
+        Info { network: self.cfg.network, deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.as_ref().map_or(0, |p| p.depths()), reserve_ppm: self.cfg.reserve_ppm, max_bits: self.cfg.max_bits, duration: self.cfg.duration }
     }
 
     /// A deposit address for a contract to come: its number, and the hub's
@@ -389,14 +406,29 @@ impl Inner {
         hub.payout_spk = self.chain.new_spk()?;
         let v_max = (1u64 << req.bits) - 1;
         let t_close = self.chain.height()? + self.cfg.duration;
-        // the dispute's keys: Alice's, checked, and the hub's, by gadget
-        let (dispute, offer_keys) = match &req.dispute {
-            RequestKeys::BitVmx(k) => dispute::bitvmx::open_keys(&self.cfg.seed, cid, &self.program, k, self.cfg.windows.unwrap_or(lichen_proto::bitvmx::windows(self.cfg.network)))?,
+                // the dispute's keys: Alice's, checked, and the hub's, by gadget
+        let gadget = match &req.dispute {
+            RequestKeys::BitVmx(_) => Gadget::BitVmx,
+            RequestKeys::Babe(_) => Gadget::Babe,
+        };
+        ensure!(gadget == self.cfg.statement.gadget(), "a request for a {gadget:?} contract to a hub running {}", self.cfg.statement.id());
+        let (dispute, offer_keys, fixed) = match &req.dispute {
+            RequestKeys::BitVmx(k) => {
+                let program = self.program.as_ref().context("the statement's program")?;
+                let (d, o) = dispute::bitvmx::open_keys(&self.cfg.seed, cid, program, k, self.cfg.windows.unwrap_or(lichen_proto::bitvmx::windows(self.cfg.network)))?;
+                (d, o, None)
+            }
+            // the statement fixed at the setup, its checkpoint with it
+            RequestKeys::Babe(k) => {
+                let (d, o, c) = self.babe_open_keys(cid, k, t_close)?;
+                (d, o, Some(c))
+            }
         };
         // an anchored deployment's contract: its checkpoint, the tip now
-        let checkpoint = match self.seq.deployment.seal {
-            Some(_) => Some(lichen_proto::Checkpoint::tip(&self.chain)?),
-            None => None,
+        let checkpoint = match (fixed, self.seq.deployment.seal) {
+            (Some(c), _) => c,
+            (None, Some(_)) => Some(lichen_proto::Checkpoint::tip(&self.chain)?),
+            (None, None) => None,
         };
         let mut record = Record {
             statement: self.cfg.statement.id().to_string(),
@@ -478,8 +510,11 @@ impl Inner {
     }
 
     fn fund(&self, a: Accept, p: Pending) -> Result<Opened> {
-        let mut record = p.record;
+                let mut record = p.record;
         record.alice_sigs = a.alice_sigs;
+        if record.gadget() == Gadget::Babe {
+            self.babe_accept(&mut record, &a.adaptor)?;
+        }
         let c = self.built(&record)?;
         record.presigned(&c).context("Alice's signatures")?;
         // the deposit input: Alice's signature and the hub's, then the hub's coins

@@ -24,6 +24,10 @@ lngap-lamport.workspace = true
 emulator.workspace = true
 lngap-zk.workspace = true
 lngap-ladder.workspace = true
+lichen-babe.workspace = true
+lichen-withdraw.workspace = true
+rand_chacha = "0.3"
+rand_core = "0.6"
 
 [dev-dependencies]
 lichen-sequencer.workspace = true

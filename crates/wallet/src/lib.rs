@@ -6,6 +6,7 @@
 //! sequencer's state; it checks every sealed root's signature, and builds a
 //! withdrawal's input itself, checked against the statement.
 
+mod babe;
 pub mod dispute;
 pub mod engine;
 pub mod finality;
@@ -19,7 +20,7 @@ use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{fresh_rho, mint_secret, note, sign, xonly, Deployment, Hash, Note, Spend, Transfer, Tx, WithdrawInput};
 use lichen_chain::{Chain, KeyFees};
 use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
-use lichen_proto::{check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, mint_owner, Presig, fee_budget_of, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Info, OfferKeys, OpenOffer, OpenRequest, Opened, Record, RequestKeys, Statement, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, mint_owner, Presig, fee_budget_of, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Gadget, Info, OfferKeys, OpenOffer, OpenRequest, Opened, Record, RequestKeys, Statement, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
 use lichen_l2::{Client, Equivocation, Seen, State};
 use lngap_btc::adaptor::{adaptor_extract, adaptor_sign, AdaptorSig};
 use lngap_channel::PartyKeys;
@@ -485,10 +486,11 @@ impl Wallet {
         ensure!(info.network == net, "the hub is on {}, this wallet's coins on {net}", info.network);
         let d = self.sequencer.deployment;
         ensure!(info.deployment == d, "the hub is in another deployment (sequencer {}, hub {}) than this wallet's (sequencer {}, hub {})", hex::encode(info.deployment.sequencer), hex::encode(info.deployment.hub), hex::encode(d.sequencer), hex::encode(d.hub));
-        ensure!(info.statement == statement.id(), "the hub runs {}, this wallet {}", info.statement, statement.id());
-        let program = statement.program(dir)?;
-        let m = program.depths();
-        ensure!(info.depths == m, "the hub's statement has {} depths, ours {m}", info.depths);
+                ensure!(info.statement == statement.id(), "the hub runs {}, this wallet {}", info.statement, statement.id());
+        let program = statement.program_if(dir)?;
+        if let Some(p) = &program {
+            ensure!(info.depths == p.depths(), "the hub's statement has {} depths, ours {}", info.depths, p.depths());
+        }
         bitcoin::Address::from_script(&payout, net.bitcoin()).with_context(|| format!("the payout address isn't a {net} address"))?;
 
         // the deposit: an address of the hub's and ours, paid, confirmed
@@ -505,8 +507,8 @@ impl Wallet {
         chain.watch(&dep_spk)?;
         let amount = Wallet::deposit_amount(&ask, net);
         pay(&bitcoin::Address::from_script(&dep_spk, net.bitcoin())?, amount)?;
-        let coin = self.wait_deposit(chain, &dep_spk, amount)?;
-        self.open_with(hub, chain, statement, &program, ask, dep, coin)
+                let coin = self.wait_deposit(chain, &dep_spk, amount)?;
+        self.open_with(hub, chain, statement, dir, program.as_ref(), ask, dep, coin)
     }
 
     /// Finish the opening of contract `cid` with the deposit already paid
@@ -522,16 +524,18 @@ impl Wallet {
         }
         let info: Info = hub_call(&format!("{hub}/info"), None)?;
         ensure!(info.network == chain.network, "the hub is on {}, this wallet's coins on {}", info.network, chain.network);
-        let program = statement.program(dir)?;
+                let program = statement.program_if(dir)?;
         let dep_spk = deposit_tree(&self.deposit_key(&dep.nonce).x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();
         chain.watch(&dep_spk)?;
         let coin = self.wait_deposit(chain, &dep_spk, Wallet::deposit_amount(&ask, chain.network))?;
-        self.open_with(hub, chain, statement, &program, ask, dep, coin)
+        self.open_with(hub, chain, statement, dir, program.as_ref(), ask, dep, coin)
     }
 
-    /// The opening, the deposit `coin` confirmed: the hub's offer checked,
-    /// the pre-signed set and the deposit input signed.
-    fn open_with(&mut self, hub: &str, chain: &Chain, statement: &Statement, program: &Program, ask: Ask, dep: Deposit, coin: (bitcoin::OutPoint, bitcoin::TxOut)) -> Result<Held> {
+        /// The opening, the deposit `coin` confirmed: the hub's offer checked,
+    /// the pre-signed set and the deposit input signed. Under BABE, the
+    /// setup's cut-and-choose first, checked before anything is signed.
+    #[allow(clippy::too_many_arguments)]
+    fn open_with(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, program: Option<&Program>, ask: Ask, dep: Deposit, coin: (bitcoin::OutPoint, bitcoin::TxOut)) -> Result<Held> {
         let Ask { deposit, bits, reserve } = ask;
         let (net, d) = (chain.network, self.sequencer.deployment);
         let (nonce, payout) = (dep.nonce.clone(), dep.payout.clone());
@@ -541,8 +545,16 @@ impl Wallet {
         let keys = self.contract_keys(&nonce);
         let mut alice = keys.public();
         alice.payout_spk = payout;
-        // her keys for the dispute, its gadget's
-        let dispute = RequestKeys::BitVmx(engine::bitvmx::request_keys(&self.secrets(&nonce), program));
+                // her keys for the dispute, its gadget's (under BABE, with the
+        // instances she keeps of the setup's)
+        let secrets = self.secrets(&nonce);
+        let (dispute, setup) = match statement.gadget() {
+            Gadget::BitVmx => (RequestKeys::BitVmx(engine::bitvmx::request_keys(&secrets, program.context("the statement's program")?)), None),
+            Gadget::Babe => {
+                let (keys, setup) = self.babe_request(hub, dep.cid, &secrets, net)?;
+                (RequestKeys::Babe(Box::new(keys)), Some(setup))
+            }
+        };
         let fees = self.fees(&nonce, net);
         let req = OpenRequest { alice, l2_address: self.address(), deposit, bits, reserve, dispute, cid: dep.cid, deposit_coin: coin.clone(), fee_spk: fees.spk() };
         let offer: OpenOffer = hub_call(&format!("{hub}/open"), Some(serde_json::to_string(&req)?))?;
@@ -553,8 +565,10 @@ impl Wallet {
         let least = chain.height()? + lichen_proto::min_duration(net);
         ensure!(offer.t_close >= least, "the hub's T_close, block {}, is too soon (at least block {least})", offer.t_close);
         // the contract's keys for the dispute: ours and the hub's, checked
-        let dispute = match (&req.dispute, &offer.dispute) {
-            (RequestKeys::BitVmx(ours), OfferKeys::BitVmx(theirs)) => engine::bitvmx::record_keys(program, net, ours, theirs)?,
+                let dispute = match (&req.dispute, &offer.dispute, &setup) {
+            (RequestKeys::BitVmx(ours), OfferKeys::BitVmx(theirs), _) => engine::bitvmx::record_keys(program.context("the statement's program")?, net, ours, theirs)?,
+            (RequestKeys::Babe(ours), OfferKeys::Babe(theirs), Some(setup)) => Wallet::babe_record_keys(net, offer.t_close, ours, setup, theirs)?,
+            _ => bail!("the hub's offer is for another gadget than the request"),
         };
         // an anchored deployment's contract: a checkpoint on our own view of
         // the chain (a stale or forked one could ask work no withdrawal
@@ -591,6 +605,11 @@ impl Wallet {
         // is paid already)
         let need = c.terminal_need(&set, net)?;
         ensure!(fee_out.value >= need, "the fee budget, {}, can't pay for the heaviest transaction a dispute may need of the user, {need}", fee_out.value);
+                // under BABE: the cut-and-choose, and her adaptor pre-signatures
+        let adaptor = match (&offer.dispute, &setup) {
+            (OfferKeys::Babe(theirs), Some(setup)) => self.babe_check(hub, dir, statement, &mut record, &secrets, setup, theirs, &set)?,
+            _ => vec![],
+        };
         record.alice_sigs = sign_all(&set, &keys.payment)?;
         // D, minted already to a key we can spend once this funding is out:
         // there, and sealed, before we sign the funding
@@ -609,7 +628,10 @@ impl Wallet {
         }
         self.save()?;
         chain.watch(&fees.spk())?;
-        let accept = Accept { cid: offer.cid, alice_sigs: record.alice_sigs.clone(), deposit_presig: locked.presig.clone() };
+                // what she keeps from the hub stays hers (under BABE,
+        // wrongly_challenged's signature: for her towers)
+        let shown = record.alice_sigs.iter().filter(|(n, _)| !c.withheld(n)).map(|(n, s)| (n.clone(), s.clone())).collect();
+        let accept = Accept { cid: offer.cid, alice_sigs: shown, deposit_presig: locked.presig.clone(), adaptor };
         let opened: Opened = hub_call(&format!("{hub}/accept"), Some(serde_json::to_string(&accept)?))?;
         // the hub broadcast it before answering; an Esplora indexes it soon
         let start = std::time::Instant::now();
@@ -788,7 +810,7 @@ impl Wallet {
         // on the real statement the hub folds only a return anchored on
         // Bitcoin under a root the sequencer has proved, the anchor deep
         // enough (what a dispute would need)
-        if let Statement::Groth16 { .. } = statement {
+                if statement.is_real() {
             let progress = self.progress.clone();
             let say = |m: String| {
                 if let Some(p) = &progress {
@@ -818,8 +840,8 @@ impl Wallet {
             }
             self.chain_receipt(cid)?;
         }
-        let program = statement.program(dir)?;
-        let c = held.record.contract(statement, &program)?;
+                let program = statement.program_if(dir)?;
+        let c = held.record.build(statement, program.as_ref())?;
         let fold = c.fold(held.record.funding, bitcoin::Amount::from_sat(b), FOLD_FEE)?;
         let alice_sig = fold.sign(&self.contract_keys(&held.nonce).payment)?;
         let req = FoldRequest { cid, index, b, alice_sig };

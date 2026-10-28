@@ -70,7 +70,7 @@ fn open_a_contract_and_receive_the_deposit() {
     let theirs = &theirs[0].0;
     assert_eq!((theirs.funding, &theirs.alice_sigs, &theirs.hub_sigs), (r.funding, &r.alice_sigs, &r.hub_sigs));
     let program = mock().program(&dir.join("alice")).unwrap();
-    let set = r.presigned(&r.build(&mock(), &program).unwrap()).unwrap();
+    let set = r.presigned(&r.build(&mock(), Some(&program)).unwrap()).unwrap();
     println!("LICHEN both parties hold {} pre-signed transactions, each signature checked", set.len());
 
     // the deposit is hers already, claimed with t

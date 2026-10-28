@@ -70,7 +70,7 @@ fn build(program: &Program) -> (Record, OpenRequest, OpenOffer) {
         alice_sigs: HashMap::new(),
         dispute: DisputeKeys::BitVmx(BitVmxKeys { moves: all_moves(&a_moves, &h_moves), inputs, tail: tail_keys(program, &path, &hops).unwrap(), windows: Some(windows(Net::Regtest)) }),
     };
-    let c = record.build(&statement(), program).unwrap();
+    let c = record.build(&statement(), Some(program)).unwrap();
     let set = c.presign(record.funding).unwrap();
     record.hub_sigs = sign_all(&set, &hub.payment).unwrap();
     record.alice_sigs = sign_all(&set, &alice.payment).unwrap();
@@ -100,7 +100,7 @@ fn build(program: &Program) -> (Record, OpenRequest, OpenOffer) {
 /// The contract a record rebuilds: its address and its pre-signed set,
 /// hashed.
 fn contract_of(record: &Record, program: &Program) -> String {
-    let c = record.build(&statement(), program).unwrap();
+    let c = record.build(&statement(), Some(program)).unwrap();
     let set = record.presigned(&c).unwrap();
     let mut e = sha256::Hash::engine();
     for p in &set {

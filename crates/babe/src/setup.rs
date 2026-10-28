@@ -205,3 +205,22 @@ pub fn choose<R: Rng>(n: usize, m: usize, rng: &mut R) -> Vec<usize> {
     kept.sort();
     kept
 }
+
+/// `f` on `0..n`, across the machine's cores (instances are built and
+/// rebuilt this way: each takes about a second).
+pub fn par<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
+    let per = n.div_ceil(cores).max(1);
+    let mut out: Vec<Option<T>> = (0..n).map(|_| None).collect();
+    std::thread::scope(|s| {
+        for (c, chunk) in out.chunks_mut(per).enumerate() {
+            let f = &f;
+            s.spawn(move || {
+                for (k, slot) in chunk.iter_mut().enumerate() {
+                    *slot = Some(f(c * per + k));
+                }
+            });
+        }
+    });
+    out.into_iter().map(|t| t.expect("every slot filled")).collect()
+}

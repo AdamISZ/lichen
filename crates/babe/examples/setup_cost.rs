@@ -13,7 +13,7 @@ use ark_relations::lc;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use ark_snark::SNARK;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
-use lichen_babe::setup::{check_opened, instance, Secret, DIGITS, VALUES};
+use lichen_babe::setup::{check_opened, instance, par, Secret, DIGITS, VALUES};
 use lichen_babe::vsss::deal;
 
 struct One;
@@ -24,23 +24,6 @@ impl ConstraintSynthesizer<Fr> for One {
         cs.enforce_constraint(lc!() + y, lc!() + y, lc!() + y)?;
         Ok(())
     }
-}
-
-/// `f` on 0..n across the cores.
-fn par<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
-    let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
-    let mut out: Vec<Option<T>> = (0..n).map(|_| None).collect();
-    std::thread::scope(|s| {
-        for (c, chunk) in out.chunks_mut(n.div_ceil(cores)).enumerate() {
-            let f = &f;
-            s.spawn(move || {
-                for (k, slot) in chunk.iter_mut().enumerate() {
-                    *slot = Some(f(c * n.div_ceil(cores) + k));
-                }
-            });
-        }
-    });
-    out.into_iter().map(|t| t.unwrap()).collect()
 }
 
 fn main() {

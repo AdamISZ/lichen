@@ -30,6 +30,12 @@ emulator.workspace = true
 lngap-ladder.workspace = true
 sha2.workspace = true
 chacha20poly1305 = "0.10"
+lichen-babe.workspace = true
+ark-bn254 = "0.5"
+ark-groth16 = { version = "0.5", default-features = false, features = ["std"] }
+rand_chacha = "0.3"
+rand_core = "0.6"
+
 
 [dev-dependencies]
 lichen-sequencer.workspace = true
