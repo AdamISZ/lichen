@@ -219,6 +219,9 @@ when she withdraws. The ways round it that we know of:
   the contract's first property, that within its cap Alice trusts the
   hub for nothing.
 \end{itemize}
+We take none of these. Section~\ref{sec:auth} moves $b$ into the
+witness instead, so one fixed statement, set up once per contract,
+serves any amount, and Script reads $b$ from the parties' signatures.
 
 \section{Authenticated amounts}
 \label{sec:auth}
@@ -412,8 +415,8 @@ transaction & poster & spends, and what it carries or checks \\
 \bottomrule
 \end{tabularx}
 \end{center}
-All but \tx{wrongly\_challenged} are pre-signed at opening, about nine
-transactions. The payout and its bit outputs are as under BitVMX.
+All are pre-signed at opening, about ten transactions,
+\tx{wrongly\_challenged} by Alice alone (Section~\ref{sec:tower}). The payout and its bit outputs are as under BitVMX.
 
 \paragraph{The assertion's deadline.} Alice's heavy move, \tx{assert},
 needs no window: a late assertion only delays a payout the hub owes
@@ -464,13 +467,22 @@ nothing races her for them.
 \paragraph{Two changes to make.} First, in BABE, the leaf
 \tx{wrongly\_challenged} spends checks the prover's signature as well as
 the hashlock, $\mathsf{HashLock}(h_{\mathit{msg}}) \wedge
-\mathsf{CheckSig}(pk_P)$, signed when posted (its Appendix~A.1). lichen
-would drop the signature. The leaf exists only to spend the connector \tx{failure}
-needs, so whoever posts $\mathit{msg}$, a tower or a stranger who copies
-it from the mempool, does what Alice wants; the hub, who knows
-$\mathit{msg}$ from the start, would only defeat its own challenge. The
-tower builds the spend when it is needed, with a fee input of its own.
-Second, fees. The terminals (\tx{request\_timeout}, \tx{success}) are signed
+\mathsf{CheckSig}(pk_P)$, signed when posted (its Appendix~A.1). A
+tower cannot sign then, but the signature should stay. Any spend of the
+leaf reveals $\mathit{msg}$ and blocks \tx{failure}, which is what Alice
+wants, but only once it confirms, and the hub knows $\mathit{msg}$ from
+the start. Without the signature the hub could spend the leaf itself,
+in a large transaction at a low fee rate, which Alice's spend could
+replace only by paying more in all (BIP~125's third rule); if the hub's
+spend does not confirm within $\Delta_1$, it replaces it with
+\tx{failure}. So Alice makes the signature at setup instead:
+\tx{wrongly\_challenged} is fixed by then, and $\mathit{msg}$ is in its
+witness, not under its signature. She signs it
+\texttt{ALL|ANYONECANPAY}, as a TRUC (version~3) transaction, and the
+tower adds $\mathit{msg}$ and a fee input of its own.
+
+Second, fees. The terminals (\tx{request\_timeout}, \tx{success}, and
+now \tx{wrongly\_challenged}) are signed
 \texttt{ALL|ANYONECANPAY}, and their broadcaster adds a coin of its
 own~\cite[\S 6]{lichenbitvmx}: keyless already. But the links
 (\tx{request}, \tx{assert}) keep their ids and are bumped through an
@@ -480,14 +492,19 @@ guarding nothing but 330~sats each, which she can hand the tower with
 the witnesses; or she posts both links herself, since neither is due in
 a window.
 
-\paragraph{A compromised tower can only stay silent.} It holds no key,
+\paragraph{A compromised tower can do little.} It holds no key,
 so it cannot sign a wrong move or a second value. That matters here:
 given her Lamport key, a tower that signed two values of $\pi_1$ would
 let the hub combine their bits into a third, signed bit by bit, and
 challenge with labels for it; she could not decrypt, and \tx{failure}
 would take everything. So the tower is not trusted like her own machine,
 as under BitVMX, but like a Lightning watchtower: several can run at
-once, strangers to her and to each other, and any one suffices. Her
+once, strangers to her and to each other, and any one suffices. One
+caveat: a tower run by the hub holds the signed
+\tx{wrongly\_challenged}, and could post it with $\mathit{msg}$ as soon
+as it posts \tx{challenge\_assert}, padded with inputs of its own, to
+pin it as above. TRUC's limit of 10~kvB on the transaction bounds what
+an honest tower must outbid, about 100,000~sats at 10~sat/vB. Her
 wallet, for its part, signs one $\pi_1$ only, and keeps the proof it
 signed.
 
@@ -528,7 +545,7 @@ the hub disproves a false claim & ${\sim}28$~kvB (${\sim}53$ unsoldered) & 100.4
 the worst case & the same: there is no separate case for reads & 200--212~kvB, a read lie \\
 Alice's transactions, those due in a window & 4 (request, assert, wrongly challenged, success), one & 13, twelve \\
 keys Alice's tower must hold & none, but an anchor key (Section~\ref{sec:tower}) & her move and hop keys, and her input words' \\
-pre-signed per contract & about 9 & 141 \\
+pre-signed per contract & about 10 & 141 \\
 \bottomrule
 \end{tabularx}
 \end{center}

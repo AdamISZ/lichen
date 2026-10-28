@@ -101,14 +101,19 @@ the qualitative gain, beyond the count of moves:
   - the two witnesses;
   - the kept instances;
   - the proof.
-- **The worst a tower can do is stay silent.** So several untrusted towers
-  can run at once.
+- **The worst a tower can do is stay silent,** or, run by the hub, pin
+  `wrongly_challenged` (below), bounded by TRUC's 10 kvB. So several
+  untrusted towers can run at once.
 - **Under BitVMX, by contrast,** each move is signed live, so the tower
   holds her move keys and can equivocate.
 
 Two changes to BABE's transactions:
-- **Drop `CheckSig(pk_P)` from the `wrongly_challenged` leaf.** That
-  leaves a bare hashlock: whoever posts msg blocks `failure`.
+- **Keep `CheckSig(pk_P)` on the `wrongly_challenged` leaf, signed at
+  setup** (ALL|ANYONECANPAY, TRUC). The tower adds msg and a fee input.
+  Dropping it (the paper before v0.1.6) would let the hub, which knows
+  msg, spend the leaf itself in a large low-fee-rate transaction: Alice
+  must outbid its whole fee (BIP 125 rule 3), and if it doesn't confirm
+  within Δ1 the hub replaces it with `failure`.
 - **Give the links' anchors a key of their own,** not the payout key.
   The terminals already use ALL|ANYONECANPAY plus the broadcaster's coin.
 
@@ -200,7 +205,7 @@ ladder's largest move to 23.6 kvB, but not its sum. It helps the
 per-window figure only, so the "1.4×" said before does not hold.
 
 The papers use this basis: `papers/lichen-bitvmx-v0.1.1` §9 and
-`papers/lichen-babe-v0.1.5` §8.2.
+`papers/lichen-babe-v0.1.6` §8.2.
 
 **The hub's response** (0.6 kvB) also falls in a window, w_H, and grows
 with N under hostile users: 60,000 contracts need w_H ≥ 36 blocks. That
