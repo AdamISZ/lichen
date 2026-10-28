@@ -16,10 +16,10 @@
 //! L_{2d+k}^{v_k}`, the labels of its two bits, so a secret revealed on
 //! chain gives its digit's labels and no others.
 
-use ark_bn254::{Bn254, Fr};
+use ark_bn254::{Bn254, Fq, Fr, G2Affine};
 use ark_ff::{BigInteger, PrimeField, UniformRand};
 use ark_groth16::VerifyingKey;
-use ark_serialize::CanonicalSerialize;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
@@ -116,6 +116,76 @@ impl Instance {
         h.update(&self.ct.masked);
         h.update(&self.hmsg);
         *h.finalize().as_bytes()
+    }
+}
+
+impl Instance {
+    /// Its bytes, as the hub sends it and Alice keeps it: the garbled
+    /// circuit, the table, the ciphertext, the hashlock.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(self.gc.size() + 64 * self.table.len() + 128);
+        let put = |n: usize, v: &mut Vec<u8>| v.extend((n as u64).to_le_bytes());
+        put(self.gc.ands.len(), &mut v);
+        for l in &self.gc.ands {
+            v.extend(l.to_le_bytes());
+        }
+        let flat: Vec<Fq> = self.gc.dre.iter().copied().chain(self.gc.constant.iter().flatten().copied()).collect();
+        put(self.gc.dre.len(), &mut v);
+        put(self.gc.constant.len(), &mut v);
+        flat.serialize_compressed(&mut v).expect("serialize");
+        put(self.table.len(), &mut v);
+        for l in self.table.iter().flatten().flatten() {
+            v.extend(l.to_le_bytes());
+        }
+        self.ct.r_delta.serialize_compressed(&mut v).expect("serialize");
+        v.extend(self.ct.masked);
+        v.extend(self.hmsg);
+        v
+    }
+
+    /// The instance of `b` ([`Instance::to_bytes`]), if it is one: every
+    /// length checked against what is left before anything is allocated.
+    pub fn from_bytes(b: &[u8]) -> Option<Instance> {
+        struct Reader<'a>(&'a [u8]);
+        impl<'a> Reader<'a> {
+            fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+                let (h, t) = (self.0.get(..n)?, self.0.get(n..)?);
+                self.0 = t;
+                Some(h)
+            }
+            /// A count of items of `size` bytes, that many bytes left.
+            fn count(&mut self, size: usize) -> Option<usize> {
+                let n = usize::try_from(u64::from_le_bytes(self.take(8)?.try_into().ok()?)).ok()?;
+                (n.checked_mul(size)? <= self.0.len()).then_some(n)
+            }
+            fn label(&mut self) -> Option<Label> {
+                Some(u128::from_le_bytes(self.take(16)?.try_into().ok()?))
+            }
+        }
+        let mut r = Reader(b);
+        let ands_n = r.count(16)?;
+        let ands = (0..ands_n).map(|_| r.label()).collect::<Option<Vec<Label>>>()?;
+        let dre_n = r.count(32)?;
+        let const_n = r.count(96)?;
+        // the field elements: a length, then each compressed (32 bytes)
+        let flat_len = 8 + 32 * (dre_n.checked_add(const_n.checked_mul(3)?)?);
+        let flat = Vec::<Fq>::deserialize_compressed(r.take(flat_len)?).ok()?;
+        (flat.len() == dre_n + 3 * const_n).then_some(())?;
+        let (dre, rest) = (flat[..dre_n].to_vec(), &flat[dre_n..]);
+        let constant = rest.chunks(3).map(|c| [c[0], c[1], c[2]]).collect();
+        let table_n = r.count(32 * VALUES)?;
+        let mut table = Vec::with_capacity(table_n);
+        for _ in 0..table_n {
+            let mut e = [[0; 2]; VALUES];
+            for l in e.iter_mut().flatten() {
+                *l = r.label()?;
+            }
+            table.push(e);
+        }
+        let r_delta = G2Affine::deserialize_compressed(r.take(64)?).ok()?;
+        let masked = r.take(32)?.try_into().ok()?;
+        let hmsg = r.take(32)?.try_into().ok()?;
+        r.0.is_empty().then_some(Instance { gc: Garbled { ands, dre, constant }, table, ct: Setup { r_delta, masked }, hmsg })
     }
 }
 

@@ -50,7 +50,7 @@ use crate::setup::{Hash, DIGITS, VALUES};
 /// deadline `T_A` for Alice's `assert`, `Δ2` for the hub's challenge,
 /// `Δ1` for Alice's answer to it. Relative windows in blocks; `T_A` as
 /// `T_close` is (a height, or a time from 500,000,000).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Windows {
     pub w_h: u16,
     pub t_a: u32,
@@ -79,6 +79,9 @@ pub struct Spec {
     pub hmsg: Vec<Hash>,
     pub windows: Windows,
 }
+
+/// `assert`'s arguments: the preimages, π2, π3.
+pub type Asserted<'a> = (&'a [Vec<u8>], &'a [u8], &'a [u8]);
 
 /// A contract's graph.
 pub struct Babe {
@@ -146,12 +149,14 @@ impl Babe {
         TapTree::new(vec![ok_leaf("respond", b, tl), ok_leaf("request_timeout", t, ttl)])
     }
     /// `respond`'s output: Alice's `assert`, π1's digits under her Lamport
-    /// key; or, from `T_A`, `respond_timeout`.
+    /// key, then π2 and π3, unsigned (so that the hub can check the whole
+    /// proof from the chain); or, from `T_A`, `respond_timeout`.
     pub fn responded(&self) -> Result<TapTree> {
         let (b, tl) = self.signed(after(POST_CSV));
         let t_a = self.spec.windows.t_a;
         let timeout = self.ctx().two_of_two_verify(Builder::new().cltv(t_a));
-        TapTree::new(vec![ok_leaf("assert", self.spec.lamport.verify(b), tl), ok_leaf("respond_timeout", timeout, Timelock::cltv(t_a))])
+        let assert = self.spec.lamport.verify(b).push_opcode(OP_2DROP);
+        TapTree::new(vec![ok_leaf("assert", assert, tl), ok_leaf("respond_timeout", timeout, Timelock::cltv(t_a))])
     }
     /// `assert`'s output: the hub's `challenge_assert`, the reveal; or,
     /// after `Δ2`, `success`.
@@ -195,7 +200,7 @@ impl Babe {
         match name {
             "request" => wots_shape([&self.spec.b_key]),
             "respond" => (0..self.spec.hub_b.params.total_digits()).flat_map(|_| [vec![0u8; 32], vec![15u8]]).chain(wots_shape([&self.spec.b_key])).collect(),
-            "assert" => vec![vec![0u8; 20]; DIGITS],
+            "assert" => vec![vec![0u8; 20]; DIGITS].into_iter().chain([vec![0u8; 64], vec![0u8; 32]]).collect(),
             _ => (0..DIGITS).flat_map(|_| [vec![0u8; 20], vec![0u8; 64]]).collect(),
         }
     }
@@ -261,9 +266,14 @@ impl Babe {
     pub fn respond_wire(hub: &Wots256Sig, alice: &WotsSig) -> Vec<Vec<u8>> {
         hub.consumption_order().into_iter().chain(alice.consumption_order()).rev().collect()
     }
-    /// `assert`'s: π1's digits, Lamport-signed.
-    pub fn assert_wire(preimages: &[Preimage]) -> Vec<Vec<u8>> {
-        preimages.iter().rev().map(|p| p.to_vec()).collect()
+    /// `assert`'s: π1's digits, Lamport-signed, then π2 and π3.
+    pub fn assert_wire(preimages: &[Preimage], pi2: &[u8], pi3: &[u8]) -> Vec<Vec<u8>> {
+        [pi3.to_vec(), pi2.to_vec()].into_iter().chain(preimages.iter().rev().map(|p| p.to_vec())).collect()
+    }
+    /// Read `assert`'s arguments (consumption order, below both
+    /// signatures): the preimages, π2, π3.
+    pub fn read_assert(args: &[Vec<u8>]) -> Option<Asserted<'_>> {
+        (args.len() == DIGITS + 2).then(|| (&args[..DIGITS], &args[DIGITS][..], &args[DIGITS + 1][..]))
     }
     /// `challenge_assert`'s: the reveal ([`crate::reveal::reveal_args`]).
     pub fn challenge_wire(args: Vec<Vec<u8>>) -> Vec<Vec<u8>> {

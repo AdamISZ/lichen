@@ -9,6 +9,8 @@ license.workspace = true
 anyhow.workspace = true
 # RISC Zero's verifying key and claim, as ln-gap checks them natively
 lngap-zk.workspace = true
+# the journal's key digest and length, as the guest's
+lichen-withdraw.workspace = true
 # the reveal on chain: adaptor signatures, scripts, keys
 lngap-btc.workspace = true
 # the graph, on ln-gap's skeleton
@@ -19,7 +21,9 @@ ark-bn254 = "0.5"
 ark-ec = "0.5"
 ark-ff = "0.5"
 ark-groth16 = { version = "0.5", default-features = false, features = ["std"] }
+ark-relations = "0.5"
 ark-serialize = "0.5"
+ark-snark = "0.5"
 ark-std = "0.5"
 blake3 = "1"
 # the input secrets' sharing, over secp256k1 (the adaptor signatures')
@@ -27,9 +31,8 @@ k256.workspace = true
 rand_chacha = "0.3"
 rand_core = "0.6"
 sha2.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 bitcoincore-rpc.workspace = true
 hex.workspace = true
-ark-relations = "0.5"
-ark-snark = "0.5"

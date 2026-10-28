@@ -37,7 +37,7 @@ pub type Preimage = [u8; 20];
 pub struct LamportKey(Vec<[Preimage; VALUES]>);
 
 /// Its public half: the preimages' hashes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LamportPub(pub Vec<[Hash160; VALUES]>);
 
 impl LamportKey {

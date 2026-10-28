@@ -130,6 +130,17 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
 
 ## Open questions
 
+- **Later: reuse the kept instances across renewals** (2026-10-28). The
+  garbled circuit computes `r·π1` whatever the statement; only the WE
+  ciphertext (480 bytes) and the hashlock are the contract's. Its
+  security is spent only when labels are revealed, in
+  `challenge_assert`. So a renewal after a fold, or after `success`
+  unchallenged, could keep the instances and send a fresh `msg`,
+  ciphertext and hashlock each: kilobytes, not the 239 MiB download.
+  Needs: an argument that one `r` under ciphertexts for different
+  statements is safe while no labels are revealed. Per user only; after
+  a challenge, a full setup.
+
 - **The countersignature or the work-bound request** (BABE_DISPUTE_PLAN
   §2 or §11): the countersignature is designed; the other is
   speculative. Build the first; keep the second as an experiment.

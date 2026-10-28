@@ -24,6 +24,7 @@ pub mod graph;
 pub mod reveal;
 pub mod risc0;
 pub mod setup;
+pub mod statement;
 pub mod vsss;
 pub mod we;
 
@@ -133,6 +134,10 @@ mod tests {
         }
         // a lie in an opened instance is caught
         assert!(!check_opened(&commitments[0], &seeds[0], &dealer.shares(1), &vk, &y));
+        // an instance as sent and kept
+        let bytes = made[1].0.to_bytes();
+        assert_eq!(crate::setup::Instance::from_bytes(&bytes).as_ref(), Some(&made[1].0));
+        assert!(crate::setup::Instance::from_bytes(&bytes[..bytes.len() - 1]).is_none());
         // the kept instances, as committed
         for k in &kept {
             assert_eq!(made[*k as usize - 1].0.commitment(), commitments[*k as usize - 1]);

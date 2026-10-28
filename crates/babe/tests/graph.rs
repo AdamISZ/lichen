@@ -145,7 +145,7 @@ fn the_presigned_set() {
     }
     let fp = sha256::Hash::from_engine(h);
     println!("fingerprint: {} pre-signed, {fp}", set.len());
-    assert_eq!(format!("{} pre-signed, {}", set.len(), &fp.to_string()[..16]), "12 pre-signed, baf1593e8d2fc7a6");
+    assert_eq!(format!("{} pre-signed, {}", set.len(), &fp.to_string()[..16]), "12 pre-signed, 6b64a4fcb7f5b664");
 }
 
 // ----- on regtest -----
@@ -233,11 +233,13 @@ impl Opened {
     fn assert(&self, rt: &Regtest) -> Transaction {
         let mut rng = ChaCha20Rng::seed_from_u64(9);
         let digits: Vec<u8> = (0..DIGITS).map(|_| (rng.next_u32() % 4) as u8).collect();
-        self.link(rt, "assert", Babe::assert_wire(&self.p.lamport.sign(&digits)))
+        self.link(rt, "assert", Babe::assert_wire(&self.p.lamport.sign(&digits), &[1; 64], &[2; 32]))
     }
     /// The hub challenges: π1's secrets, from Alice's preimages on chain.
     fn challenge(&self, rt: &Regtest, asserted: &Transaction) -> Transaction {
-        let preimages: Vec<[u8; 20]> = Self::args(asserted).iter().map(|a| a[..].try_into().unwrap()).collect();
+        let args = Self::args(asserted);
+        let (signed, _, _) = Babe::read_assert(&args).unwrap();
+        let preimages: Vec<[u8; 20]> = signed.iter().map(|a| a[..].try_into().unwrap()).collect();
         let lpub = &self.babe.spec.lamport;
         let digits: Vec<u8> = preimages.iter().enumerate().map(|(d, x)| lpub.read(d, x).unwrap()).collect();
         let secrets: Vec<Secret> = digits.iter().enumerate().map(|(d, v)| self.p.dealer.reveal(d, *v)).collect();

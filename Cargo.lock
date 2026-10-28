@@ -1776,6 +1776,7 @@ dependencies = [
  "blake3",
  "hex",
  "k256",
+ "lichen-withdraw",
  "lngap-btc",
  "lngap-channel",
  "lngap-lamport",
@@ -1783,6 +1784,7 @@ dependencies = [
  "lngap-zk",
  "rand_chacha",
  "rand_core 0.6.4",
+ "serde",
  "sha2",
 ]
 
