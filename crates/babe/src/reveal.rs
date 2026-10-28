@@ -6,7 +6,7 @@
 //! At setup Alice gives the hub, for each digit `d` and value `v`, a
 //! pre-signature on `challenge_assert` under a one-time key `A_{d,v}` of
 //! hers, adapted to the dealing's point `f_{d,v}(0)·G`
-//! ([`crate::vsss::Dealing::point`]). The leaf ([`challenge_leaf`]) reads
+//! ([`crate::vsss::Dealing::point`]). The leaf ([`reveal_verify`]) reads
 //! each digit from her Lamport preimage, which the hub copies from
 //! `assert`, and checks a signature under the key that value selects. The
 //! hub has none but her pre-signature's completion, which hands her
@@ -15,14 +15,13 @@
 //!
 //! Two bits a step, so that the leaf's witness fits tapscript's initial
 //! stack (1,000 elements, BIP 342): a preimage and a signature a digit,
-//! 508 for π1's 254 digits, and the hub's signature. Bit by bit it would
-//! be 1,017.
+//! 508 for π1's 254 digits, and the leaf's own two signatures. Bit by bit
+//! it would be 1,018.
 
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use lngap_btc::adaptor::{adaptor_complete, adaptor_extract, adaptor_sign, adaptor_verify, AdaptorSig};
 use lngap_btc::bitcoin::opcodes::all::*;
 use lngap_btc::bitcoin::script::Builder;
-use lngap_btc::bitcoin::ScriptBuf;
 use lngap_btc::keys::{xonly, Seed};
 use lngap_btc::script::BuilderExt;
 use lngap_btc::secp256k1::{schnorr, Keypair, Message, PublicKey, SecretKey, XOnlyPublicKey};
@@ -113,12 +112,12 @@ pub fn check_presigs(keys: &[[XOnlyPublicKey; VALUES]], msg: &Message, points: &
         && keys.iter().zip(points).zip(presigs).all(|((k, t), s)| (0..VALUES).all(|v| adaptor_verify(&k[v], msg, &t[v], &s[v])))
 }
 
-/// `challenge_assert`'s leaf. Per digit, consuming Alice's preimage then a
-/// signature: the preimage selects the key, which the signature must
-/// satisfy; then the hub's own signature.
-pub fn challenge_leaf(lamport: &LamportPub, keys: &[[XOnlyPublicKey; VALUES]], hub: &XOnlyPublicKey) -> ScriptBuf {
+/// `challenge_assert`'s reveal, digit after digit: consuming Alice's
+/// preimage then a signature, the preimage selects the key, which the
+/// signature must satisfy.
+pub fn reveal_verify(b: Builder, lamport: &LamportPub, keys: &[[XOnlyPublicKey; VALUES]]) -> Builder {
     assert_eq!(lamport.0.len(), keys.len(), "a key set a digit");
-    let b = lamport.0.iter().zip(keys).fold(Builder::new(), |b, (h, k)| {
+    lamport.0.iter().zip(keys).fold(b, |b, (h, k)| {
         // OP_HASH160, then for the first three values
         // OP_DUP <h_v> OP_EQUAL OP_IF OP_DROP <A_v> OP_ELSE; the last
         // <h_3> OP_EQUALVERIFY <A_3>, the branches closed
@@ -127,8 +126,7 @@ pub fn challenge_leaf(lamport: &LamportPub, keys: &[[XOnlyPublicKey; VALUES]], h
         });
         let b = b.push_bytes(&h[VALUES - 1]).push_opcode(OP_EQUALVERIFY).push_x_only_key(&k[VALUES - 1]);
         (0..VALUES - 1).fold(b, |b, _| b.push_opcode(OP_ENDIF)).push_opcode(OP_CHECKSIGVERIFY)
-    });
-    b.checksig(hub).into_script()
+    })
 }
 
 /// The hub's completions of the pre-signatures for `digits`, with their
@@ -142,15 +140,15 @@ pub fn complete(presigs: &[[AdaptorSig; VALUES]], digits: &[u8], secrets: &[Secr
         .collect()
 }
 
-/// `challenge_assert`'s witness arguments, in consumption order.
-pub fn challenge_args(preimages: &[Preimage], sigs: &[schnorr::Signature], hub: &schnorr::Signature) -> Vec<Vec<u8>> {
-    preimages.iter().zip(sigs).flat_map(|(p, s)| [p.to_vec(), s.as_ref().to_vec()]).chain([hub.as_ref().to_vec()]).collect()
+/// The reveal's witness elements, in consumption order.
+pub fn reveal_args(preimages: &[Preimage], sigs: &[schnorr::Signature]) -> Vec<Vec<u8>> {
+    preimages.iter().zip(sigs).flat_map(|(p, s)| [p.to_vec(), s.as_ref().to_vec()]).collect()
 }
 
-/// Alice's reading of a posted `challenge_assert`: its arguments, in
-/// consumption order, give each digit's value and its secret.
+/// Alice's reading of a posted `challenge_assert`: the reveal's elements,
+/// in consumption order, give each digit's value and its secret.
 pub fn extract(lamport: &LamportPub, presigs: &[[AdaptorSig; VALUES]], args: &[Vec<u8>]) -> Option<(Vec<u8>, Vec<Secret>)> {
-    if args.len() != 2 * presigs.len() + 1 {
+    if args.len() != 2 * presigs.len() {
         return None;
     }
     args.chunks(2)

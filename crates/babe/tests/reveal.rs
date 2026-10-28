@@ -4,7 +4,7 @@
 //! them from the mined transaction. And the stack limit that makes it two
 //! bits a step.
 
-use lichen_babe::reveal::{challenge_args, challenge_leaf, check_presigs, complete, extract, points, AdaptorKeys, LamportKey};
+use lichen_babe::reveal::{check_presigs, complete, extract, points, reveal_args, reveal_verify, AdaptorKeys, LamportKey};
 use lichen_babe::setup::{Secret, DIGITS};
 use lichen_babe::vsss::{deal, scalar};
 use lngap_btc::bitcoin::opcodes::all::*;
@@ -12,6 +12,7 @@ use lngap_btc::bitcoin::script::Builder;
 use lngap_btc::bitcoin::{absolute, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxOut, Witness};
 use lngap_btc::keys::{xonly, Seed};
 use lngap_btc::regtest::Regtest;
+use lngap_btc::script::BuilderExt;
 use lngap_btc::secp256k1::SECP256K1;
 use lngap_btc::sighash::{sign_tapscript, tapscript_sighash};
 use lngap_btc::taptree::{Leaf, TapTree};
@@ -51,7 +52,7 @@ fn challenge_assert_reveals_the_asserted_secrets() {
     // assert spends a funded output under her Lamport check; its output
     // is challenge_assert's
     let assert_tree = one_leaf("assert", lpub.verify(Builder::new()).push_opcode(OP_PUSHNUM_1).into_script());
-    let challenge_tree = one_leaf("challenge", challenge_leaf(&lpub, &akeys.public(), &xonly(&hub)));
+    let challenge_tree = one_leaf("challenge", reveal_verify(Builder::new(), &lpub, &akeys.public()).checksig(&xonly(&hub)).into_script());
     let (funded, _) = rt.fund(&assert_tree.script_pubkey(), Amount::from_sat(1_000_000)).unwrap();
     let mut assert_tx = spend(funded, Amount::from_sat(980_000), challenge_tree.script_pubkey());
     let challenge_prev = assert_tx.output[0].clone();
@@ -87,11 +88,12 @@ fn challenge_assert_reveals_the_asserted_secrets() {
     wrong[17] ^= 1;
     let mut bad = sigs.clone();
     bad[17] = complete(&presigs[17..18], &wrong[17..18], &[dealer.reveal(17, wrong[17])])[0];
-    challenge_tx.input[0].witness = witness(&challenge_args(&posted, &bad, &hub_sig), &challenge_tree, "challenge");
+    let with_hub = |sigs| reveal_args(&posted, sigs).into_iter().chain([hub_sig.as_ref().to_vec()]).collect::<Vec<_>>();
+    challenge_tx.input[0].witness = witness(&with_hub(&bad), &challenge_tree, "challenge");
     let err = rt.test_accept(&challenge_tx).unwrap_err();
     assert!(err.contains("Invalid Schnorr signature"), "{err}");
 
-    let args = challenge_args(&posted, &sigs, &hub_sig);
+    let args = with_hub(&sigs);
     assert_eq!(args.len(), 2 * DIGITS + 1, "509 elements, within the 1,000");
     challenge_tx.input[0].witness = witness(&args, &challenge_tree, "challenge");
     let challenge_vsize = challenge_tx.vsize();
@@ -100,7 +102,7 @@ fn challenge_assert_reveals_the_asserted_secrets() {
 
     // Alice reads the secrets of the digits she asserted, and only those
     let mined = rt.get_tx(&challenge_id).unwrap();
-    let (got, revealed) = extract(&lpub, &presigs, &witness_args_consumption_order(&mined.input[0].witness)).unwrap();
+    let (got, revealed) = extract(&lpub, &presigs, &witness_args_consumption_order(&mined.input[0].witness)[..2 * DIGITS]).unwrap();
     assert_eq!(got, digits);
     assert_eq!(revealed, secrets);
     for (d, (v, t)) in got.iter().zip(&revealed).enumerate() {

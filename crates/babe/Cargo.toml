@@ -11,6 +11,10 @@ anyhow.workspace = true
 lngap-zk.workspace = true
 # the reveal on chain: adaptor signatures, scripts, keys
 lngap-btc.workspace = true
+# the graph, on ln-gap's skeleton
+lngap-channel.workspace = true
+lngap-lamport.workspace = true
+lngap-sessions.workspace = true
 ark-bn254 = "0.5"
 ark-ec = "0.5"
 ark-ff = "0.5"
@@ -25,6 +29,7 @@ rand_core = "0.6"
 sha2.workspace = true
 
 [dev-dependencies]
+bitcoincore-rpc.workspace = true
 hex.workspace = true
 ark-relations = "0.5"
 ark-snark = "0.5"

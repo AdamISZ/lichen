@@ -13,12 +13,14 @@
 //! input secrets shared ([`vsss`]) so that one set revealed on chain
 //! opens every kept instance; the hub reveals it in `challenge_assert`
 //! by completing Alice's adaptor pre-signatures ([`reveal`]). The
-//! statement is RISC Zero's ([`risc0`]).
+//! statement is RISC Zero's ([`risc0`]); the transactions, on ln-gap's
+//! skeleton, are [`graph`]'s.
 
 pub mod circuit;
 pub mod field;
 pub mod gadget;
 pub mod garble;
+pub mod graph;
 pub mod reveal;
 pub mod risc0;
 pub mod setup;

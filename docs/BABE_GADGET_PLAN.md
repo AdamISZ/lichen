@@ -56,11 +56,10 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
    digit-by-digit equality with Alice's), `request_timeout`, `assert`
    (π1 under Lamport, an absolute deadline), `respond_timeout`,
    `challenge_assert` (the labels), `success`, `wrongly_challenged`
-   (`msg`'s preimage), `failure`. Two things the skeleton lacks:
-   - an absolute lock on `assert` (CLTV): the skeleton's locks are
-     relative, the default's leaf aside;
-   - `failure` spends two outputs: a terminal of two inputs (ALL|ACP
-     on each), or a link of two (plain ALL).
+   (`msg`'s preimage), `failure`. As built (2026-10-28), one chain
+   carries the value and every transaction has one input (BABE's
+   deposit-and-connectors shape isn't needed: there `assert` starts from
+   an outside coin); the skeleton's `Presign::new` takes a CLTV as is.
 3. **Windows**: `w_H`, `Δ1`, `Δ2` and the assertion's deadline `T_A`, a
    `BabeWindows` beside BitVMX's `Windows`.
 4. **The garbler and the evaluator**: BABE's circuit (the point check,
@@ -153,7 +152,24 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         user cycles against the withdrawal's 333k, one segment; proved
         (660 s) and wrapped (258 s) on a real return; a signature on
         another `b` refused; claim digest printed
-- [ ] 2 scripts and graph (stand-in)
+- [x] 2 scripts and graph (`graph`): on the real reveal, `msg` the
+      only stand-in. One chain `request → respond → assert →
+      challenge_assert`, each output with its terminal
+      (`request_timeout` after `w_H`, `respond_timeout` from `T_A` by
+      CLTV, `success` after `Δ2`, `failure` after `Δ1`), and per kept
+      instance `wrongly_challenged_k` (TRUC, 2-of-2 with Alice's
+      signature kept from the hub, paying her `b` in bits: a terminal
+      can't pay into a pre-signed transaction, its fee input changes its
+      id). `respond` checks the hub's SHA-256 Winternitz signature on `b`
+      against Alice's digit by digit (ln-gap's `Wots256*`, `1f0db8c`).
+      12 pre-signed, fingerprint pinned. On regtest, mainnet's policy,
+      every ending: a true claim challenged and paid, a false one taken
+      by `failure`, the hub gone, Alice gone, no challenge, and a
+      `respond` on another `b` refused. Sizes: `request` 457 vB,
+      `respond` 759, `assert` 7,700, `challenge_assert` 20,717,
+      `wrongly_challenged` 805 with its fee coin (the note's 0.21: it
+      now carries the payout), the timeouts and `failure` 221–780
+      (`tests/graph.rs`)
 - [ ] 3 lichen integration (stand-in)
 - [ ] 4 the garbling (begun before 2 and 3: it doesn't need them)
   - [x] honest setup, `crates/babe`: the witness encryption
