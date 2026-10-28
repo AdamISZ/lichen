@@ -2,8 +2,10 @@
 
 2026-10-27, branch `gadget`. Builds on GADGET_PLAN.md (the gadget layer)
 and BABE_DISPUTE_PLAN.md (the graph, the windows, the figures). The
-design note is papers/lichen-babe; its v0.1.2 and v0.1.3 (the keyless
-tower, setup by VSSS) are on branch `exit-counter`, not yet merged.
+design note is papers/lichen-babe-v0.1.6 (v0.1.2 the keyless tower,
+v0.1.3 the setup by VSSS, v0.1.4 the honest-setup caveat, v0.1.5 the
+adaptor reveal in 2-bit digits, v0.1.6 `wrongly_challenged` signed at
+setup).
 
 ## What there is to build on
 
@@ -132,9 +134,6 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
 - **The countersignature or the work-bound request** (BABE_DISPUTE_PLAN
   §2 or §11): the countersignature is designed; the other is
   speculative. Build the first; keep the second as an experiment.
-- **VSSS's on-chain design**: the adaptor-per-bit reveal in
-  `challenge_assert` (MuSig2 nonces or Alice's own key) isn't designed
-  yet.
 - **A hub offering both gadgets**: `Info` names one statement and its
   depths; offering BitVMX and BABE side by side changes the handshake.
 
@@ -183,5 +182,9 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         1.5 + 8.1 s); she stores 238 MiB, and downloads it first
         (`examples/setup_cost.rs`)
   - [ ] the setup exchange, Alice's storage
-  - [ ] `challenge_assert`'s label reveal (labels as Lamport keys)
+  - [ ] `challenge_assert`'s reveal by adaptor signatures (the note's
+        v0.1.5: Alice's own one-time keys, one pre-signature a digit and
+        value; 2-bit digits, as tapscript's 1,000-element stack needs):
+        the leaf script, pre-signing and completion on a real sighash,
+        extraction; `vsss` and the table by digit
 - [ ] 5 end to end
