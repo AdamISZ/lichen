@@ -91,6 +91,32 @@ sweep. Today she acts about 13 times: escalate, `inputs`, 10 rounds, the
 record and the proof. Only `wrongly_challenged` (5a) is under real time
 pressure, and it is 149 vB and mechanical, so it suits a tower.
 
+**Alice's tower holds no keys (2026-10-26; the paper's §7).** This is
+the qualitative gain, beyond the count of moves:
+- **Her commitments come before the game.** She signs `b` (request) and
+  π1 (assert, after `respond`, before the loose deadline T_A).
+- **Her one windowed answer is a preimage.** For `wrongly_challenged`, the
+  tower reads the labels off chain, evaluates the garbled circuit and
+  decrypts the WE. It needs no key, given:
+  - the two witnesses;
+  - the kept instances;
+  - the proof.
+- **The worst a tower can do is stay silent,** or, run by the hub, pin
+  `wrongly_challenged` (below), bounded by TRUC's 10 kvB. So several
+  untrusted towers can run at once.
+- **Under BitVMX, by contrast,** each move is signed live, so the tower
+  holds her move keys and can equivocate.
+
+Two changes to BABE's transactions:
+- **Keep `CheckSig(pk_P)` on the `wrongly_challenged` leaf, signed at
+  setup** (ALL|ANYONECANPAY, TRUC). The tower adds msg and a fee input.
+  Dropping it (the paper before v0.1.6) would let the hub, which knows
+  msg, spend the leaf itself in a large low-fee-rate transaction: Alice
+  must outbid its whole fee (BIP 125 rule 3), and if it doesn't confirm
+  within Δ1 the hub replaces it with `failure`.
+- **Give the links' anchors a key of their own,** not the payout key.
+  The terminals already use ALL|ANYONECANPAY plus the broadcaster's coin.
+
 **There is no read-lie branch.** The whole verification is inside the
 garbled circuit and the WE. So the worst case (187 kvB, the hub's
 `combine_8`) has no counterpart.
@@ -179,7 +205,7 @@ ladder's largest move to 23.6 kvB, but not its sum. It helps the
 per-window figure only, so the "1.4×" said before does not hold.
 
 The papers use this basis: `papers/lichen-bitvmx-v0.1.1` §9 and
-`papers/lichen-babe-v0.1.1` §7.2.
+`papers/lichen-babe-v0.1.6` §8.2.
 
 **The hub's response** (0.6 kvB) also falls in a window, w_H, and grows
 with N under hostile users: 60,000 contracts need w_H ≥ 36 blocks. That
@@ -230,6 +256,55 @@ All per contract, the paper's figures at (N_CC, M_CC) = (2,268, 4) on a
 needs 10 label sets on chain without soldering (~92 kvB, est). Soldering
 makes the setup cost and the on-chain cost independent.
 
+**VSSS instead of soldering is the setup to aim for (2026-10-26; the
+paper's §8.5).**
+- **Most of the soldered setup is soldering:** about 14 min in all, 745 s
+  of it the SNARK.
+- **About 14 min per contract, at every opening and renewal, is probably
+  unworkable.** About 40 s is not.
+
+How VSSS works (Glock §3.4, BABE §9.4):
+- **The labels are shared.** The hub Shamir-shares each label across the
+  N instances, threshold N − M + 1, under Feldman commitments.
+- **One label set goes on chain**, the secrets. With the opened shares,
+  Alice interpolates the kept instances' labels.
+- **So M stops costing chain space, and the cost moves to N.** Choose a
+  small N.
+
+| (N, M) | setup | Alice stores |
+|---|---|---|
+| (78, 10) | ~40 s (BABE's estimate) | ~220 MiB |
+| (124, 8) | ~1 min | ~180 MiB |
+| (181, 7) | ~1.5 min | ~155 MiB |
+
+- **A hub opening 10,000 contracts:** ~110 laptop-hours, against ~2,300
+  soldered.
+- **Storage:** Duty-Free Bits' 45× would bring M = 10 to ~5 MiB.
+
+On chain (2026-10-28, the paper's v0.1.5):
+- **It needs adaptor signatures.** A hashlock can't be tied to the
+  Feldman commitment without a proof.
+- **How:** Alice pre-signs `challenge_assert` per (bit, value) under
+  one-time keys A_{i,β}, adapted to C_0 = f(0)·G. The script picks the
+  key by her Lamport signature (copied by the hub from `assert`), and
+  the hub's completion reveals f(0). Each secret adapts exactly one
+  pre-signature: no point is reused.
+- **Bit by bit it doesn't fit one input:** tapscript's initial stack is
+  at most 1,000 elements (BIP 342), and each bit needs two (signature,
+  preimage): 1,017 in all.
+- **So 2-bit digits:** Alice's Lamport over 2-bit digits (one of four
+  independent preimages, no checksum), one shared secret per (digit,
+  value). The polynomials, keys and hashes number the same; signatures
+  and preimages halve. 509 stack elements; ~237 B leaf and 86 B witness
+  a digit.
+- **The cost (est.):** `challenge_assert` ~21 kvB (26 bit by bit, 17.4
+  soldered), `assert` ~7.8 (9.24). Disproving a false claim ~30 kvB
+  (28 soldered). Hostile users: ~47,000 contracts for a week's dispute,
+  against 56,000 soldered.
+- **The keyless tower survives:** A_{i,β} is used only at setup. The
+  tower also needs the pre-signatures' scalars and the opened shares of
+  both values (~2 MiB at (78, 10)).
+
 ## 9. What changes with EXIT_PLAN's counter-proof
 
 The figures above are for today's statement, a withdrawal by return. With
@@ -261,7 +336,8 @@ countersign: 8 more words, about +2 kvB on `request` and +2.5 on
 - **BABE's figures are its prototype's:**
   - honest setup on chain, one label set;
   - M = 4 needs soldering (an SP1 proof) or four label sets on chain;
-  - VSSS (§9.4) could replace soldering, but has no on-chain design yet.
+  - VSSS (§9.4) could replace soldering; its on-chain design (§8 above,
+    2-bit digits and adaptor signatures) is estimated, not built.
 - **The countersignature construction is a sketch.** Its security needs
   knowledge soundness through Groth16, RISC Zero's STARK and the WE
   (babe-amount-authenticated.md, C4).
