@@ -30,6 +30,11 @@ details, start with [the 1,000-foot view](../1000-ft-view.md).
   sealing or vanishes: her exit proof, the operator's counter proof,
   and the verification gadget, kept abstract, used in one of two
   places on chain.
+- [A BABE dispute: a true claim, challenged](babe-challenged.md):
+  branch `gadget`. Contract 1000 on Mutinynet, a real proof against a
+  hub that challenges true claims: the cut-and-choose at opening, then
+  five transactions, 30,471 vB. How the challenge hands Alice the
+  garbled circuit's labels, and why a tower needs none of her keys.
 - [How a dispute pays out](payout.md): how one pre-signed transaction
   pays Alice exactly `b`, in bits, and the hub the rest. A toy example,
   then Test B's payout traced down to the witness.
