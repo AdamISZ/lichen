@@ -121,7 +121,7 @@ impl Wallet {
     /// contract's journal).
     pub fn babe_false_input(&self, claim: &[u8]) -> Result<Vec<u8>> {
         let (_, _, journal) = lngap_zk::groth16::split_input(claim)?;
-        let proof = lichen_babe::statement::risc0_claim(claim, &journal)?;
+        let proof = lichen_babe::statement::risc0_claim(claim, journal)?;
         Ok(lichen_babe::statement::proof_to_bytes(&proof))
     }
 
