@@ -17,7 +17,7 @@ w=/w/smoke-$$.json
 wallet() {
     dc run --rm --no-deps -T -v "$here/data/regtest/smoke:/w" -v "$here/data/regtest/bitcoind:/bitcoind:ro" --entrypoint lichen hub \
         --network regtest --wallet "$w" --sequencer "$SEQUENCER_URL" --hub http://hub:18310 \
-        --rpc-url http://bitcoind:8332 --cookie /bitcoind/regtest/.cookie --chain-wallet smoke --statement "${STATEMENT:-groth16}" "$@"
+        --rpc-url http://bitcoind:8332 --cookie /bitcoind/regtest/.cookie --chain-wallet smoke --statement "${STATEMENT:-babe}" "$@"
 }
 mkdir -p "$here/data/regtest/smoke"
 

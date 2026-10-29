@@ -129,7 +129,7 @@ wallet they like. They need both URLs:
 ```sh
 lichen --network mutinynet --wallet alice.json --sequencer http://<sequencer host>:18300 init
 lichen --network mutinynet --wallet alice.json --sequencer http://<sequencer host>:18300 --hub http://<hub host>:18310 \
-  --statement groth16 open 400000 --payout <an address of hers>
+  --statement babe open 400000 --payout <an address of hers>
 ```
 
 `init` pins the deployment the sequencer announces. `open` prints a

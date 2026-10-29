@@ -4,9 +4,11 @@
 # A turnkey tower on a fresh x86_64 VPS (docs/RUN_A_TOWER.md): paste this
 # as the machine's user data. It installs Docker, builds the tower's image
 # from lichen's master (and ln-gap at lichen's LNGAP_REV), then waits for
-# the package: copy it to /srv/lichen-tower/package.json and the tower
+# the package: copy it to /srv/lichen-tower/ (package.json, and under
+# BABE package.d), then `touch /srv/lichen-tower/ready`, and the tower
 # starts. Logs: `docker logs -f lichen-tower-tower-1`; its state, to sweep
-# with afterwards: /srv/lichen-tower/lichen/deploy/tower/data/package.state.json.
+# with afterwards (root's: copy it out with `docker compose cp`, as in
+# RUN_A_TOWER.md): /srv/lichen-tower/lichen/deploy/tower/data/package.state.json.
 # Settings below.
 package_update: true
 packages: [docker.io, docker-compose-v2, git, curl]
@@ -15,18 +17,20 @@ write_files:
     content: |
       NETWORK=mutinynet
       ESPLORA=https://mutinynet.com/api,https://mutinynet.com/api
-      STATEMENT=groth16
+      STATEMENT=babe
       R0WORK=/srv/lichen-tower/r0work
   - path: /srv/lichen-tower/start.sh
     permissions: "0755"
     content: |
       #!/bin/sh
-      # wait for the package, then run the tower beside it
+      # wait for the package (and under BABE its package.d), copied here
+      # and then marked complete with `touch ready`; run the tower beside it
       set -eu
       cd /srv/lichen-tower
-      until [ -f package.json ]; do sleep 10; done
+      until [ -f ready ] && [ -f package.json ]; do sleep 10; done
       mkdir -p r0work lichen/deploy/tower/data
       cp package.json lichen/deploy/tower/data/package.json
+      [ ! -d package.d ] || cp -r package.d lichen/deploy/tower/data/
       cp tower.env lichen/deploy/tower/.env
       docker compose -f lichen/deploy/tower/docker-compose.yml up -d
 runcmd:

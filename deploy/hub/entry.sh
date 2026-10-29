@@ -25,7 +25,7 @@ case "${1:-}" in
         until curl -fsS "$seq/info" >/dev/null 2>&1; do echo "waiting for the sequencer at $seq"; sleep 5; done
         exec lichen-hub --network "$NETWORK" --listen 0.0.0.0:18310 --sequencer "$seq" \
             --rpc-url http://bitcoind:8332 --cookie "$cookie" --chain-wallet hub --dir /hub \
-            --statement "${STATEMENT:-groth16}" --reserve-ppm "${RESERVE_PPM:-20000}" --max-bits "${MAX_BITS:-24}" \
+            --statement "${STATEMENT:-babe}" --reserve-ppm "${RESERVE_PPM:-20000}" --max-bits "${MAX_BITS:-24}" \
             ${DURATION:+--duration "$DURATION"} ${WINDOWS:+--windows "$WINDOWS"} ${HOSTILE:+--hostile} ${REFUSE_FOLDS:+--refuse-folds}
         ;;
     *)

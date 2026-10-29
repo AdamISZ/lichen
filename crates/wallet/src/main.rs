@@ -37,7 +37,7 @@ struct Args {
     /// BitVMX's: `mock`, `groth16` (its verifier, found in the cargo
     /// checkout) or `groth16:<path to the verifier's program definition>`;
     /// BABE's: `babe` (the RISC Zero proof) or `babe-mock`.
-    #[arg(long, default_value = "mock")]
+    #[arg(long, default_value = "babe-mock")]
     statement: lichen_proto::Statement,
     /// The prover of shielded spends: a command run as `<cmd> spend <input
     /// file> <receipt file>`. Without it, spends carry native proofs (the
