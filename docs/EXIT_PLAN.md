@@ -3,6 +3,10 @@
 2026-10-21, branch `anchor`. Replaces END_PLAN.md for a deployment
 whose hub and sequencer are one operator.
 
+2026-10-30: revised for BABE, now lichen's gadget. "The game" below is
+the BitVMX design and is superseded by "Under BABE", which follows it.
+The steps at the end are the BABE ones.
+
 ## The assumption
 
 The hub and the sequencer cooperate: one operator, or two that trust
@@ -193,7 +197,7 @@ it, making the counter a hash preimage instead of a proof? No:
   the note's commitment, and the sender who makes the note must not know
   `rev`, so the recipient would have to supply it, as with an invoice.
 
-## The game
+## The game (BitVMX; superseded by Under BABE)
 
 ln-gap's game with the operator's counter as a second input, owned by
 the verifier. The program definition already lists inputs by owner. The
@@ -267,6 +271,108 @@ What it needs:
 
 The single program above becomes an optimization, if a two-proof ELF
 proves cheap.
+
+## Under BABE
+
+The claim, the counter, the cutoff and the exit records stay as above.
+What changes is how they ride on the dispute. BABE's graph keeps its
+shape (`request`, `respond`, `assert`, `challenge_assert`, each with its
+terminal); three things are added. A diagram:
+[the exit dispute](https://claude.ai/artifact/PJJkZuAygAEhP9ar62z98F),
+a private page.
+
+**A dead operator is already handled.** If the hub never responds,
+`request_timeout` pays Alice her `b` after `w_H`, with no proof
+(`engine/babe.rs`). The counter design is for an operator that is
+present but hostile: one that responds, then censors her return or
+stops producing the chain receipts she needs, so that she can't prove
+by `T_A` and `respond_timeout` takes her contract.
+
+### `E` and `K` on chain
+
+- **`request`:** Alice signs `b` (as now, a 4-byte one-time key the
+  payout reads) and `E` under a second one-time key, 32 bytes. She posts
+  the nullifier list in the witness, unsigned since `E` binds it, at 32
+  bytes a note (up to 8). That is how the hub learns what to search for.
+- **`respond`:** the hub signs `b` (as now), `E`, and `H(K)`, all under
+  its SHA-256 Winternitz keys. Its script compares the hub's `b` and `E`
+  with Alice's, digit by digit, as it compares `b` today. Without that,
+  the hub could sign some other `E` and leave her nothing provable. `K`
+  itself goes in the witness: "none", or a counter of about 256 bytes.
+  Whether `E` and `H(K)` take one 64-byte signature or two 32-byte ones
+  is a detail; the witness stays far under the 1,000-element limit
+  (roughly 300 elements more).
+- **Return mode** (a refused return, today's dispute): `E` is a fixed
+  value for return mode, and `K` is "none". So one graph serves both.
+
+### Alice's statement
+
+Fixed at setup, with the journal `c ‖ D ‖ H(pk_H)` as now; `b`, `E` and
+`K` reach it through the hub's signature, the trick that already carries
+`b`. One guest, two modes:
+
+```
+the hub signed (b, E, H(K)), and either
+   return mode:  a return of b with memo c, anchored, as today
+   exit mode:    ( K = none  and  my notes, by E, were in S's tree and
+                                  unspent at S, summing to at least b )
+                 or
+                 ( K ≠ none and ( K doesn't verify, or K's journal
+                                  names another D or E ) )
+```
+
+A failed counter pays Alice whatever her own claim, the rule from "The
+game". There's no second game and no roles reversed: `K` is judged
+inside her statement, which BABE already judges. A true counter leaves
+her no valid proof (`failure`, or `respond_timeout`); a false one she
+proves false.
+
+**What that costs, and when.** Only a counter with her `D` and `E` that
+doesn't verify makes her guest run a full Groth16 verification. That
+means a hub that has deliberately forged a counter, losing the contract
+for it. Malformed points fail early; a counter naming another `D` or `E`
+needs only the journal compared. Unmeasured: probably tens of millions
+of cycles with RISC Zero's 256-bit accelerator, so dozens of segments,
+against days until `T_A`. It's compute only: her proof stays one
+Groth16 on chain. Composition can't help here, since an assumption
+proves a receipt valid, never invalid.
+
+### The counter
+
+The counter statement as above: a RISC Zero guest, wrapped in Groth16.
+It uses the same verifying key as Alice's proofs, with its own image id,
+which her guest pins. The cutoff is `request`'s confirmation height,
+proved by the counter guest from the request transaction in a block on
+the anchors' headers; the guest knows the contract's funding outpoint
+through `D` or `E`'s preimage (detail).
+
+### Windows and load
+
+- **`w_H` absorbs `W_c`.** The hub must find and prove any counter within
+  its response window: about 20 minutes to prove, plus the wrap.
+  Mutinynet's 40 blocks (20 minutes) is too short; lengthen it.
+- **On chain,** per exit and fixed whatever anyone does:
+  - `request` grows by the nullifiers and Alice's second signature (a
+    few kB, due only by `T_close`);
+  - `respond` grows by the hub's signatures and `K` (a few kB; it counts
+    toward the hub's bytes per window, small beside `challenge_assert`'s
+    20.7 kvB).
+
+  Nothing grows with misbehaviour.
+- **The compute flood.** A wave of stale claims makes the hub prove many
+  counters within one `w_H`. It's costly to mount, since each countered
+  claimant loses their contract. Counters parallelise, so a proving
+  market or more machines scale with the wave, and one proof could
+  answer many claims if needed. Size the hub's capacity with `w_H`.
+
+### Exit records under BABE
+
+Alice's whole proof is on chain in `assert` (π1 signed, π2 and π3
+beside it), so the operator always has it for the record. The chain
+guest then checks a Groth16 per exit record, the same cost as above,
+per exit rather than per transaction. If that proves too heavy, the
+alternative is the one above: the claim carries the owner's signature
+on `c ‖ E`, made inside the exit proof. Measure first.
 
 ## After an exit
 
@@ -710,48 +816,84 @@ timeout.
   the operator serves data, since a consolidation is itself a spend
   (the consolidation attack).
 
-## Steps
+## Steps (BABE)
 
-1. **The exit claim** in `lichen-withdraw` (native, on the mock
-   statement): the journal with `E`.
-2. **The counter statement** (native), with the cutoff and its proof of
-   `H_esc`, and the exit record on the L2:
-   `Tx::Exit`, hub-signed and carrying the claimant's exit proof, both
-   checked by the chain guest. A new chain guest.
-3. **ln-gap:** the verifier-owned input, the two-proof program (first
-   the mock statement's analogue), the layout with `E`. The real work.
-4. **The guests and the verifier ELF;** measure the depths, the
-   pre-signed set and the reserve.
-5. **The wallet:**
-   - the exit kit, fetched after each spend or receipt;
-   - "final" requires the kit;
-   - `lichen exit <contract>`.
+0. **Spikes**, to size what is unmeasured:
+   - a BN254 Groth16 verification in a RISC Zero guest (`ark-groth16`,
+     or RISC Zero's own verifier): its cycles;
+   - the same, as the chain guest's check of an exit record's proof.
+1. **The statements, native** (`crates/withdraw`):
+   - exit mode: notes in `T_S`, unspent in `N_S` (non-membership in the
+     nullifier set's sparse Merkle tree, `validity/smt.rs`), Alice's
+     authority (`nk`, or a signature for transparent notes), distinct
+     notes, `b ≤ Σ`, and `E`;
+   - the counter: an insertion of one of `E`'s nullifiers after `h_S`,
+     final before the cutoff, not contract `c`'s own return or exit
+     record, in the same history as `S`, with the cutoff proved from
+     `request`'s confirmation;
+   - the two modes behind the fixed statement, with `K`'s check (none,
+     another `D` or `E`, or verification).
 
-   The tower's package gains the kit.
-6. **The operator:**
-   - watches escalations;
-   - refuses to sequence spends of nullifiers in pending claims;
-   - posts exit records;
-   - proves and posts counters within `W_c`;
-   - folds an exit it has checked, if it chooses to.
-7. **Tests.**
-   - Regtest:
+   Unit tests for each, including every case in "The counter".
+2. **The L2** (`ledger`, `validity`, `sequencer`):
+   - `Tx::Exit`, hub-signed, carrying the claimant's exit proof, checked
+     by the chain guest. A new chain guest, so a new deployment.
+   - The exit kit served per note: a path and a non-membership proof at
+     an anchored state.
+   - The sequencer refuses spends of nullifiers in pending claims.
+3. **The graph** (`crates/babe`):
+   - `request` signs `E` and carries the nullifiers;
+   - `respond` signs `E` and `H(K)`, compares `E`, and carries `K`.
+
+   Sizes measured, with the 1,000-element limit checked as for the reveal.
+4. **The guests** (`r0/`, built on lichen-vps):
+   - the BABE guest with both modes and `K`'s check;
+   - the counter guest;
+   - the chain guest with `Tx::Exit`.
+
+   Their image ids are pinned in `D`'s scheme as today.
+5. **A mock for regtest.** BABE's mock statement takes every claim as
+   true, so it can't exercise counters. The mock exit decides natively
+   instead: the wallet asserts only if the native check passes, and the
+   hub challenges any claim that fails it. That's how BitVMX's mock
+   played lies.
+6. **The hub** (`dispute/babe.rs`):
+   - in exit mode, read the nullifiers, search the spent set, and prove
+     and post a counter within `w_H`, or respond "none";
+   - post exit records;
+   - refuse spends of pending claims' nullifiers;
+   - fold an exit it has checked natively, if it chooses.
+7. **The wallet** (`engine/babe.rs`, `main.rs`):
+   - the exit kit, fetched after each spend or receipt; "final" requires
+     it;
+   - exit mode: claim, `E`, the nullifiers, and the assertion, proving
+     `K` false when it is;
+   - the switch from a return to an exit when the return isn't sealed in
+     time, so `lichen withdraw` still does the right thing;
+   - the tower's package carries the kit.
+8. **Windows:** `w_H` long enough for a counter (Mutinynet and mainnet).
+9. **Tests:**
+   - Regtest, on the mock:
      - an exit while the operator censors;
-     - an exit with the operator gone (timeouts);
-     - an exit of an old state after a spend (countered, Alice loses);
-     - the same note through two contracts (the second countered);
-     - a garbage counter (Alice wins);
-     - an exit record without a matching exit proof (the chain guest
-       rejects it);
-     - Alice's censored return sequenced after her escalation (not a
-       counter; Alice wins);
-     - any spend of hers anchored after the cutoff (not a counter);
-     - the consolidation attack (Alice loses: the data-availability gap,
-       until one of its options is built);
+     - the operator gone (`request_timeout`);
+     - an old state after a spend (countered, Alice loses);
+     - the same note through two contracts;
+     - a bogus counter (Alice wins);
+     - a counter for another `E` (Alice wins);
+     - her censored return sequenced after her request (not a counter);
+     - a spend after the cutoff (not a counter);
+     - an exit record without a matching proof (rejected);
      - a spend racing a claim;
-     - two claims of the same notes escalated together (both countered,
-       by each other's exit records, past the cutoff).
-   - Groth16: a countered exit end to end.
-   - Mutinynet: a `HOSTILE` operator censoring; Alice exits, Bob's old
-     state is countered.
-8. **Docs:** SHIELDED.md's Limits, CODE.md.
+     - two claims escalated together;
+     - the consolidation attack (Alice loses: the data-availability gap,
+       until 10).
+   - Regtest on a real proof, opt-in: a countered exit and a bogus
+     counter proved false.
+   - Mutinynet: a `HOSTILE` operator censoring; Alice exits; Bob's stale
+     claim is countered.
+10. **Data availability:** sender acknowledgment, as specified above. A
+    chain-guest change, after the exit itself works. Until then the
+    consolidation test documents the gap.
+11. **Docs:** this plan's status, an explainer for the exit, SHIELDED.md's
+    Limits, RUN_A_TOWER (the kit), CODE.md, and the papers (the main
+    paper's exit section, the BABE companion's counter).
