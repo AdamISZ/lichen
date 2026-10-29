@@ -535,6 +535,23 @@ docs, L2BEAT's privacy page; 2026-10-30):
 
   The two tokens can coexist on Starknet's exchanges.
 - **Thin points:**
+  - **Starknet's own governance** (L2BEAT, Stage 1, fails the walkaway
+    test):
+    - **The Security Council (9 of 12)** can upgrade anything at once,
+      with no exit window, the verifier included.
+    - **Regular upgrades** go through a 2-of-6 StarkWare multisig, behind
+      8 days; the verifier is under a 2-of-4 multisig, behind 8 days.
+    - **Liveness and censorship.** A whitelisted proposer posts state
+      roots. Users can queue L1 transactions but not force them; a
+      3-of-12 Council minority can post a root including a stuck one,
+      with no defined process or deadline.
+    - **For lichen:** an emergency upgrade could post a root recording a
+      `return` that never happened, and the exit guest, trusting the core
+      contract, would accept it. So the hub's money rests on the Council
+      not colluding with a withdrawer. Requiring old roots doesn't help,
+      since emergency upgrades have no delay. Lichen there removes the
+      federation over the bitcoin, but keeps the Council over the state
+      the bridge relies on.
   - **Sequencer censorship.** StarkWare's sequencer censoring a `return`
     is lichen's sequencer hole, in other hands. Whether L1-to-L2 messages
     can force one through is open.
@@ -634,5 +651,6 @@ The same shape for lichen's own L2:
   [SNIP-38 (strkBTC)](https://community.starknet.io/t/snip-38-strkbtc-bitcoin-on-starknet/116174),
   [STRK20 notes and nullifiers](https://docs.starknet.io/build/starknet-privacy/notes-and-nullifiers),
   [L2BEAT privacy: STRK20](https://l2beat.com/privacy/projects/strk20),
+  [L2BEAT: Starknet](https://l2beat.com/scaling/projects/starknet),
   [STARK verified on Bitcoin signet](https://blockeden.xyz/blog/2026/03/15/starkware-zk-stark-proof-bitcoin-signet-zero-knowledge-native/)
 - Mina's scan state and Babylon are from memory, not checked.
