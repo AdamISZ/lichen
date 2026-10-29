@@ -2,10 +2,11 @@
 
 2026-10-27, branch `gadget`. Builds on GADGET_PLAN.md (the gadget layer)
 and BABE_DISPUTE_PLAN.md (the graph, the windows, the figures). The
-design note is papers/lichen-babe-v0.1.6 (v0.1.2 the keyless tower,
+design note is papers/lichen-babe-v0.1.7 (v0.1.2 the keyless tower,
 v0.1.3 the setup by VSSS, v0.1.4 the honest-setup caveat, v0.1.5 the
 adaptor reveal in 2-bit digits, v0.1.6 `wrongly_challenged` signed at
-setup).
+setup, v0.1.7 as built and measured: the graph as built, the Mutinynet
+disputes, the costs measured beside 0.1.6's estimates).
 
 ## What there is to build on
 

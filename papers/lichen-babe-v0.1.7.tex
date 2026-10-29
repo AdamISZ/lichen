@@ -25,13 +25,19 @@
 \newcolumntype{L}{>{\raggedright\arraybackslash}X}
 
 \renewcommand{\arraystretch}{1.3}
+% float pages: floats from the top, not spread over the page
+\makeatletter
+\setlength{\@fptop}{0pt}
+\setlength{\@fpsep}{1.5\baselineskip}
+\setlength{\@fpbot}{0pt plus 1fil}
+\makeatother
 \rowcolors{1}{}{black!5}
 
 \definecolor{coop}{RGB}{232,245,233}
 \definecolor{chainc}{RGB}{255,228,225}
 \definecolor{hubc}{RGB}{255,243,214}
 
-\title{\textbf{Lichen over BABE}\\withdrawals of a variable amount, by authenticated request\\[2pt]\large a design note with cost estimates}
+\title{\textbf{Lichen over BABE}\\withdrawals of a variable amount, by authenticated request\\[2pt]\large as built and measured}
 \author{waxwing}
 \date{Version 0.1, October 2026\\[2pt]\small a companion to \emph{Lichen}, version 0.2~\cite{lichen}}
 
@@ -39,27 +45,28 @@
 \maketitle
 
 \begin{abstract}
-BABE~\cite{babe} settles a Groth16 proof on Bitcoin in three
+BABE~\cite{babe} settles a Groth16 proof on Bitcoin in a few
 transactions, using witness encryption and a small garbled circuit, but
 its statement, public inputs included, is fixed when the parties set up.
 A lichen withdrawal is for an amount $b$ that Alice chooses only when she
-withdraws. We describe how BABE can serve as lichen's on-chain gadget
+withdraws. We describe how BABE serves as lichen's on-chain gadget
 without any change to its cryptography: the amount leaves the public
 input and enters the witness, together with the hub's one-time signature
 on it, which the hub must give on chain for exactly the amount Alice
 asserted there, or lose. We sketch why this binds the proved amount to
-the paid one, give the transaction graph, and estimate costs from BABE's
-published measurements and lichen's: a refused withdrawal of about
-31~kvB in six transactions against BitVMX's 100--212~kvB in 23--25, a
-hub able to hold, for a dispute of a given length, about seven times as
-many contracts before congesting the chain pays (three without
-soldering), a
-tower for Alice that holds none of her keys, since her only move due in
-a window is a hash preimage, and a
-setup per contract of about 14 minutes of computation with BABE's
-soldering, or, we estimate, about 40 seconds with verifiable secret
-sharing in its place, and 90--220~MiB of storage for the user. Nothing here is built, and the security argument is a
-sketch.
+the paid one, and give the transaction graph as built. It is lichen's
+gadget now, set up per contract by verifiable secret sharing in place of
+BABE's soldering, and three of its endings have been played on
+Mutinynet with a real RISC Zero proof. A true claim challenged by the
+hub and answered took 30.5~kvB in five transactions, against BitVMX's
+100--212~kvB in 23--25; unchallenged, 9.7~kvB in four; a false claim,
+29.9~kvB in five. The setup is 19~seconds of computation per contract on
+one laptop, and the user keeps about 240~MiB. For a dispute of a given
+length a hub holds about six times as many contracts as under BitVMX
+before congesting the chain pays. Alice's tower holds none of her keys,
+since her only move due in a window is a hash preimage; one has played a
+dispute on Mutinynet from Docker on a rented machine. The security
+argument is still a sketch.
 \end{abstract}
 
 \tableofcontents
@@ -71,22 +78,26 @@ The main paper~\cite{lichen} treats the check of a disputed withdrawal
 proof as a gadget with a narrow interface: given a proof whose public
 input binds the program and its journal, adjudicate a two-party claim
 on Bitcoin, with the contract's fixed terms checked, the amount $b$
-readable by Script for a variable payout, and the loser paying. The
-gadget built today is BitVMX's interactive search~\cite{bitvmx},
-described and measured in a companion~\cite{lichenbitvmx}. This note
-describes a second gadget, BABE, which is not built.
+readable by Script for a variable payout, and the loser paying. lichen's
+first gadget was BitVMX's interactive search~\cite{bitvmx}, described and
+measured in a companion~\cite{lichenbitvmx}, and still built. This note
+describes the second, BABE, which is now built in lichen~\cite{lichencode}
+and its default.
 
 What is ours here is narrow: the binding of a late-chosen amount by the
 hub's authentication (Section~\ref{sec:auth}), first put forward in a
-discussion on Delving Bitcoin~\cite{delving}, and the cost estimates of
-Section~\ref{sec:costs}. BABE, its witness encryption and its garbled
-circuit are its authors'~\cite{babe,gkpw24,argo}; the problem of public
-inputs that are known only at proving time has been treated at the
-cryptographic layer by GOAT's researchers~\cite{goat}. Figures marked
-(BABE) are the BABE paper's measurements, taken from its revised version
-(October 2026), whose on-chain figures are larger than those of the
-January version; figures marked (lichen) are measured in lichen's proof
-of concept; the rest are our estimates.
+discussion on Delving Bitcoin~\cite{delving}; the transaction graph and
+the setup by verifiable secret sharing, as built; and the measurements.
+BABE, its witness encryption and its garbled circuit are its
+authors'~\cite{babe,gkpw24,argo}; the problem of public inputs that are
+known only at proving time has been treated at the cryptographic layer by
+GOAT's researchers~\cite{goat}. Figures marked (BABE) are the BABE
+paper's measurements, taken from its revised version (October 2026);
+figures marked (lichen) are measured in lichen's proof of concept, on
+regtest under mainnet's relay policy or on Mutinynet as stated; the rest
+are estimates, marked (est.). Version 0.1.6 of this note was the design
+before it was built; its estimates are kept beside the measurements where
+they differ.
 
 \section{BABE in brief}
 \label{sec:babe}
@@ -128,8 +139,7 @@ $r\pi_1$ by two-party computation once $\pi_1$ is known:
   publishes $\mathit{msg}$ (\emph{WronglyChallenged}), which blocks the
   verifier's \emph{Failure}; after a timelock $\Delta_2$ the prover's
   \emph{Success} pays. If the verifier never challenges, Success pays
-  after $\Delta_2$ anyway. Failure needs $\Delta_1$ after the challenge,
-  and $\Delta_2 > \Delta_1 + 2u$ for a liveness bound $u$.
+  after $\Delta_2$ anyway. Failure needs $\Delta_1$ after the challenge.
 \end{itemize}
 On chain, a contested valid proof costs Assert 9,240~vB, ChallengeAssert
 17,400~vB and WronglyChallenged 149~vB (BABE), with one set of labels.
@@ -139,25 +149,26 @@ for example 2,268 instances of which 4 are kept, 1~min~37~s and 1.8~GB at
 peak on a 16-thread laptop (BABE). Without more, the verifier must then
 post 4 sets of labels; \emph{soldering}, a SNARK proving the kept
 instances' labels consistent, brings it back to one at about 12~minutes
-more of setup (BABE); verifiable secret sharing could do the same in
-seconds (Section~\ref{sec:vsss}). The WE is extractable, proved in the generic group
-model. The protocol is proved robust (an honest prover is paid) and
-knowledge-sound (a prover who is paid knows a witness) for a setup that
-both parties run honestly. Against a verifier who garbles wrongly,
-cut-and-choose is argued, failing with probability at most $2^{-40}$ for
-the parameters above, but not proved (BABE).
+more of setup (BABE); verifiable secret sharing does the same in seconds,
+and is what lichen builds (Section~\ref{sec:vsss}). The WE is
+extractable, proved in the generic group model. The protocol is proved
+robust (an honest prover is paid) and knowledge-sound (a prover who is
+paid knows a witness) for a setup that both parties run honestly.
+Against a verifier who garbles wrongly, cut-and-choose is argued,
+failing with probability at most $2^{-40}$ for the parameters above, but
+not proved (BABE).
 
 \section{Where BABE fits in lichen}
 \label{sec:fit}
 
 \paragraph{The proving stack is unchanged.} lichen's withdrawal proof is
-already a Groth16 proof over BN254: RISC Zero's recursion compresses the
-guest's STARK receipts into a succinct receipt, and RISC Zero's
-shrink-wrap proves that receipt's verification in Groth16, with RISC
-Zero's single trusted setup~\cite{risc0}. BABE verifies exactly such a
-proof. The guests, the STARKs, the sequencer's chain proofs and the
-wrap all stay as they are; only the statement's journal changes
-(Section~\ref{sec:auth}).
+a Groth16 proof over BN254: RISC Zero's recursion compresses the guest's
+STARK receipts into a succinct receipt, and RISC Zero's shrink-wrap
+proves that receipt's verification in Groth16, with RISC Zero's single
+trusted setup~\cite{risc0}. BABE verifies exactly such a proof. The
+sequencer's chain proofs and the wrap stay as they are; BABE's
+withdrawal guest is the withdrawal statement with one more check and a
+different journal (Section~\ref{sec:auth}).
 
 \paragraph{The roles.} Alice, who claims her withdrawal, is BABE's
 prover; the hub, the only party a false claim can rob, is its verifier,
@@ -239,7 +250,7 @@ where $\mathrm{ValidWithdrawal}$ is lichen's withdrawal statement
 unchanged (a return of $b$ to the hub with the contract's memo $c$, under
 an anchored root of a valid history, with the contract's work on top)
 and $w$ its witness. The journal holds only values fixed when the
-contract opens: $c$, $\mathcal{D}$ and a digest of $pk_H$. The claim digest, and
+contract opens: $c \,\|\, \mathcal{D} \,\|\, H(pk_H)$. The claim digest, and
 so BABE's statement, is then fixed at setup, while $b$ is free until
 Alice withdraws.
 
@@ -247,14 +258,17 @@ Alice withdraws.
 
 \begin{enumerate}[leftmargin=1.5em]
 \item \emph{Request.} Alice asserts $b$ on chain under her one-time key
-  for it, as she does today.
+  for it, as under BitVMX.
 \item \emph{Response.} The hub must sign the same $b$ under $pk_H$, on
-  chain, within its window. The response's script verifies both
+  chain, within its window $w_H$. The response's script verifies both
   signatures and checks, digit by digit, that they sign the same value.
   If the hub is silent, Alice's timeout pays her the asserted $b$, as
   the hub's silence does under BitVMX.
 \item \emph{Proof.} Alice proves the statement, using the hub's
-  signature as part of her witness, and wraps the proof.
+  signature as part of her witness, and wraps the proof. Her wallet
+  stops after the response with the hub's signature written out for the
+  prover, and resumes when given the proof; she has until an absolute
+  deadline $T_A$, shortly before $\Tc$ (Section~\ref{sec:graph}).
 \item \emph{BABE.} Assert, ChallengeAssert, WronglyChallenged or
   Failure, as in Section~\ref{sec:babe}.
 \item \emph{Payout.} Success pays through the bit outputs, which read
@@ -297,20 +311,21 @@ signature on $b$ is on chain, each bit output could require both
 parties' signatures on the same value: Alice's leaf with bit $i$ set, the
 hub's with it clear. Neither can then spend with a value the other did
 not sign, which removes \tx{equiv\_b} and Alice's wait $\delta$ at about
-the same script cost.
+the same script cost. This is not built: the bit outputs are BitVMX's.
 
 \subsection{The guest}
 
-The withdrawal guest takes $b$ and $\sigma_H$ as private inputs, checks
-$\sigma_H$ against $pk_H$, and commits $c$, $\mathcal{D}$ and $pk_H$'s digest. The
-cost of the check depends on the signature's hash. LN-GAP's one-time
-signatures chain \texttt{HASH160}, RIPEMD-160 of SHA-256: up to 150 chain
-steps for a 32-bit word, and RIPEMD-160 has no accelerator in RISC
-Zero's zkVM, so a few hundred thousand cycles, comparable to today's
-whole statement of 389,000 (est.). Chains of SHA-256 instead, which
-Script can check with \texttt{OP\_SHA256} at 32 bytes a chain value and
-the zkVM accelerates, would cost a few thousand cycles (est.). The hub's
-key should use them.
+The guest takes $b$ and $\sigma_H$ as private inputs, checks $\sigma_H$
+against $pk_H$, runs the withdrawal statement, and commits $c$,
+$\mathcal{D}$ and $pk_H$'s digest. LN-GAP's one-time signatures chain
+\texttt{HASH160}, RIPEMD-160 of SHA-256, which has no accelerator in RISC
+Zero's zkVM; the hub's key instead chains SHA-256, which the zkVM
+accelerates and Script checks with \texttt{OP\_SHA256}, at 32 bytes a
+chain value. Alice's key for $b$ stays LN-GAP's, so the response's
+script verifies one signature of each kind. The guest runs in 482k user
+cycles against the plain withdrawal guest's 333k, one segment either way
+(lichen); 0.1.6 estimated the check at a few thousand. On a 4-vCPU x86
+server it proves in 640--660~s and wraps in about 255~s (lichen).
 
 \subsection{Security, as a sketch}
 \label{sec:security}
@@ -368,14 +383,14 @@ What remains to be written properly:
 \node[tx, fill=coop, left=of c] (fold) {\tx{fold}};
 \node[tx, fill=coop, right=of c] (def) {\tx{default} after $\Tc$};
 \node[tx, fill=chainc, below=of c] (req) {\tx{request}\\Alice signs $b$};
-\node[tx, fill=coop, right=of req] (rt) {\tx{request\_timeout}\\after $w_H$: Alice paid};
+\node[tx, fill=coop, right=of req] (rt) {\tx{request\_timeout}\\after $w_H$: Alice paid $b$};
 \node[tx, fill=hubc, below=of req] (resp) {\tx{respond}\\the hub signs $b$};
-\node[tx, fill=hubc, right=of resp] (rspt) {\tx{respond\_timeout}\\after $T_A$: the hub};
+\node[tx, fill=coop, right=of resp] (rspt) {\tx{respond\_timeout}\\from $T_A$: the hub};
 \node[tx, fill=chainc, below=of resp] (as) {\tx{assert}\\$\pi_1$, Lamport-signed};
-\node[tx, fill=hubc, below=of as] (ca) {\tx{challenge\_assert}\\the labels};
-\node[tx, fill=coop, left=of ca, text width=26mm] (succ) {\tx{success}, after $\Delta_2$:\\Alice paid $b$};
-\node[tx=33mm, fill=chainc, below left=6mm and -10mm of ca] (wc) {\tx{wrongly\_challenged}\\$\mathit{msg}$};
-\node[tx, fill=hubc, below right=6mm and -10mm of ca] (fail) {\tx{failure}, after $\Delta_1$:\\the hub};
+\node[tx, fill=coop, right=of as] (succ) {\tx{success}\\after $\Delta_2$: Alice paid $b$};
+\node[tx, fill=hubc, below=of as] (ca) {\tx{challenge\_assert}\\$\pi_1$'s secrets};
+\node[tx, fill=coop, right=of ca] (fail) {\tx{failure}\\after $\Delta_1$: the hub};
+\node[tx=33mm, fill=chainc, below=of ca] (wc) {\tx{wrongly\_challenged}$_k$\\$\mathit{msg}_k$: Alice paid $b$};
 \draw[->] (c) -- (fold);
 \draw[->] (c) -- (def);
 \draw[->] (c) -- (req);
@@ -383,49 +398,73 @@ What remains to be written properly:
 \draw[->] (req) -- (resp);
 \draw[->] (resp) -- (rspt);
 \draw[->] (resp) -- (as);
+\draw[->] (as) -- (succ);
 \draw[->] (as) -- (ca);
-\draw[->] (as) -| (succ);
-\draw[->] (ca) -- (wc);
 \draw[->] (ca) -- (fail);
+\draw[->] (ca) -- (wc);
 \end{tikzpicture}
-\caption{The dispute's graph. Red: Alice's transactions; yellow: the
-hub's; green: settlements. \tx{success} and \tx{failure} also spend the
-value output of \tx{respond}; \tx{wrongly\_challenged} spends the output
-\tx{failure} needs, so after it only \tx{success} remains.}
+\caption{The dispute's graph as built. Red: Alice's links; yellow: the
+hub's; green: the terminals, each of which ends the dispute. One chain
+of links carries the contract's value, each link's output with its
+terminal; a terminal and the next link spend the same output, so only
+one of them confirms.}
 \label{fig:graph}
 \end{figure}
 
-The graph follows BABE's (its Appendix A.1), joined to lichen's contract
-and payout (Figure~\ref{fig:graph}):
-\begin{center}
+BABE's graph (its Appendix A.1) keeps the prover's deposit apart and
+has Failure spend three outputs, because there Assert starts from an
+outside coin. Here the dispute starts from the contract output, so the
+value flows through one chain and every transaction has one input
+(Figure~\ref{fig:graph}, Table~\ref{tab:graph}).
+\begin{table}[!htbp]
+\centering
 \small
-\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{30mm}p{12mm}L}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{37mm}p{12mm}L}
 \toprule
 transaction & poster & spends, and what it carries or checks \\
 \midrule
 \tx{request} & Alice & the contract output; her one-time signature on $b$ (one word) \\
-\tx{respond} & hub & \tx{request}'s output, within $w_H$; the hub's signature on $b$, and Alice's again for the digit-by-digit comparison; creates a value output and a connector \\
-\tx{request\_timeout} & Alice & \tx{request}'s output after $w_H$; the payout, unverified \\
-\tx{assert} & Alice & the connector, before an absolute deadline $T_A$; $\pi_1$ under her Lamport key \\
-\tx{respond\_timeout} & hub & the value output and the connector, after $T_A$: Alice never asserted \\
-\tx{challenge\_assert} & hub & \tx{assert}'s second output, within $\Delta_2 - \Delta_1$; the labels, matched to Alice's Lamport signature \\
-\tx{wrongly\_challenged} & Alice & \tx{challenge\_assert}'s output, within $\Delta_1$; the preimage $\mathit{msg}$ \\
-\tx{failure} & hub & the value output, \tx{assert}'s first output and \tx{challenge\_assert}'s, after $\Delta_1$; the hub takes everything \\
-\tx{success} & Alice & the value output and \tx{assert}'s first output, after $\Delta_2$; the payout with its bit outputs \\
+\tx{request\_timeout} & Alice & \tx{request}'s output after $w_H$: the hub never responded; the payout \\
+\tx{respond} & hub & \tx{request}'s output, within $w_H$; the hub's signature on $b$, and Alice's again for the digit-by-digit comparison \\
+\tx{respond\_timeout} & hub & \tx{respond}'s output from the absolute $T_A$: Alice never asserted; the hub takes everything \\
+\tx{assert} & Alice & \tx{respond}'s output, before $T_A$; $\pi_1$ under her Lamport key, in 2-bit digits, with $\pi_2$ and $\pi_3$ beside \\
+\tx{success} & Alice & \tx{assert}'s output after $\Delta_2$: no challenge; the payout \\
+\tx{challenge\_assert} & hub & \tx{assert}'s output, within $\Delta_2$; the secrets of $\pi_1$'s digits, by completing Alice's adaptor pre-signatures (Section~\ref{sec:vsss}) \\
+\tx{wrongly\_challenged}$_k$ & Alice & \tx{challenge\_assert}'s output, before \tx{failure}; $\mathit{msg}_k$ of kept instance $k$; the payout \\
+\tx{failure} & hub & \tx{challenge\_assert}'s output after $\Delta_1$: no answer; the hub takes everything \\
 \bottomrule
 \end{tabularx}
-\end{center}
-All are pre-signed at opening, about ten transactions,
-\tx{wrongly\_challenged} by Alice alone (Section~\ref{sec:tower}). The payout and its bit outputs are as under BitVMX.
+\caption{The transactions of the dispute, as built.}
+\label{tab:graph}
+\end{table}
+A challenge and \tx{success} spend the same output, so they cannot race,
+and BABE's condition $\Delta_2 > \Delta_1 + 2u$ is not needed. Each kept
+instance has its own $\mathit{msg}_k$, so there is one
+\tx{wrongly\_challenged} per kept instance. A terminal cannot pay into a
+pre-signed transaction, since its broadcaster's fee input changes its
+id, so every terminal that pays Alice carries the payout's bit outputs
+itself: \tx{wrongly\_challenged} is 0.82~kvB rather than BABE's 149~vB.
+The links carry a 330-sat anchor for their poster and pay a floor of
+their own, 1~sat/vB, out of the contract, so they relay alone.
+
+All are pre-signed at opening: the default, four links, four terminals,
+and a \tx{wrongly\_challenged} for each kept instance, 19 transactions at
+$(N, M) = (78, 10)$ (0.1.6 estimated about ten). Each
+\tx{wrongly\_\allowbreak challenged} is signed by Alice alone and kept from the hub
+(Section~\ref{sec:tower}). The payout and its bit outputs are as under
+BitVMX.
 
 \paragraph{The assertion's deadline.} Alice's heavy move, \tx{assert},
 needs no window: a late assertion only delays a payout the hub owes
 anyway, and the hub loses nothing by waiting. So its deadline $T_A$ is
-absolute, early enough before $\Tc$ that $\Delta_2$ and the payout fit,
-and the proof, which needs the hub's signature first, never races a
-timeout. What remains due within a window is, for Alice,
-\tx{wrongly\_challenged} (149~vB) and, for the hub, its response and its
-challenge.
+absolute, $\Tc$ less $\Delta_2$, $\Delta_1$ and $\delta$, so that the
+rest of the dispute and the payout fit, and the proof, which needs the
+hub's signature first, never races a timeout. On Mutinynet, with
+30-second blocks, the windows are $w_H = 40$, $\Delta_2 = 240$,
+$\Delta_1 = 80$ and $\delta = 40$ blocks, and a contract lasts a week, so
+an assertion is due a week after the contract opens. What remains due
+within a window is, for Alice, \tx{wrongly\_challenged} and, for the hub,
+its response and its challenge.
 
 \section{Alice's liveness: a keyless tower}
 \label{sec:tower}
@@ -450,21 +489,36 @@ proof needs the hub's signature on $b$, so the second comes after
 visit, not a race. A prover she does not trust with keys can make the
 proof; she checks it (one Groth16 verification) and signs $\pi_1$.
 
-\paragraph{What the tower holds.} The pre-signed transactions, the two
-signed witnesses, the kept garbled instances (about 89~MiB) and the WE
-ciphertext, and her proof, which reveals nothing of the witness. From
-these and the chain it plays everything left to Alice:
+\paragraph{What the tower holds.} Her signed \tx{request}, her Lamport
+signature on $\pi_1$ (a preimage per digit, checked against her key),
+her signatures on the \tx{wrongly\_challenged}s, the proof, the
+contract's pre-signed transactions and her adaptor pre-signatures, the
+kept instances and the opened shares (about 240~MiB at $(78, 10)$), and
+the key of her fee budget, which pays the terminals' fees. From these
+and the chain it plays everything left to Alice:
 \begin{itemize}[leftmargin=1.5em]
+\item \tx{assert}, from her signature on $\pi_1$ (\tx{request} and
+  \tx{respond} are on chain already, since the proof needs the hub's
+  signature);
 \item \tx{request\_timeout} and \tx{success}: pre-signed, released by
   their timelocks;
-\item \tx{wrongly\_challenged}: it reads the hub's labels from
-  \tx{challenge\_assert}, evaluates the garbled circuit to $r\pi_1$,
-  decrypts with $\pi_2$ and $\pi_3$, and posts $\mathit{msg}$.
+\item \tx{wrongly\_challenged}: it reads the secrets from
+  \tx{challenge\_assert}, interpolates each kept instance's labels,
+  evaluates the garbled circuits to $r\pi_1$, decrypts with $\pi_2$ and
+  $\pi_3$, and posts the $\mathit{msg}$ of the instance that opens.
 \end{itemize}
 Her bit outputs wait $\delta$ for her own key, as under BitVMX, and
-nothing races her for them.
+nothing races her for them: she sweeps them later from her own device,
+with the tower's state file.
 
-\paragraph{Two changes to make.} First, in BABE, the leaf
+On Mutinynet a tower played contract 1001's dispute this way, from
+lichen's Docker image on a rented 4-vCPU machine~\cite{explainers}:
+Alice requested, proved after the hub's response and exported the
+package (740~KB, and 243~MB of kept instances); the tower asserted and,
+the hub not challenging, posted \tx{success} the block after $\Delta_2$.
+Her device did nothing between the export and the sweep.
+
+\paragraph{Two changes to BABE's graph, made.} First, in BABE, the leaf
 \tx{wrongly\_challenged} spends checks the prover's signature as well as
 the hashlock, $\mathsf{HashLock}(h_{\mathit{msg}}) \wedge
 \mathsf{CheckSig}(pk_P)$, signed when posted (its Appendix~A.1). A
@@ -477,30 +531,42 @@ replace only by paying more in all (BIP~125's third rule); if the hub's
 spend does not confirm within $\Delta_1$, it replaces it with
 \tx{failure}. So Alice makes the signature at setup instead:
 \tx{wrongly\_challenged} is fixed by then, and $\mathit{msg}$ is in its
-witness, not under its signature. She signs it
-\texttt{ALL|ANYONECANPAY}, as a TRUC (version~3) transaction, and the
-tower adds $\mathit{msg}$ and a fee input of its own.
+witness, not under its signature. As every leaf in lichen's graph, it is
+2-of-2, and she keeps her signature from the hub, for her towers only.
+She signs it \texttt{ALL|ANYONECANPAY}, as a TRUC (version~3)
+transaction, and the tower adds $\mathit{msg}$ and a fee input of its
+own. A TRUC transaction cannot spend an unconfirmed parent of another
+version, so the tower's fee coin confirms first; \tx{challenge\_assert}
+has confirmed already, since Alice answers only a confirmed challenge.
+Bitcoin Core relays TRUC from version 28; on Mutinynet a node of an older
+build refused one with \texttt{version} while its newer peers relayed
+it, so lichen's wallet now sends a transaction its node refuses for its
+version through the network's public Esplora.
 
 Second, fees. The terminals (\tx{request\_timeout}, \tx{success}, and
-now \tx{wrongly\_challenged}) are signed
-\texttt{ALL|ANYONECANPAY}, and their broadcaster adds a coin of its
-own~\cite[\S 6]{lichenbitvmx}: keyless already. But the links
-(\tx{request}, \tx{assert}) keep their ids and are bumped through an
-anchor only their poster can spend, which lichen today locks to the key
-that also sweeps her winnings. The anchors need a key of their own,
-guarding nothing but 330~sats each, which she can hand the tower with
-the witnesses; or she posts both links herself, since neither is due in
-a window.
+\tx{wrongly\_challenged}) are signed \texttt{ALL|ANYONECANPAY}, and
+their broadcaster adds a coin of exactly the fee from Alice's fee
+budget, set aside when the contract opened~\cite[\S 6]{lichenbitvmx}:
+the tower holds that budget's key, which guards nothing else. (At
+1~sat/vB a small terminal's fee is under the dust floor of a P2TR
+output, so the coin is at least 330~sats.) The links (\tx{request},
+\tx{assert}) pay their floor themselves; above it they are bumped
+through an anchor only their poster can spend, which lichen still locks
+to the key that also sweeps her winnings. So a tower posts her links at
+their floor, which sufficed on Mutinynet; to bump them it needs the
+anchors to have a key of their own, guarding nothing but 330~sats each,
+which is not yet built.
 
-\paragraph{A compromised tower can do little.} It holds no key,
-so it cannot sign a wrong move or a second value. That matters here:
-given her Lamport key, a tower that signed two values of $\pi_1$ would
-let the hub combine their bits into a third, signed bit by bit, and
-challenge with labels for it; she could not decrypt, and \tx{failure}
-would take everything. So the tower is not trusted like her own machine,
-as under BitVMX, but like a Lightning watchtower: several can run at
-once, strangers to her and to each other, and any one suffices. One
-caveat: a tower run by the hub holds the signed
+\paragraph{A compromised tower can do little.} It holds no key that
+signs a move, so it cannot sign a wrong move or a second value. That
+matters here: given her Lamport key, a tower that signed two values of
+$\pi_1$ would let the hub combine their bits into a third, signed digit
+by digit, and challenge with the secrets for it; she could not decrypt,
+and \tx{failure} would take everything. So the tower is not trusted like
+her own machine, as under BitVMX, but like a Lightning watchtower:
+several can run at once, strangers to her and to each other, and any one
+suffices. At worst one stays silent, or spends her fee budget, 30,000
+sats on Mutinynet. One caveat: a tower run by the hub holds the signed
 \tx{wrongly\_challenged}, and could post it with $\mathit{msg}$ as soon
 as it posts \tx{challenge\_assert}, padded with inputs of its own, to
 pin it as above. TRUC's limit of 10~kvB on the transaction bounds what
@@ -508,50 +574,84 @@ an honest tower must outbid, about 100,000~sats at 10~sat/vB. Her
 wallet, for its part, signs one $\pi_1$ only, and keeps the proof it
 signed.
 
-\section{Estimates}
+\section{Costs, measured}
 \label{sec:costs}
 
-\subsection{Transactions and disputes}
+\subsection{Transactions}
 
-\begin{center}
+Table~\ref{tab:sizes} gives the sizes as mined on Mutinynet (lichen),
+or on regtest under mainnet's relay policy where marked, beside 0.1.6's
+estimates.
+\begin{table}[!htbp]
+\centering
 \small
-\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{60mm}L}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{58mm}LL}
 \toprule
-transaction & size \\
+transaction & measured & 0.1.6 \\
 \midrule
-\tx{request}: one signed word & ${\sim}0.4$~kvB (est., from lichen's measured ${\sim}250$~vB a word) \\
-\tx{respond}: two signed words and the comparison & ${\sim}0.6$~kvB (est.) \\
-\tx{assert} & 9.24~kvB (BABE) \\
-\tx{challenge\_assert}, one label set (soldered) & 17.4~kvB (BABE) \\
-\tx{challenge\_assert}, four label sets & ${\sim}42$~kvB (est.: one set is about $17.4 - 9.2 = 8.2$~kvB) \\
-\tx{challenge\_assert}, one secret set by adaptor signatures (VSSS), in 2-bit digits & ${\sim}21$~kvB (est., Section~\ref{sec:vsss}), with \tx{assert} ${\sim}7.8$ \\
-\tx{wrongly\_challenged} & 0.15~kvB (BABE); ${\sim}0.21$ with a fee input \\
-a timeout, \tx{failure}, \tx{success} & ${\sim}0.3$--$0.8$~kvB (est.) \\
-the payout and Alice's sweep of her bits & ${\sim}3$~kvB (lichen) \\
+\tx{request}: one signed word & 0.45~kvB & ${\sim}0.4$ \\
+\tx{respond}: two signed words and the comparison & 0.76~kvB & ${\sim}0.6$ \\
+\tx{assert}: $\pi_1$ in 254 2-bit digits & 7.73~kvB & ${\sim}7.8$ \\
+\tx{challenge\_assert}: 254 secrets by adaptor signatures & 20.72~kvB (its leaf 60,232 bytes, 509 witness elements, regtest) & ${\sim}21$ \\
+\tx{wrongly\_challenged}, with its fee input and the payout & 0.82~kvB & ${\sim}0.21$ \\
+\tx{success}, with its fee input and the payout & 0.78~kvB & ${\sim}0.3$--$0.8$ \\
+\tx{failure}, with its fee input & 0.24~kvB & ${\sim}0.3$--$0.8$ \\
+the hub's sweep of its bits; Alice's of hers & 2.7; 1.7--1.8~kvB & ${\sim}3$ \\
 \bottomrule
 \end{tabularx}
-\end{center}
+\caption{Transaction sizes, measured and as 0.1.6 estimated them.}
+\label{tab:sizes}
+\end{table}
 
-\begin{center}
+\subsection{Disputes}
+
+Three disputes on Mutinynet (2026-10-29), each a withdrawal from a
+contract of cap $2^{21} - 1$~sats, with a real proof~\cite{explainers}
+(Table~\ref{tab:mutinynet}).
+\begin{table}[!htbp]
+\centering
 \small
-\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{56mm}LL}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{48mm}lL}
 \toprule
-exit & BABE (est.) & BitVMX~\cite{lichenbitvmx} \\
+ending & the dispute & what happened \\
 \midrule
-the hub present: a fold & 0.3~kvB & 0.3~kvB \\
-the hub gone & ${\sim}3.8$~kvB: request, its timeout, the payout & 23.1~kvB \\
-the hub refuses a true claim to the end & ${\sim}31$~kvB in six transactions (${\sim}56$ unsoldered) & ${\sim}120$~kvB in 23 \\
-the hub disproves a false claim & ${\sim}28$~kvB (${\sim}53$ unsoldered) & 100.4~kvB \\
+a true claim, challenged & 30.5~kvB in 5 & the hub, hostile, challenged a valid proof; kept instance 9 of 10 opened; answered five blocks after the challenge \\
+a true claim, unchallenged & 9.7~kvB in 4 & played by a tower in Docker; \tx{success} the block after $\Delta_2$ \\
+a false claim & 29.9~kvB in 5 & another contract's real proof; challenged, none of 10 kept instances opened; \tx{failure} \\
+\bottomrule
+\end{tabularx}
+\caption{Three disputes on Mutinynet, 2026-10-29.}
+\label{tab:mutinynet}
+\end{table}
+Every link went at its floor, 1~sat/vB, with no child: a dispute's fees
+are about its size in sats. Table~\ref{tab:vsbitvmx} sets them against
+BitVMX's.
+\begin{table}[!htbp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{50mm}LL}
+\toprule
+exit & BABE & BitVMX~\cite{lichenbitvmx} \\
+\midrule
+the hub present: a fold & 0.2~kvB & 0.2~kvB \\
+the hub gone & ${\sim}1.2$~kvB, \tx{request} and its timeout (est. from the measured sizes; played on regtest) & 23.1~kvB \\
+the hub refuses a true claim & 9.7~kvB in 4; 30.5 in 5 if it challenges & ${\sim}120$~kvB in 23 \\
+the hub disproves a false claim & 29.9~kvB in 5 & 100.4~kvB \\
 the worst case & the same: there is no separate case for reads & 200--212~kvB, a read lie \\
 Alice's transactions, those due in a window & 4 (request, assert, wrongly challenged, success), one & 13, twelve \\
-keys Alice's tower must hold & none, but an anchor key (Section~\ref{sec:tower}) & her move and hop keys, and her input words' \\
-pre-signed per contract & about 10 & 141 \\
+keys Alice's tower must hold & none that signs a move: the fee budget's & her move and hop keys, and her input words' \\
+pre-signed per contract & 19 & 141 \\
 \bottomrule
 \end{tabularx}
-\end{center}
+\caption{BABE's exits, as measured, against BitVMX's~\cite{lichenbitvmx}.}
+\label{tab:vsbitvmx}
+\end{table}
 Most of the gain against a vanished hub comes from not publishing the
 proof's input words before the hub moves; BitVMX could recover much of
 it by demanding them only from a hub that is present~\cite{lichenbitvmx}.
+A false claim's dispute has one shape, whatever the lie: under BitVMX the
+liar chooses the lie, and with it the cost of the search that catches
+it, up to twice the cheapest.
 
 \subsection{Congestion}
 
@@ -563,79 +663,97 @@ side, one after another, so a hub safe at a given window under BitVMX
 asks for a dispute twelve windows long. The fair basis is the dispute's
 length $T$ for a given $N$, with each window sized to its move:
 $N \le T \cdot 1\,\mathrm{MvB} / \sum_i s_i$, summed over the defender's
-windowed moves~\cite[\S 9]{lichenbitvmx}.
-\begin{center}
+windowed moves~\cite[\S 9]{lichenbitvmx}. Table~\ref{tab:congestion}
+applies it to the measured sizes.
+\begin{table}[!htbp]
+\centering
 \small
 \begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{34mm}LLL}
 \toprule
 & BABE, Alice against a hostile hub & BABE, the hub against hostile users & BitVMX, the binding side \\
 \midrule
-windowed moves & \tx{wrongly\_challenged}, 0.21~kvB & the response 0.6 and \tx{challenge\_assert} 17.4 (42 unsoldered) & as built, Alice: twelve windows sized to her proof; with a window per move, the hub \\
-$\sum_i s_i$ & 0.21~kvB & 18~kvB (43) & 302~kvB; 121~kvB \\
-contracts safe with a dispute of a day & ${\sim}690{,}000$ & 8,000 (3,400) & 480; 1,190 \\
-of a week & --- & 56,000 (23,700) & 3,300; 8,350 \\
-the dispute for 60,000 contracts & 13 blocks & 7.5 days (18 days) & 126 days; 50 days \\
+windowed moves & \tx{wrongly\_challenged}, 0.82~kvB & \tx{respond} 0.76 and \tx{challenge\_assert} 20.72 & as built, Alice: twelve windows sized to her proof; with a window per move, the hub \\
+$\sum_i s_i$ & 0.82~kvB & 21.5~kvB & 302~kvB; 121~kvB \\
+contracts safe with a dispute of a day & ${\sim}175{,}000$ & 6,700 & 480; 1,190 \\
+of a week & --- & 47,000 & 3,300; 8,350 \\
+the dispute for 60,000 contracts & 49 blocks & 8.9 days & 126 days; 50 days \\
 \bottomrule
 \end{tabularx}
-\end{center}
+\caption{Contracts a hub can hold before congesting the chain pays, by the dispute's length.}
+\label{tab:congestion}
+\end{table}
 Hostile users bind under BABE. For a dispute of the same length, BABE
-holds about 6.7 times as many contracts as BitVMX with a window per move
-(2.8 unsoldered), and 17 times as many as BitVMX as built (7 unsoldered).
-A hostile hub stops mattering, since Alice's only windowed move is
-149~vB; were her assertion given a window rather than a deadline, her
-sum would be 9.5~kvB, about 106,000 contracts for a week. The hub's
-response, 0.6~kvB in $w_H$, is part of its sum: 60,000 contracts need
-$w_H$ of at least 36 blocks. Chunking BitVMX's path into separate windows
-would not change these figures, since it shrinks the path's largest move
-but not its sum.
+holds about 5.6 times as many contracts as BitVMX with a window per move,
+and 14 times as many as BitVMX as built. A hostile hub stops mattering,
+since Alice's only windowed move is 0.82~kvB. The hub's response,
+0.76~kvB in $w_H$, is part of its sum: 60,000 contracts need $w_H$ of
+at least 46 blocks. Chunking BitVMX's path into separate windows would
+not change these figures, since it shrinks the path's largest move but
+not its sum.
 
 \subsection{Reserves and time}
 
-A reserve must cover the other side's fees in a dispute it loses. Alice's
-side is about 12.5~kvB (request, assertion, the preimage, her payout),
-against about 117 under BitVMX, so the hub's reserve per user falls
-about tenfold: about 125,000~sats at 10~sat/vB rather than 1.2 million,
-and the contract suits balances of some tens of thousands of sats
-rather than half a million. The hub's side is about 18~kvB (43
-unsoldered). A hostile hub stretches a dispute to about
-$w_H + \Delta_2$ blocks after Alice's assertion, about 170 blocks with
-$w_H = 12$, $\Delta_2 = 156$, $\Delta_1 = 12$, against about 430 under
-BitVMX with the windows the main paper uses; a vanished hub's users wait
-$w_H$, as now.
+A reserve must cover the other side's fees in a dispute it loses. The
+links pay their floors out of the contract, and the loser's reserve
+bears them: at most 30,981~sats at 1~sat/vB, the four links' floors and
+their anchors, against 197,356 under BitVMX (lichen). lichen's hub sizes
+its reserve to that figure, at the least. A hub that refuses a true claim
+and does not challenge loses only the first three links', 9,934; one
+that challenges pays for its own challenge too. At 10~sat/vB the
+deepest dispute's floors are about 310,000~sats, against about
+1.2~million under BitVMX, so the contract suits balances of some tens
+of thousands of sats rather than half a million.
+
+A hostile hub stretches a dispute to about $w_H + \Delta_2$ blocks after
+Alice's assertion, plus $\Delta_1$ if it challenges. On Mutinynet the
+challenged true claim was answered 20 minutes after Alice requested, 15
+of them her proving; the unchallenged one paid two hours after its
+assertion, that being $\Delta_2$. A vanished hub's users wait $w_H$, as
+under BitVMX.
 
 \subsection{Setup per contract}
 \label{sec:setup}
 
-The new cost. At BABE's operating point (2,268 instances, 4 kept), on a
-16-thread laptop (BABE):
-\begin{center}
+The new cost, at lichen's $(N, M) = (78, 10)$ with verifiable secret
+sharing (Section~\ref{sec:vsss}), measured on one 14-core laptop
+(lichen), beside BABE's operating point with soldering
+(Table~\ref{tab:setup}).
+\begin{table}[!htbp]
+\centering
 \small
-\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{60mm}L}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{44mm}LL}
 \toprule
-item & per contract \\
+item & $(78, 10)$, VSSS (lichen) & $(2{,}268, 4)$, soldered (BABE) \\
 \midrule
-cut-and-choose, both roles & 1~min~37~s, 1.8~GB at peak \\
-soldering, for one label set on chain & 745~s more, the hub's \\
-what Alice stores & ${\sim}89$~MiB (4 instances of 22~MiB); perhaps ${\sim}2$~MiB with Duty-Free Bits' 45-fold smaller encoding~\cite{dutyfree}, unverified for this use \\
-transferred from the hub to Alice & at least the kept instances, ${\sim}89$~MiB (est.) \\
-a hub opening 10,000 contracts & ${\sim}270$ laptop-hours, ${\sim}2{,}300$ with soldering: parallel, and again at each renewal \\
+an instance & 23.83~MiB (gates 8.06, the encoding's tables 15.77); garbled in 1.2~s, evaluated in 0.6~s, one thread & 22~MiB; 175~ms, 127~ms \\
+the hub's setup & dealing 1.3~s, 78 instances 9.4~s & cut-and-choose 1~min~37~s for both roles, 1.8~GB at peak; soldering 745~s more \\
+Alice's checks & 1.5 + 8.1~s & (in the above) \\
+in all & 19~s (0.1.6 estimated 40) & ${\sim}14$~min \\
+what Alice downloads and stores & ${\sim}240$~MiB, 10 instances & ${\sim}89$~MiB, 4 instances \\
+a hub opening 10,000 contracts & ${\sim}30$ laptop-hours of the hub's own work & ${\sim}2{,}300$ laptop-hours \\
 \bottomrule
 \end{tabularx}
-\end{center}
-Fewer instances trade setup for chain space: keeping 10 of 78 sets up in
-6~s but, unsoldered, puts 10 label sets on chain. Nearly all of the
-soldered setup's 14 minutes is the soldering, not the cut-and-choose.
+\caption{The setup per contract.}
+\label{tab:setup}
+\end{table}
+Our garbling hashes with BLAKE3 and multiplies schoolbook, where BABE's
+uses fixed-key AES and Karatsuba, hence the larger and slower instance.
+On Mutinynet the hub's setup took 9.5~s. The download is now the larger
+cost: about 240~MiB per contract, again at each renewal. Two ways to cut
+it remain open: Duty-Free Bits' 45-fold smaller encoding~\cite{dutyfree},
+unverified for these instances, and reusing the kept instances across
+renewals, sending a fresh $\mathit{msg}$, ciphertext and hashlock for
+each, since an unchallenged instance has revealed nothing.
 
-\subsection{Setup by verifiable secret sharing}
+\section{Setup by verifiable secret sharing}
 \label{sec:vsss}
 
 Fourteen minutes of computation per contract, paid again at every
-renewal, is probably more than opening a contract can bear; forty
+renewal, is probably more than opening a contract can bear; twenty
 seconds is not. Glock~\cite{glock} replaces soldering with verifiable
 secret sharing (VSSS), and BABE's authors have prototyped that layer for
-BABE's 508 input bits (BABE, §9.4), without a transaction design. This
-is the setup we would want, and what it needs on chain is sketched
-below.
+BABE's 508 input bits (BABE, §9.4), without a transaction design. lichen
+builds it, with the transaction design below.
 
 \paragraph{Why BABE keeps 4 of 2,268.} Cut-and-choose fails only if
 every kept instance is bad and every opened one good, so the error is
@@ -645,18 +763,18 @@ puts a label set on chain; soldered, the proof's time grows with $M$
 and a small $M$ forces a large $N$.
 
 \paragraph{Secret sharing reverses that.} The hub shares each input
-label, for each bit and each value, across the $N$ instances, with
+secret, for each digit and each value, across the $N$ instances, with
 threshold $N - M + 1$, and publishes commitments to the polynomials
 (Feldman's, over secp256k1). Alice checks the opened instances' shares
 against them. The labels of a free-XOR garbling are related
 ($L^1 = L^0 \oplus \Delta$), so they cannot themselves be independent
 shares: the shared values are secrets of their own, which each instance
 maps to its labels through a small table, $H(s) \oplus L$. At proving
-time one secret per bit goes on chain, $f(0)$ of its polynomial; with
+time one secret per digit goes on chain, $f(0)$ of its polynomial; with
 the $N - M$ opened shares, Alice interpolates the secrets, and so the
 labels, of every kept instance. The value Alice did not
 assert stays hidden, since only $N - M$ points of its polynomial are
-known. The chain carries one label set whatever $M$ is, and the cost
+known. The chain carries one secret set whatever $M$ is, and the cost
 moves to $N$, the shares to commit and check. So the right choice is
 now a small $N$:
 \begin{center}
@@ -666,37 +784,35 @@ now a small $N$:
 $(N, M)$ & setup, both roles & Alice stores and receives \\
 \midrule
 (2,268, 4), soldered & ${\sim}14$~min (BABE) & ${\sim}89$~MiB \\
-(78, 10), VSSS & ${\sim}40$~s (BABE's estimate: 33~s for the VSSS layer) & ${\sim}220$~MiB \\
-(124, 8), VSSS & ${\sim}1$~min (54~s for the layer) & ${\sim}180$~MiB \\
-(181, 7), VSSS & ${\sim}1.5$~min (84~s for the layer) & ${\sim}155$~MiB \\
+(78, 10), VSSS & 19~s (lichen) & ${\sim}240$~MiB (lichen) \\
+(124, 8), VSSS & ${\sim}1$~min (BABE's estimate for the layer: 54~s) & ${\sim}190$~MiB (est.) \\
+(181, 7), VSSS & ${\sim}1.5$~min (84~s for the layer) & ${\sim}170$~MiB (est.) \\
 \bottomrule
 \end{tabularx}
 \end{center}
-That is about twenty times faster than soldering, and a hub opening
-10,000 contracts spends about 110 laptop-hours rather than 2,300. The
-bill moves to storage and transfer: Alice keeps every finalized instance,
-22~MiB each, since she cannot know which one is honest. Glock's even
-split, about 44 instances with 22 kept, would be the wrong end of that
-trade here, at nearly 500~MiB. Duty-Free Bits' 45-fold smaller
-encoding~\cite{dutyfree}, if it holds for these instances, would bring
-even $M = 10$ to about 5~MiB.
+$\binom{78}{10}^{-1}$ is $2^{-40.2}$; lichen's wallet refuses a setup of
+less than $2^{-40}$ off regtest. The bill moves to storage and transfer:
+Alice keeps every finalized instance, since she cannot know which one is
+honest. Glock's even split, about 44 instances with 22 kept, would be
+the wrong end of that trade here, at over 500~MiB.
 
 \paragraph{On chain: adaptor signatures.} The secret posted on chain
 must be the one Alice checked against the commitments, and the chain
 must check that. A hashlock cannot: tying a hash to a committed point
 $s G$ needs a proof, which is what soldering is. Glock uses adaptor
-signatures instead. At setup Alice gives the hub, for each bit $i$ and
+signatures instead. At setup Alice gives the hub, for each digit $j$ and
 value $\beta$, a pre-signature on \tx{challenge\_assert} under her own
-one-time key $A_{i,\beta}$, adapted to the committed point $C_0 =
-f_{i,\beta}(0)\,G$. The script selects $A_{i,\beta}$ by her Lamport
+one-time key $A_{j,\beta}$, adapted to the committed point $C_0 =
+f_{j,\beta}(0)\,G$. The script selects $A_{j,\beta}$ by her Lamport
 signature, which the hub copies from \tx{assert}, and the hub can
 satisfy it only by completing her pre-signature, which hands her
-$f_{i,\beta}(0)$. The selection matters both ways: the other value's
+$f_{j,\beta}(0)$. The selection matters both ways: the other value's
 secret would leave Alice unable to decrypt, and both values' would let
 her evaluate the circuit on points other than $\pi_1$. In Glock the
 garbler is also the prover, so its adaptor signatures are its
 assertion; in BABE the prover asserts and the verifier reveals, so both
-are paid for.
+are paid for. A completion for a value other than the asserted one does
+not verify (lichen).
 
 Each secret is the adaptor of exactly one pre-signature, under a key
 used for nothing else. Nothing is adapted twice to one point, so the
@@ -711,48 +827,39 @@ once the kept instances are chosen: their hashlocks are in
 input. Tapscript limits an input's initial stack to 1,000 elements
 (BIP~342), and each bit needs two, the hub's signature and Alice's
 preimage: 1,016 for $\pi_1$'s 508 bits, 1,017 with the hub's own
-signature. Splitting \tx{challenge\_assert} over two inputs would do,
-but a better fix also saves bytes. Alice signs $\pi_1$ in 2-bit digits,
-revealing one of four independent preimages per digit: Lamport over a
-larger alphabet, which, unlike Winternitz's chains, needs no checksum.
-The hub shares one secret per digit and value, which each instance maps
-to both bits' labels. The polynomials number the same, $254 \times 4 =
-508 \times 2$, as do the keys and hashes in the leaf, but the hub's
-signatures and Alice's preimages halve, to 254 each, and the stack
-holds 509 elements. Per digit the leaf is about 237~bytes (four hashes,
-four keys and the selection) and the witness 86 (a signature and a
-preimage):
+signature, which lichen's tests confirm fails where 1,000 passes. Alice
+therefore signs $\pi_1$ in 2-bit digits, revealing one of four
+independent preimages per digit: Lamport over a larger alphabet, which,
+unlike Winternitz's chains, needs no checksum. The hub shares one secret
+per digit and value, which each instance maps to both bits' labels. The
+polynomials number the same, $254 \times 4 = 508 \times 2$, as do the
+keys and hashes in the leaf, but the hub's signatures and Alice's
+preimages halve, to 254 each, and the stack holds 509 elements:
 \begin{center}
 \small
 \begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{50mm}LL}
 \toprule
-& bit by bit & 2-bit digits \\
+& bit by bit (est.) & 2-bit digits (lichen) \\
 \midrule
 \tx{challenge\_assert}'s stack & 1,017 elements: two inputs & 509 \\
-\tx{challenge\_assert} & ${\sim}26$~kvB (est.) & ${\sim}21$~kvB (est.) \\
-\tx{assert} & 9.24~kvB (BABE) & ${\sim}7.8$~kvB (est.) \\
-a false claim disproved & ${\sim}37$~kvB & ${\sim}30$~kvB \\
-a true claim refused to the end & ${\sim}39$~kvB & ${\sim}33$~kvB \\
-the hub's windowed sum & ${\sim}27$~kvB & ${\sim}22$~kvB \\
+\tx{challenge\_assert} & ${\sim}26$~kvB & 20.72~kvB \\
+\tx{assert} & 9.24~kvB (BABE) & 7.73~kvB \\
+a false claim disproved & ${\sim}37$~kvB & 29.9~kvB \\
+a true claim challenged to the end & ${\sim}39$~kvB & 30.5~kvB \\
+the hub's windowed sum & ${\sim}27$~kvB & 21.5~kvB \\
 contracts for a week's dispute & 37,000 & 47,000 \\
 \bottomrule
 \end{tabularx}
 \end{center}
-Soldered, the same rows are 17.4, 9.24, 28, 31 and 18~kvB with 56,000
-contracts; ten label sets unsoldered put about 91~kvB in
-\tx{challenge\_assert}. \tx{assert}'s figure scales BABE's by our
-count of script and witness, 118~bytes a digit against 70 a bit. Wider
-digits do not pay: at three bits the keys
-and hashes per bit rise from two to $8/3$. The pre-signatures, 1,016,
-are a small transfer, about 100~KB.
+Wider digits do not pay: at three bits the keys and hashes per bit rise
+from two to $8/3$. The pre-signatures, 1,016, are a small transfer,
+about 100~KB.
 
-\paragraph{The keyless tower survives.} Alice's keys $A_{i,\beta}$ are
+\paragraph{The keyless tower survives.} Alice's keys $A_{j,\beta}$ are
 used once, at setup, to make the pre-signatures, and never again. To
-read the secrets the tower needs, beyond what Section~\ref{sec:tower}
-lists, her pre-signatures (32~KiB of their scalars) and the opened
-shares of both values (about 2~MiB at $(78, 10)$), none of them a key,
-and it extracts and interpolates as Alice would. The kept instances it
-holds are now $M$ of them, about 220~MiB at $(78, 10)$ rather than 89.
+read the secrets the tower needs her pre-signatures and the opened
+shares, none of them a key, and it extracts and interpolates as Alice
+would (Section~\ref{sec:tower}).
 
 \section{With a counter-proof}
 \label{sec:counter}
@@ -773,7 +880,7 @@ of one of them. Under BABE, two shapes:
   hostile-hub side falls to the hostile users'.
 \end{itemize}
 Either way, Alice's request also carries the nullifiers' digest, which
-the hub countersigns: about 2~kvB more on each (est.).
+the hub countersigns: about 2~kvB more on each (est.). Neither is built.
 
 \section{Open questions}
 \label{sec:open}
@@ -783,14 +890,12 @@ the hub countersigns: about 2~kvB more on each (est.).
   proof.
 \item A proof of robustness under cut-and-choose, against a hub that
   garbles wrongly. It is BABE's to give, but lichen's users rely on it.
-\item The secret-sharing setup of Section~\ref{sec:vsss}: its
-  transaction design, built and measured, and BABE's 40-second estimate
-  confirmed end to end; its security argument with the shares and
-  adaptor signatures in place of soldering.
-\item What Duty-Free Bits' smaller encoding means for what Alice must
-  store and receive.
-\item The response transaction's script and size, and the guest's
-  signature check, built and measured.
+\item The security argument for the secret-sharing setup, with the
+  shares and adaptor signatures in place of soldering.
+\item What Alice must download, about 240~MiB a contract: Duty-Free
+  Bits' smaller encoding, and the kept instances' reuse across renewals.
+\item The anchors' own key, so that a tower can bump Alice's links above
+  their floor.
 \item Whether BABE's authors, or GOAT's, see a problem with moving the
   amount into the witness this way.
 \end{itemize}
@@ -800,6 +905,10 @@ the hub countersigns: about 2~kvB more on each (est.).
 \bibitem{lichen} waxwing. Lichen: L2s in channels enforced by Bitcoin. Version 0.2, October 2026. \url{https://github.com/AdamISZ/lichen}
 
 \bibitem{lichenbitvmx} waxwing. Lichen over BitVMX: the dispute, as built and measured. Version 0.1, October 2026. \url{https://github.com/AdamISZ/lichen}
+
+\bibitem{lichencode} lichen: the ledger, the sequencer, the hub and the wallet. \url{https://github.com/AdamISZ/lichen}
+
+\bibitem{explainers} lichen's explainers: a BABE dispute, a true claim challenged; BABE's other endings. \url{https://github.com/AdamISZ/lichen/tree/master/docs/explainers}
 
 \bibitem{babe} S.~Garg, D.~Kolonelos, M.~Sergeevitch, S.~Sridhar and D.~Tse. BABE: verifying proofs on Bitcoin made 1000x cheaper. ePrint 2026/065, revised October 2026. \url{https://eprint.iacr.org/2026/065}
 

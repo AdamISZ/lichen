@@ -2,7 +2,7 @@
 
 A walkthrough of one real dispute on Mutinynet (2026-10-29), played on
 BABE, lichen's verification gadget since BitVMX (the design note:
-`papers/lichen-babe-v0.1.6`). Alice withdraws 300,000 sats from contract
+`papers/lichen-babe-v0.1.7`). Alice withdraws 300,000 sats from contract
 1000 with a real RISC Zero proof. The hub is hostile: it refuses every
 cooperative withdrawal and challenges every claim, true ones too. So the
 dispute runs to its longest honest ending: the hub challenges a valid
