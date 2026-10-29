@@ -1,5 +1,10 @@
 # Opening a contract
 
+> On BitVMX, lichen's first verification gadget, kept as the record of
+> Test B. A BABE contract pre-signs 19 transactions, not 141, after a
+> cut-and-choose of garbled circuits ([its opening](babe-challenged.md#opening-the-cut-and-choose));
+> the terms, the deposit and the mint are the same under either.
+
 A walkthrough of how Alice opened contract 1001 on Mutinynet
 (2026-10-12). That's the contract of Test B, whose dispute is in
 [hub-absent.md](hub-absent.md). Opening takes four requests to the hub

@@ -1,8 +1,7 @@
 # A BABE dispute: a true claim, challenged
 
 A walkthrough of one real dispute on Mutinynet (2026-10-29), played on
-BABE, lichen's second verification gadget (branch `gadget`;
-[BABE_GADGET_PLAN.md](../BABE_GADGET_PLAN.md), the design note
+BABE, lichen's verification gadget since BitVMX (the design note:
 `papers/lichen-babe-v0.1.6`). Alice withdraws 300,000 sats from contract
 1000 with a real RISC Zero proof. The hub is hostile: it refuses every
 cooperative withdrawal and challenges every claim, true ones too. So the
@@ -293,9 +292,11 @@ fold, with the same remedy, a new contract.
 
 ## The other endings
 
-Played on regtest through the same hub and wallet, not on Mutinynet:
-the first two on a real proof (`crates/hub/tests/babe_risc0.rs`), the
-others on the mock statement (`babe.rs`, `babe_resume.rs`):
+The first two have since run on Mutinynet, the first played by a tower
+in Docker ([BABE's other endings](babe-endings.md)). All four run on
+regtest through the same hub and wallet, the first two on a real proof
+(`crates/hub/tests/babe_risc0.rs`), the others on the mock statement
+(`babe.rs`, `babe_resume.rs`):
 
 | ending | what happens | who is paid |
 |---|---|---|

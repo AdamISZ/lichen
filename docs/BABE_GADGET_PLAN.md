@@ -311,3 +311,18 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         moved to it in place, with no reindex. A node that still refuses
         TRUC makes `Chain::broadcast` send that transaction through the
         network's public Esplora instead.
+      - [x] Mutinynet, 2026-10-29, the other two endings with a hub present
+        (docs/explainers/babe-endings.md), the hub at `--refuse-folds`
+        (refuses folds, challenges false claims only). Contract 1001: a
+        true claim of 300,000, proved on lichen-vps (1,213 s + wrap 434 s,
+        beside the tower image's build), exported (740 KB + 243 MB) and
+        played by deploy/tower's compose on lichen-vps (image from 64b0bb1,
+        about 50 min to build): it asserted, the hub let it stand, `success`
+        the block after Δ2; 9,721 vB; Alice swept 379,557 from the tower's
+        state. Contract 1002 (Bob): contract 1000's real claim asserted with
+        `--false-claim`; challenged, none of 10 kept instances opened,
+        `failure`; 29,893 vB; the hub +287,468 net. Found: a terminal's fee
+        coin under dust at 1 sat/vB (`failure`, 237 vB): the hub's node
+        wallet refused it; `terminal_fee` now at least 330 (dbc94f5). The
+        tower's state file is root's: `docker compose cp` (docs, the
+        tower's message).

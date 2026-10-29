@@ -14,8 +14,7 @@ It never runs a dispute. It needs one fact from the hub: the hub's L2
 key, which it treats as the only key allowed to mint. Unless it anchors
 its history on Bitcoin (below), it has no chain: no node, no coins.
 
-Shielded transactions (branch `shielded`, [SHIELDED.md](SHIELDED.md))
-carry a RISC Zero receipt of the spend guest, which the sequencer checks
+Shielded transactions ([SHIELDED.md](SHIELDED.md)) carry a RISC Zero receipt of the spend guest, which the sequencer checks
 against the committed guest's image id (`r0/guests/spend.id`). It never
 proves anything itself. Started with `--native-proofs` (not in the
 compose file), it also accepts native proofs, the sender's private input
@@ -33,8 +32,7 @@ withdrawal needs the one at its return's height: a disputed one's proof
 checks its root ends a valid history, and the hub checks the same before
 it folds. So run the chain prover alongside the sequencer.
 
-**Anchoring** (branch `anchor`, [ANCHOR_PLAN.md](ANCHOR_PLAN.md)): so
-that it can't sign two histories unseen, the sequencer commits its
+**Anchoring:** so that it can't sign two histories unseen, the sequencer commits its
 history to Bitcoin. Started with `--anchor-rpc <bitcoind's RPC URL>
 --anchor-cookie <its cookie file>` (and `--anchor-wallet`, `sequencer`
 by default; `--network`), it uses that node's wallet:

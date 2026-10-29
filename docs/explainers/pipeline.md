@@ -1,5 +1,11 @@
 # From a Rust program to one step on Bitcoin
 
+> The pipeline into BitVMX's verifier, lichen's first verification
+> gadget. Under BABE the proof is made and wrapped the same way (its
+> guest also checks the hub's signature on the amount), and what checks
+> it on Bitcoin is a garbled circuit of the Groth16 verifier
+> ([BABE in one paragraph](babe-challenged.md#babe-in-one-paragraph)).
+
 How a withdrawal is proved, wrapped and, if the hub refuses it, disputed.
 For engineers with a basic familiarity with zero-knowledge proofs. The
 figures are from lichen's canonical withdrawal guest and the Mutinynet

@@ -1,5 +1,10 @@
 # A withdrawal when the hub disappears
 
+> A BitVMX dispute, lichen's first verification gadget, kept as the
+> record of Test B. Under BABE the same case ends by `request_timeout`:
+> a hub that never responds pays Alice after `w_H`
+> ([BABE's endings](babe-challenged.md#the-other-endings)).
+
 A walkthrough of one real dispute on Mutinynet (2026-10-12). Alice
 withdraws 35,000 sats from contract 1001. The hub has been switched off,
 so it never answers. Every transaction is linked to the Mutinynet explorer;

@@ -6,8 +6,8 @@ BitVMX integration are in [ln-gap](https://github.com/AdamISZ/ln-gap)
 repository at the revision in `LNGAP_REV`.
 
 A contract's dispute runs on a verification gadget: BitVMX's search, or
-BABE (its garbled circuits and witness encryption, `crates/babe`; on
-branch `gadget`, docs/BABE_GADGET_PLAN.md). What every gadget shares (the
+BABE (its garbled circuits and witness encryption, `crates/babe`;
+docs/BABE_GADGET_PLAN.md). What every gadget shares (the
 contract output with its fold and default, the payout, the pre-signed
 links' floors and anchors) is ln-gap's `sessions::skeleton`; each
 gadget's keys and play are their own modules: `proto::bitvmx` and

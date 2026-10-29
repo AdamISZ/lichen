@@ -263,7 +263,7 @@ fn main() -> Result<()> {
                 let state = package.with_extension("state.json");
                 let name = state.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 println!("{outcome:?}: the payout is {txid}.");
-                println!("Sweep it on your own device, with the wallet that exported the package: the tower has none of its keys. Copy this tower's state there, {} (deploy/tower/data/{name} on a machine running deploy/tower's compose file), then:\n  lichen sweep-dispute {cid} --tower-state {name}", state.display());
+                println!("Sweep it on your own device, with the wallet that exported the package: the tower has none of its keys. Copy this tower's state there, {} (on a machine running deploy/tower's compose file, the container's, so root's: `docker compose -f deploy/tower/docker-compose.yml cp tower:/tower/{name} .` makes a copy of your own), then:\n  lichen sweep-dispute {cid} --tower-state {name}", state.display());
             }
             None => println!("{outcome:?}"),
         }

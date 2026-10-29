@@ -1,6 +1,6 @@
 # Shielded transfers
 
-An example L2 for lichen, on branch `shielded`: payments whose amounts
+An example L2 for lichen: payments whose amounts
 and parties are hidden, Zcash-style, with every block proved valid so
 that a withdrawal enforced on Bitcoin rests on a history anyone can
 check. It is a demonstration that lichen's contracts work under a
@@ -42,7 +42,7 @@ Three kinds of proof, all RISC Zero:
 |---|---|---|---|
 | spend | the sender, on their own machine | every shielded transaction | the notes spent exist, are yours, and are unspent; the amounts balance. The sequencer checks it without learning the notes |
 | chain | the sequencer's prover | every sealed height | this block is valid, and so was the history before it |
-| withdrawal | the user (or their tower) | only when the hub refuses a withdrawal | the return is in the ledger, under a root the chain proof ends at; wrapped in Groth16 for BitVMX's verifier on Bitcoin |
+| withdrawal | the user (or their tower) | only when the hub refuses a withdrawal | the return is in the ledger, under a root the chain proof ends at; wrapped in Groth16 for the contract's verification gadget on Bitcoin (BABE, or BitVMX) |
 
 The chain proof is what makes a shielded ledger safe for the hub. With
 transparent notes anyone can audit the sequencer. With shielded ones
@@ -148,7 +148,7 @@ after would allow it.
 **Anchoring on Bitcoin.** A sequencer could sign two histories that
 split at some height, each valid: pay someone in one and return the same
 money to the hub in the other. So the sequencer anchors its history on
-Bitcoin (branch `anchor`, [ANCHOR_PLAN.md](ANCHOR_PLAN.md)): it keeps
+Bitcoin ([RUN_A_SEQUENCER.md](RUN_A_SEQUENCER.md) runs it): it keeps
 one output, the seal, and each anchor transaction spends it, makes the
 next, and commits a hash of the whole history up to a sealed height. An
 output can be spent only once, so only one history is ever anchored;
@@ -182,27 +182,38 @@ blocks; it says what it's waiting for.
 ## The bad case: a refused withdrawal
 
 If the hub won't fold, you enforce the withdrawal on Bitcoin. Your
-wallet (or a tower, below) proves the withdrawal statement under the
-sequencer's chain proof, wraps it in Groth16, and plays BitVMX's
-dispute game with that as its input. Proving takes about 6 minutes and
-the wrap 4.5, on a 4-vCPU x86 Linux machine. The wrap runs only on x86,
-so on a Mac it has to happen elsewhere. A Mac proves the unwrapped part
-in about 75 s.
+wallet proves the withdrawal statement under the sequencer's chain
+proof and wraps it in Groth16, and the contract's verification gadget
+checks it on Bitcoin. Under BABE you first request the amount on chain
+and the hub responds by signing it too; then you prove, since the proof
+covers that signature: about 11 minutes and the wrap 4, on a 4-vCPU x86
+Linux machine, with until shortly before the contract closes to do it.
+Under BitVMX you prove first (about 6 minutes and the wrap 4.5), and the
+proof is the input of BitVMX's dispute game. The wrap runs only on x86,
+so on a Mac it has to happen elsewhere (a Mac proves BitVMX's unwrapped
+part in about 75 s).
 
 You don't have to stay online for it. A **tower** is a machine you rent
-for one dispute. You hand it a package (`lichen export-dispute`) holding
-that contract's one-time secrets and its fee budget's key, but never
-your wallet's key. At worst a tower can lose that one dispute; it can't
-take your money. It proves, escalates, answers each of the hub's moves,
-and stops at the payout, which you sweep from your own device later.
+for one dispute. You hand it a package (`lichen export-dispute`), never
+your wallet's key. Under BABE you prove first, and the package holds
+your signatures and the fee budget's key: the tower asserts your proof
+and answers a challenge, and at worst stays silent. Under BitVMX it
+holds that contract's one-time secrets and its fee budget's key, and
+proves, escalates and answers each of the hub's moves; at worst it can
+lose that one dispute, not take your money. Either stops at the payout,
+which you sweep from your own device later.
 
 What it takes ([RUN_A_TOWER.md](RUN_A_TOWER.md) has the setup):
 
-- **A machine.** x86-64 Linux with Docker; 4 vCPUs, 16 GB of memory
-  (the wrap uses about 8), 15 GB of disk. All cores are busy for about
-  10 minutes at the start; after that it mostly waits for blocks.
-- **Time.** If the hub never answers, you are paid by timeout once its
-  window passes: on Mutinynet (30-second blocks, a 10-minute window)
+- **A machine.** x86-64 Linux with Docker; 15 GB of disk. Under BABE
+  it only waits for blocks, and holds the contract's kept garbled
+  circuits (about 240 MB). Under BitVMX it proves: 4 vCPUs and 16 GB of
+  memory (the wrap uses about 8), all cores busy for about 10 minutes at
+  the start.
+- **Time.** Under BABE, if the hub doesn't challenge, `success` pays
+  you once its window passes (on Mutinynet 240 blocks, two hours); if it
+  challenges, the tower answers within minutes. Under BitVMX, if the hub
+  never answers, you are paid by timeout once its window passes: on Mutinynet (30-second blocks, a 10-minute window)
   well under an hour from the tower's start; with 10-minute blocks
   (a one-hour window), a few hours. If the hub plays the whole search,
   there are 21 rounds of moves. In a Mutinynet trial against a hub

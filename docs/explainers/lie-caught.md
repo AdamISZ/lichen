@@ -1,5 +1,11 @@
 # When Alice lies
 
+> BitVMX's false claims, lichen's first verification gadget, kept as
+> the record of these runs. Under BABE a false proof is simply
+> challenged: no kept instance opens and `failure` takes the contract,
+> at a fixed size of about 30 kvB whatever the lie
+> ([BABE's other endings](babe-endings.md#contract-1002-a-false-claim-challenged)).
+
 Two false claims on Mutinynet (2026-10-14), each played to the end
 against an honest hub. In both, Alice deposits 30,000 and returns 10,000
 tokens on the L2, then claims a withdrawal of 40,000. The hub disputes

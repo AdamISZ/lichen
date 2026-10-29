@@ -1,7 +1,6 @@
 # Exiting against a hostile operator
 
-A design, not yet built: [EXIT_PLAN.md](../EXIT_PLAN.md) has the plan.
-This note explains how it protects a user from an operator that runs
+A design, not yet built. This note explains how it protects a user from an operator that runs
 both the hub and the sequencer and wants her money. It is about the
 proofs: who makes each one, from what, and where each is checked on
 Bitcoin.
@@ -279,8 +278,8 @@ keep the gadget a black box, so this note describes them.
   attack, Alice merges her covered notes into one new note. The operator
   seals that and withholds the new note's data: the old notes are
   countered, and the new one has no kit. Any spend that leaves her with
-  change works the same way. EXIT_PLAN.md lists the options, most of
-  them rules about what a counter must show. The leading one is the
+  change works the same way. There are several remedies, most of them
+  rules about what a counter must show. The leading one is the
   sender's acknowledgment: a spend can counter Alice only once she has
   signed that she holds its data, and its outputs stay locked until
   then. Others are publishing each batch's nullifiers and new

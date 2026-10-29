@@ -1,5 +1,9 @@
 # A withdrawal when the hub comes back
 
+> A BitVMX dispute, lichen's first verification gadget, kept as the
+> record of Test C. A BABE hub restarts the same way, reading each
+> dispute back from the chain.
+
 A walkthrough of Test C on Mutinynet (2026-10-13). Alice withdraws
 30,000 sats from contract 1002 by dispute, as in
 [hub-absent.md](hub-absent.md). The difference is that the hub, stopped

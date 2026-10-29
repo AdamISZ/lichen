@@ -1,28 +1,39 @@
 # Running a tower
 
 A tower plays one contract's dispute for you on a machine you rent, so
-that your laptop or phone can be away (the plan: [TOWER_PLAN.md](TOWER_PLAN.md)).
-It proves your withdrawal, wraps the proof, runs your side of the search,
-escalates and answers each of the hub's moves, to the payout. It holds
-this contract's one-time secrets and its fee budget's key, never your
-wallet's key: at worst it can lose this one dispute (which is the hub's
-gain), not take your money.
+that your laptop or phone can be away. What it holds depends on the
+contract's verification gadget:
+
+- **BABE** (`--statement babe`): your signatures (on the amount, on
+  your proof, and, made when the contract opened, on the transaction
+  that answers a wrong challenge) and the fee budget's key, none of the
+  dispute's keys. You prove first; the
+  tower asserts your proof, waits for the hub, and answers a challenge
+  from the contract's kept garbled circuits. At worst it stays silent,
+  so several can run at once.
+- **BitVMX** (`--statement groth16`): the contract's one-time secrets
+  and its fee budget's key, never your wallet's key. It proves your
+  withdrawal, wraps the proof, runs your side of the search, escalates
+  and answers each of the hub's moves, to the payout. At worst it can
+  lose this one dispute (which is the hub's gain), not take your money.
 
 This is the manual route, on a machine outside your own network (a VPS).
-It has been run on Mutinynet from a GCE `n2-highmem-4`.
+Both have been run on Mutinynet: BitVMX's from a GCE `n2-highmem-4`,
+BABE's from a 4-vCPU x86 VPS
+([BABE's other endings](explainers/babe-endings.md)).
 
 ## The machine
 
 | | needed | measured (4 vCPUs) |
 |---|---|---|
-| CPU | x86_64 (the Groth16 wrap is x86 only); 4 vCPUs will do | proof 349 s, wrap 263 s, the traced run about 2 min: escalated about 12 minutes after start |
-| memory | 16 GB | the wrap at 7.8 GB or more; the proof less |
-| disk | 15 GB | the images 6 GB (the tower's 0.8 GB, RISC Zero's prover 5.2 GB); the build's cache 6 GB more; the dispute's working files 0.5 GB |
+| CPU | x86_64 (the image is `linux/amd64`; BitVMX's Groth16 wrap is x86 only); 4 vCPUs will do | BABE: next to nothing, it waits on blocks. BitVMX: proof 349 s, wrap 263 s, the traced run about 2 min: escalated about 12 minutes after start |
+| memory | 16 GB for BitVMX (the wrap at 7.8 GB or more); BABE, little | |
+| disk | 15 GB | the images 6 GB (the tower's 0.8 GB, RISC Zero's prover 5.2 GB, which BitVMX's wrap needs); the build's cache 6 GB more; a BABE package's kept instances 243 MB; BitVMX's working files 0.5 GB |
 | network | outbound only: GitHub, Docker Hub, RISC Zero's installer, the Esplora servers | |
 
-Everything but the proving is waiting on blocks. Proving and the wrap
-take all the cores for about 10 minutes, so other services on a shared
-machine slow down meanwhile.
+Under BABE the tower only waits on blocks. Under BitVMX, proving and the
+wrap take all the cores for about 10 minutes, so other services on a
+shared machine slow down meanwhile.
 
 ### Docker
 
@@ -43,12 +54,11 @@ shells inside it, even in a session made after you logged in again:
 
 ## 1. The image
 
-On the machine (the build takes 30 minutes or more on 4 vCPUs, so run it
+On the machine (the build takes 30 to 50 minutes on 4 vCPUs, so run it
 in tmux):
 
 ```sh
 git clone https://github.com/AdamISZ/lichen && git clone https://github.com/AdamISZ/ln-gap
-git -C lichen checkout tower              # until the tower is merged
 git -C ln-gap checkout "$(cat lichen/LNGAP_REV)"
 cd lichen
 deploy/tower/build.sh
@@ -57,8 +67,8 @@ mkdir -p deploy/tower/data
 ```
 
 `build.sh` also pulls RISC Zero's Groth16 prover image, by its digest:
-the wrap runs it as a container of its own. The build's
-cache can be deleted once the image is built (`docker builder prune`).
+BitVMX's wrap runs it as a container of its own. The build's cache can
+be deleted once the image is built (`docker builder prune`).
 
 The settings, `deploy/tower/.env`:
 
@@ -66,8 +76,8 @@ The settings, `deploy/tower/.env`:
 |---|---|
 | `NETWORK` | the contract's network |
 | `ESPLORA` | two Esplora servers, comma-separated. A move is answered only once both report it confirmed, in the same block, with the same witness; a disagreement is logged as `chain: ALARM`. On Mutinynet, `https://mutinynet.com/api` twice will do for a trial |
-| `STATEMENT` | `groth16` (the tower proves) or `mock` |
-| `R0WORK` | an absolute path on the machine for the wrap's working files, such as `/home/<you>/r0work` |
+| `STATEMENT` | the contract's: `babe`, `groth16` (the tower proves), or a mock (`babe-mock`, `mock`) |
+| `R0WORK` | an absolute path on the machine for BitVMX's wrap's working files, such as `/home/<you>/r0work` (set it under BABE too) |
 
 `R0WORK` is mounted at the same path in the tower's container because
 the prover's container is started through the machine's Docker, which
@@ -77,7 +87,29 @@ reads the path as the machine's.
 
 On your own device, once the hub has refused a cooperative withdrawal
 (`lichen withdraw <contract> <amount>` returned the amount on the L2 and
-then failed):
+then failed).
+
+### Under BABE
+
+The tower can't sign a proof, so you prove first. Run `lichen dispute
+<contract> <amount>` yourself until the hub responds and the proof falls
+due, then prove as it tells you, on x86 Linux with Docker
+([the README](../README.md#under-babe): about 15 minutes on 4 cores; the
+tower's machine will do). Then export with the proof:
+
+```sh
+lichen --network mutinynet --wallet alice.json --statement babe \
+  export-dispute <contract> --input claim.hex --out package.json
+scp -r package.json package.d <you>@<machine>:lichen/deploy/tower/data/
+```
+
+`package.json` (under 1 MB) holds your signatures, the claim and the fee
+budget's key; `package.d` the contract's kept garbled circuits (about
+240 MB), which the tower needs to answer a challenge. The proof is due
+by `T_A`, shortly before the contract closes (on Mutinynet, a week after
+it opened), so there is time to get the machine ready. The tower never contacts the sequencer.
+
+### Under BitVMX
 
 ```sh
 lichen --network mutinynet --wallet alice.json --statement groth16 \
@@ -93,31 +125,6 @@ machine, not through another account.
 Nothing forces you to export at once: the dispute has to be under way
 well before the contract closes (on Mutinynet a week after it opened),
 so get the machine ready first.
-
-### Under BABE
-
-On a BABE contract (`--statement babe`) the tower holds none of your
-keys, only signatures: on the amount, on your proof, and (made when the
-contract opened) on the transaction that answers a wrong challenge. At
-worst it stays silent. Since it can't sign a proof, you prove first: run
-`lichen dispute <contract> <amount>` yourself until the hub responds and
-the proof falls due, prove as it tells you (about 15 minutes on 4 x86
-cores), then export with the proof:
-
-```sh
-lichen --network mutinynet --wallet alice.json --statement babe \
-  export-dispute <contract> --input claim.hex --out package.json
-scp -r package.json package.d <you>@<machine>:lichen/deploy/tower/data/
-```
-
-`package.d` holds the contract's kept garbled circuits (about 240 MB),
-which the tower needs to answer a challenge. Set `STATEMENT=babe` in
-`deploy/tower/.env`. The tower asserts your
-proof (a resumed dispute: what you already posted it finds on chain),
-then waits for the hub: if it doesn't challenge, the tower collects; if
-it does, the tower answers from the circuits.
-
-### Your sequencer
 
 The package carries what the tower proves from: the return's note, its
 path, the signed root and the chain receipt at its height, as your
@@ -148,7 +155,25 @@ docker compose -f deploy/tower/docker-compose.yml up -d
 docker compose -f deploy/tower/docker-compose.yml logs -f tower
 ```
 
-The log, from the Mutinynet run:
+The log of a BABE dispute on Mutinynet (2026-10-29), a hub that refused
+but didn't challenge: the tower finds your `request` and the hub's
+`respond` on chain, asserts, and after the hub's window posts
+`success`:
+
+```
+requesting 300000 sats, 02af03c8…
+waiting for the hub's response: its window ends at block 3544053
+the hub responded: asserting the proof, 3475a989…
+asserted at 3544085: the hub may challenge until block 3544325
+no challenge came: success pays the user, d1e01390…
+Unchallenged(d1e01390…): the payout is d1e01390….
+```
+
+Had the hub challenged, the log would go on `challenged: opening the
+kept instances with π1's secrets`, then `kept instance <k> opens:
+answering with its msg`.
+
+Under BitVMX (the Mutinynet run):
 
 ```
 proving the withdrawal of 22000 sats (note 21) with lngap-r0
@@ -165,34 +190,47 @@ move 3: the trace's hashes at the seven boundaries inside that segment
 ...
 ```
 
-and so on to the payout. It survives a restart (`restart: on-failure`;
-its state is `deploy/tower/data/package.state.json`, its working files
-`deploy/tower/data/package.d/`). It posts each of your links at its
-floor of 1 sat/vB (fee bumps need a separate anchor key: not yet).
+and so on to the payout. Either survives a restart (`restart:
+on-failure`; its state is `deploy/tower/data/package.state.json`, its
+working files `deploy/tower/data/package.d/`). It posts each of your
+links at its floor of 1 sat/vB (fee bumps need a separate anchor key:
+not yet).
 
 ### A trial against your own hub
 
-On a test network, start your hub with `HOSTILE=1` in `deploy/hub/.env`
-(rebuild its image first, `deploy/hub/build.sh`): it then refuses every
-withdrawal and disputes every claim, so the tower plays the whole
-search, and it takes the output by its timeout if the tower's proof of
-the last step comes late. The hub is the tower's other side, so keep it and its node
-running throughout (on a Mac, `caffeinate -i`); what is tested is that
-your wallet stays idle.
+On a test network, start your hub (rebuild its image first,
+`deploy/hub/build.sh`) with one of:
+
+- `REFUSE_FOLDS=1` in `deploy/hub/.env`: it refuses every withdrawal,
+  but disputes only false claims, so a true claim ends unchallenged;
+- `HOSTILE=1`: it refuses every withdrawal and disputes every claim,
+  true ones too, so the tower plays the longest honest dispute (under
+  BitVMX the whole search, and the hub takes the output by its timeout
+  if the tower's proof of the last step comes late).
+
+The hub is the tower's other side, so keep it and its node running
+throughout (on a Mac, `caffeinate -i`); what is tested is that your
+wallet stays idle.
 
 ## 4. After: sweep on your own device
 
 The tower stops at the payout: your bit outputs and the reserves wait
-for your own key. Copy its state back and sweep:
+for your own key. Its state file is the container's, so root's: copy it
+out with Docker, bring it back and sweep:
 
 ```sh
-scp <you>@<machine>:lichen/deploy/tower/data/package.state.json .
-lichen --network mutinynet --wallet alice.json --statement groth16 \
+# on the machine
+docker compose -f deploy/tower/docker-compose.yml cp tower:/tower/package.state.json .
+# on your device
+scp <you>@<machine>:lichen/package.state.json .
+lichen --network mutinynet --wallet alice.json --statement babe \
   sweep-dispute <contract> --tower-state package.state.json
 ```
 
-Then delete the package and its working files from the machine
-(`deploy/tower/data/`, `R0WORK`), or the machine itself.
+(`--statement groth16` for a BitVMX contract.) Your outputs can be swept
+`δ` blocks after the payout confirms (40 on Mutinynet); the command
+waits for that. Then delete the package and its working files from the
+machine (`deploy/tower/data/`, `R0WORK`), or the machine itself.
 
 `deploy/tower/cloud-init.yaml` sketches a one-step launch on a fresh
 VPS: untested, and it builds `master`.
