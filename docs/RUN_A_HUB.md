@@ -51,8 +51,11 @@ and ln-gap at the commit in `LNGAP_REV`.
   `lichen` wallet, for the smoke test.
 - **`lichen-bitcoind:<network>`:** the node.
   - For regtest, signet and testnet4: stock Bitcoin Core 31.1.
-  - For Mutinynet: benthecarman's patched build, Core 25.99 with
-    30-second signet blocks.
+  - For Mutinynet: benthecarman's patched build, the one Mutinynet's
+    own node runs: Core 29.2 (Inquisition) with 30-second signet blocks.
+    It relays TRUC, which BABE's `wrongly_challenged` is. The earlier
+    build, 25.99, refuses TRUC. To move a node off it, rebuild the image
+    and recreate the `bitcoind` container. The datadir upgrades in place.
   - Each release tarball is pinned by SHA-256.
 
 ## 2. The hub's key

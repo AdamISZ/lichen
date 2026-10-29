@@ -305,6 +305,9 @@ The gadget layer (GADGET_PLAN.md) leaves BABE these, unchanged:
         Found: the deployment's Mutinynet node (`deploy/hub/bitcoind`, a
         25.99 build) rejects TRUC (`version`); its peers (29.x) relay it,
         so the answer went out through mutinynet.com's Esplora (the
-        wallet resumed with `--esplora`), within `Δ1`. The node image
-        wants the current Mutinynet build (29.2); mainnet relays TRUC from
-        Core 28
+        wallet resumed with `--esplora`), within `Δ1`. Mainnet relays
+        TRUC from Core 28. Fixed 2026-10-29: the image is now Mutinynet's
+        current build (`2fda7bfc027e`, 29.2), and the deployment's node
+        moved to it in place, with no reindex. A node that still refuses
+        TRUC makes `Chain::broadcast` send that transaction through the
+        network's public Esplora instead.

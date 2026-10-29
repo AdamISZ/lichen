@@ -30,7 +30,9 @@ Branch `testnet` (lichen). ln-gap needs nothing so far.
   `signetchallenge=512102f7561d208dd9ae99bf497273e16f389bdbd6c4742ddb8e6b216e64fa2928ad8f51ae`,
   peer `45.79.52.207:38333`, 30 s blocks (`signetblocktime=30`). It needs
   benthecarman's patched bitcoind (release `paircommit`,
-  `bitcoin-d4a86277ed8a-x86_64-linux-gnu.tar.gz`), not stock Core; it
+  `bitcoin-d4a86277ed8a-x86_64-linux-gnu.tar.gz`; from 2026-10-29
+  `mutinynet-inq-template-hash`, `2fda7bfc027e`, Core 29.2, which relays
+  TRUC), not stock Core; it
   also activates some soft forks, which lichen doesn't use. One signer
   (a 1-of-1 challenge). Live on 2026-10-12: height 3,500,307, blocks
   every 30-32 s, running about three years. Only the hub's node needs

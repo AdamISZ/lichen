@@ -338,12 +338,14 @@ a move two ways loses her the dispute.
 - **The proof fits between `respond` and `T_A`:** 15 minutes against
   a week.
 - **The deployment's Mutinynet node rejected the TRUC answer**
-  (`version`): its image is a 25.99 build, before TRUC. Its peers, 29.x,
+  (`version`): its image was a 25.99 build, before TRUC. Its peers, 29.x,
   relay it, so the wallet, resumed through mutinynet.com's Esplora,
   posted it within the window. The first fee coin,
   [082a38d5…](https://mutinynet.com/tx/082a38d5d1816479c87b0e97d713ad56a9bc4bc3120c800e9044f396999cbbf7),
-  went unused, and the sweep took it back. The node image wants the
-  current Mutinynet build; mainnet relays TRUC from Bitcoin Core 28.
+  went unused, and the sweep took it back. Mainnet relays TRUC from
+  Bitcoin Core 28. Since then, the node image is Mutinynet's current
+  build (29.2). A wallet whose node still refuses TRUC now sends that
+  transaction through the network's public Esplora on its own.
 - **The hub's two link anchors** (660) are left unspent: it collects
   its bit outputs but not its anchors.
 

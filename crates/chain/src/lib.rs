@@ -154,6 +154,12 @@ impl Stall {
     }
 }
 
+/// A node's refusal of a transaction for its version, as one before
+/// Bitcoin Core 28 refuses TRUC.
+fn rejects_truc(e: &bitcoincore_rpc::Error) -> bool {
+    matches!(e, bitcoincore_rpc::Error::JsonRpc(bitcoincore_rpc::jsonrpc::Error::Rpc(r)) if r.code == -26 && r.message == "version")
+}
+
 enum Backend {
     Rpc { rpc: Client, wallet: String, url: String, cookie: std::path::PathBuf },
     /// One or more Esplora servers, read under [`Endpoints`]' rules.
@@ -488,9 +494,21 @@ impl Chain {
             Backend::Esplora(e) => e.height(),
         }
     }
+    /// A node before Bitcoin Core 28 refuses TRUC (version 3) as
+    /// nonstandard, though its peers relay it: then the transaction goes
+    /// out through the network's public Esplora.
     pub fn broadcast(&self, tx: &Transaction) -> Result<Txid> {
         match &self.backend {
-            Backend::Rpc { rpc, .. } => Ok(rpc.send_raw_transaction(tx)?),
+            Backend::Rpc { rpc, .. } => match rpc.send_raw_transaction(tx) {
+                Ok(txid) => Ok(txid),
+                Err(e) => match self.network.default_esplora() {
+                    Some(url) if tx.version.0 == 3 && rejects_truc(&e) => {
+                        eprintln!("chain: the node refuses TRUC (before Bitcoin Core 28); {} goes out through {url}", tx.compute_txid());
+                        Chain::esplora(url, self.network)?.broadcast(tx)
+                    }
+                    _ => Err(e.into()),
+                },
+            },
             Backend::Esplora(e) => e.broadcast(tx),
         }
     }
@@ -834,5 +852,22 @@ impl Chain {
         tx.input.push(bitcoin::TxIn { previous_output: op, sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME, ..Default::default() });
         let tx = fees.sign(self, &tx, &[(tx.input[0].previous_output, prevout.clone()), (op, coin)])?;
         self.broadcast(&tx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoincore_rpc::jsonrpc::error::{Error, RpcError};
+
+    fn refusal(code: i32, message: &str) -> bitcoincore_rpc::Error {
+        bitcoincore_rpc::Error::JsonRpc(Error::Rpc(RpcError { code, message: message.into(), data: None }))
+    }
+
+    #[test]
+    fn a_refusal_of_truc() {
+        // a 25.99 node's answer to a version 3 transaction (Mutinynet, 2026-10-29)
+        assert!(super::rejects_truc(&refusal(-26, "version")));
+        assert!(!super::rejects_truc(&refusal(-26, "TRUC-violation, version=3 tx cannot spend from non-version=3 tx")));
+        assert!(!super::rejects_truc(&refusal(-25, "bad-txns-inputs-missingorspent")));
     }
 }
