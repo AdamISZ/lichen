@@ -34,9 +34,10 @@ struct Args {
     cookie: Option<PathBuf>,
     #[arg(long, default_value = "alice")]
     chain_wallet: String,
-    /// BitVMX's: `mock`, `groth16` (its verifier, found in the cargo
-    /// checkout) or `groth16:<path to the verifier's program definition>`;
-    /// BABE's: `babe` (the RISC Zero proof) or `babe-mock`.
+    /// BABE's: `babe` (the real proof) or `babe-mock`; BitVMX's: `bitvmx`
+    /// (the real proof, on its verifier found in the cargo checkout),
+    /// `bitvmx:<path to the verifier's program definition>` or
+    /// `bitvmx-mock`.
     #[arg(long, default_value = "babe-mock")]
     statement: lichen_proto::Statement,
     /// The prover of shielded spends: a command run as `<cmd> spend <input
@@ -164,7 +165,7 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
         /// The claim's input, hex, if made already (a proof's, for
-        /// groth16); the tower builds the mock's. Needed under babe: the
+        /// bitvmx); the tower builds the mock's. Needed under babe: the
         /// package carries her signature on it, not her key.
         #[arg(long)]
         input: Option<PathBuf>,
@@ -488,7 +489,7 @@ mod tests {
 
     #[test]
     fn escalate_note_names_the_deadline_and_both_routes() {
-        let a = Args::parse_from(["lichen", "--network", "mutinynet", "--statement", "groth16:v.yaml", "contracts"]);
+        let a = Args::parse_from(["lichen", "--network", "mutinynet", "--statement", "bitvmx:v.yaml", "contracts"]);
         let n = escalate_note(&a, 1006, 22_000, 3_519_000, Some(3_514_050));
         println!("{n}");
         assert!(n.contains("by block 3519000") && n.contains("4950 blocks left, about 41.2 hours"));

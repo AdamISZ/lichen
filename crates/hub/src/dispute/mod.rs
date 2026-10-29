@@ -216,6 +216,13 @@ impl Inner {
     /// Post one of the hub's links (unless it is already there: replayed,
     /// checked to be the same), its child paying from the hub's anchor;
     /// its confirmation height.
+    /// An error once the hub is being dropped, for a wait on the chain to
+    /// give up on (its dispute is read again from the chain on restart).
+    pub(crate) fn stopping(&self) -> Result<()> {
+        anyhow::ensure!(!self.stop.load(std::sync::atomic::Ordering::Relaxed), "the hub is stopping");
+        Ok(())
+    }
+
     pub(crate) fn post(&self, cid: u32, tx: &Transaction) -> Result<u32> {
         let txid = tx.compute_txid();
         match self.chain.get_tx(&txid) {
@@ -232,6 +239,7 @@ impl Inner {
                 return Ok(h);
             }
             anyhow::ensure!(!patience.expired(self.chain.height()?), "{txid} never confirmed");
+            self.stopping()?;
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }

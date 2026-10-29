@@ -120,9 +120,12 @@ fn a_babe_dispute_resumes_and_alice_gone_loses_at_t_a() {
     w.pause_after = Some(2);
     let (o, _) = w.dispute(&ch, &statement(), &wdir, cid, B, &input).unwrap();
     assert_eq!(o, Outcome::Paused);
-    // the chain halts; the hub restarts, the wallet is reopened
+    // the chain halts; the hub restarts, the wallet is reopened. The hub
+    // may have judged her proof and posted its challenge before the halt
+    // (then it is dropped waiting for a block that won't come), or not
     mining.store(false, Ordering::Relaxed);
     println!("LICHEN R: Alice's wallet stopped after assert; the chain halted");
+    let before = hub.log();
     drop(hub);
     let hub = Hub::start(config()).unwrap();
     println!("LICHEN R: the hub restarted at {}", hub.url);
@@ -137,7 +140,9 @@ fn a_babe_dispute_resumes_and_alice_gone_loses_at_t_a() {
     assert!(matches!(o, Outcome::Answered(_)), "R: she answers the challenge after the restarts: {o:?}");
     let (sweep, _) = swept.expect("R: swept");
     wait("R: the sweep confirms", 30, || ch.confirmations(&sweep).unwrap() > 0);
-    assert!(hub.log().iter().any(|l| l.contains(&format!("contract {cid}: the user's proof is valid, but the hub disputes true claims"))), "R: the restarted hub judged her proof");
+    let judged = format!("contract {cid}: the user's proof is valid, but the hub disputes true claims");
+    assert!(before.iter().chain(&hub.log()).any(|l| l.contains(&judged)), "R: a hub judged her proof");
+    assert!(hub.log().iter().any(|l| l.contains(&format!("contract {cid}: the user answered the challenge"))), "R: the restarted hub followed the dispute to her answer");
 
     // A: her wallet stops after request, and she never asserts
     let (ch, mut w, _, wdir, held, input) = open("abe", &hub.url);

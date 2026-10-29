@@ -24,7 +24,7 @@ fn data() -> PathBuf {
 }
 
 fn statement() -> Statement {
-    Statement::Mock { session: 0, returns: vec![] }
+    Statement::BitVmxMock { session: 0, returns: vec![] }
 }
 
 fn key(label: &str, n: u32) -> WotsSecret {

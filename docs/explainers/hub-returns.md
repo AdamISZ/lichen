@@ -205,7 +205,7 @@ hub started again after the escalation. Since this run the proof also
 needs the sequencer's chain receipt at the return's height:
 
 ```sh
-L="./target/release/lichen --network mutinynet --statement groth16"
+L="./target/release/lichen --network mutinynet --statement bitvmx"
 docker compose -f deploy/hub/docker-compose.yml stop hub
 $L --wallet alice.json withdraw 1002 30000             # the return; the fold fails
 $L --wallet alice.json withdraw-input 1002 > withdraw-input.json

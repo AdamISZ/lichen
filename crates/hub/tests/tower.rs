@@ -31,7 +31,7 @@ const B: u32 = 300_000;
 
 /// The mock statement: the return of `B` with memo 1000 is true.
 fn statement() -> Statement {
-    Statement::Mock { session: 1000, returns: vec![(B, 1000)] }
+    Statement::BitVmxMock { session: 1000, returns: vec![(B, 1000)] }
 }
 
 fn background(stop: &Arc<AtomicBool>, every: Duration, f: impl Fn() + Send + 'static) -> std::thread::JoinHandle<()> {

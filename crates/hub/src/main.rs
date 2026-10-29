@@ -32,9 +32,10 @@ struct Args {
     cookie: Option<PathBuf>,
     #[arg(long, default_value = "hub")]
     chain_wallet: String,
-    /// BitVMX's: `mock`, `groth16` (its verifier, found in the cargo
-    /// checkout) or `groth16:<path to the verifier's program definition>`;
-    /// BABE's: `babe` (the RISC Zero proof) or `babe-mock`.
+    /// BABE's: `babe` (the real proof) or `babe-mock`; BitVMX's: `bitvmx`
+    /// (the real proof, on its verifier found in the cargo checkout),
+    /// `bitvmx:<path to the verifier's program definition>` or
+    /// `bitvmx-mock`.
     #[arg(long, default_value = "babe-mock")]
     statement: Statement,
     /// Where the hub keeps its contracts.

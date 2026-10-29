@@ -7,7 +7,7 @@ separate party, normally on another machine
 ([RUN_A_SEQUENCER.md](RUN_A_SEQUENCER.md)). The hub reaches it by URL,
 as a wallet does.
 
-With a real statement (`babe` or `groth16`), the hub folds only what the user could win by dispute. It checks the withdrawal
+With a real statement (`babe` or `bitvmx`), the hub folds only what the user could win by dispute. It checks the withdrawal
 statement natively, with the sequencer's chain receipt at the return's
 height ([SHIELDED.md](SHIELDED.md)), so the sequencer must run its chain
 prover.
@@ -80,7 +80,7 @@ In `deploy/hub/.env`:
 |---|---|
 | `NETWORK` | `regtest`, `mutinynet`, `signet` or `testnet4` |
 | `SEQUENCER_URL` | the sequencer, as the hub's container reaches it. If the sequencer is on this same machine: `http://host.docker.internal:<its port>` |
-| `STATEMENT` | what disputes run: `babe` (the real statement, on BABE) or `babe-mock`; `groth16` (the real statement, on BitVMX) or `mock` |
+| `STATEMENT` | what disputes run: `babe` (the real statement, on BABE) or `babe-mock`; `bitvmx` (the real statement, on BitVMX) or `bitvmx-mock` |
 | `RESERVE_PPM`, `MAX_BITS`, `DURATION` | the hub's terms: its reserve (ppm of the cap), the largest cap (2^bits − 1 sats), a contract's life in blocks (empty: the network's default) |
 | `WINDOWS` | the dispute's windows in blocks, `<user>,<hub>,<path>`: the user's for each of her moves, the hub's for its choices, the hub's for its heavy moves (empty: the network's default; wallets refuse a user window under it). The heavy ones bound how many contracts the hub can hold safely when blocks are full (the paper's congestion table) |
 | `HOSTILE` | trials on test networks only (the hub refuses it on any other): any value makes the hub refuse every cooperative withdrawal and dispute every claim, true ones too, so that each withdrawal is played on chain to its end; a valid last step whose proof doesn't come in the user's window is taken by the hub's timeout (a tower's test: [RUN_A_TOWER.md](RUN_A_TOWER.md)). Empty by default |

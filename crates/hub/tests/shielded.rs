@@ -30,7 +30,7 @@ fn wait(what: &str, mut ok: impl FnMut() -> bool) {
 }
 
 fn mock() -> Statement {
-    Statement::Mock { session: 0, returns: vec![] }
+    Statement::BitVmxMock { session: 0, returns: vec![] }
 }
 
 #[test]

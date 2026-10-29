@@ -329,6 +329,7 @@ impl Inner {
             Verdict::ReadChallenge => anyhow::bail!("contract {cid}: a read challenge, and the statement has no jump list to settle it"),
             Verdict::Disprove(name, wit) => {
                 while self.chain.height()? < at + u32::from(p.delta) {
+                    self.stopping()?;
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
                 let wire = d.rule_wire(&d.contract.rule(m, &name)?, &wit, None, &link)?;

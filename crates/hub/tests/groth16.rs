@@ -42,7 +42,7 @@ fn disputes_on_the_groth16_verifier() {
     std::fs::create_dir_all(&dir).unwrap();
     // BitVMX's verifier, as BitVMX-CPU ships it (GPL, not vendored), from
     // the cargo checkout
-    let statement = Statement::groth16().unwrap();
+    let statement = Statement::bitvmx().unwrap();
     // the canned claim: the toy deployment's return of 60 with memo 42,
     // proved under the committed guest (the real-receipt test's withdrawal,
     // `lichen-r0 claim` on x86 Linux)

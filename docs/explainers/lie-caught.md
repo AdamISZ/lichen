@@ -245,7 +245,7 @@ With `--sequencer` and `--hub` as for a tester
 cargo run --release -p lichen-hub --example read_lie -- lie-1004.hex /tmp/rl > lie-1004-lie.json
 lichen --network mutinynet --wallet lie.json open 30000 --bits 16 --payout <address>
 lichen --network mutinynet --wallet lie.json return 10000 1004
-lichen --network mutinynet --wallet lie.json --statement groth16 \
+lichen --network mutinynet --wallet lie.json --statement bitvmx \
   dispute 1004 40000 --input lie-1004.hex --lie lie-1004-lie.json
 ```
 

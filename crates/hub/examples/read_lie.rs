@@ -22,7 +22,7 @@ fn main() -> Result<()> {
     let dir = std::path::PathBuf::from(args.get(2).context("a work directory")?);
     let min_hops: usize = args.get(3).map_or(Ok(1), |s| s.parse())?;
     let tail: u64 = args.get(4).map_or(Ok(20_000), |s| s.parse())?;
-    let program = Statement::groth16()?.program(&dir)?;
+    let program = Statement::bitvmx()?.program(&dir)?;
     let j = program.schedule.jump.context("a jump list")?;
     let d = format!("{}/exec/", dir.display());
     std::fs::create_dir_all(&d)?;

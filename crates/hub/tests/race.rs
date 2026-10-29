@@ -22,7 +22,7 @@ use lngap_btc::regtest::Regtest;
 const B: u32 = 300_000;
 
 fn statement() -> Statement {
-    Statement::Mock { session: 1000, returns: vec![(B, 1000)] }
+    Statement::BitVmxMock { session: 1000, returns: vec![(B, 1000)] }
 }
 
 fn background(stop: &Arc<AtomicBool>, every: Duration, f: impl Fn() + Send + 'static) -> std::thread::JoinHandle<()> {

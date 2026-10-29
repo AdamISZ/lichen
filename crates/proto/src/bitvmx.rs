@@ -139,20 +139,20 @@ impl Statement {
     /// The Groth16 statement on BitVMX's verifier ([`verifier_elf`]), its
     /// program definition written beside a copy of the ELF in the
     /// temporary directory.
-    pub fn groth16() -> Result<Statement> {
+    pub fn bitvmx() -> Result<Statement> {
         let dir = std::env::temp_dir().join(format!("lichen-groth16-{}", &VERIFIER_ELF_SHA256[..12]));
         std::fs::create_dir_all(&dir)?;
         if !dir.join("zkverifier.elf").exists() {
             std::fs::copy(verifier_elf()?, dir.join("zkverifier.elf"))?;
         }
         std::fs::write(dir.join("groth16.yaml"), GROTH16_PDF)?;
-        Ok(Statement::Groth16 { pdf: dir.join("groth16.yaml") })
+        Ok(Statement::BitVmx { pdf: dir.join("groth16.yaml") })
     }
     /// The program, built under `dir` if it must be.
     pub fn program(&self, dir: &Path) -> Result<Program> {
         match self {
-            Statement::Groth16 { pdf } => Program::load(&pdf.display().to_string()),
-            Statement::Mock { session, returns } => Program::load(&lngap_sessions::statement::write_program_with(&dir.join(format!("mock-statement-{session}")), *session, returns, 8, true)?),
+            Statement::BitVmx { pdf } => Program::load(&pdf.display().to_string()),
+            Statement::BitVmxMock { session, returns } => Program::load(&lngap_sessions::statement::write_program_with(&dir.join(format!("mock-statement-{session}")), *session, returns, 8, true)?),
             Statement::Babe { .. } => anyhow::bail!("the BABE statement has no program"),
         }
     }
@@ -174,7 +174,7 @@ impl Statement {
         let check = |name: &str, word: usize, value: u32| Check { name: name.to_string(), word, value, in_claim: true };
         let late = |name: &str, word: usize, value: u32| Check { name: name.to_string(), word, value, in_claim: false };
         match self {
-            Statement::Groth16 { .. } => {
+            Statement::BitVmx { .. } => {
                 let id = lngap_zk::final_d60::input_words(&hex::decode(IMAGE_ID.trim()).expect("hex"));
                 let dep = lngap_zk::final_d60::input_words(deployment);
                 let mut checks = vec![check("journal_len", 0, (JOURNAL_LEN / 4) as u32), check("memo", 42, c)];
@@ -182,7 +182,7 @@ impl Statement {
                 checks.extend((0..8).map(|j| late(&format!("deployment_{}", j + 1), 43 + j, dep[j])));
                 (41, checks)
             }
-            Statement::Mock { .. } | Statement::Babe { .. } => (0, vec![check("memo", 1, c)]),
+            Statement::BitVmxMock { .. } | Statement::Babe { .. } => (0, vec![check("memo", 1, c)]),
         }
     }
     /// Whether the program accepts `input`, answered natively when that is
@@ -191,8 +191,8 @@ impl Statement {
     /// The emulation stays the authority whenever the trace matters.
     pub fn accepts(&self, input: &[u8]) -> Option<bool> {
         match self {
-            Statement::Groth16 { .. } => Some(lngap_zk::groth16::verify_input(input).is_ok()),
-            Statement::Mock { .. } | Statement::Babe { .. } => None,
+            Statement::BitVmx { .. } => Some(lngap_zk::groth16::verify_input(input).is_ok()),
+            Statement::BitVmxMock { .. } | Statement::Babe { .. } => None,
         }
     }
     /// The input a claim of `b` with memo `c` runs the program on: for the
@@ -200,8 +200,8 @@ impl Statement {
     /// (made elsewhere).
     pub fn mock_input(&self, b: u32, c: u32) -> Option<Vec<u8>> {
         match self {
-            Statement::Mock { .. } => Some(lngap_sessions::statement::input(b, c)),
-            Statement::Groth16 { .. } | Statement::Babe { .. } => None,
+            Statement::BitVmxMock { .. } => Some(lngap_sessions::statement::input(b, c)),
+            Statement::BitVmx { .. } | Statement::Babe { .. } => None,
         }
     }
 }

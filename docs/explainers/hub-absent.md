@@ -338,7 +338,7 @@ reading the chain through Esplora). With the hub stopped, after her
 return, Alice runs:
 
 ```sh
-lichen --network mutinynet --statement groth16 --wallet alice.json \
+lichen --network mutinynet --statement bitvmx --wallet alice.json \
   dispute 1001 35000 --input claim.hex
 ```
 

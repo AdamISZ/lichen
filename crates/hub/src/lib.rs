@@ -167,13 +167,15 @@ pub(crate) struct Inner {
     /// on a dispute it loses, by gadget (the statement's, found at the
     /// first opening).
     floors: Mutex<HashMap<Gadget, u64>>,
+    /// Set when the hub is dropped: a dispute waiting on the chain gives
+    /// up, so that dropping a hub never waits for a block.
+    stop: AtomicBool,
 }
 
 pub struct Hub {
     pub url: String,
     inner: Arc<Inner>,
     server: Arc<Server>,
-    stop: Arc<AtomicBool>,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -220,8 +222,7 @@ impl Hub {
         ensure!(!(cfg_refuse || cfg_dispute) || cfg.network.is_test(), "a hub refuses withdrawals or disputes true claims on test networks only, not {}", cfg.network);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()) });
-        let stop = Arc::new(AtomicBool::new(false));
+        let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             for mut req in srv.incoming_requests() {
@@ -254,9 +255,9 @@ impl Hub {
                 let _ = req.respond(Response::from_string(json).with_status_code(code).with_header(ct));
             }
         });
-        let (i2, s2) = (inner.clone(), stop.clone());
+        let i2 = inner.clone();
         let watcher = std::thread::spawn(move || {
-            while !s2.load(Ordering::Relaxed) {
+            while !i2.stop.load(Ordering::Relaxed) {
                 if let Err(e) = i2.default_expired() {
                     eprintln!("hub: {e:#}");
                 }
@@ -266,7 +267,7 @@ impl Hub {
                 std::thread::sleep(std::time::Duration::from_millis(300));
             }
         });
-        Ok(Hub { url: format!("http://127.0.0.1:{port}"), inner, server, stop, threads: vec![http, watcher] })
+        Ok(Hub { url: format!("http://127.0.0.1:{port}"), inner, server, threads: vec![http, watcher] })
     }
     /// The contracts so far, and how each ended if it has.
     pub fn contracts(&self) -> Vec<(Record, Option<bitcoin::Txid>)> {
@@ -323,7 +324,7 @@ impl Hub {
 
 impl Drop for Hub {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.inner.stop.store(true, Ordering::Relaxed);
         self.server.unblock();
         for t in self.threads.drain(..) {
             let _ = t.join();

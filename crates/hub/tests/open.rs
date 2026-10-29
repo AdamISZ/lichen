@@ -20,7 +20,7 @@ use lngap_btc::regtest::Regtest;
 
 /// The mock statement with an empty table (these tests never dispute).
 fn mock() -> Statement {
-    Statement::Mock { session: 0, returns: vec![] }
+    Statement::BitVmxMock { session: 0, returns: vec![] }
 }
 
 #[test]

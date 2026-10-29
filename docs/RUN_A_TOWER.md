@@ -11,7 +11,7 @@ contract's verification gadget:
   tower asserts your proof, waits for the hub, and answers a challenge
   from the contract's kept garbled circuits. At worst it stays silent,
   so several can run at once.
-- **BitVMX** (`--statement groth16`): the contract's one-time secrets
+- **BitVMX** (`--statement bitvmx`): the contract's one-time secrets
   and its fee budget's key, never your wallet's key. It proves your
   withdrawal, wraps the proof, runs your side of the search, escalates
   and answers each of the hub's moves, to the payout. At worst it can
@@ -76,7 +76,7 @@ The settings, `deploy/tower/.env`:
 |---|---|
 | `NETWORK` | the contract's network |
 | `ESPLORA` | two Esplora servers, comma-separated. A move is answered only once both report it confirmed, in the same block, with the same witness; a disagreement is logged as `chain: ALARM`. On Mutinynet, `https://mutinynet.com/api` twice will do for a trial |
-| `STATEMENT` | the contract's: `babe`, `groth16` (the tower proves), or a mock (`babe-mock`, `mock`) |
+| `STATEMENT` | the contract's: `babe`, `bitvmx` (the tower proves), or a mock (`babe-mock`, `bitvmx-mock`) |
 | `R0WORK` | an absolute path on the machine for BitVMX's wrap's working files, such as `/home/<you>/r0work` (set it under BABE too) |
 
 `R0WORK` is mounted at the same path in the tower's container because
@@ -112,7 +112,7 @@ it opened), so there is time to get the machine ready. The tower never contacts 
 ### Under BitVMX
 
 ```sh
-lichen --network mutinynet --wallet alice.json --statement groth16 \
+lichen --network mutinynet --wallet alice.json --statement bitvmx \
   export-dispute <contract> --out package.json
 scp package.json <you>@<machine>:lichen/deploy/tower/data/package.json
 ```
@@ -227,7 +227,7 @@ lichen --network mutinynet --wallet alice.json --statement babe \
   sweep-dispute <contract> --tower-state package.state.json
 ```
 
-(`--statement groth16` for a BitVMX contract.) Your outputs can be swept
+(`--statement bitvmx` for a BitVMX contract.) Your outputs can be swept
 `δ` blocks after the payout confirms (40 on Mutinynet); the command
 waits for that. Then delete the package and its working files from the
 machine (`deploy/tower/data/`, `R0WORK`), or the machine itself.

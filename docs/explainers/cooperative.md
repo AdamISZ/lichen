@@ -276,7 +276,7 @@ r0/chain-prover.sh deploy/sequencer/data/mutinynet/ledger.json.blocks
 Then Alice:
 
 ```sh
-L="./target/release/lichen --network mutinynet --statement groth16"
+L="./target/release/lichen --network mutinynet --statement bitvmx"
 $L --wallet alice.json init
 $L --wallet alice.json open 30000 --bits 16 --reserve 20000 --payout <an address of yours>
 #   it prints "pay 81000 sats to tb1p…": pay that from any wallet

@@ -4,7 +4,7 @@ How lichen's contracts work, from real runs. For the idea without the
 details, start with [the 1,000-foot view](../1000-ft-view.md).
 
 A contract's dispute runs on a verification gadget. lichen's is BABE;
-the first was BitVMX, which is still built (`--statement groth16`), and
+the first was BitVMX, which is still built (`--statement bitvmx`), and
 its runs are kept below as records.
 
 ## Either gadget

@@ -44,7 +44,7 @@ fn statement() -> Statement {
     let any = lngap_sessions::statement::ANY;
     let mut returns: Vec<(u32, u32)> = (1..16).map(|i| (B + 4_096 * i, any)).collect();
     returns.push((B, any));
-    Statement::Mock { session: any, returns }
+    Statement::BitVmxMock { session: any, returns }
 }
 
 fn background(stop: &Arc<AtomicBool>, every: Duration, f: impl Fn() + Send + 'static) -> std::thread::JoinHandle<()> {

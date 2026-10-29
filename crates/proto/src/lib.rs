@@ -148,36 +148,36 @@ pub fn default_duration(net: Net) -> u32 {
     }
 }
 
-/// The statement the disputes run, and so their gadget: under BitVMX,
-/// `groth16`, BitVMX's Groth16 verifier over a proof of the withdrawal
-/// guest (the real thing; its program definition should ask for an 8-ary
-/// search and a jump list: 21 depths), or `mock`, ln-gap's small stand-in
+/// The statement the disputes run, and so their gadget. Under BABE,
+/// `babe`, a Groth16 proof of the BABE guest, or `babe-mock`, one of a toy
+/// circuit anyone can prove ([`babe`]). Under BitVMX, `bitvmx`, BitVMX's
+/// Groth16 verifier over a proof of the withdrawal guest (the real thing;
+/// its program definition should ask for an 8-ary search and a jump list:
+/// 21 depths), or `bitvmx-mock`, ln-gap's small stand-in
 /// (for fast tests; 8-ary, a jump list, 7 depths): a program that accepts
 /// exactly the returns `(b, c)` in its table, for one memo `session`.
-/// Under BABE, `babe`, a Groth16 proof of the BABE guest, or `babe-mock`,
-/// one of a toy circuit anyone can prove ([`babe`]). Both sides must
-/// build the same one.
+/// Both sides must build the same one.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Statement {
     /// The program definition (yaml) of BitVMX's Groth16 verifier.
-    Groth16 { pdf: PathBuf },
-    Mock { session: u32, returns: Vec<(u32, u32)> },
+    BitVmx { pdf: PathBuf },
+    BitVmxMock { session: u32, returns: Vec<(u32, u32)> },
     Babe { mock: bool },
 }
 
 impl std::str::FromStr for Statement {
     type Err = anyhow::Error;
-    /// `mock`, `groth16` (BitVMX's verifier found in the cargo checkout:
-    /// [`Statement::groth16`]), `groth16:<path to the verifier's program
-    /// definition>`, `babe` or `babe-mock`.
+    /// `babe`, `babe-mock`, `bitvmx` (BitVMX's verifier found in the cargo
+    /// checkout: [`Statement::bitvmx`]), `bitvmx:<path to the verifier's
+    /// program definition>` or `bitvmx-mock`.
     fn from_str(s: &str) -> Result<Statement> {
         match s.split_once(':') {
-            None if s == "mock" => Ok(Statement::Mock { session: 0, returns: vec![] }),
-            None if s == "groth16" => Statement::groth16(),
+            None if s == "bitvmx-mock" => Ok(Statement::BitVmxMock { session: 0, returns: vec![] }),
+            None if s == "bitvmx" => Statement::bitvmx(),
             None if s == "babe" => Ok(Statement::Babe { mock: false }),
             None if s == "babe-mock" => Ok(Statement::Babe { mock: true }),
-            Some(("groth16", pdf)) => Ok(Statement::Groth16 { pdf: PathBuf::from(pdf) }),
-            _ => bail!("a statement is `mock`, `groth16`, `groth16:<pdf>`, `babe` or `babe-mock`"),
+            Some(("bitvmx", pdf)) => Ok(Statement::BitVmx { pdf: PathBuf::from(pdf) }),
+            _ => bail!("a statement is `babe`, `babe-mock`, `bitvmx`, `bitvmx:<pdf>` or `bitvmx-mock`"),
         }
     }
 }
@@ -185,8 +185,8 @@ impl std::str::FromStr for Statement {
 impl Statement {
     pub fn id(&self) -> &'static str {
         match self {
-            Statement::Groth16 { .. } => "groth16",
-            Statement::Mock { .. } => "mock",
+            Statement::BitVmx { .. } => "bitvmx",
+            Statement::BitVmxMock { .. } => "bitvmx-mock",
             Statement::Babe { mock: false } => "babe",
             Statement::Babe { mock: true } => "babe-mock",
         }
@@ -202,7 +202,7 @@ impl Statement {
     /// than the mock: the hub then checks a withdrawal natively before
     /// folding, and the wallet waits for the anchor and the chain receipt.
     pub fn is_real(&self) -> bool {
-        matches!(self, Statement::Groth16 { .. } | Statement::Babe { mock: false })
+        matches!(self, Statement::BitVmx { .. } | Statement::Babe { mock: false })
     }
 }
 
@@ -777,7 +777,7 @@ mod tests {
     fn a_request_checked() {
         use lngap_lamport::winternitz::{WotsParams, WotsSecret};
         let dir = std::env::temp_dir().join(format!("lichen-proto-req-{}", std::process::id()));
-        let program = Statement::Mock { session: 0, returns: vec![] }.program(&dir).unwrap();
+        let program = Statement::BitVmxMock { session: 0, returns: vec![] }.program(&dir).unwrap();
         let input = |j: usize, p: WotsParams| WotsSecret::from_entropy(p, [j as u8; 32]).public();
         let alice = lngap_channel::PartyKeys::from_seed(lngap_channel::Role::User, lngap_btc::keys::Seed::from_label("test/alice")).public();
         let good = lngap_zk::final_d60::input_key_params();
@@ -812,23 +812,23 @@ mod tests {
     #[test]
     fn the_native_check_on_the_words_read() {
         let valid = hex::decode(include_str!("../tests/data/claim-60-42.hex").trim()).unwrap();
-        let g16 = Statement::Groth16 { pdf: PathBuf::from("unused.yaml") };
+        let g16 = Statement::BitVmx { pdf: PathBuf::from("unused.yaml") };
         let rebuilt = input_from_words(&lngap_zk::final_d60::input_words(&valid));
         assert_eq!(rebuilt, valid);
         assert_eq!(g16.accepts(&rebuilt), Some(true));
         let mut words = lngap_zk::final_d60::input_words(&valid);
         words[41] = 61;
         assert_eq!(g16.accepts(&input_from_words(&words)), Some(false), "b tampered");
-        assert_eq!(Statement::Mock { session: 0, returns: vec![] }.accepts(&valid), None);
+        assert_eq!(Statement::BitVmxMock { session: 0, returns: vec![] }.accepts(&valid), None);
     }
 
-    /// `groth16` alone finds the verifier, and its program definition's
+    /// `bitvmx` alone finds the verifier, and its program definition's
     /// input is the layout's: the journal's length, the image id, the proof,
     /// the journal.
     #[test]
     fn the_groth16_statement_found() {
         assert!(GROTH16_PDF.contains(&format!("size: {}", 4 + 32 + 128 + JOURNAL_LEN)));
-        let Statement::Groth16 { pdf } = "groth16".parse::<Statement>().unwrap() else { panic!("not groth16") };
+        let Statement::BitVmx { pdf } = "bitvmx".parse::<Statement>().unwrap() else { panic!("not bitvmx") };
         assert!(pdf.exists() && pdf.with_file_name("zkverifier.elf").exists());
         for n in ["regtest", "mutinynet", "signet", "testnet4"] {
             assert_eq!(n.parse::<Net>().unwrap().to_string(), n);
@@ -850,7 +850,7 @@ mod tests {
     /// deployment's words.
     #[test]
     fn the_groth16_layout_pins_the_deployment() {
-        let g16 = Statement::Groth16 { pdf: PathBuf::from("unused.yaml") };
+        let g16 = Statement::BitVmx { pdf: PathBuf::from("unused.yaml") };
         let (ours, theirs) = (Deployment::toy(), Deployment { sequencer: [1; 32], hub: [2; 32], seal: None });
         let (b_word, checks) = g16.layout(42, &ours.id());
         assert_eq!(b_word, 41);

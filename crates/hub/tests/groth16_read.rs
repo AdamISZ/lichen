@@ -68,7 +68,7 @@ fn a_read_lie_on_the_groth16_verifier() {
     let dir = std::env::temp_dir().join(format!("lichen-g16r-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let statement = Statement::groth16().unwrap();
+    let statement = Statement::bitvmx().unwrap();
     let mut input = hex::decode(include_str!("../../proto/tests/data/claim-60-42.hex").trim()).unwrap();
     input[164] = 61; // b, word 41's low byte: a false claim
     let t = Instant::now();
