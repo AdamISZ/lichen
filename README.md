@@ -20,19 +20,19 @@ Choose your adventure:
 
 ### General concepts in a few words
 
-A layer 2 ledger whose tokens a hub issues, each user's holdings up to a cap collateralised in her own contract with the hub, and withdrawable on Bitcoin without trusting the hub for anything: not its honesty, not its liveness. A withdrawal is a return of tokens to the hub on the ledger; the hub pays it out in btc in the contract, on the bitcoin blockchain, cooperatively, and if it refuses (or is gone), the user proves the return (RISC Zero, wrapped in Groth16) and enforces it on Bitcoin with a verification gadget (currently BitVMX, planned a BABE variant) over a Groth16 verifier. No change to Bitcoin is needed. In case you didn't spot the point: the tokens *are* bitcoin because of the 1-1 backing, permissionlessly claimable.
+A layer 2 ledger whose tokens a hub issues, each user's holdings up to a cap collateralised in her own contract with the hub, and withdrawable on Bitcoin without trusting the hub for anything: not its honesty, not its liveness. A withdrawal is a return of tokens to the hub on the ledger; the hub pays it out in btc in the contract, on the bitcoin blockchain, cooperatively, and if it refuses (or is gone), the user proves the return (RISC Zero, wrapped in Groth16) and enforces it on Bitcoin with a verification gadget (currently using a variant of BABE, but BitVMX is also built) over a Groth16 verifier. No change to Bitcoin is needed. In case you didn't spot the point: the tokens *are* bitcoin because of the 1-1 backing, permissionlessly claimable.
 
 The contracts and the dispute machinery are in [ln-gap](https://github.com/AdamISZ/ln-gap) (`crates/apps/sessions`); think of that as the backend including both all the bitcoin side and also all the ZKP dispute management side. This repository is the software the parties run.
 
 ### A few operational details that are mostly PoC limitations
 
-Worth mentioning these as idiosyncracies: first, this was built without a user-side bitcoin wallet as that's probably the right choice anyway: you fund an intermediate joint-control address and then from there the contract is funded. Explained in the procedures below. Second: in case you actually want to test *disputes*, and not normal usage, you'll have to create proofs to do withdrawals. The instructions are [here](#disputes-on-the-real-statement), and note that this involves running a proving step on x86 architecture that might take about 5 minutes. Notably, this step is partly delegatable, and that is addressed with the idea of [watchtowers](docs/RUN_A_TOWER.md).
+Worth mentioning these as idiosyncracies: first, this was built without a user-side bitcoin wallet as that's probably the right choice anyway: you fund an intermediate joint-control address and then from there the contract is funded. Explained in the procedures below. Second: in case you actually want to test *disputes*, and not normal usage, you'll have to create proofs to do withdrawals. The instructions are [here](#disputes-on-the-real-statement), and note that this involves running a proving step on x86 architecture that might take about 5 minutes. Notably, this step is delegatable, and that is addressed with the idea of [watchtowers](docs/RUN_A_TOWER.md).
 
 ### High level plan of work to do:
 
-* Completing documentation of all the internal steps for normal operation and dispute, in the Bitcoin contracts. (Mostly done, but not complete)
+* Completing documentation of all the internal steps for normal operation and dispute, in the Bitcoin contracts. (Ongoing as the design is not yet 100% bedded down)
 
-* Building extra support functionality - a turnkey watchtower, so there is a realistic path for a constrained user to dispute correctly. :white_check_mark:
+* Building extra support functionality - a turnkey watchtower, so there is a realistic path for a constrained user to dispute correctly. Note that this is now **keyless** using the BABE verification gadget. :white_check_mark:
 
 * Creating a useful feature for the L2: shielded transfers. :white_check_mark:
 
@@ -40,9 +40,11 @@ Worth mentioning these as idiosyncracies: first, this was built without a user-s
 
 * Creating a commitment mechanism (seals) for the L2 sequencer to gain finality from the Bitcoin chain (on a slower timescale) :white_check_mark:
 
-* As per the above, but further strengthening against malicious or disruptive sequencer behavior. (planned, not implemented)
+* As per the above, but further strengthening against malicious or disruptive sequencer behavior. (planned via a proof-counterproof method, not yet implemented)
 
-* LONG TERM: potential replacement of BitVMX with a BABE-style construction. (plans [are in place](https://delvingbitcoin.org/t/variable-payout-amounts-for-babe-as-applied-to-lichen/2963); nothing done)
+* Replacement of BitVMX with a BABE-style construction. Done; vastly improves the onchain dispute case scalability. :white_check_mark:
+
+Note that what is still to do is related to L2 security guarantees/claims; the Lichen part is already complete.
 
 -------
 
@@ -72,10 +74,16 @@ it off and leaves the CPU to the payments). The hub's pane has its
 contracts and two switches. To show it on a screen, open each pane in a
 window of its own, larger: `/alice`, `/bob`, `/ledger` and `/hub`.
 
-Pay each other, withdraw cooperatively, then switch the hub to refuse
-withdrawals and dispute true claims, and withdraw: the dispute plays
-out move by move (a minute or two). Disputes run on the mock statement,
-set so that every claim is true (the contract's memo check still
+Pay each other and withdraw cooperatively. Then switch the hub to refuse
+withdrawals, and withdraw: the dispute plays out on Bitcoin, BABE's, in
+a few transactions. Alice requests, the hub responds, she asserts her
+proof, and `success` pays her once the hub's window to challenge has
+passed (about half a minute). Switch the hub to dispute true claims as
+well, and it challenges: her wallet answers with one of the garbled
+circuits it kept when the contract opened, and she is paid ([a true
+claim challenged, on Mutinynet](docs/explainers/babe-challenged.md)).
+Disputes run on BABE's mock statement, where each claim's proof is of a
+toy circuit, so every claim is true (the contract's memo check still
 applies). It stands in for the real withdrawal proof, which takes
 minutes on x86 ([Disputes on the real statement](#disputes-on-the-real-statement)).
 
@@ -92,12 +100,15 @@ and data, and its own guide:
   together, and what testers need.
 
 A user whose withdrawal is refused can hand the dispute to a machine she
-rents, a tower that proves and plays it while she is away:
-[Running a tower](docs/RUN_A_TOWER.md).
+rents, a tower that plays it while she is away: [Running a
+tower](docs/RUN_A_TOWER.md). Under BitVMX's Groth16 statement the tower
+proves too, and holds the contract's one-time secrets (never her
+wallet's key); under BABE she proves first, and the tower holds only
+her signatures.
 
-On branch `shielded` the L2 has private payments, with every block
-proved valid: what is hidden, how long things take and what a dispute
-costs are in [Shielded transfers](docs/SHIELDED.md).
+The L2 has private payments, with every block proved valid: what is
+hidden, how long things take and what a dispute costs are in [Shielded
+transfers](docs/SHIELDED.md).
 
 [deploy/README.md](deploy/README.md) lays out the files;
 [docs/CODE.md](docs/CODE.md) the crates, for working on lichen's code.
@@ -125,15 +136,14 @@ and won't open a contract with a hub in another.
 ## Networks, and no wallet of the user's
 
 `--network regtest|mutinynet|signet|testnet4` (hub and wallet): each a
-whole profile, the addresses and the contracts' timing in blocks (see
-[docs/TESTNET_PLAN.md](docs/TESTNET_PLAN.md)). The hub runs a node and
+whole profile, the addresses and the contracts' timing in blocks. The hub runs a node and
 its wallet. The user runs neither: `lichen` reads Bitcoin from an
 Esplora server (`--esplora`, by default the network's public one) and
 holds keys, not coins. Opening a contract:
 
 ```sh
-lichen --network mutinynet --wallet alice.json open 400000 --payout <an address of yours>
-# pay 571000 sats to tb1p... (from any wallet, or a faucet); it waits
+lichen --network mutinynet --wallet alice.json --statement babe open 400000 --payout <an address of yours>
+# pay 451000 sats to tb1p... (from any wallet, or a faucet); it waits
 ```
 
 The deposit address is the hub's and yours together, or yours alone
@@ -150,10 +160,10 @@ so that a proof made in advance is valid for them.
 ## Disputes on the real statement
 
 A withdrawal the hub refuses is enforced with a proof of the return, made
-with RISC Zero and wrapped in Groth16 (the wrap runs on x86 Linux). On
-branch `shielded` the proof also shows that the return's root ends a valid
-history, with the sequencer's chain receipt at its height
-([Shielded transfers](docs/SHIELDED.md)):
+with RISC Zero and wrapped in Groth16 (the wrap runs on x86 Linux). The
+proof also shows that the return's root ends a valid history, with the
+sequencer's chain receipt at its height
+([Shielded transfers](docs/SHIELDED.md)). On BitVMX's statement:
 
 ```sh
 # 1. the claim: the return note, its path, the sequencer's signed root;
@@ -167,12 +177,38 @@ lichen --wallet alice.json chain-receipt <memo> chain.receipt
 lichen-r0 claim withdraw-input.json chain.receipt claim.hex
 #    (on a Mac, r0/withdraw-prover.sh withdraw ... proves the STARK only)
 # 3. the dispute, on the Groth16 verifier
-lichen --wallet alice.json --statement groth16 dispute <contract> <amount> --input claim.hex
+lichen --wallet alice.json --statement bitvmx dispute <contract> <amount> --input claim.hex
 ```
 
-`--statement groth16` finds BitVMX's verifier in the cargo checkout (by
+`--statement bitvmx` finds BitVMX's verifier in the cargo checkout (by
 its SHA-256; `LICHEN_VERIFIER_ELF` overrides). The wallet checks the
 claim's words against the contract (memo, image id, deployment, journal
 length) before escalating; a dispute in progress resumes
 when the command is run again (`lichen dispute <contract>`).
+
+### Under BABE
+
+With `--statement babe` (the hub's too), the proof also covers the hub's
+signature on the amount, which the hub gives only when it responds on
+chain. So the dispute has two steps. First, `lichen dispute <contract>
+<amount>` requests, waits for the hub's `respond`, writes its signature
+to `<wallet>.d/babe-<contract>/hub-auth.json` and stops: the proof is
+due by `T_A`, shortly before the contract closes (on Mutinynet, a week
+after it opened). Then:
+
+```sh
+lichen --wallet alice.json withdraw-input <contract> > withdraw-input.json
+lichen --wallet alice.json chain-receipt <contract> chain.receipt
+# on x86 Linux with Docker, lichen-r0 (r0/host, or in the prover image
+# with the host's Docker for the wrap). 4 vCPUs: 11 min to prove, 4 to wrap
+lichen-r0 babe-claim withdraw-input.json alice.d/babe-<contract>/hub-auth.json chain.receipt claim.hex
+lichen --wallet alice.json --statement babe dispute <contract> --input claim.hex
+```
+
+Or, with the proof made, hand the rest to a tower: `lichen export-dispute
+<contract> --input claim.hex --out package.json`. The wallet checks the
+claim's journal and verifies its proof before it asserts. If the hub
+challenges a true claim, the wallet (or the tower) answers it from the
+garbled circuits kept when the contract opened ([a true claim
+challenged, on Mutinynet](docs/explainers/babe-challenged.md)).
 
