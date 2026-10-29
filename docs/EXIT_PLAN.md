@@ -346,6 +346,34 @@ proved by the counter guest from the request transaction in a block on
 the anchors' headers; the guest knows the contract's funding outpoint
 through `D` or `E`'s preimage (detail).
 
+### Open before the counter (found building step 1)
+
+Alice's claim is built (`crates/withdraw/src/exit.rs`), with `E`'s
+preimage gaining the funding outpoint `O`. Two things stand in the
+counter's way:
+
+- **Nothing binds `O`.** The counter's cutoff is the confirmation of
+  the transaction spending `O`. But BABE fixes the journal
+  (`c ‖ D ‖ H(pk_H)`) in `babe_setup`, when the deposit is asked for,
+  before any funding transaction exists. So Alice's guest can't check
+  `E`'s `O`: she could name an outpoint spent long ago, a stale cutoff,
+  and hide a later spend. Identifying `request` some other way (Alice's
+  signature in its witness, the hub's in `respond`'s, the taproot leaf
+  it reveals) fails: each can be copied into an earlier or later
+  transaction by whoever gains from it. Proposed: run the setup once the
+  funding transaction is built (its txid known, nothing broadcast yet),
+  and fold `O` into the journal's third word, `H(pk_H ‖ O)`. Nothing is
+  broadcast before the presignatures, so Alice's deposit is no more
+  exposed than now. The setup's 19 s moves to after funding is built.
+- **The counter can't see which transaction inserted a nullifier.**
+  Both exclusions (contract `c`'s own return; exit records, exempt from
+  the cutoff) depend on it, but the history commits only each height's
+  state root. Proposed: the history commits each block's transactions
+  too, `hist_h = H(hist_{h-1} ‖ root_h ‖ txs_h)`, with `txs_h` a hash of
+  the block's transaction digests. The counter opens the one transaction
+  and checks its kind. This changes the chain guest, which step 2
+  replaces anyway, and what anchors commit.
+
 ### Windows and load
 
 - **`w_H` absorbs `W_c`.** The hub must find and prove any counter within

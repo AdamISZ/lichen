@@ -147,6 +147,25 @@ pub fn insert(root: &Hash, key: &Hash, proof: &Proof, empties: &[Hash]) -> Optio
     (sibs.next().is_none() && absent == *root).then_some(with)
 }
 
+/// Whether `proof` shows `key` unspent in a tree of root `root`: what
+/// [`insert`] checks before spending it.
+pub fn unspent(root: &Hash, key: &Hash, proof: &Proof, empties: &[Hash]) -> bool {
+    let mut absent = empties[0];
+    let mut sibs = proof.siblings.iter();
+    for h in 0..DEPTH {
+        let sib = if proof.has(h) {
+            match sibs.next() {
+                Some(s) => *s,
+                None => return false,
+            }
+        } else {
+            empties[h]
+        };
+        absent = if bit(key, DEPTH - 1 - h) { node(&sib, &absent) } else { node(&absent, &sib) };
+    }
+    sibs.next().is_none() && absent == *root
+}
+
 /// The root of the subtree at depth `d` holding `keys` (sorted, all
 /// sharing their first `d` bits).
 pub fn subtree(keys: &[Hash], d: usize, empties: &[Hash]) -> Hash {
@@ -244,7 +263,10 @@ mod tests {
             root = next;
             // spent now: no proof of it unspent
             assert_eq!(insert(&root, &k, &proof(&keys, &k, &e), &e), None);
+            assert!(!unspent(&root, &k, &proof(&keys, &k, &e), &e));
         }
+        // unspent agrees with insert
+        assert!(unspent(&root, &h(5), &proof(&keys, &h(5), &e), &e));
         // a proof against another root, or tampered, is refused
         let k = h(5);
         let p = proof(&keys, &k, &e);

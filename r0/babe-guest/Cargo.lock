@@ -826,6 +826,7 @@ name = "lichen-withdraw"
 version = "0.1.0"
 dependencies = [
  "k256",
+ "lichen-shielded",
  "lichen-validity",
  "sha2",
 ]

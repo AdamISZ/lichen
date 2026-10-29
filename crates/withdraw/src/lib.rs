@@ -32,6 +32,7 @@ use lichen_validity::btc::{work, Header};
 use lichen_validity::{state_root, AnchorState, ChainJournal, OutPoint, TNote};
 use sha2::{Digest, Sha256};
 
+pub mod exit;
 pub mod fixed;
 
 pub type Hash = [u8; 32];
@@ -93,6 +94,61 @@ pub struct WithdrawInput {
     pub work: u128,
 }
 
+/// An anchored state, as a statement proves it: the state root's height
+/// and nullifier tree (the commitment tree's root is the statement's own),
+/// the sequencer's signature on the root, the chain receipt's journal but
+/// for what's rebuilt, the headers on top of the anchor's block, and the
+/// work the contract asks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Anchored {
+    pub height: u64,
+    pub nullifiers: Hash,
+    pub signature: [u8; 64],
+    pub sequencer: Hash,
+    pub hub: Hash,
+    pub chain_height: u64,
+    pub chain_root: Hash,
+    pub recent: Hash,
+    pub hist: Hash,
+    pub anchor: AnchorState,
+    pub headers: Vec<[u8; 80]>,
+    pub work: u128,
+}
+
+impl Anchored {
+    /// The state root with commitment tree `tree`.
+    pub fn root(&self, tree: &Hash) -> Hash {
+        state_root(self.height, tree, &self.nullifiers)
+    }
+
+    /// The chain journal a receipt must have, under the chain guest
+    /// `chain_id`.
+    pub fn chain_journal(&self, chain_id: &Hash) -> ChainJournal {
+        ChainJournal { hub: self.hub, height: self.chain_height, root: self.chain_root, recent: self.recent, chain_id: *chain_id, hist: self.hist, anchor: self.anchor }
+    }
+
+    /// Check the state with commitment tree `tree`: its root signed by the
+    /// sequencer, the last one anchored in a chain receipt of `chain_id`,
+    /// with the contract's work on top. On success, the contract's `D`.
+    pub fn check(&self, tree: &Hash, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<Hash, Reject> {
+        let root = self.root(tree);
+        let key = VerifyingKey::from_bytes(&self.sequencer).map_err(|_| Reject::BadSignature)?;
+        let sig = Signature::try_from(&self.signature[..]).map_err(|_| Reject::BadSignature)?;
+        key.verify_raw(&root, &sig).map_err(|_| Reject::BadSignature)?;
+        let a = &self.anchor;
+        if !a.anchored() || a.root != root || a.height != self.height || a.sequencer != self.sequencer {
+            return Err(Reject::NotAnchored);
+        }
+        if !verify_chain(&self.chain_journal(chain_id).to_bytes()) {
+            return Err(Reject::Chain);
+        }
+        if self.headers.is_empty() || work_on(&a.block, &self.headers).is_none_or(|w| w < self.work) {
+            return Err(Reject::Depth);
+        }
+        Ok(contract_id(&deployment_id(&self.sequencer, &self.hub), &a.genesis, self.work))
+    }
+}
+
 /// Why an input is rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reject {
@@ -110,11 +166,22 @@ pub enum Reject {
     /// The hub's signature on `b` doesn't verify (the fixed statement's,
     /// [`fixed`]).
     HubAuth,
+    /// An exit claims no notes, or more than [`exit::MAX_NOTES`].
+    Notes,
+    /// An exit's nullifiers aren't in increasing order, so not distinct.
+    Order,
+    /// A claimed note isn't in the state's commitment tree.
+    NotInTree,
+    /// A claimed note was spent at the state.
+    Spent,
+    /// No authority over a claimed note: the owner's signature on the
+    /// claim, for a transparent note.
+    NotYours,
     Encoding,
 }
 
 /// The root a leaf at `index` reaches through `path`, leaf level first.
-fn root_from_path(leaf: Hash, index: u32, path: &[Hash]) -> Hash {
+pub(crate) fn root_from_path(leaf: Hash, index: u32, path: &[Hash]) -> Hash {
     let node = |l: &Hash, r: &Hash| -> Hash {
         let mut h = Sha256::new();
         h.update(l);
@@ -130,14 +197,13 @@ fn root_from_path(leaf: Hash, index: u32, path: &[Hash]) -> Hash {
 
 /// The signed (and anchored) root `input`'s note and path reach.
 pub fn signed_root(input: &WithdrawInput) -> Hash {
-    let tree = root_from_path(input.note.commitment(), input.index, &input.path);
-    state_root(input.height, &tree, &input.nullifiers)
+    input.anchored().root(&input.tree())
 }
 
 /// The chain journal a receipt must have for `input`, under the chain
 /// guest `chain_id`.
 pub fn chain_journal(input: &WithdrawInput, chain_id: &Hash) -> ChainJournal {
-    ChainJournal { hub: input.hub, height: input.chain_height, root: input.chain_root, recent: input.recent, chain_id: *chain_id, hist: input.hist, anchor: input.anchor }
+    input.anchored().chain_journal(chain_id)
 }
 
 /// The work of headers on top of block `from`, if each follows the last
@@ -177,26 +243,36 @@ pub fn withdrawal(input: &WithdrawInput, chain_id: &Hash, verify_chain: &mut dyn
         return Err(Reject::PathLength);
     }
     let b = u32::try_from(input.note.value).map_err(|_| Reject::TooLarge)?;
-    let root = signed_root(input);
-    let key = VerifyingKey::from_bytes(&input.sequencer).map_err(|_| Reject::BadSignature)?;
-    let sig = Signature::try_from(&input.signature[..]).map_err(|_| Reject::BadSignature)?;
-    key.verify_raw(&root, &sig).map_err(|_| Reject::BadSignature)?;
-    let a = &input.anchor;
-    if !a.anchored() || a.root != root || a.height != input.height || a.sequencer != input.sequencer {
-        return Err(Reject::NotAnchored);
-    }
-    if !verify_chain(&chain_journal(input, chain_id).to_bytes()) {
-        return Err(Reject::Chain);
-    }
-    if input.headers.is_empty() || work_on(&a.block, &input.headers).is_none_or(|w| w < input.work) {
-        return Err(Reject::Depth);
-    }
-    Ok((b, input.note.memo, contract_id(&deployment_id(&input.sequencer, &input.hub), &a.genesis, input.work)))
+    let d = input.anchored().check(&input.tree(), chain_id, verify_chain)?;
+    Ok((b, input.note.memo, d))
 }
 
 // ----- the encoding: what the withdrawal guest reads -----
 
 impl WithdrawInput {
+    /// The commitment tree's root its note and path reach.
+    pub fn tree(&self) -> Hash {
+        root_from_path(self.note.commitment(), self.index, &self.path)
+    }
+
+    /// The anchored state it proves the return in.
+    pub fn anchored(&self) -> Anchored {
+        Anchored {
+            height: self.height,
+            nullifiers: self.nullifiers,
+            signature: self.signature,
+            sequencer: self.sequencer,
+            hub: self.hub,
+            chain_height: self.chain_height,
+            chain_root: self.chain_root,
+            recent: self.recent,
+            hist: self.hist,
+            anchor: self.anchor,
+            headers: self.headers.clone(),
+            work: self.work,
+        }
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut w = Vec::with_capacity(600 + 32 * self.path.len() + 80 * self.headers.len());
         w.extend_from_slice(&self.height.to_be_bytes());
@@ -269,11 +345,11 @@ pub(crate) mod tests {
     use k256::schnorr::SigningKey;
     use lichen_validity::btc::sha256d;
 
-    fn key(n: u8) -> SigningKey {
+    pub(crate) fn key(n: u8) -> SigningKey {
         SigningKey::from_bytes(&[n; 32]).unwrap()
     }
 
-    fn xonly(k: &SigningKey) -> Hash {
+    pub(crate) fn xonly(k: &SigningKey) -> Hash {
         k.verifying_key().to_bytes().into()
     }
 
@@ -292,7 +368,7 @@ pub(crate) mod tests {
         unreachable!()
     }
 
-    fn headers_on(from: &Hash, n: usize) -> Vec<[u8; 80]> {
+    pub(crate) fn headers_on(from: &Hash, n: usize) -> Vec<[u8; 80]> {
         let mut out: Vec<[u8; 80]> = Vec::new();
         for _ in 0..n {
             let prev = out.last().map_or(*from, |h| sha256d(h));
