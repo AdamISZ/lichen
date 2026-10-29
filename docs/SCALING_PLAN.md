@@ -593,6 +593,56 @@ The same shape for lichen's own L2:
   this; from memory.)
 - **Precedents:** Liquid's functionaries, Fedimint's federations.
 
+## Parked: lichen as a launchpad (2026-10-30)
+
+An idea to come back to. A small, highly secure lichen L2 ("lichen-core")
+whose rules verify proofs, as a settlement layer that other systems
+plug into by proof.
+
+- **Recursion makes BABE's fixed statement general.** Each contract's
+  statement stays "my return is in lichen-core's valid history", but that
+  history can include verified proofs of other systems.
+- **A permissionless rule.** Anyone registers a RISC Zero program, and a
+  settlement for it is accepted given a receipt, checked as an
+  assumption (nearly free in the guest). That's `OP_STARK_VERIFY` from a
+  user's view. Foreign proof systems (Stwo, say) come in through a
+  registered program that verifies them.
+- **Throughput moves to the edges.** Lichen-core's proving is linear in
+  settlements and bridge moves, not payments; payments live on L3s, each
+  settling a batch with one receipt. That's Ethereum's rollup-centric
+  argument, and lichen-core can run under a tight proving budget.
+- **The trust under the bitcoin is lichen-core only:** Bitcoin, BABE,
+  RISC Zero, the sequencer's liveness. L3s carry their own validity and
+  data. Foreign L2s connect through escrows on lichen-core, so a
+  compromised one (a council posting a fake root) loses at most its
+  escrow. Against D1′ on Starknet, where Starknet's Council sits under
+  every bitcoin.
+- **Bridges both ways by proofs alone.** Lichen-core verifies a foreign
+  chain's finality and state (D1's machinery as registered programs). The
+  foreign chain verifies lichen-core's chain proof, a RISC Zero Groth16,
+  which Ethereum already verifies routinely. Counterparties are needed
+  only to swap into a chain's native assets, which is market liquidity,
+  not trust.
+- **The hard problems:**
+  1. **Data availability.** Lichen-core's data is the sequencer's, and
+     L3s posting to it inherit that.
+  2. **Upgrades against pinned statements.** Contracts pin the chain
+     guest's image id for life, so new base rules would break open
+     contracts. The registration rule avoids most upgrades; the base
+     still needs versioning, such as accepting a chain of predecessor
+     guests.
+  3. **Censorship.** Forced inclusion through Bitcoin and the exit
+     design become essential.
+  4. **The Bitcoin edge.** Trustless BTC still needs a contract with
+     enough cap; L3 balances beyond it are credit.
+  5. **A single issuer.** One hub's token; several hubs mean several
+     assets.
+  6. **Funding** the prover and the hub's liquidity, from settlement
+     fees.
+- **Against per-L2 BitVM bridges** (Alpen, Citrea, Starknet's Phase 2):
+  one Bitcoin-facing bridge, which every L2 can use by settling on
+  lichen-core, at the price of lichen's caps and expiry.
+
 ## Recommendation
 
 1. **A, now.** Batch proofs and native cooperative withdrawals; the
