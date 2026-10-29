@@ -468,7 +468,7 @@ The candidates, as of 2026-10-30 (secondary sources, unless noted):
     Xverse, with "a roadmap toward a fully trustless architecture".
   - **So it's shielded BTC on a validity-proved L2, held back by a
     federated bridge:** the gap lichen's bridge is designed for.
-  - Developed further below.
+  - Developed under "Starknet in detail", below.
 - **Miden.** Private notes and accounts, proved on the client, a STARK
   rollup on Ethereum. On testnets as far as could be confirmed; mainnet
   status unclear.
@@ -485,6 +485,67 @@ The candidates, as of 2026-10-30 (secondary sources, unless noted):
   - Intmax2 (validity, but not private);
   - Railgun (contracts on Ethereum's L1, not an L2);
   - Penumbra, Namada, Aleo (L1s of their own).
+
+**Starknet in detail** (primary sources: SNIP-38, Starknet's posts and
+docs, L2BEAT's privacy page; 2026-10-30):
+- **strkBTC's bridge** (SNIP-38, a draft dated 2026-04-21):
+  - **Flows:** a deposit to the federation's multisig, then a mint that
+    members co-sign. A peg-out is a burn on Starknet that members check
+    themselves (no light client or state proof), then co-sign the BTC's
+    release.
+  - **Members:** at least five, proposed as Xverse, Twinstake, NEAR,
+    UTXO, Luganodes and OneKey. KYC/KYB required. The Starknet Security
+    Council can remove members. The threshold and the script are left
+    to a charter.
+  - **Roadmap:** Phase 2 is "BitVM-based verification" for standard
+    flows; Phase 3 is OP_CAT or similar, with the federation as fallback.
+    No trust models or dates are given. A partnership with Alpen for a
+    trust-minimised bridge by the end of 2026 is reported (unverified).
+  - **Related:** StarkWare has verified a STARK on Bitcoin's signet with
+    OP_CAT, at about 790 kvB a verification.
+- **STRK20's privacy pool:**
+  - **Design:** notes and nullifiers. Client-side Stwo proofs (STARKs,
+    no setup), verified by the protocol since v0.14.2 (SNIP-36).
+  - **Compliance:** an escrowed viewing key and screened deposits.
+  - **L2BEAT:**
+    - weak link privacy;
+    - "one auditor key can decrypt every user's history";
+    - a 7-of-12 multisig can replace the pool at once;
+    - only StarkWare's sequencer checks the proofs, and exit needs it
+      (it fails the walkaway test);
+    - deposits and withdrawals are public in address, token and amount.
+- **Lichen there:** the hub issues lichen-BTC on Starknet, shieldable by
+  STRK20 like any token, and backed per holder up to the cap by contracts
+  on Bitcoin.
+  - **The token contract is ours,** so it's designed for cheap proofs:
+    `return(b, c)` burns and records the return in one slot; the opening's
+    swap is a mint into escrow released by `t` (Cairo can check
+    `t·G = T`: Starknet has secp256k1 syscalls); immutable.
+  - **The exit guest:** Ethereum's finality (Signal/Helios), the core
+    contract's state root (Steel), then the slot under that root in
+    Starknet's tries. Those hash with Pedersen, so curve arithmetic in the
+    zkVM: perhaps 10^8 cycles, once (unmeasured).
+- **Against strkBTC:**
+  - **Custody:** the federation's pooled multisig, against each user's
+    2-of-2 with the hub.
+  - **A refused peg-out:** trust a federation threshold, against forcing
+    it on Bitcoin with BABE, today.
+  - **Amounts and liquidity:** any amount and pooled, against a per-user
+    cap with the hub's locked liquidity, plus an expiry.
+
+  The two tokens can coexist on Starknet's exchanges.
+- **Thin points:**
+  - **Sequencer censorship.** StarkWare's sequencer censoring a `return`
+    is lichen's sequencer hole, in other hands. Whether L1-to-L2 messages
+    can force one through is open.
+  - **Compliance.** STRK20's escrowed key and screening; lichen-BTC could
+    stay transparent, with shielding left to the user.
+  - **Instant upgrades.** The 7-of-12 multisig over the pool.
+  - **Ethereum's hard forks** (D1).
+- **Spikes:**
+  1. a Cairo token contract (escrowed mint, `return(b, c)`);
+  2. the exit guest's Starknet state proof, its Pedersen cost counted;
+  3. L1-to-L2 messages as forced inclusion for a `return`.
 
 **Our own Orchard L2,** for comparison: Zcash's primitives for spends
 (Halo2), checked natively by the hub. The history comes either from a
@@ -569,5 +630,9 @@ The same shape for lichen's own L2:
   [Xverse on strkBTC](https://www.xverse.app/blog/strkbtc-privacy-bitcoin-starknet),
   [Starknet v0.14.2](https://www.starknet.io/blog/starknet-v0-14-2-the-privacy-engine-arrives/),
   [Miden docs](https://docs.polygon.technology/miden/miden-base/),
-  [Tachyon and Udon](https://cryptobriefing.com/zcash-tachyon-udon-zakura-common-integration/)
+  [Tachyon and Udon](https://cryptobriefing.com/zcash-tachyon-udon-zakura-common-integration/),
+  [SNIP-38 (strkBTC)](https://community.starknet.io/t/snip-38-strkbtc-bitcoin-on-starknet/116174),
+  [STRK20 notes and nullifiers](https://docs.starknet.io/build/starknet-privacy/notes-and-nullifiers),
+  [L2BEAT privacy: STRK20](https://l2beat.com/privacy/projects/strk20),
+  [STARK verified on Bitcoin signet](https://blockeden.xyz/blog/2026/03/15/starkware-zk-stark-proof-bitcoin-signet-zero-knowledge-native/)
 - Mina's scan state and Babylon are from memory, not checked.
