@@ -419,6 +419,82 @@ receipt's inclusion (receipts trie, Keccak) for an ERC-20 transfer: its
 cycles, and whether RISC Zero's precompiles cover BLS12-381 and Keccak as
 The Signal's note suggests for BLS.
 
+#### D1′. A shielded validity rollup as the L2
+
+D1 with privacy. Instead of building our own L2, lichen becomes the
+trust-minimised bridge for an existing rollup whose payments are already
+shielded and whose history is already proved. The rollup's own provers
+prove the history, and Ethereum verifies them, so nobody in lichen runs
+a prover. The exit guest, run only for a disputed withdrawal, proves:
+1. that Ethereum finalised a checkpoint (The Signal, or Helios: D1);
+2. that the rollup's contract on Ethereum holds a state root at that
+   checkpoint (a storage proof, with Steel);
+3. that Alice's return is a note in that state, opening to `b`, `c` and
+   the hub as owner. That's the rollup's own note tree and hash, proved
+   once.
+
+Then the same wrap and BABE. The hub's tokens are a private token on
+the rollup.
+
+**What we inherit:**
+- the rollup's maturity and upgrade governance;
+- Ethereum's consensus and the rollup's verifier, so its proof system's
+  setup too;
+- D1's hard-fork constraint;
+- its fees and wallets for users.
+
+**A note on why Ethereum stays in the loop.** A validity proof alone
+shows that a history is valid, not that it is *the* history: a sequencer
+could prove two valid forks. The rollup's contract on Ethereum is what
+makes one canonical, as lichen's anchors on Bitcoin do now.
+
+The candidates, as of 2026-10-30 (secondary sources, unless noted):
+- **Aztec.**
+  - **Design:** an Ethereum L2 whose private state is encrypted notes
+    (UTXO-style). Private functions run and are proved on the user's
+    device, and a rollup tree proves the history (base, merge and root
+    circuits; Noir, Barretenberg).
+  - **Status:** mainnet beta (Ignition) from November 2025; L2BEAT lists
+    an Alpha (v4) launch in March 2026.
+  - **Setup:** its proofs need Aztec's own ceremony.
+  - **For the exit guest:** the note tree is Poseidon2 over BN254,
+    modest once per withdrawal.
+- **Starknet with STRK20; strkBTC.**
+  - **STRK20** (Starknet v0.14.2, "the privacy engine") adds a shielded
+    mode to tokens on Starknet's validity rollup (STARKs, settling on
+    Ethereum).
+  - **strkBTC** (live 2026-05-12) is a BTC-backed token with that mode.
+    Its bridge is a federation, reported as five members including
+    Xverse, with "a roadmap toward a fully trustless architecture".
+  - **So it's shielded BTC on a validity-proved L2, held back by a
+    federated bridge:** the gap lichen's bridge is designed for.
+  - Developed further below.
+- **Miden.** Private notes and accounts, proved on the client, a STARK
+  rollup on Ethereum. On testnets as far as could be confirmed; mainnet
+  status unclear.
+- **Zcash, natively.**
+  - **Tachyon** brings recursive proofs (proof-carrying data) to Zcash.
+    Its Udon crate was released 2026-09-28 and is merging into Zcash's
+    node software (Zakura Common). It's aimed at validators; unconfirmed
+    whether it will give an outside verifier a succinct proof of the
+    shielded state.
+  - **StarkWare's Ztarknet** (a Zcash L2 on Starknet's stack, testnet
+    from November 2025) and **Zoro** (a STARK-proved Zcash light client)
+    point the same way.
+- **Not candidates:**
+  - Intmax2 (validity, but not private);
+  - Railgun (contracts on Ethereum's L1, not an L2);
+  - Penumbra, Namada, Aleo (L1s of their own).
+
+**Our own Orchard L2,** for comparison: Zcash's primitives for spends
+(Halo2), checked natively by the hub. The history comes either from a
+recursive proof in the Halo2 world (new engineering) or from a
+federation (D2), and RISC Zero runs only at the exit, verifying the
+foreign proof once. The first spike: verify an Orchard action's Halo2
+proof and a Sinsemilla path in a RISC Zero guest, and count the cycles.
+D1′ makes most of this unnecessary, if a mature shielded rollup is
+acceptable as the L2.
+
 #### D2. A committee of our own
 
 The same shape for lichen's own L2:
@@ -486,4 +562,12 @@ The same shape for lichen's own L2:
   [Veridise audit](https://veridise.com/wp-content/uploads/2025/11/VAR-risczero-250414-steel-V2.pdf)
 - Electra's light-client changes: [Snowbridge's upgrade](https://gitlab.parity.io/parity/mirrors/polkadot-sdk/-/commit/dd7562ab5618d9c2a657ead42a0f92b3496ff80f);
   sync committee slashing: [EIP-7657](https://eips.ethereum.org/EIPS/eip-7657)
-- Mina's scan state, Zcash's Tachyon and Babylon are from memory, not checked.
+- Shielded rollups: [L2BEAT: Aztec](https://l2beat.com/scaling/projects/aztecnetwork),
+  [Aztec docs](https://docs.aztec.network/vision),
+  [strkBTC is live (Starknet)](https://www.starknet.io/strkbtc-is-live-private-bitcoin-arrives-on-starknet/),
+  [The Block on strkBTC](https://www.theblock.co/post/400903/starknet-launches-strkbtc-to-bring-zk-powered-shielded-bitcoin-to-its-layer-2-network),
+  [Xverse on strkBTC](https://www.xverse.app/blog/strkbtc-privacy-bitcoin-starknet),
+  [Starknet v0.14.2](https://www.starknet.io/blog/starknet-v0-14-2-the-privacy-engine-arrives/),
+  [Miden docs](https://docs.polygon.technology/miden/miden-base/),
+  [Tachyon and Udon](https://cryptobriefing.com/zcash-tachyon-udon-zakura-common-integration/)
+- Mina's scan state and Babylon are from memory, not checked.
