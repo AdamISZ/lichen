@@ -23,4 +23,3 @@ lichen-proto.workspace = true
 lichen-hub.workspace = true
 lichen-wallet.workspace = true
 lngap-btc.workspace = true
-lngap-sessions.workspace = true

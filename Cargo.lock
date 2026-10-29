@@ -1820,7 +1820,6 @@ dependencies = [
  "lichen-sequencer",
  "lichen-wallet",
  "lngap-btc",
- "lngap-sessions",
  "serde",
  "serde_json",
  "signal-hook",

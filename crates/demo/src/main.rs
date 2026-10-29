@@ -11,10 +11,11 @@
 //! prover image) and checked by the sequencer; the chain prover proves
 //! each sealed height as it goes (r0/chain-prover.sh; off with
 //! --no-chain-prover). The ledger pane shows what anyone sees: commitments,
-//! nullifiers and proofs, not amounts or parties. Disputes run on the mock
-//! statement, set so that every claim is true (the contract's memo check
-//! still applies): a stand-in for the proof of the return, which the real
-//! statement checks (minutes on x86, too slow to watch).
+//! nullifiers and proofs, not amounts or parties. Disputes are BABE's
+//! (docs/BABE_GADGET_PLAN.md) on its mock statement, where each claim's
+//! proof is of a toy circuit for the contract's journal, so every claim is
+//! true: a stand-in for the proof of the return, which the real statement
+//! checks (minutes on x86, too slow to watch).
 
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -41,8 +42,8 @@ use tiny_http::{Header, Method, Response, Server};
 
 const FIRST_CID: u32 = 1000;
 /// Millions of sats, so that fees at a realistic feerate stay small beside
-/// them: a cap of 2^24 sats (16.8M), and a reserve above the mock
-/// dispute's floors (125k sats).
+/// them: a cap of 2^24 sats (16.8M), and a reserve above a BABE
+/// dispute's floors (31k sats).
 const ASK: Ask = Ask { deposit: 2_000_000, bits: 24, reserve: 250_000 };
 
 #[derive(Parser)]
@@ -222,9 +223,9 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
     for _ in 0..8 {
         rt.fund(&hub_chain.new_spk()?, Amount::from_sat(50_000_000))?;
     }
-    // every claim true: a stand-in for proving the return
-    let any = lngap_sessions::statement::ANY;
-    let statement = Statement::Mock { session: any, returns: vec![(any, any)] };
+    // BABE on its mock statement: every claim true, a stand-in for proving
+    // the return
+    let statement = Statement::Babe { mock: true };
     let hub = Hub::start(Config {
         network: lichen_proto::Net::Regtest,
         listen: "127.0.0.1:0".into(),
@@ -498,7 +499,10 @@ fn withdraw(d: &Arc<Demo>, r: Withdraw) -> Result<Value> {
                     *u3.activity.lock().unwrap() = m.clone();
                     d3.log(format!("{}: {m}", u3.name));
                 }));
-                let input = d2.statement.mock_input(r.amount as u32, cid).expect("the mock's input");
+                let input = match w.babe_mock_input(cid) {
+                    Ok(i) => i,
+                    Err(e) => return set(format!("the dispute failed: {e:#}")),
+                };
                 match w.dispute(&u2.chain, &d2.statement, &u2.dir, cid, r.amount as u32, &input) {
                     Ok((o, _)) => set(format!("the dispute ended: {o:?}")),
                     Err(e) => set(format!("the dispute failed: {e:#}")),
