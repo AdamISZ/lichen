@@ -116,6 +116,15 @@ impl Wallet {
         Ok(lichen_babe::statement::proof_to_bytes(&proof))
     }
 
+    /// For trials: a RISC Zero claim of another contract's journal, as a
+    /// false claim's input (its proof verifies, but not for this
+    /// contract's journal).
+    pub fn babe_false_input(&self, claim: &[u8]) -> Result<Vec<u8>> {
+        let (_, _, journal) = lngap_zk::groth16::split_input(claim)?;
+        let proof = lichen_babe::statement::risc0_claim(claim, &journal)?;
+        Ok(lichen_babe::statement::proof_to_bytes(&proof))
+    }
+
     /// Under the mock BABE statement, the claim's input for contract
     /// `cid`: a proof of the toy circuit for its journal.
     pub fn babe_mock_input(&self, cid: u32) -> Result<Vec<u8>> {

@@ -148,6 +148,11 @@ enum Cmd {
         /// configuration (JSON). An honest hub wins against any lie.
         #[arg(long, hide = true)]
         lie: Option<PathBuf>,
+        /// For trials, on test networks only, under babe: assert --input,
+        /// a real proof of another claim, unchecked against this
+        /// contract's, so that the hub's challenge is played to `failure`.
+        #[arg(long, hide = true)]
+        false_claim: bool,
     },
     /// Write the package a tower needs to play a contract's dispute (once
     /// the withdrawal is returned on the L2 and the hub has refused it):
@@ -387,14 +392,19 @@ fn main() -> Result<()> {
             let txid = w.refund(&chain(&a)?, contract, bitcoin::Amount::from_sat(fee))?;
             println!("refunded the deposit for contract {contract}: {txid}");
         }
-        Cmd::Dispute { contract, amount, ref input, ref lie } => {
+        Cmd::Dispute { contract, amount, ref input, ref lie, false_claim } => {
+            anyhow::ensure!(!false_claim || a.network.is_test(), "--false-claim is for test networks only, not {}", a.network);
             let chain = chain(&a)?;
             let kept = w.contracts.iter().find(|h| h.record.cid() == contract).and_then(|h| h.claim.clone());
             let real_babe = matches!(a.statement, lichen_proto::Statement::Babe { mock: false });
             // under babe, a RISC Zero claim (lichen-r0 babe-claim's) becomes its proof
             let read = |p: &PathBuf, w: &lichen_wallet::Wallet| -> Result<Vec<u8>> {
                 let data = hex::decode(std::fs::read_to_string(p)?.trim())?;
-                if real_babe { w.babe_claim_input(contract, &data) } else { Ok(data) }
+                match (real_babe, false_claim) {
+                    (true, true) => w.babe_false_input(&data),
+                    (true, false) => w.babe_claim_input(contract, &data),
+                    _ => Ok(data),
+                }
             };
             let (amount, input) = match (kept, amount, input) {
                 // the proof, made once the hub responded

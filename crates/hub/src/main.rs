@@ -65,6 +65,11 @@ struct Args {
     /// proved in the user's window is taken by the hub's timeout.
     #[arg(long)]
     hostile: bool,
+    /// For trials, on test networks only: refuse every cooperative
+    /// withdrawal, so that each is played on chain, but dispute only
+    /// false claims (a true one ends unchallenged).
+    #[arg(long)]
+    refuse_folds: bool,
 }
 
 fn parse_windows(s: &str) -> Result<Windows, String> {
@@ -92,6 +97,9 @@ fn main() -> Result<()> {
     if a.hostile {
         anyhow::ensure!(a.network.is_test(), "--hostile is for test networks only, not {}", a.network);
         println!("hostile: refusing every cooperative withdrawal and disputing every claim");
+    } else if a.refuse_folds {
+        anyhow::ensure!(a.network.is_test(), "--refuse-folds is for test networks only, not {}", a.network);
+        println!("refusing every cooperative withdrawal; disputing false claims only");
     }
     let hub = Hub::start(Config {
         network: a.network,
@@ -108,7 +116,7 @@ fn main() -> Result<()> {
         max_bits: a.max_bits,
         duration: a.duration.unwrap_or(lichen_proto::default_duration(a.network)),
         windows: a.windows,
-        refuse_folds: a.hostile,
+        refuse_folds: a.hostile || a.refuse_folds,
         dispute_true_claims: a.hostile,
         first_cid: 1000,
     })?;

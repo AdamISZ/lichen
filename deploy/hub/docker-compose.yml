@@ -41,6 +41,7 @@ services:
       DURATION: ${DURATION:-}
       WINDOWS: ${WINDOWS:-}
       HOSTILE: ${HOSTILE:-}
+      REFUSE_FOLDS: ${REFUSE_FOLDS:-}
     volumes:
       - ./data/${NETWORK}/hub:/hub
       - ./data/${NETWORK}/bitcoind:/bitcoind:ro
