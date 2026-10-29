@@ -34,8 +34,9 @@ struct Args {
     cookie: Option<PathBuf>,
     #[arg(long, default_value = "alice")]
     chain_wallet: String,
-    /// `mock`, `groth16` (BitVMX's verifier, found in the cargo checkout),
-    /// or `groth16:<path to the verifier's program definition>`.
+    /// BitVMX's: `mock`, `groth16` (its verifier, found in the cargo
+    /// checkout) or `groth16:<path to the verifier's program definition>`;
+    /// BABE's: `babe` (the RISC Zero proof) or `babe-mock`.
     #[arg(long, default_value = "mock")]
     statement: lichen_proto::Statement,
     /// The prover of shielded spends: a command run as `<cmd> spend <input

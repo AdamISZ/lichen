@@ -168,8 +168,8 @@ pub enum Statement {
 impl std::str::FromStr for Statement {
     type Err = anyhow::Error;
     /// `mock`, `groth16` (BitVMX's verifier found in the cargo checkout:
-    /// [`Statement::groth16`]) or `groth16:<path to the verifier's program
-    /// definition>`.
+    /// [`Statement::groth16`]), `groth16:<path to the verifier's program
+    /// definition>`, `babe` or `babe-mock`.
     fn from_str(s: &str) -> Result<Statement> {
         match s.split_once(':') {
             None if s == "mock" => Ok(Statement::Mock { session: 0, returns: vec![] }),
