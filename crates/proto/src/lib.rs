@@ -744,9 +744,12 @@ pub fn feerate(net: Net) -> u64 {
 
 /// The fee a terminal transaction's broadcaster adds with its coin
 /// (`Chain::post_terminal`): the transaction's own size and the coin's
-/// input (a key-path spend, 58 vB), at the network's feerate.
+/// input (a key-path spend, 58 vB), at the network's feerate; at least
+/// 330 sats, since the coin is worth exactly the fee and a P2TR output
+/// under that is dust, which doesn't relay (a node's wallet won't make it:
+/// at 1 sat/vB a small terminal, such as `failure`, would need one).
 pub fn terminal_fee(tx: &Transaction, net: Net) -> Amount {
-    Amount::from_sat((tx.vsize() as u64 + 60) * feerate(net))
+    Amount::from_sat(((tx.vsize() as u64 + 60) * feerate(net)).max(330))
 }
 
 /// The canned claim's `D` (`tests/data/claim-60-42.*`, the real-receipt

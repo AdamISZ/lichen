@@ -236,7 +236,10 @@ impl Inner {
         let alice_b = Disputed::alice_b(&req)?;
         let b = u32::from_be_bytes(alice_b.message().try_into().map_err(|_| anyhow::anyhow!("b's signature signs 4 bytes"))?);
         let ours = hub_b(&self.cfg.seed, cid).sign(&b.to_be_bytes())?;
-        self.note(format!("contract {cid}: the user requests {b} sats: responding"));
+        // (once: a dispute read again from the chain finds it posted)
+        if self.chain.get_tx(&d.txid("respond")).is_none() {
+            self.note(format!("contract {cid}: the user requests {b} sats: responding"));
+        }
         self.post(cid, &d.finish("respond", lichen_babe::graph::Babe::respond_wire(&ours, &alice_b))?)?;
         Ok(bb(State::Responded(Box::new(d))))
     }
