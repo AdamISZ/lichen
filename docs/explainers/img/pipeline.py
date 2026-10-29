@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""The diagrams of ../pipeline.md, from lichen's withdrawal guest with
-anchoring (image id 11a9f930…, 2026-10-21) and, for the dispute,
-Mutinynet contract 1002 (2026-10-13). Standard
+"""The diagrams of ../pipeline.md, from lichen's guests with anchoring
+(the withdrawal guest 11a9f930…, 2026-10-21; BABE's 74b95bb4…,
+2026-10-27), BABE's disputes on Mutinynet (2026-10-29) and, for
+BitVMX's, Mutinynet contract 1002 (2026-10-13). Standard
 library only:
     python3 docs/explainers/img/pipeline.py
 writes docs/explainers/img/pipeline-*.svg."""
@@ -26,45 +27,78 @@ def box(s, x, y, w, h, title, lines, fill, stroke, size=13.5):
 
 # ---------------------------------------------------------------- the whole pipeline
 def overview():
-    s = Svg(1060, 576)
-    s.text(24, 32, "A withdrawal claim, from a Rust program to one instruction checked on Bitcoin", 16, INK, 700)
+    s = Svg(1060, 640)
+    s.text(24, 32, "A withdrawal claim, from a Rust program to a check on Bitcoin, under BABE", 16, INK, 700)
     s.rect(24, 50, 1012, 40, fill=OK_L, stroke=OK, sw=1.3)
     s.text(40, 75, "The normal case needs no proof from Alice: the hub checks her return natively and signs the fold (cooperative.md).", 12.5, INK, 600)
-    # row 1: Alice's machine
-    s.text(24, 122, "only if the hub refuses the fold: on Alice's machine, once", 12, ALICE, 700)
+    # on chain first: request and respond
+    s.text(24, 122, "only if the hub refuses the fold: on chain, Alice requests b and the hub signs the same b; then, on Alice's machine:", 12, ALICE, 700)
     y, w, h = 134, 220, 78
     xs = [24, 288, 552, 816]
     rows = [
-        ("1. the guest", ["Rust, compiled to RISC-V", "about 393k cycles"]),
+        ("1. the guest", ["Rust, compiled to RISC-V; checks", "the hub's signature on b: ~480k cycles"]),
         ("2. the STARK", ["about 220 kB, with the", "chain receipt resolved"]),
-        ("3. the Groth16 proof", ["RISC Zero + gnark", "128 bytes"]),
-        ("4. the verifier's input", ["204 bytes: 51 words,", "the proof and the journal"]),
+        ("3. the Groth16 proof", ["three points A, B, C", "128 bytes"]),
+        ("4. assert, on chain", ["A, Lamport-signed in", "254 digits; B and C beside"]),
     ]
     for x, (t, ls) in zip(xs, rows):
         box(s, x, y, w, h, t, ls, ALICE_L, ALICE)
-    for a, b, lab in [(0, 1, "prove"), (1, 2, "wrap"), (2, 3, "encode")]:
+    for a, b, lab in [(0, 1, "prove"), (1, 2, "wrap"), (2, 3, "sign A")]:
         s.line(xs[a] + w + 2, y + h / 2, xs[b] - 4, y + h / 2)
         s.text((xs[a] + w + xs[b]) / 2, y + h / 2 - 8, lab, 11, INK2, 600, "middle")
-    # escalate, and the hub's check
+    # the hub's check
     cx = xs[3] + w / 2
     s.line(cx, y + h + 2, cx, 262)
-    s.text(cx - 8, 246, "Alice escalates: the input goes on chain, signed word by word", 11, INK2, 400, "end")
     box(s, 816, 266, 220, 78, "the hub checks it natively", ["the same Groth16 check", "in about 1.5 ms"], HUB_L, HUB)
     s.line(cx, 346, cx, 372)
-    s.text(cx, 390, "true: it concedes; Alice's", 11.5, OK, 700, "middle")
-    s.text(cx, 406, "timeout pays her (hub-returns.md)", 11.5, OK, 700, "middle")
-    # the dispute
+    s.text(cx, 390, "valid: it lets it stand;", 11.5, OK, 700, "middle")
+    s.text(cx, 406, "success pays Alice after \u0394\u2082", 11.5, OK, 700, "middle")
+    # the challenge
     s.path("M 816 305 L 300 305 L 300 444")
-    s.text(560, 297, "false: the hub disputes, and the search is played", 11, INK2, 400, "middle")
-    s.text(24, 434, "the dispute", 12, INK2, 700)
+    s.text(560, 297, "false (or a hub that disputes true claims): it challenges", 11, INK2, 400, "middle")
+    s.text(24, 434, "the challenge", 12, INK2, 700)
     y2 = 448
-    box(s, 24, y2, 300, 78, "5. BitVMX's Groth16 verifier", ["a fixed RISC-V program, the same for", "every withdrawal: about 478M steps"], CON_L, CON)
-    box(s, 384, y2, 300, 78, "6. the search, on Bitcoin", ["8-ary over the verifier's run:", "10 rounds, 21 moves, one per link"], FEE_L, FEE)
-    box(s, 744, y2, 292, 78, "7. one step", ["one RISC-V instruction, checked", "in Script: whoever is wrong loses"], OK_L, OK)
+    box(s, 24, y2, 300, 78, "5. challenge_assert", ["the hub reveals the secrets of A's", "digits, as it signed at opening"], HUB_L, HUB)
+    box(s, 384, y2, 300, 78, "6. the garbled circuits", ["Alice's kept instances, on A's labels,", "give r\u00b7A; with B, C: the key, if valid"], CON_L, CON)
+    box(s, 744, y2, 292, 78, "7. the answer", ["msg unlocked: wrongly_challenged pays", "Alice; none: failure pays the hub"], OK_L, OK)
     s.line(326, y2 + 39, 380, y2 + 39)
     s.line(686, y2 + 39, 740, y2 + 39)
-    s.text(24, 558, "Two RISC-V programs, two machines: the guest runs only in RISC Zero's zkVM, on Alice's machine; the verifier runs only in BitVMX's emulator.", 11.5, INK2)
+    s.text(24, 560, "The garbled circuits were made by the hub when the contract opened, and checked by Alice by cut-and-choose: she kept 10 of 78.", 11.5, INK2)
+    s.text(24, 580, "Under BitVMX, lichen's first gadget, the same Groth16 proof is instead the input of a RISC-V verifier,", 11.5, INK2)
+    s.text(24, 598, "whose 478 million steps are searched on chain down to one instruction (section 5).", 11.5, INK2)
     s.save("overview")
+
+
+# ---------------------------------------------------------------- BABE's check
+def babe():
+    s = Svg(1060, 470)
+    s.text(24, 32, "What a challenge hands Alice, and how a valid proof turns it into msg", 16, INK, 700)
+    # left: at opening
+    s.text(24, 64, "at opening, per contract", 12, INK2, 700)
+    box(s, 24, 76, 300, 96, "the hub's 78 instances", ["each: a garbled circuit computing r\u00b7A", "from A's bits (r its own secret), and the", "ciphertext: r\u00b7\u03b4, and msg masked by r\u00b7T"], CON_L, CON, 13)
+    box(s, 24, 196, 300, 78, "Alice's cut-and-choose", ["she opens 68 and checks them;", "she keeps 10 (about 240 MiB)"], ALICE_L, ALICE)
+    s.line(174, 174, 174, 192)
+    # middle: on chain
+    s.text(384, 64, "in the dispute, on chain", 12, INK2, 700)
+    box(s, 384, 76, 300, 78, "assert (Alice)", ["A's 508 bits in 254 2-bit digits,", "one Lamport preimage each"], ALICE_L, ALICE)
+    box(s, 384, 196, 300, 78, "challenge_assert (the hub)", ["one secret per digit, for the value", "Alice signed: her adaptor pre-signatures"], HUB_L, HUB)
+    s.line(534, 156, 534, 192)
+    # right: Alice, off chain
+    s.text(744, 64, "then, on Alice's machine", 12, INK2, 700)
+    box(s, 744, 76, 292, 78, "the labels of A", ["each kept instance's, interpolated", "from the secrets and the opened shares"], ALICE_L, ALICE)
+    box(s, 744, 196, 292, 78, "evaluate", ["each kept circuit on A's labels:", "r\u00b7A, under its own r"], CON_L, CON)
+    s.path("M 686 235 L 712 235 L 712 115 L 740 115")
+    s.line(890, 156, 890, 192)
+    # bottom: the pairing
+    s.rect(24, 306, 1012, 104, fill=OK_L, stroke=OK, sw=1.5)
+    s.text(530, 332, "Groth16 checks  e(A, B) + e(C, \u03b4) = T.  Multiply through by r:", 13, INK, 700, "middle")
+    s.text(530, 356, "e(r\u00b7A, B) + e(C, r\u00b7\u03b4) = r\u00b7T", 14, INK, 700, "middle")
+    s.text(530, 380, "Alice has r\u00b7A from the circuit, B and C from her proof, and r\u00b7\u03b4 from the ciphertext: r\u00b7T unmasks msg,", 11.5, INK2, 400, "middle")
+    s.text(530, 397, "but only if the proof is valid for the contract's statement. A false proof opens no instance.", 11.5, INK2, 400, "middle")
+    s.line(890, 276, 890, 302)
+    s.text(24, 440, "The secrets reveal only the labels of the A that Alice signed, so she can evaluate the circuit on that A and no other;", 11.5, INK2)
+    s.text(24, 458, "r stays inside the circuit. A kept instance a dishonest hub garbled wrong would be caught, with overwhelming odds, among the opened ones.", 11.5, INK2)
+    s.save("babe")
 
 
 # ---------------------------------------------------------------- recursion and the wrap
@@ -92,9 +126,10 @@ def wrap():
     s.line(99, 209, 174, 230)
     s.line(269, 209, 194, 230)
     s.text(288, 236, "resolve", 10, INK2, 600, "middle")
-    s.text(24, 290, "Ours is one segment (about 393k cycles): one lift, no joins;", 11.5, ALICE, 600)
-    s.text(24, 307, "then a resolve takes in the sequencer's chain receipt.", 11.5, ALICE, 600)
-    s.text(24, 324, "Dashed: what a longer guest would add.", 11.5, INK2)
+    s.text(24, 290, "Ours is one segment: 482k cycles for BABE's", 11.5, ALICE, 600)
+    s.text(24, 307, "guest, 393k for BitVMX's; one lift, no joins;", 11.5, ALICE, 600)
+    s.text(24, 324, "then a resolve takes in the chain receipt.", 11.5, ALICE, 600)
+    s.text(24, 341, "Dashed: what a longer guest would add.", 11.5, INK2)
     # the chain of receipts
     y, w, h = 214, 180, 92
     xs = [380, 610, 840]
@@ -110,8 +145,8 @@ def wrap():
     s.text(380, 112, "“the program with image id X ran and output journal J”.", 12.5, INK)
     s.text(380, 136, "Each step changes only how it is proved, so that the next step can take it:", 11.5, INK2)
     s.text(380, 153, "any length → one STARK → a STARK a BN254 circuit can check → Groth16.", 11.5, INK2)
-    s.text(380, 340, "Measured: the STARK in 75 s on a Mac (Docker, 8 cores), 361 s on a 4-vCPU x86 server;", 11.5, INK2)
-    s.text(380, 357, "the wrap in 258 s on that server, with about 8 GB of memory.", 11.5, INK2)
+    s.text(380, 340, "Measured on a 4-vCPU x86 server: BABE's guest proved in about 660 s, BitVMX's in 361 s", 11.5, INK2)
+    s.text(380, 357, "(75 s on a Mac, in Docker); the wrap in about 255 s, with about 8 GB of memory.", 11.5, INK2)
     s.save("wrap")
 
 
@@ -242,5 +277,5 @@ def jumps():
 
 
 if __name__ == "__main__":
-    for f in (overview, wrap, input_words, search, jumps):
+    for f in (overview, babe, wrap, input_words, search, jumps):
         f()
