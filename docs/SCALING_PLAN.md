@@ -121,9 +121,17 @@ default, ZK fault proofs on demand.** For OP Stack rollups.
 
 **Shielded CSV (Nick, Eagen, Linus): client-side validation.** No
 sequencer proves anything. Each coin carries a recursive proof of its
-own history (proof-carrying data), and nullifiers go on Bitcoin, one per
-transaction. Proving scales with each user's own activity. It is the
-furthest from lichen's shape.
+own history (proof-carrying data), and nullifiers go on Bitcoin, about
+64 bytes per transaction. But every receiver checks coin proofs against
+a nullifier accumulator built from all the nullifiers on Bitcoin. The
+details, and what lichen would make of it, are in option C.
+
+**Shielded Bitcoin ([alloc] init, September 2026): every transfer on
+Bitcoin.** Zcash-style notes. Each transfer is an envelope published on
+Bitcoin: the nullifiers, the encrypted outputs and a 192-byte Groth16
+proof. There's no consensus or sequencer of its own. Bitcoin orders the
+envelopes, and any indexer rebuilds the same shielded state by replaying
+them. Details in option C.
 
 ## Lessons
 
@@ -218,12 +226,99 @@ What it needs rewired, and the open questions:
    to B now, with A's batch proofs as a later validity mode, or as
    checkpoints that shorten what a fault proof must cover.
 
-### C. Client-side validation (Shielded CSV)
+### C. A privacy layer on Bitcoin under lichen: Shielded CSV, Shielded Bitcoin
 
-The sequencer proves nothing, so proving scales with each user's own
-coins. It needs nullifiers on Bitcoin, and a different withdrawal
-statement (Alice proves her coin's history). It is a different system,
-noted for completeness.
+Recorded for completeness: neither looks like a pairing that makes
+sense for lichen. Both papers leave the bridge out:
+- Shielded Bitcoin calls peg-in and peg-out "outside the scope of this
+  paper", for a separate treatment based on PIPEs v2.
+- Shielded CSV assumes "an adequate bridging mechanism", and points to
+  BitVM for one.
+
+Lichen is a bridge that doesn't care which L2 sits on it, so the
+question is what each L2 would cost lichen to prove, and what it would
+give its users.
+
+| | lichen's L2 | Shielded Bitcoin | Shielded CSV |
+|---|---|---|---|
+| where transfers live | off chain, with the sequencer | on Bitcoin, in full | with their owners; nullifiers on Bitcoin |
+| ordering | the sequencer, anchored on Bitcoin | Bitcoin | Bitcoin, through the nullifiers |
+| validity | the chain proof | indexers replay the envelopes, each Groth16 checked | each coin's recursive proof, checked against the nullifier accumulator |
+| Bitcoin space per transfer | none (an anchor per batch, 269 vB) | 625 vB (`OP_RETURN`) or 438 vB (witness), for 2-in-2-out | about 64 bytes, aggregated by publishers |
+| finality of a payment | the sequencer's seal, then the anchor's depth | a Bitcoin block | a Bitcoin block, and confirmations against reorgs |
+| an offline receiver | yes (the sequencer stores notes) | yes (ciphertexts on chain, scanned) | not specified: the paper's "static donation address" case is future work |
+| recovery from a seed | yes | yes (replay) | no: lost wallet state loses the balance |
+| shared-state programs | possible, at proving cost | transfers only | no: rules on accounts and coins only |
+| the bridge | lichen | out of scope (PIPEs v2) | assumed (BitVM suggested) |
+
+**Shielded CSV in detail (ePrint 2025/068):**
+- **Accounts.** A transaction nullifies its sender's account state, not
+  each coin. The nullifier is a public key and a Schnorr signature that
+  commits to the transaction (sign-to-contract).
+- **Publishers.** An open role. They half-aggregate nullifiers and post
+  them, which is how a transfer costs about 64 bytes.
+- **The accumulator.** Every user scans every nullifier on Bitcoin into
+  a nullifier accumulator, one signature check each. A coin proof is
+  valid only against it.
+- **Two-step payments.** The coin proof can be made only once the
+  nullifier is on chain, as part of the fee design (§2). So a payment is
+  final after a block, and reorgs need care (the "conditional NAV").
+- **Delivery and wallet state.** The sender hands the coin and its proof
+  to the receiver over an encrypted channel (§6.1). An offline receiver
+  is future work. There's no recovery from a seed (§6.2). Coins created
+  in one transaction can be linked by their recipients (§6.3).
+- **Spending policies.** t-of-n accounts (MuSig2, FROST), time locks
+  (an extension), atomic swaps with Bitcoin through PTLCs, multiple
+  assets (§5, A.1). Each is a rule on one account; there's no shared
+  state.
+
+**What lichen would have to prove: a global proof in every case.**
+- **Shielded Bitcoin:** "the return's envelope is in block X, and
+  replaying everything up to X accepts it". That's linear, with a
+  Groth16 check per envelope inside the zkVM. The paper's §22.2 lists
+  this very proof as an open problem: a succinct proof that the replayed
+  root at height h is correct, for light clients.
+- **Shielded CSV:** the coin proof, plus a proof that the accumulator it
+  is checked against is the right one. Both are built from all the
+  nullifiers on Bitcoin, so this too is linear, at one Schnorr check per
+  transaction, and needs no sequencer: anyone can maintain it from
+  public data. (An earlier draft of this note said a CSV withdrawal
+  proof would be constant. It isn't, because of the accumulator.)
+- **The pattern.** Every design that lets Bitcoin judge validity without
+  trusting a party pays a global proof somewhere. They differ in the
+  cost per transaction (a spend, a Groth16 check, a signature check) and
+  in who can produce it (the sequencer, or anyone).
+
+**Against Lightning through the hub,** for payments:
+- **Lichen as Shielded CSV's bridge keeps the hub at the centre:**
+  receiving is limited to each contract's cap (beyond it, credit), as
+  with inbound liquidity.
+- **CSV then adds costs:** a share of a nullifier on Bitcoin per payment,
+  at least a block's wait, a delivery problem for receivers, and lost
+  funds with lost wallet state.
+- **What it gives back:**
+  - privacy against the hub, which on Lightning sees the amount and
+    timing of every payment between its own users;
+  - atomic swaps with Bitcoin.
+
+  Lightning wins on cost and latency.
+- **CSV's natural setting is bearer coins with no hub,** which needs a
+  pooled bridge. Lichen's per-user contracts are the opposite kind.
+  Since lichen already centres a hub, a sequencer adds little trust, and
+  lichen's own L2 is the better fit. It's the only option here with no
+  chain cost per payment, offline receivers and shared-state programs
+  together.
+
+**Privacy at the boundary, in every case.** Shielded Bitcoin's privacy
+analysis lists what stays public: timing, arity, anchor age, envelope
+grouping, fee-wallet linkage, and entry and exit. Under lichen the exits
+are public by construction:
+- a contract's funding shows its deposit and cap;
+- a fold pays `b` openly;
+- a disputed withdrawal puts `b` on Bitcoin in bit outputs.
+
+Payments inside the L2 are private; the bridge is where privacy systems
+on Bitcoin still leak.
 
 ### D. A consensus L2: an existing chain, or a committee of our own
 
@@ -378,7 +473,10 @@ The same shape for lichen's own L2:
 - Alpen: [system architecture](https://docs.alpenlabs.io/how-alpen-works/system-architecture),
   [transaction lifecycle](https://docs.alpenlabs.io/how-alpen-works/transaction-lifecycle)
 - Aztec: [indexed Merkle tree](https://docs.aztec.network/aztec/concepts/storage/trees/indexed_merkle_tree)
-- Shielded CSV: ePrint 2025/068 (the main paper cites it).
+- Shielded CSV: [ePrint 2025/068](https://eprint.iacr.org/2025/068)
+  (Nick, Eagen, Linus; read in full: §2, §5, §6, A.1)
+- Shielded Bitcoin: [[alloc] init, September 2026](https://www.allocinit.xyz/uploads/shielded-bitcoin.pdf)
+  (Shikhelman, Komarov, Moskvin; read: §1–4, §11, §17, §22, A.3–A.6)
 - The Signal: [ethresear.ch post](https://ethresear.ch/t/the-signal-ethereum-casper-ffg-finality-proofs/22841),
   [site](https://signal.boundless.network/)
 - Helios in RISC Zero: [zkSecurity's audit](https://reports.zksecurity.xyz/reports/risc0-helios/);
