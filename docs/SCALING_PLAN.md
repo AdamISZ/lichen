@@ -225,16 +225,147 @@ coins. It needs nullifiers on Bitcoin, and a different withdrawal
 statement (Alice proves her coin's history). It is a different system,
 noted for completeness.
 
+### D. A consensus L2: an existing chain, or a committee of our own
+
+**Where the linear cost comes from.** It isn't lichen's. Lichen removes
+trust in the hub (the bridge), and takes on the L2's own assumptions:
+"the only assumptions are those of the layer 2 itself, kept apart from
+the hub" (the main paper's abstract). Validity proofs are one way to make
+the L2's assumptions nearly vanish. The cost is linear because the L2's
+only source of validity is a proof of its whole history. Give the L2 a
+consensus whose finality can be proved succinctly, and the withdrawal
+statement shrinks to "a finalized state includes my return". That's a
+constant amount of work per withdrawal, made only in a dispute, whatever
+the L2's traffic. The trust moves to the consensus, as the L2's stated
+assumption.
+
+| the L2's validity rests on | users trust | proving cost |
+|---|---|---|
+| validity proofs (today, A) | no one | linear in transactions |
+| optimistic, fault proofs (B) | one honest watcher, with the data | proofs only in disputes; data availability |
+| a consensus (D) | the consensus, as the L2's assumption | a light-client proof per disputed withdrawal |
+
+#### D1. An existing chain: Ethereum
+
+The tokens are an ERC-20 the hub mints, a return is a transfer to the
+hub's address with memo `c`, and Ethereum's validators provide validity,
+ordering and finality. There's no sequencer, no prover, and no anchoring
+on Bitcoin: Ethereum's own finality makes it unnecessary. The withdrawal
+statement becomes "a finalized checkpoint, reached from one the contract
+fixed at opening, includes a receipt of this transfer". It's still a
+RISC Zero proof wrapped in Groth16, so the Bitcoin side, BABE and its
+setup, is unchanged. Only the guest and the journal's `D` change: `D`
+would hold the token contract, the hub's address, the starting
+checkpoint, the chain's identity and the fork schedule.
+
+We set Ethereum aside earlier for want of a usable light-client proof,
+and over hard forks. Both now look answerable:
+
+| tool | what it proves | zkVM | status |
+|---|---|---|---|
+| The Signal (Boundless) | full Casper FFG finality: a valid transition between finalized checkpoints, from the attestations | RISC Zero | proofs published as a public good, "to be consumed anywhere that can verify a RISC Zero proof"; launched with Boundless mainnet, July 2025 |
+| Helios, RISC Zero port | the sync committee: its updates, a finality update, and storage slots against the finalized execution state root | RISC Zero | audited by zkSecurity, April 2025 |
+| SP1 Helios (Succinct) | the same light client, in SP1 | SP1 | audited (Zellic; OpenZeppelin, May 2025) |
+| Steel (RISC Zero) | EVM state and history queries in a guest, linked to beacon block roots (EIP-4788) | RISC Zero | audited (Veridise, 2025); the audit flagged a gap in its history traversal |
+
+**The two routes:**
+- **Full finality (The Signal):**
+  - **Assumption:** the strongest available, two-thirds of all stake.
+  - **Cost:** about 40 billion cycles an epoch, about $30 (its authors'
+    figures), so not something we would prove ourselves.
+  - **How lichen would use it:** Alice's guest would take a Signal proof
+    as an assumption, as it takes the chain receipt today. Lichen then
+    depends on Boundless publishing them, or on buying them on its market.
+  - **To check:** whether a published proof covers one epoch or recurses
+    from a fixed start. A week is about 1,575 epochs.
+  - **Its stated limits:** slashings are not modelled within its
+    lookahead (a safety violation would need about 20% of stake
+    slashed), and liveness halts on long non-finality.
+- **The sync committee (Helios):**
+  - **Assumption:** weaker: two-thirds of a rotating committee of 512,
+    with no slashing for signing a false update (EIP-7657 proposes it).
+  - **Cost:** far cheaper. One update a sync-committee period (about 27
+    hours) and a BLS aggregate per update, so about seven over a week's
+    contract. That's linear in time, not in traffic, and small.
+  - **One audit finding to keep:** the chain's identity (the genesis root,
+    the forks) wasn't in the journal. Lichen's `D` would commit it.
+
+**Hard forks.** The real constraint, and manageable for short contracts:
+- **Signatures:** the fork version enters each signature's domain,
+  computed from a fork schedule given as input. Committed in `D`, it's
+  fixed for the contract.
+- **Code:** a fork can change what the client's code must do. Electra
+  moved the generalized indices of the beacon state's fields, which a
+  light client's Merkle branches depend on (Snowbridge's Electra
+  upgrade, for one, had to make them fork-dependent).
+- **The consequence:** a guest built before a fork can't prove past it
+  unless it already contains that fork's rules. The contract pins the
+  guest's image id at opening, so a contract must not span a fork its
+  guest doesn't know. Forks are scheduled months ahead, and a week's
+  contract opened with a current guest is safe. A long contract must end
+  before the next fork, or be opened after a guest with that fork's rules
+  ships.
+- **Who bears the residual risk:** an emergency fork at short notice
+  could leave Alice unable to prove before `T_A`. The cooperative path
+  still works, since the hub just reads the chain.
+
+**What else changes:**
+- **The opening's swap.** The hub now mints to a key locked by an adaptor
+  point `T`, released when the funding reveals `t`. On Ethereum, `t` would
+  have to be shown in a contract: a hashlock (the funding reveals a
+  preimage), or a check of `t·G = T` (`ecrecover` can be made to do it).
+- **Users need ETH for gas.**
+- **Privacy is Ethereum's: none,** unless a privacy pool sits on top.
+- **Finality takes about 13 minutes,** where lichen's anchors take ten
+  Bitcoin blocks.
+
+**Unmeasured:** a RISC Zero guest that checks a Helios update chain and a
+receipt's inclusion (receipts trie, Keccak) for an ERC-20 transfer: its
+cycles, and whether RISC Zero's precompiles cover BLS12-381 and Keccak as
+The Signal's note suggests for BLS.
+
+#### D2. A committee of our own
+
+The same shape for lichen's own L2:
+- **The statement:** a committee signs each root (a threshold signature),
+  and the withdrawal statement is the committee's signature and a Merkle
+  path.
+- **The hub as a required signer** never pays against a root it didn't
+  validate, which protects it fully with no proofs.
+- **Users trust the committee for their own notes.** Independent signers,
+  all required, let any one honest member block a theft, at the price of
+  any one halting the chain (so: forced inclusion through Bitcoin, and
+  timeouts). Fault proofs for users are the other remedy (the exit
+  design).
+- **Anchoring still earns its place** here against a committee that
+  equivocates, or rewrites history long afterwards with old keys. It
+  protects against forks and key compromise over time, not against
+  invalid state. (Babylon timestamps proof-of-stake chains on Bitcoin for
+  this; from memory.)
+- **Precedents:** Liquid's functionaries, Fedimint's federations.
+
 ## Recommendation
 
 1. **A, now.** Batch proofs and native cooperative withdrawals; the
    per-block budget; the transparent refactor; a profile of the chain
    guest. It keeps the model, and should make a testnet hub cheap to
    run.
-2. **B, as research.** Write it up before building anything: the dispute
+2. **D1, a spike.** It removes the linear cost outright, and the tooling
+   exists. The steps:
+   - a RISC Zero guest that checks a Helios update chain from a fixed
+     checkpoint and an ERC-20 transfer's receipt under it;
+   - its cycles, and whether The Signal's published proofs can stand in
+     as an assumption;
+   - a check of how a contract would pin the fork schedule.
+
+   The Bitcoin side stays as built.
+3. **B, as research.** Write it up before building anything: the dispute
    branch for a fault proof (which gadget, which party garbles), and
    above all data availability (2), which decides whether B is safe at
    all for an off-chain-data L2 like lichen's.
+4. **D2** if a testnet hub of our own wants the cheapest workable L2: a
+   committee with the hub as a required signer, stated as the L2's trust
+   model.
 
 ## Sources
 
@@ -248,4 +379,13 @@ noted for completeness.
   [transaction lifecycle](https://docs.alpenlabs.io/how-alpen-works/transaction-lifecycle)
 - Aztec: [indexed Merkle tree](https://docs.aztec.network/aztec/concepts/storage/trees/indexed_merkle_tree)
 - Shielded CSV: ePrint 2025/068 (the main paper cites it).
-- Mina's scan state and Zcash's Tachyon are from memory, not checked.
+- The Signal: [ethresear.ch post](https://ethresear.ch/t/the-signal-ethereum-casper-ffg-finality-proofs/22841),
+  [site](https://signal.boundless.network/)
+- Helios in RISC Zero: [zkSecurity's audit](https://reports.zksecurity.xyz/reports/risc0-helios/);
+  SP1 Helios: [Zellic](https://reports.zellic.io/publications/sp1-helios),
+  [OpenZeppelin](https://www.openzeppelin.com/news/sp1-helios-audit)
+- Steel: [introduction](https://risczero.com/blog/introducing-steel),
+  [Veridise audit](https://veridise.com/wp-content/uploads/2025/11/VAR-risczero-250414-steel-V2.pdf)
+- Electra's light-client changes: [Snowbridge's upgrade](https://gitlab.parity.io/parity/mirrors/polkadot-sdk/-/commit/dd7562ab5618d9c2a657ead42a0f92b3496ff80f);
+  sync committee slashing: [EIP-7657](https://eips.ethereum.org/EIPS/eip-7657)
+- Mina's scan state, Zcash's Tachyon and Babylon are from memory, not checked.
