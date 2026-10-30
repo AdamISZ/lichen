@@ -152,7 +152,10 @@ availability as the only gap (Data availability, below).
   contract, and an honest Alice never makes one for notes she is
   claiming through `c`. The two claims counter each other, and the
   double claimer loses both contracts. (Found while designing the
-  sender acknowledgment below, which relies on it.)
+  sender acknowledgment below, which relies on it.) Under BABE a record
+  comes too late for concurrent claims, since the hub responds before
+  Alice proves; a counter citing the other claim's signature takes its
+  place there (Exit authority on chain).
 
 **Why contract `c`'s own return doesn't count.** An honest Alice tries
 the cooperative way first: she signs a return of her notes with memo
@@ -514,8 +517,9 @@ only, today's journal) stays until the graph changes (step 3).
   its response window: about 20 minutes to prove, plus the wrap.
   Mutinynet's 40 blocks (20 minutes) is too short; lengthen it.
 - **On chain,** per exit and fixed whatever anyone does:
-  - `request` grows by the nullifiers and Alice's second signature (a
-    few kB, due only by `T_close`);
+  - `request` grows by Alice's second signature, `E`'s preimage, and
+    each note's opening and owner's signature (about 150 bytes a note,
+    1.2 kB for 8; due only by `T_close`);
   - `respond` grows by the hub's signatures and `K` (a few kB; it counts
     toward the hub's bytes per window, small beside `challenge_assert`'s
     20.7 kvB).
@@ -527,14 +531,129 @@ only, today's journal) stays until the graph changes (step 3).
   market or more machines scale with the wave, and one proof could
   answer many claims if needed. Size the hub's capacity with `w_H`.
 
-### Exit records under BABE
+### Exit authority on chain (decided for step 2, 2026-10-30)
 
-Alice's whole proof is on chain in `assert` (π1 signed, π2 and π3
-beside it), so the operator always has it for the record. The chain
-guest then checks a Groth16 per exit record, the same cost as above,
-per exit rather than per transaction. If that proves too heavy, the
-alternative is the one above: the claim carries the owner's signature
-on `c ‖ E`, made inside the exit proof. Measure first.
+**The hole.** Under BABE the hub responds before Alice proves:
+`request`, then `respond` within `w_H`, then her proof in `assert`. A
+dishonest Alice requests through `c1` and `c2` at once, claiming the
+same notes. Both responses fall due before either proof is on chain,
+so no exit record exists to counter either claim ("Exit records are
+exempt" relied on BitVMX's order, where her proof came first). The hub
+can't respond in time with a counter. Whatever it does, both claims
+pay, and this works once per contract she holds. Point 3 of the
+invariant fails for a live, honest operator.
+
+**Claims are signed on chain.** Every note in a claim carries its
+owner's signature on `E`, and `request` posts them. Transparent notes
+already sign `E` (the signature `exit::check` verifies inside the
+proof). Now `request` also posts, per note:
+
+- the opening (`owner`, `value`, `memo`, `rho`: 80 bytes), so anyone can
+  derive the nullifier and see the key;
+- the signature (64 bytes).
+
+It also posts the rest of `E`'s preimage, `h_S` and `SR_S`; `c`, `O` and
+`b` are already known. That's about 150 bytes a note, 1.2 kB for 8,
+replacing the bare nullifier list.
+
+**A new counter ground: equivocation.** A counter for `c` may cite an
+owner's signature on an `E'` for another contract `c' ≠ c` that names
+one of `E`'s nullifiers. The signature alone is the evidence:
+
+- **No L2 state is involved,** and no L1 inclusion. The hub can cite it
+  wherever it found it.
+- **An honest Alice never makes one.** Her wallet signs a claim naming a
+  note through one contract only, ever.
+- **Two requests in one block counter each other** at `respond` time.
+  The hub answers the first plainly and counters the second, or
+  counters both. Either way she is paid once at most.
+- **Nobody can fake one, and front-running is useless.** Only the owner
+  can sign. A copied signature names its own `c`, which the ground
+  excludes, and a request that copies someone's nullifiers can't sign
+  for them.
+- **It runs in `K`, not script.** An equivocation leaf in `respond`
+  would need to tie the signing key to the nullifier, and the
+  nullifier to this claim's `E`. Both are hashes of concatenations, so
+  they need `OP_CAT`, and the key isn't fixed at setup.
+
+The counter's journal stays `D ‖ E`. Its input becomes one of two
+grounds:
+
+- an insertion, as built;
+- an equivocation: `E`'s preimage, plus the cited `E'`'s preimage, the
+  note's opening and the signature.
+
+The cost: **a request commits its notes.** If Alice's claim through
+`c1` fails, she can't retry them through `c2`. A claim fails in two
+ways:
+
+- a real spend countered it, so the notes were gone anyway;
+- she missed her own assert window, which loses `c1` in any design.
+
+**The claim branch checks `request`.** The posted signatures must be the
+ones her proof uses. Otherwise a dishonest Alice could post junk in
+both requests and prove with signatures kept off chain. So the claim
+branch takes `request`:
+
+- the transaction spending `O`, by Merkle path in a block on the
+  anchor's headers, as the counter proves its cutoff;
+- it must carry `E`'s preimage and a valid signature for each note.
+
+A junk request can't win: the hub responds plainly, and
+`respond_timeout` takes the contract. This also closes a smaller gap:
+the nullifiers the hub searches for were posted unbound, and are now
+derived from the openings the proof checks.
+
+**Exit records carry the signatures, not a proof.** `Tx::Exit` holds
+what `request` posted: `E`'s preimage and the owners' signatures. The
+chain guest checks one BIP340 signature per note, as for a transparent
+spend. A Groth16 per record was too heavy (step 0). The rule of "After
+an exit" holds unchanged: a record exists only for a claim the notes'
+owner made, and the signature is that owner's proof. Since `request`
+holds everything a record needs, the operator posts the record as soon
+as `request` confirms. The notes then leave the L2 at the claim, rather
+than waiting on a sequencer rule until the payout. If one of the
+nullifiers is already in the set, the record is invalid, and that
+claim is countered instead.
+
+**Shielded notes, later: the owner key goes in the address.** Their
+authority today is knowing `nk`, inside the proof, so there's nothing
+to post. Revealing anything checkable against `nf = H(nk ‖ rho)` would
+expose `nk`. With shielding (after the MVP), the address gains a BIP340
+key `P`:
+
+```
+owner = SHA256("lichen/owner"  ‖ nk ‖ P)
+nf    = SHA256("lichen/snf"    ‖ SHA256("lichen/snf-in" ‖ nk ‖ rho) ‖ P)
+```
+
+- **Spends are unchanged in kind.** Authority is still `nk`. The spend
+  guest takes `P` as an input, fixed because the commitment holds
+  `owner`, and checks no signature. That's about three more SHA
+  compressions per input, against the measured 34.6k-cycle spend.
+- **A request posts,** per note, the inner hash and `P`, and `P`'s
+  signature on `E`. The inner hash doesn't reveal `nk`.
+- **The privacy cost:** an exit reveals `P`, linking the claimed notes
+  and the wallet's other exits. Spends stay unlinked, since matching a
+  spent nullifier to `P` needs that note's inner hash. Accepted
+  (2026-10-30).
+- **Rejected alternative:** a per-note one-time hash-based key inside the
+  nullifier. That's about 580 compressions per input in the spend
+  proof, likely taking it from 2^17 to 2^18.
+- **Until then,** shielded claims can't be cited and get no record. The
+  sequencer refuses spends of their nullifiers, and two concurrent
+  claims through two contracts are the operator's loss.
+
+**Considered and set aside:**
+
+- **The hub answers overlapping requests one at a time:** it holds the
+  later ones until the first's proof is on chain, then counters with
+  its record. That needs `w_H` longer than Alice's assert window, so a
+  dead hub takes days to time out.
+- **A claim-only Groth16 in `request`:** signatures do its job without
+  the SNARK.
+- **`E` fixed in the return branch,** so that a proof could vouch for a
+  record: no longer needed, since records don't come from `π`.
 
 ## After an exit
 
@@ -575,11 +694,9 @@ owner made, since only she can prove one (`nk`, or her signature). Then:
 
 The operator always has the proof: the dispute puts Alice's Groth16
 proof on chain as her input words, and a folded exit hands it over off
-chain. The chain guest checks it once per exit record. In-guest Groth16
-verification (BN254 pairings) is unmeasured. If it's costly, the record
-could carry the exit's succinct receipt where the operator has it, or
-the claim could carry the owner's signature on `c ‖ E`, made inside the
-exit proof, for the record to show instead. Detail for the design pass.
+chain. The chain guest checks it once per exit record. (Under BABE the
+record carries the owners' signatures on `E` instead, posted in
+`request`: "Exit authority on chain".)
 
 ## The operator's death
 
@@ -947,8 +1064,8 @@ timeout.
   - the journal layout gains `E` and the nullifier words.
 
   All of this must be measured.
-- **The exit record's proof check** in the chain guest, once per exit:
-  unmeasured.
+- **The exit record's check** in the chain guest, once per exit: a
+  BIP340 signature per note (Exit authority on chain).
 - **The input words.** About 1 KB of one-time signatures per nullifier
   on chain in a dispute: 8 notes cost about 8 KB.
 - **Mass exit** against a hostile operator: every contract escalating
@@ -1000,9 +1117,9 @@ timeout.
      660 s there), against days to `T_A`: fine for Alice's rare case.
      A GPU prover would make it minutes.
    - In the chain guest it's too heavy per exit record (~47M cycles
-     each, against 0.4M for a block of one mint today). So the record carries the
-     owner's signature on `c ‖ E`, made inside the exit proof (the
-     alternative in "After an exit"), not the Groth16.
+     each, against 0.4M for a block of one mint today). So the record
+     carries the owners' signatures on `E`, posted in `request`, not the
+     Groth16 (Exit authority on chain).
 1. **The statements, native** (`crates/withdraw`). The claim and the
    counter are built, the nullifier tree's leaves tagged, and the three
    branches behind the fixed statement (`fixed::check_exit`); done:
@@ -1018,14 +1135,22 @@ timeout.
      counter (below).
 
    Unit tests for each, including every case in "The counter".
-2. **The L2** (`ledger`, `validity`, `sequencer`):
-   - `Tx::Exit`, hub-signed, carrying the claimant's exit proof, checked
-     by the chain guest. A new chain guest, so a new deployment.
-   - The exit kit served per note: a path and a non-membership proof at
-     an anchored state.
-   - The sequencer refuses spends of nullifiers in pending claims.
+2. **Exit authority, and the L2** (`withdraw`, `ledger`, `validity`,
+   `sequencer`), as in "Exit authority on chain":
+   - the statements: the counter's equivocation ground; the claim branch
+     checking that `request` carries `E`'s preimage and each note's
+     opening and signature;
+   - `Tx::Exit`, hub-signed, carrying `E`'s preimage and the owners'
+     signatures, checked by the chain guest; invalid if a nullifier is
+     already in the set. A new chain guest, so a new deployment;
+   - the exit kit served per note: a path and a non-membership proof at
+     an anchored state;
+   - the sequencer refuses spends of nullifiers in claims it has seen,
+     from the mempool on, until the record retires them (shielded ones
+     for good, until the address change).
 3. **The graph** (`crates/babe`):
-   - `request` signs `E` and carries the nullifiers;
+   - `request` signs `E` and carries `h_S`, `SR_S`, and each note's
+     opening and owner's signature;
    - `respond` gets two leaves, both comparing `b` and `E` with
      `request`'s: plain (`b`, `E` under `e_plain`) and counter (`b`, `E`
      under `e_counter`, and `K` signed itself). Alice presigns both.
@@ -1033,7 +1158,7 @@ timeout.
    Sizes measured, with the 1,000-element limit checked as for the reveal.
 4. **The guests** (`r0/`, built on lichen-vps):
    - the BABE guest with both modes and `K`'s check;
-   - the counter guest;
+   - the counter guest, with both grounds;
    - the chain guest with `Tx::Exit`.
 
    Their image ids are pinned in `D`'s scheme as today.
@@ -1043,16 +1168,20 @@ timeout.
    hub challenges any claim that fails it. That's how BitVMX's mock
    played lies.
 6. **The hub** (`dispute/babe.rs`):
-   - in exit mode, read the nullifiers, search the spent set, and prove
-     and post a counter within `w_H`, or respond "none";
-   - post exit records;
-   - refuse spends of pending claims' nullifiers;
+   - in exit mode, read the notes from `request`, check their
+     signatures, search the spent set and the signed claims it has seen
+     through other contracts, and prove and post a counter within `w_H`,
+     or respond "none";
+   - post the exit record once `request` confirms;
+   - refuse spends of claimed nullifiers;
    - fold an exit it has checked natively, if it chooses.
 7. **The wallet** (`engine/babe.rs`, `main.rs`):
    - the exit kit, fetched after each spend or receipt; "final" requires
      it;
-   - exit mode: claim, `E`, the nullifiers, and the assertion, proving
-     `K` false when it is;
+   - exit mode: claim, `E`, the notes' openings and signatures, and the
+     assertion, proving `K` false when it is;
+   - never sign a claim for a note already named in a claim through
+     another contract;
    - the switch from a return to an exit when the return isn't sealed in
      time, so `lichen withdraw` still does the right thing;
    - the tower's package carries the kit.
@@ -1062,12 +1191,14 @@ timeout.
      - an exit while the operator censors;
      - the operator gone (`request_timeout`);
      - an old state after a spend (countered, Alice loses);
-     - the same note through two contracts;
+     - the same note through two contracts, requested in one block
+       (one is countered by the other's signature);
+     - a request with a junk signature (Alice can't win);
      - a bogus counter (Alice wins);
      - a counter for another `E` (Alice wins);
      - her censored return sequenced after her request (not a counter);
      - a spend after the cutoff (not a counter);
-     - an exit record without a matching proof (rejected);
+     - an exit record without valid owners' signatures (rejected);
      - a spend racing a claim;
      - two claims escalated together;
      - the consolidation attack (Alice loses: the data-availability gap,
@@ -1082,3 +1213,6 @@ timeout.
 11. **Docs:** this plan's status, an explainer for the exit, SHIELDED.md's
     Limits, RUN_A_TOWER (the kit), CODE.md, and the papers (the main
     paper's exit section, the BABE companion's counter).
+12. **With shielding (after the MVP):** the owner key `P` in the shielded
+    address, so shielded claims are signed and cited like transparent
+    ones (Exit authority on chain).
