@@ -7,6 +7,17 @@ whose hub and sequencer are one operator.
 the BitVMX design and is superseded by "Under BABE", which follows it.
 The steps at the end are the BABE ones.
 
+**Status, 2026-10-31 (branch `exit`).** Steps 0–8 are built, and step 9's
+regtest test on the mock statement passes (`crates/hub/tests/babe_exit.rs`):
+an honest exit paid and recorded; a stale claim after an anchored spend
+countered; one note through two contracts, the second countered and the
+first paid; a forged counter proved false and paid. The guests are built
+and committed with the exit. Not yet: the exit on real proofs (step 9's
+opt-in test), towers' exits, shielded notes' exits (step 12), sender
+acknowledgment (step 10). "Decided while building steps 2–9" records
+where the build departs from the sections above; where they disagree, it
+holds.
+
 ## The assumption
 
 The hub and the sequencer cooperate: one operator, or two that trust
@@ -655,6 +666,101 @@ nf    = SHA256("lichen/snf"    ‖ SHA256("lichen/snf-in" ‖ nk ‖ rho) ‖ P)
 - **`E` fixed in the return branch,** so that a proof could vouch for a
   record: no longer needed, since records don't come from `π`.
 
+### Decided while building steps 2–9 (2026-10-30 and 31)
+
+**The contract is bound by its deposit coin, not its funding outpoint.**
+`E` and the journal name `O_D`, the contract's deposit coin, instead of
+the funding's output `O`: `E = H(c ‖ O_D ‖ b ‖ h_S ‖ SR_S ‖ nfs)`, the
+journal `c ‖ D ‖ H(pk_H ‖ O_D)`. The deposit is confirmed before the
+setup fixes the statement, whereas `O` is known only once the hub builds
+the funding, which would have meant reordering the opening (the plan's
+four-step `/deposit`, pay, `/open`, setup). Nothing but the funding can
+spend the deposit, so a statement given the funding transaction knows
+`O`: `request` is the transaction spending the funding's output 0, for
+the claim's posting and the counter's cutoff alike
+(`lichen_withdraw::Request::spending`). The setup takes the deposit coin
+(`SetupRequest::deposit`), so asking for one takes a payment, as the
+reorder would have.
+
+**The claim is posted in 80-byte items.** Bitcoin Core relays no
+tapscript witness item larger than 80 bytes, so `request` carries the
+claim (`Posted`: `h_S`, `SR_S`, each transparent note's opening and
+signature, each shielded note's nullifier; 1,169 bytes at most) in 15
+items of up to 80 bytes, the first of its witness. The statements read
+the witness through the coinbase's witness commitment
+(`validity::btc::witness_in_block`, checked against rust-bitcoin).
+
+**`request` must have the contract's work on it.** A header at the tip
+of the headers the statements are given is as cheap to forge as its own
+bits: a dishonest Alice could post junk and prove from a forged block
+with the real claim, and a dishonest hub could forge a later cutoff. So
+the claim and the counter accept `request` only in the anchor's block or
+in a header with `W` of work from it on (`Anchored::deep`). The counter
+had this gap before.
+
+**The posted claim is checked by the claim branch.** The branch takes
+`request` and requires its first items to be exactly the claim it
+proves, so the signatures the hub can cite are the ones her proof uses.
+This also binds the nullifiers the hub searches for.
+
+**A return's dispute signs a fixed `E`.** Every new BABE contract has
+the exit's graph, so `request` always carries an `E` signature: a return
+signs 32 zero bytes and posts nothing, and the hub responds plainly. The
+return branch reads neither.
+
+**The hub's response.** For an exit claim (`dispute/babe.rs`):
+
+- it reads the claim from `request` and checks it names `E`; junk gets a
+  plain response, and Alice can't win;
+- it looks for a ground: another of its contracts' requests with the
+  owner's signature on one of the notes; another contract's exit record;
+  or a spend (a return to another contract, or an ordinary spend; its
+  own return of at least `b` excluded) anchored by `request`'s block.
+  A sequencer endpoint tells how a nullifier was spent (`/spent/<nf>`),
+  and the hub tells a return's leaf from the return notes it holds;
+- with one, it assembles the counter guest's input (the later anchored
+  state, the nullifier's path there from `/nullifier/<h>/<nf>`, the
+  history from the claim's state, `request` in its block), waits until
+  those blocks are deep enough, checks it natively, and proves it with
+  its prover (`--prover`: `lichen-r0 counter`, `wrap`, `bitvmx-input`;
+  on the mock, a seal anyone can make, `statement::mock_counter`);
+- with none, it holds the claimed nullifiers (`POST /hold`, hub-signed:
+  the sequencer refuses their spends) and records the exit on the L2.
+
+**The wallet's exit.** `lichen exit <contract>` (`wallet/src/exit.rs`)
+claims the wallet's transparent notes in the latest anchored state, each
+with its kit from the sequencer (`/kit/<h>/<index>/<nf>`) checked against
+the signed root, `b` their total up to the cap. After the hub's response
+the engine proves the branch it leaves, checked natively first: a true
+counter ends the dispute (`Outcome::Countered`); a false one, the
+failed-counter branch; a plain response, the claim. On the real
+statement it writes the statement's input for `lichen-r0 babe-exit` and
+stops with the proof due, as a return's dispute does.
+
+**`K` is BitVMX's 128-byte encoding.** The points as ln-gap's native
+check reads them (each x little-endian, y's sign in the top bit), which
+the BABE guest decompresses over substrate-bn (`crates/groth16`, checked
+against ln-gap's arkworks check on real receipts).
+
+**`w_H` covers a counter.** The contract's work on `request`'s block,
+then the counter's proof and wrap: regtest 24 blocks, Mutinynet 240 (2
+h), signet 36 (6 h), testnet4 72 (12 h).
+
+**Measured.** On regtest under standard policy: `request` 2,373 vB with
+the largest claim, `respond` 4,480 vB plain and 12,255 vB countering
+(766 witness items). The BABE guest with the exit is 892 kB
+(substrate-bn); a return's proof under it is 489k cycles, one segment,
+640 s on lichen-vps and a 257 s wrap.
+
+**Not yet decided: towers.** A tower plays a return's dispute keyless
+because Alice signs π1 before the hub responds. An exit's proof depends
+on which leaf the hub responds with, so she can't sign it ahead. Either
+she comes back after `respond`, or the tower holds her one-time Lamport
+key for the contract, or the package carries a signed proof per leaf
+(the claim's, and the failed counter's once the hub's `K` is known: not
+possible ahead). Until it is decided, a tower's package carries no claim,
+and a tower can't play an exit.
+
 ## After an exit
 
 The operator, as sequencer, posts an exit record on the L2: a
@@ -1120,7 +1226,7 @@ timeout.
      each, against 0.4M for a block of one mint today). So the record
      carries the owners' signatures on `E`, posted in `request`, not the
      Groth16 (Exit authority on chain).
-1. **The statements, native** (`crates/withdraw`). The claim and the
+1. **The statements, native** (`crates/withdraw`). Done. The claim and the
    counter are built, the nullifier tree's leaves tagged, and the three
    branches behind the fixed statement (`fixed::check_exit`); done:
    - exit mode: notes in `T_S`, unspent in `N_S` (non-membership in the
@@ -1136,7 +1242,9 @@ timeout.
 
    Unit tests for each, including every case in "The counter".
 2. **Exit authority, and the L2** (`withdraw`, `ledger`, `validity`,
-   `sequencer`), as in "Exit authority on chain":
+   `sequencer`), as in "Exit authority on chain". Done, but for the
+   sequencer's holds from the mempool on (the hub holds a claim once
+   `request` confirms):
    - the statements: the counter's equivocation ground; the claim branch
      checking that `request` carries `E`'s preimage and each note's
      opening and signature;
@@ -1148,7 +1256,8 @@ timeout.
    - the sequencer refuses spends of nullifiers in claims it has seen,
      from the mempool on, until the record retires them (shielded ones
      for good, until the address change).
-3. **The graph** (`crates/babe`):
+3. **The graph** (`crates/babe`). Done (sizes under "Decided while
+   building steps 2–9"):
    - `request` signs `E` and carries `h_S`, `SR_S`, and each note's
      opening and owner's signature;
    - `respond` gets two leaves, both comparing `b` and `E` with
@@ -1156,18 +1265,19 @@ timeout.
      under `e_counter`, and `K` signed itself). Alice presigns both.
 
    Sizes measured, with the 1,000-element limit checked as for the reveal.
-4. **The guests** (`r0/`, built on lichen-vps):
+4. **The guests** (`r0/`, built on lichen-vps). Done, and the fixtures
+   proved again (r0/guests/README.md):
    - the BABE guest with both modes and `K`'s check;
    - the counter guest, with both grounds;
    - the chain guest with `Tx::Exit`.
 
    Their image ids are pinned in `D`'s scheme as today.
-5. **A mock for regtest.** BABE's mock statement takes every claim as
+5. **A mock for regtest.** Done. BABE's mock statement takes every claim as
    true, so it can't exercise counters. The mock exit decides natively
    instead: the wallet asserts only if the native check passes, and the
    hub challenges any claim that fails it. That's how BitVMX's mock
    played lies.
-6. **The hub** (`dispute/babe.rs`):
+6. **The hub** (`dispute/babe.rs`). Done, but for folding an exit:
    - in exit mode, read the notes from `request`, check their
      signatures, search the spent set and the signed claims it has seen
      through other contracts, and prove and post a counter within `w_H`,
@@ -1175,7 +1285,10 @@ timeout.
    - post the exit record once `request` confirms;
    - refuse spends of claimed nullifiers;
    - fold an exit it has checked natively, if it chooses.
-7. **The wallet** (`engine/babe.rs`, `main.rs`):
+7. **The wallet** (`engine/babe.rs`, `exit.rs`, `main.rs`). The exit
+   mode is done (`lichen exit`); not yet the kit kept after each spend or
+   receipt, "final" requiring it, the switch from a refused return, the
+   rule against claiming a note through two contracts, and the tower:
    - the exit kit, fetched after each spend or receipt; "final" requires
      it;
    - exit mode: claim, `E`, the notes' openings and signatures, and the
@@ -1185,8 +1298,11 @@ timeout.
    - the switch from a return to an exit when the return isn't sealed in
      time, so `lichen withdraw` still does the right thing;
    - the tower's package carries the kit.
-8. **Windows:** `w_H` long enough for a counter (Mutinynet and mainnet).
-9. **Tests:**
+8. **Windows:** `w_H` long enough for a counter. Done.
+9. **Tests.** On the mock, the first four cases below are
+   `babe_exit.rs`'s (an honest exit; a stale claim countered; one note
+   through two contracts; a forged counter); the rest are unit tests of
+   the statements, or still to write. The real-proof test is to do:
    - Regtest, on the mock:
      - an exit while the operator censors;
      - the operator gone (`request_timeout`);
@@ -1210,7 +1326,7 @@ timeout.
 10. **Data availability:** sender acknowledgment, as specified above. A
     chain-guest change, after the exit itself works. Until then the
     consolidation test documents the gap.
-11. **Docs:** this plan's status, an explainer for the exit, SHIELDED.md's
+11. **Docs:** done 2026-10-31: this plan's status, an explainer for the exit, SHIELDED.md's
     Limits, RUN_A_TOWER (the kit), CODE.md, and the papers (the main
     paper's exit section, the BABE companion's counter).
 12. **With shielding (after the MVP):** the owner key `P` in the shielded

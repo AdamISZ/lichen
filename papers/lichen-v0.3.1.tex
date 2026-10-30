@@ -197,14 +197,14 @@ With this context, we can understand what the withdrawal proof actually does. Th
 \item Finality. Bitcoin headers follow on from the anchor's block, each meeting its own difficulty target, with total work of at least W. W is fixed when the contract opens, about 10 blocks' worth.
 \end{enumerate}
 
-The result is the amount $b$, the memo $c$ and $\mathcal{D}$, which identifies the contract: the sequencer's and hub's keys, the genesis output and W. So a proof for another deployment, history or finality threshold is a proof of a different statement. Under BitVMX the public output is $b \,\|\, c \,\|\, \mathcal{D}$: Bitcoin reads $b$ for the payout, and checks $c$ and $\mathcal{D}$ against the contract's terms. Under BABE, whose public input is fixed when the contract opens, the statement also checks the hub's one-time signature on $b$, and its public output is $c \,\|\, \mathcal{D} \,\|\, H(pk_H)$, the same for every amount (Section~\ref{sec:blocks}). Since the chain proof's program id is built into the withdrawal program, the one program id the contract pins covers both.
+The result is the amount $b$, the memo $c$ and $\mathcal{D}$, which identifies the contract: the sequencer's and hub's keys, the genesis output and W. So a proof for another deployment, history or finality threshold is a proof of a different statement. Under BitVMX the public output is $b \,\|\, c \,\|\, \mathcal{D}$: Bitcoin reads $b$ for the payout, and checks $c$ and $\mathcal{D}$ against the contract's terms. Under BABE, whose public input is fixed when the contract opens, the statement also checks the hub's one-time signature on $b$, and its public output is $c \,\|\, \mathcal{D} \,\|\, H(pk_H)$, the same for every amount (Section~\ref{sec:blocks}); with the exit (Section~\ref{sec:exit}) it is $c \,\|\, \mathcal{D} \,\|\, H(pk_H \,\|\, O_D)$, $O_D$ the contract's deposit coin. Since the chain proof's program id is built into the withdrawal program, the one program id the contract pins covers both.
 
 Not fully addressed yet, however:
 
 \begin{itemize}
 \item This is not (yet) a proof of heaviest chain; that would require a counter-proof mechanism. It's currently judged that building a 10 block fork is expensive enough to make attack uneconomic.
-\item Sequencer going quiet, or censoring user transfers: it is planned to implement a counter-proof design, slightly different from the above, in which the prover proves owning the note, and the hub can counter-prove spentness, because in the current design, a dead sequencer loses the user's money at $\Tc$.
-\item The data availability question has not been addressed.
+\item Sequencer going quiet, or censoring user transfers: the exit (Section~\ref{sec:exit}), in which Alice proves owning notes at an anchored state and the hub can counter-prove a later spend, is built and played on regtest, not yet on real proofs.
+\item The data availability question has not been addressed; the exit is safe exactly when the user can read the anchored data she needs.
 \end{itemize}
 
 \subsection{From a program to a verifiable claim}
@@ -323,7 +323,7 @@ exit against a vanished hub & 23~kvB, 5 transactions & ${\sim}1.2$~kvB, 2 (est.;
 a true claim refused, played to the end & ${\sim}120$~kvB, 23 transactions & 9.7~kvB, 4; 30.5~kvB, 5 if the hub challenges \\
 a false claim & 100--200~kvB & 29.9~kvB, 5 \\
 the worst case & ${\sim}200$~kvB (a lie about a read) & 30.5~kvB \\
-pre-signed per contract & 141 transactions & 19 \\
+pre-signed per contract & 141 transactions & 19 (20 with the exit) \\
 setup per contract, beyond pre-signing & none & 19~s on a laptop; ${\sim}240$~MiB stored by the user \\
 contracts a hub can hold, disputes lasting a week\textsuperscript{*} & 3,300 (8,350 with a window per move) & ${\sim}47{,}000$ \\
 \bottomrule
@@ -332,7 +332,10 @@ contracts a hub can hold, disputes lasting a week\textsuperscript{*} & 3,300 (8,
 \textsuperscript{*}Before congesting the chain becomes a profitable
 attack: for $N$ contracts, every move due within a window of $w$ blocks
 must fit in it, $N s \le w \cdot 1\,\mathrm{MvB}$~\cite{floodloot}, and
-the dispute lasts the sum of its windows.}
+the dispute lasts the sum of its windows. Measured before BABE's graph
+carried the exit, which adds about 5~kvB to a refused claim and brings
+the contracts a hub can hold in a week to about 40,000 (est.;
+Section~\ref{sec:exit}).}
 \label{tab:gadgets}
 \end{table}
 
@@ -360,7 +363,7 @@ one this paper assumes. The same output could sit in a Lightning channel
 commitment, making the fold a channel update and letting deposits arrive
 as Lightning payments, as earlier LN-GAP code demonstrates. But the
 price is high. Every channel update re-signs the contract's pre-signed
-transactions for both commitments (19 each under BABE, 141 under
+transactions for both commitments (20 each under BABE, 141 under
 BitVMX); renewal,
 though off chain, is still a new contract and, under BABE, a new setup;
 and a channel's revoked states bring back the always-on watchtower that a
@@ -580,6 +583,68 @@ So the bound is not one contract's cap but
 the hub's total headroom exposed to a single forged chain. As long as
 that stays well below the reward of the blocks a fork must replace, the attack remains un-economic. This is the kind of security you can claim for Bitcoin itself, basically.
 
+\section{Exiting against a hostile operator}
+\label{sec:exit}
+
+A withdrawal starts with a return to the hub on the L2, which the
+sequencer must include. If the hub and the sequencer are one operator,
+it profits from not including it, since whatever isn't withdrawn by
+$\Tc$ is the hub's: it may censor the return, stop sealing, withhold
+data, or vanish. The exit doesn't start with a return.
+
+\paragraph{The claim.} Alice claims from a state $S$ already anchored on
+Bitcoin: ``at $S$ these notes of mine were unspent; pay me $b$''. She
+needs only her \emph{exit kit}, which the sequencer serves after each of
+her spends and receipts and her wallet checks against the signed root:
+each note's path in the commitment tree at $S$, and its nullifier's
+absence from the spent set there. A kit never goes stale, since the tree
+only grows. Her claim's fingerprint
+$E = H(c \,\|\, O_D \,\|\, b \,\|\, h_S \,\|\, \mathit{SR}_S \,\|\, \mathit{nullifiers})$
+names the contract by its deposit coin $O_D$, which only its funding can
+spend; each note's owner signs $E$, and her \tx{request} posts the claim
+with the signatures (about 1.2~kB at most), so that the hub can search
+for the notes and cite the signatures.
+
+\paragraph{The counter.} The hub may answer only with a \emph{counter},
+on one of two grounds, each something only Alice could have done:
+\begin{itemize}[leftmargin=1.5em]
+\item a note spent at an anchored state after $S$, in the one anchored
+  history, whose anchor confirmed in or before her request's block. A
+  later one could be a transaction of hers the operator held and
+  sealed after she committed to her claim. Her own return to the
+  contract, of at least $b$, never counts: the hub would hold her tokens,
+  and the contract still pays once;
+\item her signed claim of one of the notes through another contract.
+\end{itemize}
+A nullifier enters the spent set only by a spend, which needs the note's
+keys, or by an \emph{exit record}, which the hub posts after a claim to
+retire its notes and which the chain proof accepts only with the owners'
+signatures on that claim. So the hub can't forge a counter.
+
+\paragraph{On BABE.} The claim and the counter ride on the dispute's
+first two transactions. \tx{request} signs $E$ beside $b$; \tx{respond}
+signs $b$ and $E$ in one of two leaves, plainly or with the counter $K$,
+a Groth16 proof of the counter guest, signed whole. Alice's statement,
+fixed at setup, has three branches: a return, as before; her claim,
+after a plain response; or $K$ not being a counter, after a countering
+one. A true counter leaves her no branch, and the hub takes the
+contract; a false one pays her, and that branch's proof needs no secret
+of hers, so anyone can make it. Because \tx{respond} precedes
+\tx{assert}, a counter can't wait for an exit record of another claim:
+the second ground, her signature, is what stops two requests through two
+contracts in one block from both being paid. The companion paper gives
+the graph, the sizes and the cost~\cite{lichenbabe}; the hub's window
+$w_H$ grows to two hours on Mutinynet, so that it can prove a counter.
+
+\paragraph{What it doesn't solve.} The exit is safe exactly when Alice
+can read the anchored data she needs: an operator that seals a spend of
+hers and withholds its new notes' data leaves her old notes countered
+and the new ones without a kit. Requiring the sender's acknowledgment of
+the data before a spend can counter her is the planned remedy. Shielded
+notes can't exit yet, since their owner's authority is knowledge of a
+key inside the proof, with nothing to post; nor can a tower play an exit
+without her keys, since her proof depends on the hub's response.
+
 \section{Scaling with multiple hubs}
 \label{sec:multihub}
 
@@ -715,7 +780,7 @@ The design is implemented in proof-of-concept form as two code bases, LN-GAP~\ci
 
 The implementation uses the BABE gadget~\cite{lichenbabe} by default, with the BitVMX gadget~\cite{lichenbitvmx} also built, and a shielded-notes L2 for private offchain transfers. Validity proofs are implemented, along with anchors in bitcoin transactions for finality. Under BABE, three endings of a dispute have been played on Mutinynet with a real RISC Zero proof (a true claim challenged and answered, a true claim unchallenged and played by a tower, and a false claim), and the others on regtest.
 
-Some features are not yet in place, though: in particular, there is not currently a way for the user to exit when the sequencer dies or censors. This should be addressable, as has been noted, with a counter-proof mechanism for the hub, a slight design change. Under BABE, Alice's download at each opening, about 240~MiB, is the largest cost to reduce; and the anchors through which a tower would bump her transactions' fees need a key of their own.
+The exit (Section~\ref{sec:exit}), for a user whose sequencer censors or vanishes, is built under BABE and played on regtest on the mock statement: an honest exit paid, a stale claim countered, one note claimed through two contracts and the second countered, a forged counter proved false. It is not yet played with real proofs, for shielded notes or by a tower, and the sender's acknowledgment that would close its data-availability gap is not built. Under BABE, Alice's download at each opening, about 240~MiB, is the largest cost to reduce; and the anchors through which a tower would bump her transactions' fees need a key of their own.
 
 \begin{thebibliography}{99}
 
@@ -725,7 +790,7 @@ Some features are not yet in place, though: in particular, there is not currentl
 
 \bibitem{lichenbitvmx} waxwing. Lichen over BitVMX: the dispute, as built and measured. Version 0.1, October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-bitvmx-v0.1.1.pdf}
 
-\bibitem{lichenbabe} waxwing. Lichen over BABE: withdrawals of a variable amount, by authenticated request. Version 0.1, October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-babe-v0.1.7.pdf}
+\bibitem{lichenbabe} waxwing. Lichen over BABE: withdrawals of a variable amount, by authenticated request. Version 0.1, October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-babe-v0.1.8.pdf}
 
 \bibitem{babe} S.~Garg, D.~Kolonelos, M.~Sergeevitch, S.~Sridhar and D.~Tse. BABE: verifying proofs on Bitcoin made 1000x cheaper. ePrint 2026/065, revised October 2026. \url{https://eprint.iacr.org/2026/065}
 

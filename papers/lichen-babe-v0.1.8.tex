@@ -99,6 +99,13 @@ are estimates, marked (est.). Version 0.1.6 of this note was the design
 before it was built; its estimates are kept beside the measurements where
 they differ.
 
+Since version 0.1.7 the graph also carries lichen's exit, Alice's claim
+from anchored state against a hub that censors or vanishes, and the
+hub's counter to it (Section~\ref{sec:counter}). It is built and played
+on regtest on the mock statement, not yet on real proofs. The sizes of
+Section~\ref{sec:costs} were measured on Mutinynet before it was added;
+Section~\ref{sec:counter} gives what it adds.
+
 \section{BABE in brief}
 \label{sec:babe}
 
@@ -382,9 +389,9 @@ What remains to be written properly:
 \node[tx, fill=coop] (c) {contract output\\$\vmax + r_A + r_H$};
 \node[tx, fill=coop, left=of c] (fold) {\tx{fold}};
 \node[tx, fill=coop, right=of c] (def) {\tx{default} after $\Tc$};
-\node[tx, fill=chainc, below=of c] (req) {\tx{request}\\Alice signs $b$};
+\node[tx, fill=chainc, below=of c] (req) {\tx{request}\\Alice signs $b$ and $E$};
 \node[tx, fill=coop, right=of req] (rt) {\tx{request\_timeout}\\after $w_H$: Alice paid $b$};
-\node[tx, fill=hubc, below=of req] (resp) {\tx{respond}\\the hub signs $b$};
+\node[tx, fill=hubc, below=of req] (resp) {\tx{respond}\\the hub signs $b$, $E$ (and $K$)};
 \node[tx, fill=coop, right=of resp] (rspt) {\tx{respond\_timeout}\\from $T_A$: the hub};
 \node[tx, fill=chainc, below=of resp] (as) {\tx{assert}\\$\pi_1$, Lamport-signed};
 \node[tx, fill=coop, right=of as] (succ) {\tx{success}\\after $\Delta_2$: Alice paid $b$};
@@ -423,9 +430,9 @@ value flows through one chain and every transaction has one input
 \toprule
 transaction & poster & spends, and what it carries or checks \\
 \midrule
-\tx{request} & Alice & the contract output; her one-time signature on $b$ (one word) \\
+\tx{request} & Alice & the contract output; her one-time signature on $b$ (one word); with the exit, on $E$ too, and her claim posted \\
 \tx{request\_timeout} & Alice & \tx{request}'s output after $w_H$: the hub never responded; the payout \\
-\tx{respond} & hub & \tx{request}'s output, within $w_H$; the hub's signature on $b$, and Alice's again for the digit-by-digit comparison \\
+\tx{respond} & hub & \tx{request}'s output, within $w_H$; the hub's signature on $b$, and Alice's again for the digit-by-digit comparison; with the exit, the same for $E$, in one of two leaves: plain, or countering with $K$ \\
 \tx{respond\_timeout} & hub & \tx{respond}'s output from the absolute $T_A$: Alice never asserted; the hub takes everything \\
 \tx{assert} & Alice & \tx{respond}'s output, before $T_A$; $\pi_1$ under her Lamport key, in 2-bit digits, with $\pi_2$ and $\pi_3$ beside \\
 \tx{success} & Alice & \tx{assert}'s output after $\Delta_2$: no challenge; the payout \\
@@ -449,7 +456,8 @@ their own, 1~sat/vB, out of the contract, so they relay alone.
 
 All are pre-signed at opening: the default, four links, four terminals,
 and a \tx{wrongly\_challenged} for each kept instance, 19 transactions at
-$(N, M) = (78, 10)$ (0.1.6 estimated about ten). Each
+$(N, M) = (78, 10)$ (0.1.6 estimated about ten); with the exit, 20, since
+\tx{respond}'s two leaves are each pre-signed. Each
 \tx{wrongly\_\allowbreak challenged} is signed by Alice alone and kept from the hub
 (Section~\ref{sec:tower}). The payout and its bit outputs are as under
 BitVMX.
@@ -460,7 +468,8 @@ anyway, and the hub loses nothing by waiting. So its deadline $T_A$ is
 absolute, $\Tc$ less $\Delta_2$, $\Delta_1$ and $\delta$, so that the
 rest of the dispute and the payout fit, and the proof, which needs the
 hub's signature first, never races a timeout. On Mutinynet, with
-30-second blocks, the windows are $w_H = 40$, $\Delta_2 = 240$,
+30-second blocks, the windows are $w_H = 40$ (240 with the exit,
+Section~\ref{sec:counter}), $\Delta_2 = 240$,
 $\Delta_1 = 80$ and $\delta = 40$ blocks, and a contract lasts a week, so
 an assertion is due a week after the contract opens. What remains due
 within a window is, for Alice, \tx{wrongly\_challenged} and, for the hub,
@@ -640,7 +649,7 @@ the hub disproves a false claim & 29.9~kvB in 5 & 100.4~kvB \\
 the worst case & the same: there is no separate case for reads & 200--212~kvB, a read lie \\
 Alice's transactions, those due in a window & 4 (request, assert, wrongly challenged, success), one & 13, twelve \\
 keys Alice's tower must hold & none that signs a move: the fee budget's & her move and hop keys, and her input words' \\
-pre-signed per contract & 19 & 141 \\
+pre-signed per contract & 19 (20 with the exit) & 141 \\
 \bottomrule
 \end{tabularx}
 \caption{BABE's exits, as measured, against BitVMX's~\cite{lichenbitvmx}.}
@@ -861,26 +870,95 @@ read the secrets the tower needs her pre-signatures and the opened
 shares, none of them a key, and it extracts and interpolates as Alice
 would (Section~\ref{sec:tower}).
 
-\section{With a counter-proof}
+\section{The exit, with a counter}
 \label{sec:counter}
 
-lichen's planned exit for a stalled or censoring sequencer lets Alice
-withdraw from anchored state by publishing her notes' nullifiers, and
-lets the hub answer with a \emph{counter-proof}, a later anchored spend
-of one of them. Under BABE, two shapes:
+lichen's exit~\cite{lichen} lets Alice withdraw from a state already
+anchored on Bitcoin when the hub, which is also the sequencer, censors
+her return, stops sealing or vanishes. She claims her notes at an
+anchored state $S$; the hub may answer only with a \emph{counter}: one of
+the notes spent at an anchored state after $S$, final before her claim,
+or her own signed claim of one of them through another contract. Version
+0.1.7 of this note sketched two shapes; the first is built.
+
+\paragraph{The claim, in \tx{request}.} Alice's request signs, beside
+$b$, the claim's fingerprint
+$E = H(c \,\|\, O_D \,\|\, b \,\|\, h_S \,\|\, \mathit{SR}_S \,\|\, \mathit{nullifiers})$
+under a second one-time key, and posts the claim in its witness: $h_S$,
+$\mathit{SR}_S$, each note's opening and its owner's signature on $E$, at
+most 1,169~bytes, in fifteen items of 80 bytes (Bitcoin Core relays no
+larger tapscript witness item). $O_D$ is the contract's deposit coin,
+which only its funding can spend, so it names the contract on Bitcoin
+and is known when the setup fixes the statement. The claim is posted
+for the hub to search, and to cite against her if she claims a note
+twice; a return's dispute signs a fixed $E$ and posts nothing.
+
+\paragraph{The counter, in \tx{respond}.} \tx{respond} has two leaves,
+spending into one transaction, so that \tx{assert} follows either. The
+plain leaf signs $b$, and $E$ under a key $e_{\mathrm{plain}}$; the
+countering leaf signs $E$ under another key $e_{\mathrm{counter}}$, and
+the counter $K$ itself, a Groth16 proof of the counter guest compressed
+to 128 bytes (259 digits). Script can't tie a hash of $K$ to signed
+digits without \texttt{OP\_CAT}, so $K$ is signed whole: compressed,
+since 256 bytes would exceed the 1,000-element stack limit at two
+elements a digit. Script checks the hub's $E$ against Alice's by
+verifying the hub's signature tied to her signature's digits, without a
+separate comparison. On regtest under mainnet's relay policy (lichen):
+\tx{request} 2.37~kvB with the largest claim; \tx{respond} 4.48~kvB
+plain and 12.26~kvB countering, 766 witness elements.
+
+\paragraph{The statement's three branches.} The statement stays fixed at
+setup, with the journal $c \,\|\, \mathcal{D} \,\|\, H(pk_H \,\|\, O_D)$,
+$pk_H$ all four of the hub's keys in \tx{respond}. Alice wins on any of:
 \begin{itemize}[leftmargin=1.5em]
-\item \emph{Inside Alice's statement.} The hub's response carries its
-  counter, or ``none'', under its signature; Alice's statement adds
-  ``and the hub's counter, if any, is invalid''. One BABE instance; the
-  response grows by the counter's bytes when used, about 3~kvB (est.),
-  and Alice's guest must verify a Groth16 proof (cycles unmeasured).
-\item \emph{A separate game}, roles reversed: the hub proves its counter
-  in a second BABE instance garbled by Alice. Setup doubles, and Alice's
-  heaviest windowed move becomes her own \tx{challenge\_assert}, so the
-  hostile-hub side falls to the hostile users'.
+\item \emph{return:} the hub signed $b$, and a return of $b$ to the
+  contract is anchored, as before (the dispute of
+  Section~\ref{sec:auth});
+\item \emph{claim:} the hub signed $b$ and $E$ in the plain leaf, and her
+  claim holds: her notes in $S$'s tree and unspent there, $S$ anchored
+  with the contract's work on it, \tx{request} in a block with that work
+  on it too and posting exactly this claim, $b$ at most their sum;
+\item \emph{failed counter:} the hub signed $E$ and $K$ in the countering
+  leaf, and $K$ is not a counter for her $\mathcal{D} \,\|\, E$.
 \end{itemize}
-Either way, Alice's request also carries the nullifiers' digest, which
-the hub countersigns: about 2~kvB more on each (est.). Neither is built.
+Which key signed $E$ says which leaf ran; the hub's mode is a private
+input, like $b$, since it isn't known at setup. A true counter leaves
+her no branch, and \tx{respond\_timeout} takes the contract from $T_A$.
+The third branch verifies a Groth16 proof inside RISC Zero: 47M cycles
+with RISC Zero's accelerated substrate-bn (174M with arkworks), about
+48 segments, so an hour or two on a laptop and minutes on a GPU. It needs
+no secret of Alice's, so anyone can prove it for her. The guest with the
+exit is 892~kB.
+
+\paragraph{The hub's side.} The counter guest proves either ground
+from the hub's ledger: a spend in a later anchored state whose history
+passes through $S$, its anchor confirmed in or before \tx{request}'s
+block; or Alice's signed claim from another contract's \tx{request}.
+The second matters because \tx{respond} precedes \tx{assert}: two
+requests in one block would otherwise both be paid, since no record of
+either exit exists yet. Proving a spend's counter needs the contract's
+work on \tx{request}'s block first, then the proof and its wrap, so
+$w_H$ becomes 240 blocks on Mutinynet (two hours) and 36 on signet. With
+no counter, the hub records the exit on the L2, with the owners'
+signatures, and the chain guest retires its notes.
+
+\paragraph{What it adds.} To every BABE contract: one more pre-signed
+transaction; about 1.6~kvB more in \tx{request} for a return's dispute
+and about 3.7~kvB in \tx{respond} (est., from the regtest sizes), so a
+refused true claim is about 15~kvB rather than 9.7, and a vanished hub's
+exit about 2.9~kvB rather than 1.2. The hub's windowed sum grows from
+21.5 to about 25.2~kvB, or 33~kvB if every response counters, so a
+dispute of a week holds about 40,000 contracts (30,500) rather than
+47,000. Alice's windowed move is unchanged.
+
+\paragraph{Limits.} Shielded notes prove their owner's authority by
+knowing a key inside the proof, with nothing to post, so a shielded claim
+can't be cited and a wallet exits its transparent notes; shielded
+addresses will gain an owner key. A tower can't play an exit keylessly:
+Alice signs $\pi_1$ ahead for a return's dispute, but an exit's proof
+depends on which leaf the hub responds with. And the exit is safe
+exactly when Alice can read the anchored data she needs, which the main
+paper discusses~\cite{lichen}.
 
 \section{Open questions}
 \label{sec:open}
@@ -896,13 +974,17 @@ the hub countersigns: about 2~kvB more on each (est.). Neither is built.
   Bits' smaller encoding, and the kept instances' reuse across renewals.
 \item The anchors' own key, so that a tower can bump Alice's links above
   their floor.
+\item A tower for the exit: Alice's proof depends on the hub's
+  response, so she can't sign it ahead.
+\item The exit played with real proofs: a counter proved and wrapped
+  within $w_H$, and the failed-counter branch proved.
 \item Whether BABE's authors, or GOAT's, see a problem with moving the
   amount into the witness this way.
 \end{itemize}
 
 \begin{thebibliography}{99}
 
-\bibitem{lichen} waxwing. Lichen: L2s in channels enforced by Bitcoin. Version 0.3, October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-v0.3.0.pdf}
+\bibitem{lichen} waxwing. Lichen: L2s in channels enforced by Bitcoin. Version 0.3, October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-v0.3.1.pdf}
 
 \bibitem{lichenbitvmx} waxwing. Lichen over BitVMX: the dispute, as built and measured. Version 0.1, October 2026. \url{https://github.com/AdamISZ/lichen}
 

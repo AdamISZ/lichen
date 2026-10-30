@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""The diagrams of ../exit.md (a design: docs/EXIT_PLAN.md). Standard
-library only:
+"""The diagrams of ../exit.md. Standard library only:
     python3 docs/explainers/img/exit.py
 writes docs/explainers/img/exit-*.svg."""
 
@@ -49,27 +48,27 @@ def gadget(s, x, y, w, h, title, who):
 
 # ---------------------------------------------------------------- the two proofs
 def proofs():
-    s = Svg(1060, 660)
-    s.text(24, 32, "Two proofs, by two parties, from different data; the same pipeline and the same gadget", 16, INK, 700)
+    s = Svg(1060, 640)
+    s.text(24, 32, "Two proofs, by two parties, from different data; both RISC Zero guests, wrapped in Groth16", 16, INK, 700)
     cols = [
-        (24, ALICE, ALICE_L, "Alice's exit proof", "made before she escalates, from what she holds", [
+        (24, ALICE, ALICE_L, "Alice's claim", "proved after the hub responds plainly, from what she holds", [
             ("from her exit kit, for an anchored state S:", INK, 600, False),
-            ("• the chain receipt at height h_S, root SR_S", INK2, 400, False),
-            ("• each note's path in the tree T_S", INK2, 400, False),
-            ("• each nullifier's non-membership in N_S", INK2, 400, False),
-            ("from Bitcoin: headers with W of work on S's anchor", INK, 600, False),
-            ("from her wallet: the notes' openings, and nk", INK, 600, False),
-        ], "the exit guest", ["derives the nullifiers from the notes and nk,", "checks every path and non-membership, b ≤ Σ"],
-            "b ‖ c ‖ D ‖ E", "E = H(c ‖ h_S ‖ SR_S ‖ nullifiers)"),
-        (556, HUB, HUB_L, "The operator's counter proof", "made only if a later spend exists, within W_c", [
-            ("from Alice's escalation, on chain:", INK, 600, False),
-            ("• her E, and what it hashes: c, h_S, SR_S, nullifiers", INK2, 400, False),
-            ("from its own ledger (it is the sequencer):", INK, 600, False),
-            ("• the chain receipt at a later anchored S′, 10 deep", INK2, 400, False),
-            ("• one of her nullifiers, inserted at h_S < h ≤ h_S′,", INK2, 400, False),
-            ("   not by contract c's own return or exit record", INK2, 400, False),
-        ], "the counter guest", ["checks that S′'s history passes through S,", "and the insertion, in it"],
-            "D ‖ E ‖ ok", "the same E as Alice's claim, so the same contract c"),
+            ("• the chain receipt, the root SR_S at height h_S", INK2, 400, False),
+            ("• each note's path in T_S, its nullifier absent from N_S", INK2, 400, False),
+            ("from Bitcoin: S's anchor, and request in its block,", INK, 600, False),
+            ("   each with W of work on it", INK, 600, False),
+            ("from her wallet: the notes' openings and her keys", INK, 600, False),
+        ], "the BABE guest, its claim branch", ["the notes in S and unspent there, b ≤ Σ,", "request carries this claim, signed"],
+            "c ‖ D ‖ H(pk_H ‖ O_D)", "the contract's journal, fixed at its opening"),
+        (556, HUB, HUB_L, "The hub's counter", "proved before it responds, only if one exists", [
+            ("from Alice's request, on chain:", INK, 600, False),
+            ("• her E, and the claim it hashes: notes, h_S, SR_S", INK2, 400, False),
+            ("from its own ledger (it is the sequencer), either:", INK, 600, False),
+            ("• one of the notes spent at a later anchored S′,", INK2, 400, False),
+            ("   anchored by request's block (not her own return)", INK2, 400, False),
+            ("• or her signed claim of it through another contract", INK2, 400, False),
+        ], "the counter guest", ["S′ in S's history and the spend in it,", "or the other claim's signature"],
+            "D ‖ E", "the same E as Alice's claim, so the same contract"),
     ]
     for x, col, light, title, sub, rows, guest, gsub, jour, jsub in cols:
         w = 480
@@ -84,11 +83,13 @@ def proofs():
         s.text(x + w / 2, 388, jour, 14, INK, 700, "middle", mono=True)
         s.text(x + w / 2, 408, jsub, 11.5, INK2, 400, "middle")
         s.line(x + w / 2, 420, x + w / 2, 442)
-        box(s, x, 444, w, 46, "STARK, then Groth16: about 256 bytes", [], FEE_L, FEE)
-    # both into the gadget
-    s.path("M 264 490 C 264 515, 420 512, 440 540", stroke=ALICE)
-    s.path("M 796 490 C 796 515, 640 512, 620 540", stroke=HUB)
-    gadget(s, 200, 542, 660, 100, "the verification gadget", "checks a Groth16 proof and its journal on Bitcoin; reads chosen journal words into Script")
+    box(s, 24, 444, 480, 58, "π: Alice's proof, asserted", ["checked on Bitcoin by BABE: the hub challenges a false one"], FEE_L, FEE)
+    box(s, 556, 444, 480, 58, "K: 128 bytes, signed in respond", ["checked inside Alice's statement: a false K pays her"], FEE_L, FEE)
+    s.path("M 796 502 C 796 560, 520 540, 470 580", stroke=HUB)
+    s.path("M 264 502 L 264 578", stroke=ALICE)
+    s.rect(120, 580, 520, 46, fill=GAD_L, stroke=GAD, sw=1.8)
+    s.text(380, 600, "Alice's statement: return, or claim, or K is no counter", 13, INK, 700, "middle")
+    s.text(380, 617, "one guest, one journal; BABE checks the proof of it", 11.5, INK2, 400, "middle")
     s.save("proofs")
 
 
@@ -125,10 +126,10 @@ def heights():
     y = 230
     s.circle(xspend, y, 8, fill=HUB_L, stroke=HUB, sw=2)
     s.text(xspend, y - 16, "her spend to Bob inserts n₁", 11.5, HUB, 700, "middle")
-    s.text(1030, y + 26, "the counter: valid", 12, HUB, 700, "end")
+    s.text(1030, y + 26, "the counter: valid, if anchored by request's block", 12, HUB, 700, "end")
     # row 3: forgeries
     y = 350
-    for x, lab, lab2 in [(anchors[3] + 40, "an exit record, no proof of hers", "the chain guest rejects it"),
+    for x, lab, lab2 in [(anchors[3] + 40, "an exit record, not signed by her", "the chain guest rejects it"),
                          (anchors[5] + 40, "her own return, memo c", "excluded from counters")]:
         s.circle(x, y, 8, fill=FEE_L, stroke=FEE, sw=2)
         s.line(x - 6, y - 6, x + 6, y + 6, stroke=FEE, sw=2, arrow=False)
@@ -139,53 +140,45 @@ def heights():
     # legend
     s.line(24, 446, 24, 460, stroke=CON, sw=2, arrow=False)
     s.text(34, 458, "an anchor: a Bitcoin transaction spending the last one's seal", 11.5, INK2)
-    s.text(500, 458, "a spend needs the note's keys; an exit record needs her exit proof", 11.5, INK2)
+    s.text(500, 458, "a spend needs the note's keys; an exit record, her signature on a claim", 11.5, INK2)
     s.save("heights")
 
 
-# ---------------------------------------------------------------- on chain: the gadget in one of two places
+# ---------------------------------------------------------------- on chain: BABE's graph with the exit
 def graph():
     s = Svg(1060, 600)
-    s.text(24, 32, "On chain: one escalation, then the gadget in one of two places", 16, INK, 700)
-    box(s, 24, 70, 196, 74, "contract output", ["V_max + r_A + r_H", "2-of-2, pre-signed at opening"], CON_L, CON)
-    box(s, 260, 70, 220, 90, "escalate", ["Alice: her proof, b ‖ c ‖ D ‖ E,", "and her nullifiers, signed;", "confirms by T_close"], ALICE_L, ALICE)
-    box(s, 520, 70, 164, 74, "counter window W_c", ["≈ 18 blocks on mainnet", "the operator may counter"], "#ffffff", INK2, dash="5 4")
-    s.line(220, 107, 258, 107)
-    s.line(480, 107, 518, 107)
-    # the two places
-    gadget(s, 744, 56, 292, 122, "the counter game", "the operator proves its counter; Alice challenges")
-    gadget(s, 744, 326, 292, 122, "Alice's game", "Alice proves her claim; the operator challenges")
-    s.line(684, 107, 742, 107, stroke=HUB)
-    s.text(713, 99, "counters", 11, HUB, 600, "middle")
-    s.path("M 602 144 C 602 280, 700 380, 742 380", stroke=ALICE)
-    s.text(608, 250, "no counter", 11, ALICE, 600)
-    # the counter game's outcomes
-    box(s, 744, 200, 140, 88, "counter holds", ["she spent since S:", "the operator takes all"], HUB_L, HUB)
-    box(s, 896, 200, 140, 88, "counter fails", ["the cheat loses:", "Alice b + r_A + r_H,", "the hub V_max − b"], OK_L, OK)
-    s.line(814, 178, 814, 198)
-    s.line(966, 178, 966, 198)
-    # Alice's game's outcomes
-    box(s, 744, 470, 140, 88, "proof holds", ["(or a timeout):", "Alice b + r_A + r_H,", "the hub V_max − b"], OK_L, OK)
-    box(s, 896, 470, 140, 88, "proof fails", ["a false claim:", "the operator takes all"], HUB_L, HUB)
-    s.line(814, 448, 814, 468)
-    s.line(966, 448, 966, 468)
-    # the other ways out
-    box(s, 24, 220, 196, 74, "default", ["after T_close, only if", "no escalation has confirmed"], FEE_L, FEE)
-    s.line(122, 144, 122, 218, dash="4 3")
-    box(s, 24, 330, 196, 74, "fold", ["both sign, at any time:", "Alice b + r_A"], OK_L, OK)
-    s.path("M 30 144 C 8 200, 8 300, 30 328", dash="4 3")
-    s.path("M 370 160 C 370 290, 260 367, 222 367", dash="4 3")
-    s.text(470, 240, "the operator may still fold", 11, INK2, 400, "middle", italic=True)
-    s.text(470, 256, "after checking her proof itself", 11, INK2, 400, "middle", italic=True)
-    # note
-    s.text(24, 470, "Exactly one game is played, under any play:", 12, INK, 700)
-    lines(s, 24, 490, [
-        ("• a true counter wins its game, and Alice loses;", INK2, 400, False),
-        ("• a false counter loses its game, and Alice is paid at once;", INK2, 400, False),
-        ("• with no counter, Alice's game, which the operator folds if her claim is true.", INK2, 400, False),
-    ], size=11.5, step=18)
-    s.text(24, 560, "Each game is one instance of the gadget, pre-signed at opening;", 11.5, INK2)
-    s.text(24, 577, "its moves, windows and timeouts are the gadget's own.", 11.5, INK2)
+    s.text(24, 32, "On chain: BABE's dispute, with the exit's claim in request and the counter in respond", 16, INK, 700)
+    box(s, 24, 70, 170, 74, "contract output", ["V_max + r_A + r_H", "pre-signed at opening"], CON_L, CON)
+    box(s, 228, 62, 210, 92, "request", ["Alice signs b and E, and posts", "the claim: its notes, h_S, SR_S,", "the owners' signatures"], ALICE_L, ALICE)
+    s.line(194, 107, 226, 107)
+    # respond's two leaves: one transaction
+    box(s, 478, 54, 250, 64, "respond, plain", ["the hub signs b, and E under e_plain"], HUB_L, HUB)
+    box(s, 478, 128, 250, 76, "respond, countering", ["the hub signs b, E under e_counter,", "and K, its counter's proof itself"], HUB_L, HUB)
+    s.text(603, 222, "two leaves, one transaction: either way, assert follows", 11, INK2, 400, "middle", italic=True)
+    s.line(438, 100, 476, 86)
+    s.line(438, 112, 476, 160)
+    box(s, 768, 86, 268, 92, "assert", ["Alice's proof π of her statement,", "before T_A; the hub challenges a", "false one (BABE's challenge)"], ALICE_L, ALICE)
+    s.line(728, 86, 766, 120)
+    s.line(728, 166, 766, 140)
+    # timeouts
+    box(s, 228, 262, 210, 74, "request_timeout", ["after w_H, no response:", "Alice is paid b"], OK_L, OK)
+    s.line(333, 154, 333, 260, dash="4 3")
+    box(s, 478, 262, 250, 74, "respond_timeout", ["from T_A, no assertion:", "the hub takes the contract"], FEE_L, FEE)
+    s.line(603, 230, 603, 260, dash="4 3")
+    box(s, 768, 262, 268, 74, "success, or the answer", ["Alice is paid b (in bits)", "and the reserves"], OK_L, OK)
+    s.line(902, 178, 902, 260)
+    # the statement's branches
+    s.rect(24, 370, 1012, 200, fill=GAD_L, stroke=GAD, sw=1.6)
+    s.text(40, 396, "Alice's statement: one guest, one journal; she wins on any of three branches", 13.5, INK, 700)
+    lines(s, 40, 424, [
+        ("• return: the hub signed b, and a return of b to the contract is anchored (a refused withdrawal; E doesn't matter)", INK2, 400, False),
+        ("• claim: the hub signed b and E in the plain leaf, and her claim holds: her notes unspent at S, request posting it", INK2, 400, False),
+        ("• failed counter: the hub signed E and K in the counter leaf, and K isn't a counter for her D ‖ E", INK2, 400, False),
+        ("", INK2, 400, False),
+        ("A true counter leaves her no branch: she can't assert, and from T_A the contract is the hub's.", INK, 600, False),
+        ("A false one pays her through the third, and anyone can prove it: it needs no secret of hers.", INK, 600, False),
+        ("The key that signed E says which leaf ran; script compares the hub's b and E with hers, digit by digit.", INK2, 400, False),
+    ], size=12, step=21)
     s.save("graph")
 
 
