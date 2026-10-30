@@ -320,7 +320,7 @@ impl CounterInput {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     extern crate std;
     use super::*;
     use crate::tests::{block_with, header_with, headers_on, key, request_on, xonly};
@@ -342,7 +342,7 @@ mod tests {
     /// spent (an ordinary spend) at `S'`, height 5, anchored; the chain
     /// receipt at 6. Twelve headers on the anchor's block, `request` in
     /// the third.
-    fn input() -> (CounterInput, Hash) {
+    pub(crate) fn input() -> (CounterInput, Hash) {
         let (seq, hub) = (key(1), key(2));
         let (nf, other) = ([0x31; 32], [0x40; 32]);
         let set = [(nf, smt::spent()), ([0x77; 32], smt::spent())];
@@ -463,7 +463,7 @@ mod tests {
     /// Alice's claim through contract 42 (`exit`'s), and her signed claim
     /// of the same notes through 43, as its `request` posted it: an
     /// equivocation citing her transparent note.
-    fn equivocation_input() -> EquivocationInput {
+    pub(crate) fn equivocation_input() -> EquivocationInput {
         let (claim, _) = crate::exit::tests::input();
         let mut other = claim.clone();
         (other.c, other.deposit) = (43, OutPoint { txid: [13; 32], vout: 0 });

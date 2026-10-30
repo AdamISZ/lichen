@@ -57,7 +57,7 @@ mod bitvmx;
 use std::io::{Read, Write};
 
 use anyhow::{bail, ensure, Context, Result};
-use risc0_zkvm::{compute_image_id, default_executor, default_prover, Digest, ExecutorEnv, InnerReceipt, ProverOpts, Receipt};
+use risc0_zkvm::{compute_image_id, default_executor, default_prover, Digest, ExecutorEnv, InnerReceipt, MaybePruned, ProverOpts, Receipt, ReceiptClaim};
 
 const GUESTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../guests");
 
@@ -246,7 +246,7 @@ fn hub_auth(path: &str) -> Result<lichen_withdraw::fixed::HubAuth> {
 fn prove_withdraw(json: &str, chain: Receipt, execute_only: bool) -> Result<Option<Receipt>> {
     let (input, chain_id) = withdraw_input(json, &chain)?;
     let journal = lichen_withdraw::check(&input, &chain_id, &mut |j| j == chain.journal.bytes.as_slice()).map_err(|r| anyhow::anyhow!("the withdrawal statement rejects the input: {r:?}"))?;
-    prove_guest("withdraw", &input.to_bytes(), &journal, Some(chain), execute_only)
+    prove_guest("withdraw", &input.to_bytes(), &journal, Some(chain), &[], execute_only)
 }
 
 /// Prove the fixed statement (BABE's; or, `execute_only`, run it): the
@@ -258,7 +258,7 @@ fn prove_babe(json: &str, auth: &str, chain: Receipt, execute_only: bool) -> Res
     let claim = risc0_zkvm::ReceiptClaim::ok(image_id(&committed("babe")?)?, journal.to_vec());
     eprintln!("lichen-r0: the claim digest, the Groth16 public input's: {}", risc0_zkvm::sha::Digestible::digest(&claim));
     // tag 0: a return only
-    prove_guest("babe", &[&[0][..], &input.to_bytes()].concat(), &journal, Some(chain), execute_only)
+    prove_guest("babe", &[&[0][..], &input.to_bytes()].concat(), &journal, Some(chain), &[], execute_only)
 }
 
 /// The chain receipt `chain`, if any, checked against the committed chain
@@ -278,29 +278,54 @@ fn prove_babe_exit(input: &[u8], chain: Option<Receipt>, execute_only: bool) -> 
     let s = lichen_withdraw::fixed::ExitStatement::from_bytes(input).map_err(|r| anyhow::anyhow!("the statement's input: {r:?}"))?;
     let counter: [u8; 32] = image_id(&committed("counter")?)?.as_bytes().try_into()?;
     let (known, chain_id) = chain_check(&chain)?;
-    let journal = lichen_withdraw::fixed::check_exit(&s, &chain_id, &mut |j| known.as_deref() == Some(j), &mut |k, j| lichen_groth16::verify(&counter, k, j)).map_err(|r| anyhow::anyhow!("the statement rejects the input: {r:?}"))?;
+    let mut assumed = Vec::new();
+    let journal = lichen_withdraw::fixed::check_exit(&s, &chain_id, &mut |j| assume(&known, j, &mut assumed, execute_only), &mut |k, j| lichen_groth16::verify(&counter, k, j))
+        .map_err(|r| anyhow::anyhow!("the statement rejects the input: {r:?}"))?;
     // tag 1: with the exit
-    prove_guest("babe", &[&[1][..], input].concat(), &journal, chain, execute_only)
+    prove_guest("babe", &[&[1][..], input].concat(), &journal, chain, &assumed, execute_only)
 }
 
 /// Prove the counter (or, `execute_only`, run it), checked natively first.
 fn prove_counter(input: &[u8], chain: Option<Receipt>, execute_only: bool) -> Result<Option<Receipt>> {
     let c = lichen_withdraw::counter::Counter::from_bytes(input).map_err(|r| anyhow::anyhow!("the counter's input: {r:?}"))?;
     let (known, chain_id) = chain_check(&chain)?;
-    let journal = lichen_withdraw::counter::check_counter(&c, &chain_id, &mut |j| known.as_deref() == Some(j)).map_err(|r| anyhow::anyhow!("the counter rejects the input: {r:?}"))?;
-    prove_guest("counter", input, &journal, chain, execute_only)
+    let mut assumed = Vec::new();
+    let journal = lichen_withdraw::counter::check_counter(&c, &chain_id, &mut |j| assume(&known, j, &mut assumed, execute_only))
+        .map_err(|r| anyhow::anyhow!("the counter rejects the input: {r:?}"))?;
+    prove_guest("counter", input, &journal, chain, &assumed, execute_only)
+}
+
+/// Whether a statement's chain journal `j` is the chain receipt's
+/// (`known`); with none, executed only, any is: `j` is kept in `assumed`,
+/// to be run as an unresolved assumption (for counting cycles on inputs
+/// made up without a chain).
+fn assume(known: &Option<Vec<u8>>, j: &[u8], assumed: &mut Vec<Vec<u8>>, execute_only: bool) -> bool {
+    match known {
+        Some(k) => k == j,
+        None => {
+            assumed.push(j.to_vec());
+            execute_only
+        }
+    }
 }
 
 /// Prove the guest `name` (the withdrawal's, BABE's or the counter's) on
-/// `input`, the chain receipt an assumption if any, its journal to be
+/// `input`, the chain receipt an assumption if any (or, executed only,
+/// the chain journals `assumed`, unresolved), its journal to be
 /// `journal`.
-fn prove_guest(name: &str, input: &[u8], journal: &[u8], chain: Option<Receipt>, execute_only: bool) -> Result<Option<Receipt>> {
+fn prove_guest(name: &str, input: &[u8], journal: &[u8], chain: Option<Receipt>, assumed: &[Vec<u8>], execute_only: bool) -> Result<Option<Receipt>> {
     let guest = committed(name)?;
     let id = image_id(&guest)?;
     let mut env = ExecutorEnv::builder();
     env.write(&(input.len() as u32))?.write_slice(&words(&input));
     if let Some(c) = chain {
         env.add_assumption(c);
+    }
+    if !assumed.is_empty() {
+        let chain_id = image_id(&committed("chain")?)?;
+        for j in assumed {
+            env.add_assumption(MaybePruned::Value(ReceiptClaim::ok(chain_id, j.clone())));
+        }
     }
     let env = env.build()?;
     if execute_only {

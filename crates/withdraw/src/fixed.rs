@@ -402,7 +402,11 @@ mod tests {
     /// Alice's claim (`exit`'s), the hub's plain leaf signed for it; and
     /// a chain id.
     fn claim() -> (ExitStatement, Hash) {
-        let (claim, id) = crate::exit::tests::input();
+        claim_of(crate::exit::tests::input())
+    }
+
+    /// `claim`, of the claim `claim`.
+    fn claim_of((claim, id): (ExitInput, Hash)) -> (ExitStatement, Hash) {
         let e = crate::exit::fingerprint(claim.c, &claim.deposit, claim.b, claim.state.height, &claim.state.root(&claim.tree), &crate::exit::nullifiers(&claim));
         let mode = Mode::Claim { b_sig: sign(1, &claim.b.to_be_bytes()).try_into().unwrap(), e_sig: sign(2, &e).try_into().unwrap(), claim: claim.clone() };
         (ExitStatement { keys: keys(), deposit: claim.deposit, mode }, id)
@@ -516,5 +520,34 @@ mod tests {
         assert_eq!(digits_of(&[0; 32]).len(), E_DIGITS);
         assert_eq!(digits_of(&[0; 32])[64..], [3, 12, 0], "960 = 0x3c0");
         assert_eq!(digits_of(&[0; K_LEN]).len(), K_DIGITS);
+    }
+
+    /// The exit's inputs for counting the guests' cycles, written to
+    /// `LICHEN_EXEC_DIR` (`lichen-r0 exec-babe-exit` and `exec-counter`,
+    /// with no chain receipt, assume the chain journal they ask for):
+    /// claims of 1 and of 8 transparent notes (8 the most a request
+    /// posts), a failed counter whose `K` is a real BABE proof's points
+    /// (crates/babe/tests/data), and a counter on each ground.
+    #[test]
+    #[ignore]
+    fn exec_inputs() {
+        use crate::counter::{tests as ct, Counter};
+        let dir = std::path::PathBuf::from(std::env::var("LICHEN_EXEC_DIR").expect("LICHEN_EXEC_DIR"));
+        let hex = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../babe/tests/data/babe-60-42.hex")).unwrap();
+        let bytes: Vec<u8> = (0..hex.trim().len()).step_by(2).map(|i| u8::from_str_radix(&hex.trim()[i..i + 2], 16).unwrap()).collect();
+        let k = bytes[32..32 + K_LEN].to_vec();
+        let checked = |(s, id): (ExitStatement, Hash)| {
+            check_exit(&s, &id, &mut |_| true, &mut |_, _| false).unwrap();
+            s.to_bytes()
+        };
+        for (name, b) in [
+            ("claim-1", checked(claim_of(crate::exit::tests::transparent(1)))),
+            ("claim-8", checked(claim_of(crate::exit::tests::transparent(crate::exit::MAX_NOTES)))),
+            ("failed-counter", checked(counter(k))),
+            ("counter-spend", Counter::Spent(ct::input().0).to_bytes()),
+            ("counter-equivocation", Counter::Equivocation(ct::equivocation_input()).to_bytes()),
+        ] {
+            std::fs::write(dir.join(name), b).unwrap();
+        }
     }
 }

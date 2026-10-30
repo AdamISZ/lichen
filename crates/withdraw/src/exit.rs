@@ -380,6 +380,42 @@ pub(crate) mod tests {
         (input, [8; 32])
     }
 
+    /// `input`'s claim, but of `n` transparent notes of Alice's (key 3),
+    /// at indexes 0 to `n - 1`, of 5 each; `b` their total.
+    pub(crate) fn transparent(n: usize) -> (ExitInput, Hash) {
+        let (mut input, id) = input();
+        let z = lichen_validity::tree_empties();
+        let notes: Vec<TNote> = (0..n).map(|i| TNote { owner: xonly(&key(3)), value: 5, memo: 0, rho: [0x50 + i as u8; 32] }).collect();
+        // the tree of their commitments, and each one's path in it
+        let mut level: Vec<Hash> = notes.iter().map(TNote::commitment).collect();
+        let mut paths = std::vec![Vec::new(); n];
+        for (l, empty) in z.iter().take(TREE_DEPTH).enumerate() {
+            for (i, p) in paths.iter_mut().enumerate() {
+                p.push(level.get((i >> l) ^ 1).copied().unwrap_or(*empty));
+            }
+            level = level.chunks(2).map(|c| root_from_path(c[0], 0, &[*c.get(1).unwrap_or(empty)])).collect();
+        }
+        input.tree = root_from_path(notes[0].commitment(), 0, &paths[0]);
+        let spent = [([0x11; 32], smt::spent()), ([0xee; 32], smt::spent())];
+        let root = lichen_validity::state_root(3, &input.tree, &input.state.nullifiers);
+        input.state.anchor.root = root;
+        input.state.signature = key(1).sign_raw(&root, &[0; 32]).unwrap().to_bytes();
+        input.notes = notes
+            .into_iter()
+            .zip(paths)
+            .enumerate()
+            .map(|(i, (note, path))| {
+                let owned = Owned::Transparent { note, sig: [0; 64] };
+                let unspent = smt::proof(&spent, &owned.nullifier(), smt::empties());
+                Claimed { owned, index: i as u32, path, unspent }
+            })
+            .collect();
+        input.notes.sort_by_key(|n| n.owned.nullifier());
+        input.b = 5 * n as u32;
+        sign(&mut input);
+        (input, id)
+    }
+
     /// Alice signs her transparent notes' claim, as it now stands, and
     /// posts it.
     pub(crate) fn sign(input: &mut ExitInput) {
