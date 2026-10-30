@@ -21,7 +21,6 @@ use anyhow::{ensure, Context, Result};
 use bitcoin::key::Keypair;
 use bitcoin::secp256k1::{SecretKey, SECP256K1};
 use bitcoin::Txid;
-use lichen_babe::graph::Babe;
 use lichen_babe::reveal::Preimage;
 use lichen_babe::setup::digits;
 use lichen_chain::{Chain, KeyFees, Net};
@@ -224,6 +223,9 @@ impl crate::engine::babe::Secrets for PackageSigner {
     fn request_wire(&self, b: u32, _exit: bool) -> Result<Vec<Vec<u8>>> {
         ensure!(b == self.p.b, "the claim's b is {b}, the package's {}", self.p.b);
         self.p.b_wire.iter().map(|h| Ok(hex::decode(h)?)).collect()
+    }
+    fn exit_wire(&self, _b: u32, _e: &[u8; 32], _posted: &[u8]) -> Result<Vec<Vec<u8>>> {
+        anyhow::bail!("a tower doesn't exit yet: its package carries no claim")
     }
     fn sign_pi1(&self, digits: &[u8]) -> Result<Vec<Preimage>> {
         let pi1 = self.p.pi1.as_ref().context("no signature on π1 in the package")?;

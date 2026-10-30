@@ -46,6 +46,10 @@ pub enum Outcome {
     ProofDue(u32),
     /// The hub disproved her claim (or she lost by timeout).
     Lost,
+    /// Under BABE, an exit's claim countered: the hub showed a note of it
+    /// spent (or claimed through another contract), so no branch of the
+    /// statement holds; `respond_timeout` takes the contract from `T_A`.
+    Countered,
 }
 
 impl Outcome {
@@ -53,7 +57,7 @@ impl Outcome {
     pub fn payout(&self) -> Option<Txid> {
         match self {
             Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) => Some(*t),
-            Outcome::Lost | Outcome::Paused | Outcome::ProofDue(_) => None,
+            Outcome::Lost | Outcome::Paused | Outcome::ProofDue(_) | Outcome::Countered => None,
         }
     }
 }
@@ -83,6 +87,10 @@ pub trait Store {
     fn set_payout(&mut self, outcome: &Outcome) -> Result<()>;
     /// The claim lost: the contract closed by `txid`.
     fn set_lost(&mut self, txid: Txid) -> Result<()>;
+    /// An exit's claim, if the dispute is an exit's.
+    fn exit(&self) -> Option<crate::exit::ExitPlan> {
+        None
+    }
 }
 
 /// The secrets of Alice's contract with `nonce`, derived from her wallet's

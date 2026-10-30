@@ -59,6 +59,7 @@ pub use lichen_chain::{Net, Patience, Stall};
 
 pub mod babe;
 pub mod bitvmx;
+pub mod exit;
 pub use babe::{BabeKeys, BabeOffer, BabeRequest};
 pub use bitvmx::{BitVmxKeys, BitVmxOffer, BitVmxRequest};
 

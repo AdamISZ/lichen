@@ -385,6 +385,10 @@ fn the_exit_on_regtest() {
     let counter_key = c.respond_exit_wire(&alice_b, &alice_e, &c.p.exit.counter, None);
     assert!(rt.test_accept(&c.set["respond"].finish(counter_key, h, a)).is_err(), "E under the counter key");
     let responded = c.link(&rt, "respond_counter", c.respond_exit_wire(&alice_b, &alice_e, &c.p.exit.counter, Some(&k)));
+    let r = Babe::read_respond_exit(&Opened::args(&responded), true).unwrap();
+    let e_sig = c.p.exit.counter.sign(&e).unwrap();
+    assert_eq!((r.e, r.hub_e), (e.to_vec(), e_sig.hashes.clone()), "the hub's signature on E reads back whole");
+    assert_eq!(r.k.unwrap().message(), k.to_vec());
     println!("respond_counter: {} witness items", responded.input[0].witness.len());
     c.assert(&rt);
 }

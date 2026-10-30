@@ -56,6 +56,9 @@ impl Store for HeldStore<'_> {
         self.w.contracts[self.k].closed = Some(txid);
         self.w.save()
     }
+    fn exit(&self) -> Option<crate::exit::ExitPlan> {
+        self.w.contracts[self.k].exit.clone()
+    }
 }
 
 impl Wallet {
@@ -142,7 +145,7 @@ impl Wallet {
     fn won(&mut self, chain: &Chain, statement: &Statement, dir: &Path, k: usize, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
         let txid = match &outcome {
             Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) => *t,
-            Outcome::Lost | Outcome::Paused | Outcome::ProofDue(_) => bail!("not a win"),
+            Outcome::Lost | Outcome::Paused | Outcome::ProofDue(_) | Outcome::Countered => bail!("not a win"),
         };
         let at = wait_confirmed(chain, &txid)?;
         let payout = chain.get_tx(&txid).context("the payout")?;

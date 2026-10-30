@@ -425,7 +425,8 @@ impl Inner {
         let respond = self.chain.get_tx(&d.txid("respond")).context("respond")?;
         let w = &respond.input[0].witness;
         let counter = w.len() >= 2 && w.nth(w.len() - 2) == Some(d.set["respond_counter"].leaf.as_bytes());
-        let (e, k) = lichen_babe::graph::Babe::read_respond_exit(&Disputed::args(&respond), counter)?;
+        let r = lichen_babe::graph::Babe::read_respond_exit(&Disputed::args(&respond), counter)?;
+        let (e, k) = (r.e, r.k.map(|k| k.message()));
         let journal: lichen_babe::statement::CounterJournal = [&record.deployment[..], &e].concat().try_into().expect("64 bytes");
         if let Some(k) = k {
             return Ok(!self.babe_kind()?.verify_counter(&k, &journal));

@@ -105,6 +105,13 @@ pub struct ExitKeys {
     pub hub_k: Wots256Public,
 }
 
+/// What `respond` carries with the exit ([`Babe::read_respond_exit`]).
+pub struct RespondExit {
+    pub e: Vec<u8>,
+    pub hub_e: Vec<[u8; 32]>,
+    pub k: Option<Wots256Sig>,
+}
+
 /// `assert`'s arguments: the preimages, π2, π3.
 pub type Asserted<'a> = (&'a [Vec<u8>], &'a [u8], &'a [u8]);
 
@@ -391,22 +398,32 @@ impl Babe {
     pub fn respond_wire(hub: &Wots256Sig, alice: &WotsSig) -> Vec<Vec<u8>> {
         hub.consumption_order().into_iter().chain(alice.consumption_order()).rev().collect()
     }
-    /// `K` from `respond_counter`'s arguments (consumption order, below
-    /// both signatures), and the `E` the hub signed in either leaf.
-    pub fn read_respond_exit(args: &[Vec<u8>], counter: bool) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+    /// What `respond` carries with the exit, from its arguments
+    /// (consumption order, below both signatures; `counter` for
+    /// `respond_counter`'s): the `E` both signed, the hub's signature on it
+    /// (its hashes, the statement's), and on `K`.
+    pub fn read_respond_exit(args: &[Vec<u8>], counter: bool) -> Result<RespondExit> {
         let (b, e) = (2 * WotsParams::for_bytes(4).total_digits() as usize, WotsParams::for_bytes(32));
-        let alice_e = WotsSig::from_consumption_order(e, &args.get(2 * b..2 * b + 2 * e.total_digits() as usize).context("respond's arguments are too few")?)?;
-        let at = 2 * b + 2 * e.total_digits() as usize + e.total_digits() as usize + e.checksum_digits as usize;
+        let (n, msg) = (e.total_digits() as usize, e.message_digits as usize);
+        let alice_e = WotsSig::from_consumption_order(e, args.get(2 * b..2 * b + 2 * n).context("respond's arguments are too few")?)?;
+        // the tied signature, top first: each checksum digit's value and
+        // reveal, last first, then the message digits' reveals, last first
+        let tied = args.get(2 * b + 2 * n..2 * b + 3 * n + (n - msg)).context("respond's arguments are too few")?;
+        let mut hub_e = vec![[0u8; 32]; n];
+        for (k, i) in (msg..n).rev().enumerate() {
+            hub_e[i] = tied[2 * k + 1][..].try_into().context("a reveal of 32 bytes")?;
+        }
+        for (k, i) in (0..msg).rev().enumerate() {
+            hub_e[i] = tied[2 * (n - msg) + k][..].try_into().context("a reveal of 32 bytes")?;
+        }
+        let at = 2 * b + 3 * n + (n - msg);
         let k = if counter {
             let p = WotsParams::for_bytes(K_LEN as u32);
-            Some(
-                Wots256Sig::from_consumption_order(p, args.get(at..at + 2 * p.total_digits() as usize).context("respond_counter's arguments are too few")?)?
-                    .message(),
-            )
+            Some(Wots256Sig::from_consumption_order(p, args.get(at..at + 2 * p.total_digits() as usize).context("respond_counter's arguments are too few")?)?)
         } else {
             None
         };
-        Ok((alice_e.message(), k))
+        Ok(RespondExit { e: alice_e.message(), hub_e, k })
     }
     /// `respond`'s with the exit: as [`Babe::respond_wire`], then Alice's
     /// signature on `E` (from `request`) and the hub's, tied to it (its

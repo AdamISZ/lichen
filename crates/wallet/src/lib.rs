@@ -9,6 +9,7 @@
 mod babe;
 pub mod dispute;
 pub mod engine;
+pub mod exit;
 pub mod finality;
 pub mod shielded;
 pub mod tower;
@@ -154,6 +155,9 @@ pub struct Held {
     /// the hub minted after it).
     #[serde(default)]
     pub mint: Option<Locked>,
+    /// An exit in progress: its claim ([`exit::ExitPlan`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<exit::ExitPlan>,
 }
 
 pub struct Wallet {
@@ -644,7 +648,7 @@ impl Wallet {
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         };
-        self.contracts.push(Held { nonce, record, closed: None, claim: None, payout: None, mint: Some(locked) });
+        self.contracts.push(Held { nonce, record, closed: None, claim: None, payout: None, mint: Some(locked), exit: None });
         // the deposit's record goes once the funding is out: until then a
         // hub that answered but never broadcast leaves the refund
         if funded {
@@ -683,7 +687,7 @@ impl Wallet {
             let dep = self.deposits.iter().find(|d| d.cid == cid).cloned().with_context(|| format!("no contract or deposit {cid}"))?;
             ensure!(dep.presigned(), "no offer accepted for contract {cid}");
             let (record, locked) = dep.funded(chain).with_context(|| format!("contract {cid}'s funding is not out: if the hub never broadcasts it, refund the deposit after its timeout"))?;
-            self.contracts.push(Held { nonce: dep.nonce, record, closed: None, claim: None, payout: None, mint: Some(locked) });
+            self.contracts.push(Held { nonce: dep.nonce, record, closed: None, claim: None, payout: None, mint: Some(locked), exit: None });
             self.deposits.retain(|d| d.cid != cid);
             self.save()?;
         }

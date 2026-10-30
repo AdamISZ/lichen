@@ -19,6 +19,8 @@ lichen-ledger.workspace = true
 lichen-l2.workspace = true
 lichen-chain.workspace = true
 lichen-proto.workspace = true
+# the exit's claim and statement, as the BABE guest checks them
+lichen-withdraw.workspace = true
 bitcoin.workspace = true
 ureq.workspace = true
 lngap-sessions.workspace = true
