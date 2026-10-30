@@ -20,14 +20,25 @@
 //! `S'` is in `S`'s history: the history hash folded from `S`'s root
 //! through every later root to the chain receipt's.
 //!
-//! Journal: `D ‖ E`, 64 bytes.
+//! Or a second ground, with no state at all: **an equivocation**. A note
+//! of the claim is in another claim, through a contract `c' ≠ c`, that
+//! its owner signed: the signed claim `request` posted ([`Posted`]),
+//! wherever the hub found it. An honest owner claims a note through one
+//! contract only, and nobody else can sign. The hub learns it when the
+//! other `request` is posted, so before it must respond, whereas an exit
+//! record waits on that claim's proof (docs/EXIT_PLAN.md, "Exit authority
+//! on chain"). Only transparent notes can be cited, for now.
+//!
+//! Journal: `D ‖ E`, 64 bytes. An equivocation names no state, so its `D`
+//! is the input's: the ground holds whatever the deployment.
 
 use alloc::vec::Vec;
-use lichen_validity::btc::{self, Header};
+use k256::schnorr::{Signature, VerifyingKey};
+use lichen_validity::btc::Header;
 use lichen_validity::{hist_next, smt, OutPoint};
 
-use crate::exit::fingerprint;
-use crate::{Anchored, Hash, Reject};
+use crate::exit::{fingerprint, signed_digest, Posted, PostedNote};
+use crate::{Anchored, Hash, Reject, Request};
 
 /// The journal's length in bytes: `D ‖ E`.
 pub const JOURNAL_LEN: usize = 64;
@@ -56,19 +67,6 @@ impl Spent {
             Spent::Exit { c } => smt::exited(c),
         }
     }
-}
-
-/// `request` in a block: its transaction (non-witness serialization),
-/// the block's header, the transaction's index and Merkle path, and the
-/// block's coinbase and its path (which fix the tree's depth).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Request {
-    pub tx: Vec<u8>,
-    pub header: [u8; 80],
-    pub index: u32,
-    pub path: Vec<Hash>,
-    pub coinbase: Vec<u8>,
-    pub coinbase_path: Vec<Hash>,
 }
 
 /// The counter's input: the claim (`E`'s preimage); the nullifier cited
@@ -136,11 +134,8 @@ fn check_with(input: &CounterInput, grace: usize, chain_id: &Hash, verify_chain:
             back = Header(*h).prev();
         }
         let earlier = earlier && input.earlier.len() <= grace + 1;
-        let in_range = header.hash() == a.block
-            || (earlier && input.earlier.iter().any(|h| Header(*h).hash() == header.hash()))
-            || input.state.headers.iter().any(|h| Header(*h).hash() == header.hash());
-        let spends_o = btc::parse_tx(&req.tx).is_some_and(|t| t.inputs.contains(&input.funding));
-        if !in_range || !spends_o || !btc::in_block(&req.tx, &header, req.index, &req.path, &req.coinbase, &req.coinbase_path) {
+        let in_range = input.state.deep(&header) || (earlier && input.earlier.iter().any(|h| Header(*h).hash() == header.hash()));
+        if !in_range || req.spending(&input.funding).is_none() {
             return Err(Reject::Cutoff);
         }
     }
@@ -150,7 +145,113 @@ fn check_with(input: &CounterInput, grace: usize, chain_id: &Hash, verify_chain:
     Ok(journal)
 }
 
+/// An equivocation's input: the claim (`E`'s preimage) and its `D`; the
+/// other claim cited, through contract `c'`, funded at `funding'`, for
+/// `b'`, as its `request` posted it; and the note cited (its place there).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EquivocationInput {
+    pub c: u32,
+    pub funding: OutPoint,
+    pub b: u32,
+    pub h_s: u64,
+    pub sr_s: Hash,
+    pub nullifiers: Vec<Hash>,
+    pub d: Hash,
+    pub other_c: u32,
+    pub other_funding: OutPoint,
+    pub other_b: u32,
+    pub other: Posted,
+    pub which: u8,
+}
+
+/// The counter guest's input: either ground.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
+pub enum Counter {
+    Spent(CounterInput),
+    Equivocation(EquivocationInput),
+}
+
+/// The counter on either ground; on success, the journal `D ‖ E`.
+pub fn check_counter(input: &Counter, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<[u8; JOURNAL_LEN], Reject> {
+    match input {
+        Counter::Spent(i) => check(i, chain_id, verify_chain),
+        Counter::Equivocation(i) => equivocation(i),
+    }
+}
+
+/// The equivocation ground: the cited note is one of the claim's, and its
+/// owner signed the other claim, through another contract.
+pub fn equivocation(input: &EquivocationInput) -> Result<[u8; JOURNAL_LEN], Reject> {
+    if input.other_c == input.c {
+        return Err(Reject::Own);
+    }
+    let Some(PostedNote::Transparent { note, sig }) = input.other.notes.get(input.which as usize) else {
+        return Err(Reject::NotYours);
+    };
+    if !input.nullifiers.contains(&note.nullifier()) {
+        return Err(Reject::NotSpent);
+    }
+    let other = input.other.fingerprint(input.other_c, &input.other_funding, input.other_b);
+    let key = VerifyingKey::from_bytes(&note.owner).map_err(|_| Reject::NotYours)?;
+    let sig = Signature::try_from(&sig[..]).map_err(|_| Reject::NotYours)?;
+    key.verify_raw(&signed_digest(&other), &sig).map_err(|_| Reject::NotYours)?;
+    let mut journal = [0u8; JOURNAL_LEN];
+    journal[..32].copy_from_slice(&input.d);
+    journal[32..].copy_from_slice(&fingerprint(input.c, &input.funding, input.b, input.h_s, &input.sr_s, &input.nullifiers));
+    Ok(journal)
+}
+
 // ----- the encoding -----
+
+impl EquivocationInput {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut w = crate::exit::W(Vec::new());
+        w.put(&self.c.to_be_bytes());
+        w.put(&self.funding.to_bytes());
+        w.put(&self.b.to_be_bytes());
+        w.put(&self.h_s.to_be_bytes());
+        w.put(&self.sr_s);
+        w.list(&self.nullifiers);
+        w.put(&self.d);
+        w.put(&self.other_c.to_be_bytes());
+        w.put(&self.other_funding.to_bytes());
+        w.put(&self.other_b.to_be_bytes());
+        w.bytes(&self.other.to_bytes());
+        w.put(&[self.which]);
+        w.0
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Result<EquivocationInput, Reject> {
+        let mut r = crate::exit::R(b);
+        let (c, funding, b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
+        let (h_s, sr_s, nullifiers, d) = (u64::from_be_bytes(r.take()?), r.take()?, r.list()?, r.take()?);
+        let (other_c, other_funding, other_b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
+        let (other, [which]) = (Posted::from_bytes(&r.bytes()?)?, r.take()?);
+        if !r.0.is_empty() {
+            return Err(Reject::Encoding);
+        }
+        Ok(EquivocationInput { c, funding, b, h_s, sr_s, nullifiers, d, other_c, other_funding, other_b, other, which })
+    }
+}
+
+impl Counter {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let (tag, body) = match self {
+            Counter::Spent(i) => (0, i.to_bytes()),
+            Counter::Equivocation(i) => (1, i.to_bytes()),
+        };
+        [&[tag][..], &body].concat()
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Result<Counter, Reject> {
+        match b.split_first() {
+            Some((0, rest)) => Ok(Counter::Spent(CounterInput::from_bytes(rest)?)),
+            Some((1, rest)) => Ok(Counter::Equivocation(EquivocationInput::from_bytes(rest)?)),
+            _ => Err(Reject::Encoding),
+        }
+    }
+}
 
 impl CounterInput {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -184,12 +285,7 @@ impl CounterInput {
             None => w.put(&[0]),
             Some(r) => {
                 w.put(&[1]);
-                w.bytes(&r.tx);
-                w.put(&r.header);
-                w.put(&r.index.to_be_bytes());
-                w.list(&r.path);
-                w.bytes(&r.coinbase);
-                w.list(&r.coinbase_path);
+                r.write(&mut w);
             }
         }
         w.list(&self.earlier);
@@ -212,7 +308,7 @@ impl CounterInput {
         let (before, roots) = (r.take()?, r.list()?);
         let request = match r.take()? {
             [0] => None,
-            [1] => Some(Request { tx: r.bytes()?, header: r.take()?, index: u32::from_be_bytes(r.take()?), path: r.list()?, coinbase: r.bytes()?, coinbase_path: r.list()? }),
+            [1] => Some(Request::read(&mut r)?),
             _ => return Err(Reject::Encoding),
         };
         let earlier = r.list()?;
@@ -227,46 +323,20 @@ impl CounterInput {
 mod tests {
     extern crate std;
     use super::*;
-    use crate::tests::{header_with, headers_on, key, xonly};
-    use lichen_validity::btc::sha256d;
-    use lichen_validity::{state_root, AnchorState};
+    use crate::tests::{block_with, header_with, headers_on, key, xonly};
+    use lichen_validity::{btc, state_root, AnchorState};
     use std::vec;
 
-    /// A transaction spending `op`, non-witness.
-    fn tx_spending(op: &OutPoint) -> Vec<u8> {
-        let mut t = vec![2, 0, 0, 0, 1];
-        t.extend_from_slice(&op.to_bytes());
-        t.extend_from_slice(&[0, 0xff, 0xff, 0xff, 0xff, 1]);
-        t.extend_from_slice(&1000u64.to_le_bytes());
-        t.extend_from_slice(&[1, 0x51, 0, 0, 0, 0]);
-        t
-    }
-
-    fn coinbase() -> Vec<u8> {
-        let mut c = tx_spending(&OutPoint { txid: [0; 32], vout: u32::MAX });
-        c[41] = 2; // a script of two bytes: no 64-byte coinbase
-        c.splice(42..42, [1, 7]);
-        c
-    }
-
-    /// A block of the coinbase and `tx` on `prev`: its header, and the
-    /// request in it.
-    fn block_with(prev: &Hash, tx: Vec<u8>) -> ([u8; 80], Request) {
-        let (cb, id) = (coinbase(), sha256d(&tx));
-        let cb_id = sha256d(&cb);
-        let mut pair = [0u8; 64];
-        pair[..32].copy_from_slice(&cb_id);
-        pair[32..].copy_from_slice(&id);
-        let header = header_with(prev, &sha256d(&pair));
-        (header, Request { tx, header, index: 1, path: vec![cb_id], coinbase: cb, coinbase_path: vec![id] })
+    fn tx_spending(op: &OutPoint) -> (Vec<u8>, Hash) {
+        crate::tests::tx_spending(op, &[&[1, 2, 3]])
     }
 
     const FUNDING: OutPoint = OutPoint { txid: [12; 32], vout: 2 };
 
     /// Contract 42's claim of 9 from `S` (height 3), two notes; the first
     /// spent (an ordinary spend) at `S'`, height 5, anchored; the chain
-    /// receipt at 6. Ten headers on the anchor's block, `request` in the
-    /// third.
+    /// receipt at 6. Twelve headers on the anchor's block, `request` in
+    /// the third.
     fn input() -> (CounterInput, Hash) {
         let (seq, hub) = (key(1), key(2));
         let (nf, other) = ([0x31; 32], [0x40; 32]);
@@ -278,7 +348,7 @@ mod tests {
         let mut headers = headers_on(&Header(anchor_block).hash(), 2);
         let (req_block, request) = block_with(&Header(headers[1]).hash(), tx_spending(&FUNDING));
         headers.push(req_block);
-        headers.extend(headers_on(&Header(req_block).hash(), 7));
+        headers.extend(headers_on(&Header(req_block).hash(), 9));
         let anchor = AnchorState { genesis: OutPoint { txid: [3; 32], vout: 1 }, sequencer: xonly(&seq), seal: OutPoint { txid: [4; 32], vout: 0 }, height: 5, root, block: Header(anchor_block).hash() };
         let (sr_s, before) = ([0x33; 32], [0x30; 32]);
         let roots = vec![[0x34; 32], root, [0x36; 32]];
@@ -339,6 +409,9 @@ mod tests {
         // the encoding round-trips, and refuses a byte more or less
         assert_eq!(CounterInput::from_bytes(&i.to_bytes()).unwrap(), i);
         assert_eq!(CounterInput::from_bytes(&i.to_bytes()[1..]), Err(Reject::Encoding));
+        let c = Counter::Spent(i.clone());
+        assert_eq!(Counter::from_bytes(&c.to_bytes()), Ok(c.clone()));
+        assert_eq!(check_counter(&c, &id, &mut ok(&i, &id)), Ok(j));
         let mut long = i.to_bytes();
         long.push(0);
         assert_eq!(CounterInput::from_bytes(&long), Err(Reject::Encoding));
@@ -382,6 +455,74 @@ mod tests {
         assert_eq!(counts(&w), Err(Reject::NotSpent));
     }
 
+    /// Alice's claim through contract 42 (`exit`'s), and her signed claim
+    /// of the same notes through 43, as its `request` posted it: an
+    /// equivocation citing her transparent note.
+    fn equivocation_input() -> EquivocationInput {
+        let (claim, _) = crate::exit::tests::input();
+        let mut other = claim.clone();
+        (other.c, other.funding) = (43, OutPoint { txid: [13; 32], vout: 0 });
+        crate::exit::tests::sign(&mut other);
+        let posted = Posted::of(&other);
+        let which = posted.notes.iter().position(|n| matches!(n, PostedNote::Transparent { .. })).unwrap() as u8;
+        let p = Posted::of(&claim);
+        EquivocationInput {
+            c: claim.c,
+            funding: claim.funding,
+            b: claim.b,
+            h_s: p.h_s,
+            sr_s: p.sr_s,
+            nullifiers: p.nullifiers(),
+            d: [0x0d; 32],
+            other_c: other.c,
+            other_funding: other.funding,
+            other_b: other.b,
+            other: posted,
+            which,
+        }
+    }
+
+    #[test]
+    fn a_note_claimed_through_two_contracts() {
+        let i = equivocation_input();
+        let j = equivocation(&i).unwrap();
+        assert_eq!(&j[..32], &[0x0d; 32], "D as given: no state");
+        assert_eq!(&j[32..], &fingerprint(42, &i.funding, i.b, i.h_s, &i.sr_s, &i.nullifiers));
+        let c = Counter::Equivocation(i.clone());
+        assert_eq!(check_counter(&c, &[8; 32], &mut |_| false), Ok(j));
+        assert_eq!(Counter::from_bytes(&c.to_bytes()), Ok(c.clone()));
+        assert_eq!(Counter::from_bytes(&c.to_bytes()[..c.to_bytes().len() - 1]), Err(Reject::Encoding));
+        // the same contract: her own claim
+        let mut x = i.clone();
+        x.other_c = 42;
+        assert_eq!(equivocation(&x), Err(Reject::Own));
+        // a signature on another claim than the one cited (another b, so
+        // another E')
+        let mut x = i.clone();
+        x.other_b -= 1;
+        assert_eq!(equivocation(&x), Err(Reject::NotYours));
+        // a shielded note: nothing signed to cite; no note at all
+        let mut x = i.clone();
+        x.which = x.other.notes.iter().position(|n| matches!(n, PostedNote::Shielded { .. })).unwrap() as u8;
+        assert_eq!(equivocation(&x), Err(Reject::NotYours));
+        let mut x = i.clone();
+        x.which = 2;
+        assert_eq!(equivocation(&x), Err(Reject::NotYours));
+        // a note the claim doesn't name
+        let mut x = i.clone();
+        let PostedNote::Transparent { note, .. } = &x.other.notes[x.which as usize] else { unreachable!() };
+        let nf = note.nullifier();
+        x.nullifiers.retain(|n| *n != nf);
+        assert_eq!(equivocation(&x), Err(Reject::NotSpent));
+        // someone else's key over the note: not the owner's signature
+        let mut x = i.clone();
+        let other_e = x.other.fingerprint(x.other_c, &x.other_funding, x.other_b);
+        if let PostedNote::Transparent { sig, .. } = &mut x.other.notes[x.which as usize] {
+            *sig = key(9).sign_raw(&signed_digest(&other_e), &[0; 32]).unwrap().to_bytes();
+        }
+        assert_eq!(equivocation(&x), Err(Reject::NotYours));
+    }
+
     #[test]
     fn the_grace() {
         let (mut i, id) = input();
@@ -422,15 +563,26 @@ mod tests {
         r.request = Some(req);
         assert_eq!(counts(&r).unwrap_err(), Reject::Depth, "another block breaks the chain of headers");
         let mut r = i.clone();
-        r.request.as_mut().unwrap().tx = tx_spending(&OutPoint { txid: [12; 32], vout: 3 });
+        r.request.as_mut().unwrap().tx = tx_spending(&OutPoint { txid: [12; 32], vout: 3 }).0;
         assert_eq!(counts(&r), Err(Reject::Cutoff));
+        let mut r = i.clone();
+        r.request.as_mut().unwrap().reserved = [0; 32];
+        assert_eq!(counts(&r), Err(Reject::Cutoff), "another witness reserved value");
+        // request at the tip: in the headers, but without the work on it
+        let mut r = i.clone();
+        let tip = Header(*r.state.headers.last().unwrap()).hash();
+        let (h, req) = block_with(&tip, tx_spending(&FUNDING));
+        r.state.headers.push(h);
+        r.request = Some(req);
+        assert!(r.state.check(&r.tree, &id, &mut ok(&r, &id)).is_ok());
+        assert_eq!(counts(&r), Err(Reject::Cutoff), "a block at the tip is cheap to forge");
         let mut r = i.clone();
         let (h, req) = block_with(&[0x55; 32], tx_spending(&FUNDING));
         r.request = Some(Request { header: h, ..req });
         assert_eq!(counts(&r), Err(Reject::Cutoff), "a block that isn't on the anchor's");
         let mut r = i.clone();
-        r.request.as_mut().unwrap().path = vec![[0; 32]];
-        assert_eq!(counts(&r), Err(Reject::Cutoff));
+        r.request.as_mut().unwrap().path = vec![[1; 32]];
+        assert_eq!(counts(&r), Err(Reject::Cutoff), "a witness path but the coinbase's zero");
         let mut r = i.clone();
         r.request.as_mut().unwrap().coinbase_path.push([0; 32]);
         assert_eq!(counts(&r), Err(Reject::Cutoff), "a path that isn't the tree's depth");
