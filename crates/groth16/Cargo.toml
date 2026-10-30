@@ -1,0 +1,17 @@
+[package]
+name = "lichen-groth16"
+description = "A RISC Zero Groth16 receipt's check over substrate-bn: the counter's, in the BABE guest"
+# self-contained (not inherited from the workspace): the BABE guest builds
+# it alone, with RISC Zero's accelerated substrate-bn patched in
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+substrate-bn = "0.6"
+sha2 = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+# the check it must agree with: ln-gap's, arkworks', native
+lngap-zk = { path = "../../../ln-gap/crates/apps/zk" }
+hex = "0.4"
