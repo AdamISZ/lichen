@@ -551,7 +551,7 @@ impl Wallet {
         let (dispute, setup) = match statement.gadget() {
             Gadget::BitVmx => (RequestKeys::BitVmx(engine::bitvmx::request_keys(&secrets, program.context("the statement's program")?)), None),
             Gadget::Babe => {
-                let (keys, setup) = self.babe_request(hub, dep.cid, &secrets, net)?;
+                let (keys, setup) = self.babe_request(hub, dep.cid, coin.0, &secrets, net)?;
                 (RequestKeys::Babe(Box::new(keys)), Some(setup))
             }
         };

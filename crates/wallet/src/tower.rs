@@ -221,7 +221,7 @@ impl Signer for PackageSigner {
 }
 
 impl crate::engine::babe::Secrets for PackageSigner {
-    fn request_wire(&self, b: u32) -> Result<Vec<Vec<u8>>> {
+    fn request_wire(&self, b: u32, _exit: bool) -> Result<Vec<Vec<u8>>> {
         ensure!(b == self.p.b, "the claim's b is {b}, the package's {}", self.p.b);
         self.p.b_wire.iter().map(|h| Ok(hex::decode(h)?)).collect()
     }
@@ -380,7 +380,7 @@ impl Wallet {
         let kind = statement.babe_kind().context("not a BABE statement")?;
         ensure!(kind.verify(&h.record.babe_journal()?, &proof), "the proof doesn't verify for contract {cid}'s journal: the hub would challenge it and win");
         let s = self.secrets(&h.nonce);
-        let b_wire = Babe::request_wire(&s.babe_b().sign(&b.to_be_bytes())?).iter().map(hex::encode).collect();
+        let b_wire = crate::engine::babe::return_wire(&s, b, h.record.babe()?.exit.is_some())?.iter().map(hex::encode).collect();
         let pi1 = s.babe_lamport().sign(&digits(&lichen_babe::gadget::input(&proof.a))).iter().map(hex::encode).collect();
         let fee_key = hex::encode(s.fees(h.record.network).keypair.secret_bytes());
         Ok(Package {

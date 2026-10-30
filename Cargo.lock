@@ -1776,6 +1776,7 @@ dependencies = [
  "blake3",
  "hex",
  "k256",
+ "lichen-groth16",
  "lichen-withdraw",
  "lngap-btc",
  "lngap-channel",

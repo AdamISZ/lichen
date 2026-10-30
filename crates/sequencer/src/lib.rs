@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
-use lichen_l2::{Applied, ChainReceipt, Event, Hold, Refused, State};
+use lichen_l2::{Applied, ChainReceipt, Event, Hold, Refused, Spent, State};
 use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{files, xonly, Deployment, Hash, Ledger, OutPoint, Proof, Tx};
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -227,6 +227,17 @@ fn handle(sh: &Shared, method: &Method, url: &str, body: &str) -> (u16, String) 
         return match std::fs::read(&file) {
             Ok(r) => (200, serde_json::to_string(&ChainReceipt { receipt: hex::encode(r) }).unwrap()),
             Err(_) => refuse(404, format!("height {h} not proved (yet)")),
+        };
+    }
+    if let (Method::Get, Some(q)) = (method, url.strip_prefix("/spent/")) {
+        // how a nullifier (hex) was spent: its leaf, and the height whose
+        // block spent it
+        let Some(nf) = hex::decode(q).ok().and_then(|v| <Hash>::try_from(v).ok()) else {
+            return refuse(400, "a nullifier is 32 bytes, hex".into());
+        };
+        return match l.nullifiers.spent(&nf) {
+            Some((leaf, height)) => (200, serde_json::to_string(&Spent { leaf: hex::encode(leaf), height }).unwrap()),
+            None => refuse(404, "not spent".into()),
         };
     }
     if let (Method::Get, Some(q)) = (method, url.strip_prefix("/kit/")) {

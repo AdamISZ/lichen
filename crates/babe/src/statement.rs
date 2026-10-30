@@ -15,7 +15,7 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisE
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_snark::SNARK;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
-use lichen_withdraw::fixed::{key_digest, DIGITS, JOURNAL_LEN};
+use lichen_withdraw::fixed::{key_digest, DIGITS, JOURNAL_LEN, K_LEN};
 use sha2::{Digest, Sha256};
 
 use crate::field::BITS;
@@ -84,6 +84,36 @@ impl Kind {
     /// Whether `proof` is valid for the contract of `journal`.
     pub fn verify(&self, journal: &[u8], proof: &Proof<Bn254>) -> bool {
         Groth16::<Bn254>::verify(&self.verifying_key(), &self.public_inputs(journal), proof).unwrap_or(false)
+    }
+}
+
+/// A counter's journal, `D ‖ E` (`lichen_withdraw::counter`).
+pub type CounterJournal = [u8; 64];
+
+/// On the mock statement, the hub's counter `K` to the claim of `journal`:
+/// a seal anyone can make, so the mock trusts the hub to counter only
+/// what its native check of the counter holds (and the regtest tests to
+/// forge one when they mean to).
+pub fn mock_counter(journal: &CounterJournal) -> [u8; K_LEN] {
+    let h: [u8; 32] = Sha256::new().chain_update(b"lichen/mock-counter").chain_update(journal).finalize().into();
+    core::array::from_fn(|i| h[i % 32])
+}
+
+/// The counter guest's image id, once it is built and committed
+/// (`r0/guests/counter.id`); none before, and no counter verifies on the
+/// real statement.
+pub fn counter_image_id() -> Option<[u8; 32]> {
+    None
+}
+
+impl Kind {
+    /// Whether `k` is a counter for `journal`: a Groth16 proof of the
+    /// counter guest with that journal, or on the mock its seal.
+    pub fn verify_counter(&self, k: &[u8], journal: &CounterJournal) -> bool {
+        match self {
+            Kind::Risc0 => counter_image_id().is_some_and(|id| lichen_groth16::verify(&id, k, journal)),
+            Kind::Mock => k == mock_counter(journal),
+        }
     }
 }
 

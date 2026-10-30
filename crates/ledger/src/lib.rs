@@ -392,6 +392,11 @@ impl Nullifiers {
         let e = self.entries_at(h);
         (lichen_validity::smt::root(&e, empties()), lichen_validity::smt::proof(&e, nf, empties()))
     }
+    /// How `nf` was spent, if it was: its leaf, and the height whose block
+    /// spent it (0 for a ledger kept before heights were).
+    pub fn spent(&self, nf: &Hash) -> Option<(Hash, u64)> {
+        self.set.contains(nf).then(|| (self.leaf(nf), self.at.get(nf).copied().unwrap_or(0)))
+    }
     /// Whether `nf` was spent by height `h`.
     pub fn spent_by(&self, nf: &Hash, h: u64) -> bool {
         self.set.contains(nf) && self.at.get(nf).is_none_or(|&a| a <= h)

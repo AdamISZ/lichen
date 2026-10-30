@@ -254,6 +254,14 @@ pub struct Hold {
     pub sig: String,
 }
 
+/// How a nullifier was spent (`GET /spent/<nf>`): its leaf
+/// (`lichen_validity::smt`), hex, and the height whose block spent it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Spent {
+    pub leaf: String,
+    pub height: u64,
+}
+
 impl Hold {
     pub fn decode(&self) -> Result<(Vec<Hash>, Vec<u8>)> {
         let nfs = self.nfs.iter().map(|h| hex::decode(h).ok().and_then(|v| v.try_into().ok()).context("a nullifier of 32 bytes, hex")).collect::<Result<_>>()?;
@@ -322,6 +330,19 @@ impl Client {
             Ok(r) => Ok(r.into_json()?),
             Err(ureq::Error::Status(_, r)) => Err(anyhow!("the sequencer refused: {}", r.into_json::<Refused>().map_or("refused".into(), |e| e.error))),
             Err(e) => Err(anyhow!("{path}: {e}")),
+        }
+    }
+    /// How nullifier `nf` was spent, if it was: its leaf and the height
+    /// whose block spent it.
+    pub fn spent(&self, nf: &Hash) -> Result<Option<(Hash, u64)>> {
+        match ureq::get(&format!("{}/spent/{}", self.url, hex::encode(nf))).call() {
+            Ok(r) => {
+                let s: Spent = r.into_json()?;
+                let leaf = hex::decode(&s.leaf).ok().and_then(|v| v.try_into().ok()).context("a leaf of 32 bytes, hex")?;
+                Ok(Some((leaf, s.height)))
+            }
+            Err(ureq::Error::Status(404, _)) => Ok(None),
+            Err(e) => Err(anyhow!("/spent: {e}")),
         }
     }
     /// The ledger, its sealed roots checked.

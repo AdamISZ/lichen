@@ -40,8 +40,9 @@ use super::{confirmed_at, wait_link, ContractSecrets, Engine, Next, Outcome, Wal
 /// `wrongly_challenged` was made at the opening), so a tower can play it
 /// from the signatures alone.
 pub trait Secrets {
-    /// Her signature on `b`, as `request` takes it.
-    fn request_wire(&self, b: u32) -> Result<Vec<Vec<u8>>>;
+    /// Her signature on `b`, as `request` takes it (with the exit, her
+    /// signature on [`RETURN_E`] beside it: a return's dispute).
+    fn request_wire(&self, b: u32, exit: bool) -> Result<Vec<Vec<u8>>>;
     /// Her Lamport signature on π1's digits: a preimage a digit.
     fn sign_pi1(&self, digits: &[u8]) -> Result<Vec<Preimage>>;
 }
@@ -59,20 +60,40 @@ impl ContractSecrets {
     pub fn babe_adaptor(&self) -> AdaptorKeys {
         AdaptorKeys::new(&self.babe_seed(), DIGITS)
     }
+    /// Her one-time key for `E`, the exit's claim (32 bytes).
+    pub fn babe_e(&self) -> WotsSecret {
+        WotsSecret::from_entropy(WotsParams::for_bytes(32), self.wots("babe/e"))
+    }
+}
+
+/// The `E` a return's dispute signs in a contract with the exit: no
+/// exit's claim (its branch of the statement doesn't read `E`).
+pub const RETURN_E: [u8; 32] = [0; 32];
+
+/// `request`'s wire for a return's dispute of `b`: her signature on `b`;
+/// with the exit, on [`RETURN_E`] too, and nothing posted.
+pub fn return_wire(s: &ContractSecrets, b: u32, exit: bool) -> Result<Vec<Vec<u8>>> {
+    let b = s.babe_b().sign(&b.to_be_bytes())?;
+    if exit {
+        Babe::request_exit_wire(&b, &s.babe_e().sign(&RETURN_E)?, &[])
+    } else {
+        Ok(Babe::request_wire(&b))
+    }
 }
 
 impl Secrets for WalletSigner {
-    fn request_wire(&self, b: u32) -> Result<Vec<Vec<u8>>> {
-        Ok(Babe::request_wire(&self.secrets.babe_b().sign(&b.to_be_bytes())?))
+    fn request_wire(&self, b: u32, exit: bool) -> Result<Vec<Vec<u8>>> {
+        return_wire(&self.secrets, b, exit)
     }
     fn sign_pi1(&self, digits: &[u8]) -> Result<Vec<Preimage>> {
         Ok(self.secrets.babe_lamport().sign(digits))
     }
 }
 
-/// Her BABE keys for an opening request, and the instances she keeps.
+/// Her BABE keys for an opening request (with the exit's), and the
+/// instances she keeps.
 pub fn request_keys(s: &ContractSecrets, kept: Vec<u32>) -> BabeRequest {
-    BabeRequest { b_key: s.babe_b().public(), lamport: s.babe_lamport().public(), adaptor: s.babe_adaptor().public(), kept }
+    BabeRequest { b_key: s.babe_b().public(), lamport: s.babe_lamport().public(), adaptor: s.babe_adaptor().public(), kept, e_key: Some(s.babe_e().public()) }
 }
 
 /// Her signature on `b` as the payout's leaves take it.
@@ -131,7 +152,7 @@ impl Engine<'_> {
             std::thread::sleep(Duration::from_millis(200));
         }
         self.step(format!("requesting {b} sats, {}", d.txid("request")));
-        let at = self.post_link(chain, "request", d.finish("request", secrets.request_wire(b)?)?)?;
+        let at = self.post_link(chain, "request", d.finish("request", secrets.request_wire(b, record.babe()?.exit.is_some())?)?)?;
         if self.opts.pause_after == Some(1) {
             return Ok(Outcome::Paused);
         }

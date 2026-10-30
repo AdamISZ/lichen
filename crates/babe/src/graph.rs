@@ -391,6 +391,23 @@ impl Babe {
     pub fn respond_wire(hub: &Wots256Sig, alice: &WotsSig) -> Vec<Vec<u8>> {
         hub.consumption_order().into_iter().chain(alice.consumption_order()).rev().collect()
     }
+    /// `K` from `respond_counter`'s arguments (consumption order, below
+    /// both signatures), and the `E` the hub signed in either leaf.
+    pub fn read_respond_exit(args: &[Vec<u8>], counter: bool) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        let (b, e) = (2 * WotsParams::for_bytes(4).total_digits() as usize, WotsParams::for_bytes(32));
+        let alice_e = WotsSig::from_consumption_order(e, &args.get(2 * b..2 * b + 2 * e.total_digits() as usize).context("respond's arguments are too few")?)?;
+        let at = 2 * b + 2 * e.total_digits() as usize + e.total_digits() as usize + e.checksum_digits as usize;
+        let k = if counter {
+            let p = WotsParams::for_bytes(K_LEN as u32);
+            Some(
+                Wots256Sig::from_consumption_order(p, args.get(at..at + 2 * p.total_digits() as usize).context("respond_counter's arguments are too few")?)?
+                    .message(),
+            )
+        } else {
+            None
+        };
+        Ok((alice_e.message(), k))
+    }
     /// `respond`'s with the exit: as [`Babe::respond_wire`], then Alice's
     /// signature on `E` (from `request`) and the hub's, tied to it (its
     /// reveals, and its checksum digits); for `respond_counter`, then the
