@@ -70,6 +70,18 @@ impl State {
         }
         Ok(())
     }
+    /// The history hash at sealed height `h` (0 before the first).
+    pub fn hist_at(&self, h: u64) -> Hash {
+        self.sealed.iter().take_while(|s| s.height <= h).fold([0u8; 32], |acc, s| lichen_ledger::lichen_validity::hist_next(&acc, &s.root()))
+    }
+    /// What a chain receipt at sealed height `h` shows of the state: its
+    /// root, the recent roots' hash, the history hash.
+    pub fn chain_at(&self, h: u64) -> Result<(Hash, Hash, Hash)> {
+        let upto: Vec<&SignedRoot> = self.sealed.iter().take_while(|s| s.height <= h).collect();
+        ensure!(upto.last().is_some_and(|s| s.height == h), "no height {h} sealed");
+        let recent: Vec<Hash> = upto.iter().rev().take(lichen_ledger::lichen_validity::RECENT).rev().map(|s| s.tree).collect();
+        Ok((upto.last().unwrap().root(), lichen_ledger::lichen_validity::recent_hash(&recent), self.hist_at(h)))
+    }
     pub fn is_spent(&self, note: &Note) -> bool {
         self.nullifiers.contains(&lichen_ledger::nullifier(note))
     }
@@ -344,6 +356,19 @@ impl Client {
             Err(ureq::Error::Status(404, _)) => Ok(None),
             Err(e) => Err(anyhow!("/spent: {e}")),
         }
+    }
+    /// Nullifier `nf`'s path in the nullifier tree at sealed height `h`,
+    /// whatever its leaf. Not checked here: against the signed root, by
+    /// whoever uses it.
+    pub fn nullifier_proof(&self, nf: &Hash, h: u64) -> Result<lichen_ledger::lichen_validity::smt::Proof> {
+        let path = format!("/nullifier/{h}/{}", hex::encode(nf));
+        let v: serde_json::Value = match ureq::get(&format!("{}{path}", self.url)).call() {
+            Ok(r) => r.into_json()?,
+            Err(ureq::Error::Status(_, r)) => anyhow::bail!("the sequencer refused: {}", r.into_json::<Refused>().map_or("refused".into(), |e| e.error)),
+            Err(e) => anyhow::bail!("{path}: {e}"),
+        };
+        let h32 = |s: &serde_json::Value| -> Result<Hash> { hex::decode(s.as_str().context("hex")?)?.try_into().map_err(|_| anyhow!("32 bytes")) };
+        Ok(lichen_ledger::lichen_validity::smt::Proof { bitmap: h32(&v["bitmap"])?, siblings: v["siblings"].as_array().context("siblings")?.iter().map(h32).collect::<Result<_>>()? })
     }
     /// The ledger, its sealed roots checked.
     pub fn state(&self) -> Result<State> {

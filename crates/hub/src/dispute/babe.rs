@@ -210,6 +210,29 @@ impl Inner {
     }
 }
 
+/// A counter's ground, found ([`Inner::babe_ground`]).
+enum Ground {
+    /// A note's owner signed a claim of it through contract `c2` (of
+    /// deposit coin `deposit`, for `b2`), as its request posted it; the
+    /// note cited, its place there.
+    Equivocation { c2: u32, deposit: lichen_ledger::OutPoint, b2: u32, other: Posted, which: u8 },
+    /// A note of the claim (its place) spent so, at the anchoring state
+    /// `anchor` holds.
+    Spent { which: u8, spent: lichen_withdraw::counter::Spent, anchor: lichen_ledger::Anchored },
+    /// A ground that will hold once anchored.
+    NotYet,
+}
+
+/// A `respond` leaf, and its wire.
+type Response = (&'static str, Vec<Vec<u8>>);
+
+/// The hub's answer to an exit claim.
+enum Answer {
+    Plain,
+    Counter([u8; lichen_withdraw::fixed::K_LEN]),
+    NotYet,
+}
+
 /// A BABE dispute's state at the hub, in play.
 pub(crate) enum State {
     /// `respond` posted: Alice's `assert` is due before `T_A`.
@@ -268,7 +291,11 @@ impl Inner {
         let first = self.chain.get_tx(&d.txid("respond")).is_none();
         let (name, wire) = match &record.babe()?.exit {
             None => ("respond", lichen_babe::graph::Babe::respond_wire(&ours, &alice_b)),
-            Some(_) => self.babe_exit_response(record, &req, &ours, &alice_b, first)?,
+            Some(_) => match self.babe_exit_response(record, &req, &ours, &alice_b, first)? {
+                Some(r) => r,
+                // a counter whose blocks aren't deep enough yet
+                None => return Ok(None),
+            },
         };
         if first {
             self.note(format!("contract {cid}: the user requests {b} sats: responding ({name})"));
@@ -281,15 +308,16 @@ impl Inner {
     /// its wire. Alice's `E` signed back under the plain key, unless her
     /// claim has a counter (`counter`'s), then under the counter key with
     /// `K`.
-    fn babe_exit_response(&self, record: &Record, req: &bitcoin::Transaction, hub_b: &lngap_lamport::winternitz::Wots256Sig, alice_b: &lngap_lamport::winternitz::WotsSig, first: bool) -> Result<(&'static str, Vec<Vec<u8>>)> {
+    fn babe_exit_response(&self, record: &Record, req: &bitcoin::Transaction, hub_b: &lngap_lamport::winternitz::Wots256Sig, alice_b: &lngap_lamport::winternitz::WotsSig, first: bool) -> Result<Option<Response>> {
         let (_, alice_e, posted) = lichen_babe::graph::Babe::read_request_exit(&Disputed::args(req))?;
         let [plain, counter, k] = hub_exit(&self.cfg.seed, record.cid());
         let e = alice_e.message();
         let b = u32::from_be_bytes(alice_b.message().try_into().map_err(|_| anyhow::anyhow!("b's signature signs 4 bytes"))?);
         let requested = confirmed_at(self, &req.compute_txid())?.context("the request is not confirmed")?;
         Ok(match self.babe_counter(record, &e, &posted, b, requested, first)? {
-            None => ("respond", lichen_babe::graph::Babe::respond_exit_wire(hub_b, alice_b, &alice_e, &plain.sign(&e)?, None)),
-            Some(seal) => ("respond_counter", lichen_babe::graph::Babe::respond_exit_wire(hub_b, alice_b, &alice_e, &counter.sign(&e)?, Some(&k.sign(&seal)?))),
+            Answer::Plain => Some(("respond", lichen_babe::graph::Babe::respond_exit_wire(hub_b, alice_b, &alice_e, &plain.sign(&e)?, None))),
+            Answer::Counter(seal) => Some(("respond_counter", lichen_babe::graph::Babe::respond_exit_wire(hub_b, alice_b, &alice_e, &counter.sign(&e)?, Some(&k.sign(&seal)?)))),
+            Answer::NotYet => None,
         })
     }
 
@@ -311,22 +339,23 @@ impl Inner {
             .collect()
     }
 
-    /// Whether the counter's grounds hold against the claim `claim` of `b`
-    /// in contract `record` (natively, as the counter guest would check
-    /// them; the real statement's guest proves it): a note's owner signed
-    /// a claim of it through another contract; or a note was retired by
-    /// another contract's exit record; or spent at a state anchored by the
-    /// block of `request` (confirmed at `requested`), after the claim's.
-    fn babe_counter_holds(&self, record: &Record, claim: &Posted, b: u32, requested: u32) -> Result<Option<String>> {
+    /// A counter's ground against the claim `claim` of `b` in contract
+    /// `record`, if one holds natively (the counter guest checks it): a
+    /// note's owner signed a claim of it through another contract; a note
+    /// was retired by another contract's exit record; or spent at a state
+    /// anchored by the block of `request` (confirmed at `requested`), after
+    /// the claim's. With it, why, for the log.
+    fn babe_ground(&self, record: &Record, claim: &Posted, b: u32, requested: u32) -> Result<Option<(String, Ground)>> {
         let c = record.cid();
         let nfs = claim.nullifiers();
         for (c2, deposit, b2, other) in self.babe_claims_posted(c) {
             let e2 = other.fingerprint(c2, &deposit, b2);
-            for n in &other.notes {
+            for (which, n) in other.notes.iter().enumerate() {
                 if let PostedNote::Transparent { note, sig } = n {
                     let signed = lichen_ledger::verify(&note.owner, &lichen_withdraw::exit::signed_digest(&e2), sig).is_ok();
                     if signed && nfs.contains(&note.nullifier()) {
-                        return Ok(Some(format!("its owner claimed a note of it through contract {c2} too")));
+                        let g = Ground::Equivocation { c2, deposit, b2, other: other.clone(), which: which as u8 };
+                        return Ok(Some((format!("its owner claimed a note of it through contract {c2} too"), g)));
                     }
                 }
             }
@@ -334,44 +363,147 @@ impl Inner {
         let state = self.seq.state()?;
         let cids: Vec<u32> = self.open.lock().unwrap().keys().copied().collect();
         let hub = self.seq.deployment.hub;
-        for nf in &nfs {
+        for (which, nf) in nfs.iter().enumerate() {
             let Some((leaf, height)) = self.seq.spent(nf)? else { continue };
             // spent at the claim's state or before: the claim is false, no
             // counter needed (the judge sees to it)
             if height <= claim.h_s {
                 continue;
             }
-            // an exit record: another contract's counts whenever
+            // the anchoring states holding the spend, the earliest first
+            let holding = state.anchors.iter().filter(|a| a.anchor.height >= height);
+            // an exit record: another contract's counts whenever anchored
             if let Some(c2) = cids.iter().find(|c2| lichen_ledger::lichen_validity::smt::exited(**c2) == leaf) {
                 if *c2 == c {
                     continue;
                 }
-                return Ok(Some(format!("a note of it was retired by contract {c2}'s exit record")));
+                let Some(a) = holding.clone().next() else {
+                    return Ok(Some(("a note of it was retired by another contract's exit record, not yet anchored".into(), Ground::NotYet)));
+                };
+                let spent = lichen_withdraw::counter::Spent::Exit { c: *c2 };
+                return Ok(Some((format!("a note of it was retired by contract {c2}'s exit record"), Ground::Spent { which: which as u8, spent, anchor: *a })));
             }
-            // a return of at least b to this contract never counts
-            let own = state.transparent().any(|(_, n)| n.owner == hub && n.memo == c && n.value >= u64::from(b) && lichen_ledger::lichen_validity::smt::returned(c, n.value) == leaf);
-            if own {
-                continue;
-            }
+            // a return: of at least b to this contract never counts; any
+            // other, as an ordinary spend
+            let ret = state.transparent().find(|(_, n)| n.owner == hub && n.memo != 0 && lichen_ledger::lichen_validity::smt::returned(n.memo, n.value) == leaf).map(|(_, n)| (n.memo, n.value));
+            let spent = match ret {
+                Some((m, r)) if m == c && r >= u64::from(b) => continue,
+                Some((m, r)) => lichen_withdraw::counter::Spent::Return { c: m, r },
+                None => lichen_withdraw::counter::Spent::Spend,
+            };
             // an ordinary spend: final once anchored by the request's block
-            for a in &state.anchors {
+            for a in holding {
                 let block = <bitcoin::BlockHash as bitcoin::hashes::Hash>::from_byte_array(a.anchor.block);
-                if a.anchor.height >= height && self.chain.block_height(&block)?.is_some_and(|h| h <= requested) {
-                    return Ok(Some(format!("a note of it was spent at height {height}, anchored before the request")));
+                if self.chain.block_height(&block)?.is_some_and(|h| h <= requested) {
+                    return Ok(Some((format!("a note of it was spent at height {height}, anchored before the request"), Ground::Spent { which: which as u8, spent, anchor: *a })));
                 }
             }
         }
         Ok(None)
     }
 
-    /// The hub's counter `K` to the claim `e`, posted as `posted`, of `b`
-    /// in contract `record` (its request confirmed at `requested`), if it
-    /// has one; and with none, the claim held and its exit recorded on the
-    /// L2. Nothing posted: a return's dispute.
-    fn babe_counter(&self, record: &Record, e: &[u8], posted: &[u8], b: u32, requested: u32, first: bool) -> Result<Option<[u8; lichen_withdraw::fixed::K_LEN]>> {
+    /// The counter guest's input for `ground` against the claim `claim`, `e`,
+    /// of `b` in contract `record`: none yet while the blocks the counter
+    /// needs aren't deep enough (its later state's anchor, and `request`'s
+    /// block for its cutoff, each with the contract's work on it).
+    fn babe_counter_input(&self, record: &Record, claim: &Posted, b: u32, ground: &Ground) -> Result<Option<lichen_withdraw::counter::Counter>> {
+        use lichen_withdraw::counter::{Counter, CounterInput, EquivocationInput, Spent};
+        let c = record.cid();
+        let x = record.babe()?.exit.clone().context("a contract without the exit")?;
+        let deposit = statement_outpoint(&x.hub.deposit);
+        Ok(Some(match ground {
+            Ground::NotYet => return Ok(None),
+            Ground::Equivocation { c2, deposit: d2, b2, other, which } => Counter::Equivocation(EquivocationInput {
+                c,
+                deposit,
+                b,
+                h_s: claim.h_s,
+                sr_s: claim.sr_s,
+                nullifiers: claim.nullifiers(),
+                d: record.deployment,
+                other_c: *c2,
+                other_deposit: *d2,
+                other_b: *b2,
+                other: other.clone(),
+                which: *which,
+            }),
+            Ground::Spent { which, spent, anchor: a } => {
+                let state = self.seq.state()?;
+                let work = record.checkpoint.as_ref().context("an anchored contract's checkpoint")?.work();
+                let h2 = a.anchor.height;
+                let s2 = state.sealed.iter().find(|s| s.height == h2).context("the later state isn't sealed")?;
+                let (chain_root, recent, hist) = state.chain_at(a.from)?;
+                let block = <bitcoin::BlockHash as bitcoin::hashes::Hash>::from_byte_array(a.anchor.block);
+                let at = self.chain.block_height(&block)?.context("the anchor's block isn't on the chain")?;
+                let headers = self.chain.headers_after(&block, (self.chain.height()? - at) as usize)?;
+                let deep = |from: usize| headers.get(from..).is_some_and(|h| h.iter().map(|h| lichen_ledger::lichen_validity::btc::work(u32::from_le_bytes(h[72..76].try_into().unwrap()))).sum::<u128>() >= work);
+                if !deep(0) {
+                    return Ok(None);
+                }
+                let request = match spent {
+                    Spent::Exit { .. } => None,
+                    _ => {
+                        let d = Disputed::new(record, &self.cfg.statement)?;
+                        let funding = self.chain.get_tx(&record.funding.txid).context("the funding")?;
+                        let r = lichen_proto::exit::request_proof(&self.chain, &funding, &d.txid("request"))?;
+                        let rh = lichen_ledger::lichen_validity::btc::Header(r.header).hash();
+                        let in_anchor = rh == a.anchor.block;
+                        match headers.iter().position(|h| lichen_ledger::lichen_validity::btc::Header(*h).hash() == rh) {
+                            _ if in_anchor => {}
+                            Some(p) if deep(p) => {}
+                            _ => return Ok(None),
+                        }
+                        Some(r)
+                    }
+                };
+                let nf = claim.nullifiers()[*which as usize];
+                let roots = state.sealed.iter().filter(|s| s.height > claim.h_s && s.height <= a.from).map(|s| s.root()).collect();
+                let d = self.seq.deployment;
+                Counter::Spent(CounterInput {
+                    c,
+                    deposit,
+                    b,
+                    h_s: claim.h_s,
+                    sr_s: claim.sr_s,
+                    nullifiers: claim.nullifiers(),
+                    which: *which,
+                    spent: *spent,
+                    state: lichen_withdraw::Anchored {
+                        height: h2,
+                        nullifiers: s2.nullifiers,
+                        signature: s2.signature.as_slice().try_into().context("a signature of 64 bytes")?,
+                        sequencer: d.sequencer,
+                        hub: d.hub,
+                        chain_height: a.from,
+                        chain_root,
+                        recent,
+                        hist,
+                        anchor: a.anchor,
+                        headers,
+                        work,
+                    },
+                    tree: s2.tree,
+                    proof: self.seq.nullifier_proof(&nf, h2)?,
+                    before: state.hist_at(claim.h_s - 1),
+                    roots,
+                    request,
+                    earlier: vec![],
+                })
+            }
+        }))
+    }
+
+    /// The hub's answer to the claim `e`, posted as `posted`, of `b` in
+    /// contract `record` (its request confirmed at `requested`): a counter
+    /// `K` when a ground holds (its input checked natively; on the mock its
+    /// seal, on the real statement the counter guest's proof, by the
+    /// prover); none, and the claim held and its exit recorded on the L2;
+    /// or not yet, while the counter's blocks aren't deep enough. Nothing
+    /// posted: a return's dispute.
+    fn babe_counter(&self, record: &Record, e: &[u8], posted: &[u8], b: u32, requested: u32, first: bool) -> Result<Answer> {
         let cid = record.cid();
         if posted.is_empty() {
-            return Ok(None);
+            return Ok(Answer::Plain);
         }
         let x = record.babe()?.exit.clone().context("a contract without the exit")?;
         let deposit = statement_outpoint(&x.hub.deposit);
@@ -381,23 +513,40 @@ impl Inner {
                 if first {
                     self.note(format!("contract {cid}: the request posts no claim its E names: no claim to answer"));
                 }
-                return Ok(None);
+                return Ok(Answer::Plain);
             }
         };
         let kind = self.babe_kind()?;
         let journal: lichen_babe::statement::CounterJournal = [&record.deployment[..], e].concat().try_into().expect("64 bytes");
         if self.forge_counters.load(std::sync::atomic::Ordering::Relaxed) {
             self.note(format!("contract {cid}: countering the exit claim with a forged K"));
-            return Ok(Some([7; lichen_withdraw::fixed::K_LEN]));
+            return Ok(Answer::Counter([7; lichen_withdraw::fixed::K_LEN]));
         }
-        if let Some(why) = self.babe_counter_holds(record, &claim, b, requested)? {
+        if let Some((why, ground)) = self.babe_ground(record, &claim, b, requested)? {
+            let Some(input) = self.babe_counter_input(record, &claim, b, &ground)? else {
+                self.note_once(format!("contract {cid}: the exit claim has a counter ({why}): waiting for its blocks to be deep enough"));
+                return Ok(Answer::NotYet);
+            };
+            // natively first, as the counter guest: on the mock without
+            // its chain receipt
+            let ok = match &input {
+                lichen_withdraw::counter::Counter::Spent(_) if kind == lichen_babe::statement::Kind::Risc0 => true,
+                _ => lichen_withdraw::counter::check_counter(&input, &[0; 32], &mut |_| true).is_ok_and(|j| j == journal),
+            };
+            if !ok {
+                self.note(format!("contract {cid}: the exit claim's counter ({why}) doesn't check natively: responding plainly"));
+                return Ok(Answer::Plain);
+            }
             self.note(format!("contract {cid}: the exit claim is countered: {why}"));
             return match kind {
-                lichen_babe::statement::Kind::Mock => Ok(Some(lichen_babe::statement::mock_counter(&journal))),
-                lichen_babe::statement::Kind::Risc0 => {
-                    self.note(format!("contract {cid}: proving a counter on the real statement isn't built yet: responding plainly"));
-                    Ok(None)
-                }
+                lichen_babe::statement::Kind::Mock => Ok(Answer::Counter(lichen_babe::statement::mock_counter(&journal))),
+                lichen_babe::statement::Kind::Risc0 => match self.prove_counter(record, &input) {
+                    Ok(k) => Ok(Answer::Counter(k)),
+                    Err(e) => {
+                        self.note(format!("contract {cid}: the counter's proof: {e:#}: responding plainly"));
+                        Ok(Answer::Plain)
+                    }
+                },
             };
         }
         if first {
@@ -412,7 +561,36 @@ impl Inner {
                 Err(e) => self.note(format!("contract {cid}: the exit record: {e:#}")),
             }
         }
-        Ok(None)
+        Ok(Answer::Plain)
+    }
+
+    /// The counter guest's proof of `input` for contract `record`, by the
+    /// hub's prover (`lichen-r0`: `counter`, `wrap`, `bitvmx-input`, x86
+    /// for the wrap): its points, `K`.
+    fn prove_counter(&self, record: &Record, input: &lichen_withdraw::counter::Counter) -> Result<[u8; lichen_withdraw::fixed::K_LEN]> {
+        let prover = self.prover.lock().unwrap().clone().context("the hub has no prover (--prover)")?;
+        let work = self.cfg.dir.join("babe").join(format!("counter-{}", record.cid()));
+        std::fs::create_dir_all(&work)?;
+        let (inp, receipt, wrapped, out) = (work.join("input.bin"), work.join("counter.receipt"), work.join("counter.groth16"), work.join("counter.hex"));
+        std::fs::write(&inp, input.to_bytes())?;
+        let mut args = vec![std::ffi::OsString::from("counter"), inp.into(), receipt.clone().into()];
+        if let lichen_withdraw::counter::Counter::Spent(i) = input {
+            let r = self.seq.chain_receipt(i.state.chain_height)?.with_context(|| format!("the sequencer hasn't proved height {} yet", i.state.chain_height))?;
+            let chain = work.join("chain.receipt");
+            std::fs::write(&chain, r)?;
+            args.push(chain.into());
+        }
+        let run = |args: &[std::ffi::OsString]| -> Result<()> {
+            let s = std::process::Command::new(&prover).args(args).status().with_context(|| format!("running the prover {}", prover.display()))?;
+            anyhow::ensure!(s.success(), "the prover {} failed: {s}", prover.display());
+            Ok(())
+        };
+        run(&args)?;
+        run(&["wrap".into(), receipt.into(), wrapped.clone().into()])?;
+        run(&["bitvmx-input".into(), wrapped.into(), out.clone().into()])?;
+        let data = hex::decode(std::fs::read_to_string(&out)?.trim())?;
+        let (_, points, _) = lngap_zk::groth16::split_input(&data)?;
+        points.try_into().map_err(|_| anyhow::anyhow!("the counter's points aren't {} bytes", lichen_withdraw::fixed::K_LEN))
     }
 
     /// On the mock statement, whether Alice's assertion in a contract with

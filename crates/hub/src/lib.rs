@@ -162,6 +162,8 @@ pub(crate) struct Inner {
     leave_bits: AtomicBool,
     /// For tests: counter every exit claim, with a `K` that isn't one.
     forge_counters: AtomicBool,
+    /// The prover of counters on the real statement (`lichen-r0`), if any.
+    prover: Mutex<Option<PathBuf>>,
     /// For tests: a fault in each opening.
     opening_fault: Mutex<OpeningFault>,
     log: Mutex<Vec<String>>,
@@ -224,7 +226,7 @@ impl Hub {
         ensure!(!(cfg_refuse || cfg_dispute) || cfg.network.is_test(), "a hub refuses withdrawals or disputes true claims on test networks only, not {}", cfg.network);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), forge_counters: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), forge_counters: AtomicBool::new(false), prover: Mutex::new(None), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             for mut req in srv.incoming_requests() {
@@ -310,6 +312,12 @@ impl Hub {
     pub fn set_opening_fault(&self, f: OpeningFault) {
         self.misbehave();
         *self.inner.opening_fault.lock().unwrap() = f;
+    }
+    /// The prover of counters on the real statement: a command run as
+    /// `<prover> counter <input> <receipt> [<chain receipt>]`, then `wrap`
+    /// and `bitvmx-input` (`lichen-r0`).
+    pub fn set_prover(&self, prover: Option<PathBuf>) {
+        *self.inner.prover.lock().unwrap() = prover;
     }
     /// Counter every exit claim with a `K` that isn't a counter.
     pub fn set_forge_counters(&self, on: bool) {

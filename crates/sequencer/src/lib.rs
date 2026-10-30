@@ -240,6 +240,25 @@ fn handle(sh: &Shared, method: &Method, url: &str, body: &str) -> (u16, String) 
             None => refuse(404, "not spent".into()),
         };
     }
+    if let (Method::Get, Some(q)) = (method, url.strip_prefix("/nullifier/")) {
+        // /nullifier/<height>/<nullifier, hex>: its path in the nullifier
+        // tree at that height, its leaf whatever it is (a counter's)
+        let parsed = match q.split('/').collect::<Vec<_>>()[..] {
+            [h, nf] => h.parse::<u64>().ok().zip(hex::decode(nf).ok().and_then(|v| <Hash>::try_from(v).ok())),
+            _ => None,
+        };
+        let Some((h, nf)) = parsed else {
+            return refuse(400, "a nullifier's path is /nullifier/<height>/<nullifier, hex>".into());
+        };
+        let Some(s) = usize::try_from(h).ok().and_then(|h| h.checked_sub(1)).and_then(|i| l.sealed.get(i)) else {
+            return refuse(404, format!("no height {h} sealed"));
+        };
+        let (root, p) = l.nullifiers.proof_at(&nf, h);
+        if root != s.nullifiers {
+            return refuse(503, format!("height {h}'s nullifiers can't be rebuilt"));
+        }
+        return (200, serde_json::json!({ "bitmap": hex::encode(p.bitmap), "siblings": p.siblings.iter().map(hex::encode).collect::<Vec<_>>() }).to_string());
+    }
     if let (Method::Get, Some(q)) = (method, url.strip_prefix("/kit/")) {
         // /kit/<height>/<index>/<nullifier, hex>
         let parts: Vec<&str> = q.split('/').collect();

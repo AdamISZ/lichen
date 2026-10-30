@@ -12,8 +12,7 @@
 //! signature to post until the shielded address holds an owner key.
 
 use anyhow::{ensure, Context, Result};
-use lichen_l2::State;
-use lichen_ledger::lichen_validity::{hist_next, recent_hash, smt, TNote, RECENT};
+use lichen_ledger::lichen_validity::{smt, TNote};
 use lichen_ledger::{nullifier, Hash};
 use lichen_withdraw::exit::{fingerprint, posted, signed_digest, Claimed, ExitInput, Owned, MAX_NOTES};
 use lichen_withdraw::{Anchored, Request};
@@ -54,17 +53,6 @@ impl ExitPlan {
     }
 }
 
-/// The chain journal's fields at height `h` of `state` (what the chain
-/// receipt there shows): its root, the recent roots' hash, the history
-/// hash.
-fn chain_at(state: &State, h: u64) -> Result<(Hash, Hash, Hash)> {
-    let upto: Vec<_> = state.sealed.iter().take_while(|s| s.height <= h).collect();
-    ensure!(upto.last().is_some_and(|s| s.height == h), "no height {h} sealed");
-    let hist = upto.iter().fold([0u8; 32], |acc, s| hist_next(&acc, &s.root()));
-    let recent: Vec<Hash> = upto.iter().rev().take(RECENT).rev().map(|s| s.tree).collect();
-    Ok((upto.last().unwrap().root(), recent_hash(&recent), hist))
-}
-
 impl Wallet {
     /// Contract `cid`'s exit claim: our transparent notes in the latest
     /// anchored state (unspent now, so then), the largest first, at most
@@ -103,7 +91,7 @@ impl Wallet {
                 unspent: smt::Proof { bitmap: k.bitmap, siblings: k.siblings },
             });
         }
-        let (chain_root, recent, hist) = chain_at(&state, a.from)?;
+        let (chain_root, recent, hist) = state.chain_at(a.from)?;
         let d = self.sequencer.deployment;
         let st = Anchored {
             height: hs,

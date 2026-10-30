@@ -163,13 +163,15 @@ fn exits_on_the_mock_statement() {
     let (mut w, ch, cids) = open("sam", 1);
     let stale = w.exit_plan(cids[0]).unwrap();
     let bob = lichen_ledger::key_from_label("test/bob");
+    let old = w.notes(&w.state().unwrap());
     w.send(xonly(&bob), ask.deposit, 0).unwrap();
-    let last = {
-        wait("the payment sealed", || c.state().unwrap().sealed.last().unwrap().size > 0);
-        std::thread::sleep(Duration::from_millis(500));
-        c.state().unwrap().sealed.last().unwrap().height
-    };
-    wait("the payment anchored", || c.state().unwrap().anchors.last().is_some_and(|a| a.anchor.height >= last));
+    // the height whose block spent the old note, anchored
+    let mut spent = 0;
+    wait("the payment sealed", || {
+        spent = c.spent(&nullifier(&old[0].note)).unwrap().map_or(0, |s| s.1);
+        spent > 0 && c.state().unwrap().sealed.last().is_some_and(|s| s.height >= spent)
+    });
+    wait("the payment anchored", || c.state().unwrap().anchors.last().is_some_and(|a| a.anchor.height >= spent));
     let k = w.contracts.iter().position(|h| h.record.cid() == cids[0]).unwrap();
     w.contracts[k].exit = Some(stale);
     assert_eq!(exit(&mut w, &ch, "sam", cids[0]), Outcome::Countered, "S: the stale claim is countered");

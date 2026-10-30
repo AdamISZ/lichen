@@ -147,15 +147,18 @@ pub struct BabeOffer {
 /// the hub's response, `Δ2` for its challenge, `Δ1` for her answer to it,
 /// and the assertion's deadline early enough before `T_close` for both.
 pub fn windows(net: Net, t_close: u32) -> Windows {
+    // w_H covers a counter (docs/EXIT_PLAN.md, "Windows and load"): the
+    // contract's work on request's block (ten blocks), then the counter
+    // guest's proof and its wrap
     let (w_h, delta2, delta1) = match net {
         // blocks every 150 ms in the dispute tests
-        Net::Regtest => (10, 24, 12),
-        // 30 s blocks: 20 min, 2 h, 40 min
-        Net::Mutinynet => (40, 240, 80),
-        // 10 min blocks: 2 h, 12 h, 6 h
-        Net::Signet => (12, 72, 36),
-        // nominally 10 min, in bursts: 6 h, a day, 12 h
-        Net::Testnet4 => (36, 144, 72),
+        Net::Regtest => (24, 24, 12),
+        // 30 s blocks: 2 h, 2 h, 40 min
+        Net::Mutinynet => (240, 240, 80),
+        // 10 min blocks: 6 h, 12 h, 6 h
+        Net::Signet => (36, 72, 36),
+        // nominally 10 min, in bursts: 12 h, a day, 12 h
+        Net::Testnet4 => (72, 144, 72),
     };
     Windows { w_h, t_a: t_close.saturating_sub(u32::from(delta2) + u32::from(delta1) + u32::from(w_h)), delta2, delta1 }
 }

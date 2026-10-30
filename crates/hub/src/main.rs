@@ -56,6 +56,13 @@ struct Args {
     /// Mutinynet).
     #[arg(long)]
     duration: Option<u32>,
+    /// The prover of counters to exit claims, on the real statement: a
+    /// command run as `<prover> counter <input> <receipt> [<chain
+    /// receipt>]`, then `wrap` and `bitvmx-input` (`lichen-r0`; x86 Linux
+    /// with Docker for the wrap). Without it, the hub can't counter a claim
+    /// there, and an old state's claim is paid.
+    #[arg(long)]
+    prover: Option<PathBuf>,
     /// The dispute's windows, in blocks, `<user>,<hub>,<path>`: the user's
     /// for each of her moves, the hub's for its choices, the hub's for its
     /// heavy moves (the network's default if not given). Size the heavy
@@ -123,6 +130,7 @@ fn main() -> Result<()> {
         dispute_true_claims: a.hostile,
         first_cid: 1000,
     })?;
+    hub.set_prover(a.prover);
     println!("lichen hub at {}", hub.url);
     loop {
         std::thread::park();
