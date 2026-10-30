@@ -337,8 +337,17 @@ for it. Malformed points fail early; a counter naming another `D` or `E`
 needs only the journal compared. Unmeasured: probably tens of millions
 of cycles with RISC Zero's 256-bit accelerator, so dozens of segments,
 against days until `T_A`. It's compute only: her proof stays one
-Groth16 on chain. Composition can't help here, since an assumption
-proves a receipt valid, never invalid.
+Groth16 on chain. (Measured since: 47M cycles, step 0.)
+
+**Anyone can prove it.** The failed-counter branch has no secret
+witness: the hub's signatures on `E` and `K`, and `K`, are on chain,
+and `D` and `c` are in the journal. So Alice can hand the whole proof to
+a proving service or her tower, and nothing needs splitting off. Only
+the claim branch needs her secrets (`nk`, or her signature), and it has
+no Groth16 in it. Splitting would be possible too, as a receipt of "`K`
+fails for `D ‖ E`" that her guest composes (a valid receipt of a true
+statement, which is all an assumption needs). It saves nothing here,
+since no branch mixes the expensive part with her secrets.
 
 ### The counter
 
