@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
-use lichen_l2::{Applied, ChainReceipt, Event, Refused, State};
+use lichen_l2::{Applied, ChainReceipt, Event, Hold, Refused, State};
 use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{files, xonly, Deployment, Hash, Ledger, OutPoint, Proof, Tx};
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -229,7 +229,34 @@ fn handle(sh: &Shared, method: &Method, url: &str, body: &str) -> (u16, String) 
             Err(_) => refuse(404, format!("height {h} not proved (yet)")),
         };
     }
+    if let (Method::Get, Some(q)) = (method, url.strip_prefix("/kit/")) {
+        // /kit/<height>/<index>/<nullifier, hex>
+        let parts: Vec<&str> = q.split('/').collect();
+        let parsed = match parts[..] {
+            [h, i, nf] => h.parse::<u64>().ok().zip(i.parse::<u32>().ok()).zip(hex::decode(nf).ok().and_then(|v| <Hash>::try_from(v).ok())),
+            _ => None,
+        };
+        let Some(((h, i), nf)) = parsed else {
+            return refuse(400, "a kit is /kit/<height>/<index>/<nullifier, hex>".into());
+        };
+        return match l.kit(i, &nf, h) {
+            Ok(k) => (200, serde_json::to_string(&k).unwrap()),
+            Err(e) => refuse(404, format!("{e:#}")),
+        };
+    }
     match (method, url) {
+        (Method::Post, "/hold") => {
+            let held = serde_json::from_str::<Hold>(body).map_err(anyhow::Error::from).and_then(|h| h.decode()).and_then(|(nfs, sig)| l.hold(&nfs, &sig).map(|()| nfs.len()));
+            match held {
+                Ok(n) => {
+                    if let Err(e) = sh.save(&l) {
+                        return refuse(503, format!("{e:#}"));
+                    }
+                    (200, serde_json::json!({ "held": n }).to_string())
+                }
+                Err(e) => refuse(400, format!("{e:#}")),
+            }
+        }
         (Method::Post, "/tx") => match serde_json::from_str::<Tx>(body) {
             // the anchorer's alone: it applies a record once it has found
             // its own anchor confirmed (a record is checked against the
@@ -307,6 +334,29 @@ mod tests {
     /// An anchor record from a client is refused (the anchorer's alone),
     /// as is a body over the limit; a read doesn't rewrite the ledger; a
     /// restart clears the block files of heights the ledger never kept.
+    #[test]
+    fn serves_exit_kits_and_holds() {
+        let s = Sequencer::start("127.0.0.1:0", None, lichen_ledger::regtest_sequencer(), lichen_ledger::HUB_KEY).unwrap();
+        let c = lichen_l2::Client::new(&s.url).unwrap();
+        let (hub, alice) = (lichen_ledger::regtest_hub(), lichen_ledger::key_from_label("test/alice"));
+        let n = lichen_ledger::note(xonly(&alice), 5, 0);
+        let i = c.submit(&Tx::Mint(lichen_ledger::Mint::new(&hub, &c.deployment, vec![n]))).unwrap()[0];
+        c.seal().unwrap();
+        let nf = lichen_ledger::nullifier(&n);
+        let k = c.kit(i, &nf, 1).unwrap();
+        let st = c.state().unwrap();
+        assert!(k.check(&st.sealed[0], &n.commitment(), &nf));
+        assert!(format!("{:#}", c.kit(i, &nf, 9).unwrap_err()).contains("no such height"));
+        assert!(ureq::get(&format!("{}/kit/1/x", s.url)).call().is_err());
+        // a hold, the hub's only; then the note's spend is refused
+        assert!(c.hold(&alice, &[nf]).is_err());
+        c.hold(&hub, &[nf]).unwrap();
+        let spend = lichen_ledger::Spend { note: n, index: i };
+        let d = lichen_ledger::Transfer::digest(&[spend], &[n]);
+        let t = Tx::Transfer(lichen_ledger::Transfer { spends: vec![spend], outputs: vec![n], sigs: vec![lichen_ledger::sign(&alice, &d)] });
+        assert!(format!("{:#}", c.submit(&t).unwrap_err()).contains("claimed in an exit"));
+    }
+
     #[test]
     fn refuses_what_isnt_a_clients() {
         let dir = std::env::temp_dir().join(format!("lichen-seq-refuse-{}", std::process::id()));

@@ -23,6 +23,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{anyhow, ensure, Context, Result};
+use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{Deployment, Hash, Leaf, Ledger, Note, SignedRoot, Tree, Tx, WithdrawInput};
 use serde::{Deserialize, Serialize};
 
@@ -245,6 +246,21 @@ pub struct ChainReceipt {
     pub receipt: String,
 }
 
+/// An exit claim's nullifiers for the sequencer to hold (`POST /hold`),
+/// hex, and the hub's signature over `lichen_ledger::hold_digest`, hex.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Hold {
+    pub nfs: Vec<String>,
+    pub sig: String,
+}
+
+impl Hold {
+    pub fn decode(&self) -> Result<(Vec<Hash>, Vec<u8>)> {
+        let nfs = self.nfs.iter().map(|h| hex::decode(h).ok().and_then(|v| v.try_into().ok()).context("a nullifier of 32 bytes, hex")).collect::<Result<_>>()?;
+        Ok((nfs, hex::decode(&self.sig).context("the signature's hex")?))
+    }
+}
+
 impl Client {
     /// Connect, taking the deployment the sequencer announces (trust on
     /// first use: keep it, and use [`Client::pinned`] after).
@@ -288,6 +304,24 @@ impl Client {
             Ok(r) => Ok(Some(hex::decode(r.into_json::<ChainReceipt>()?.receipt).context("a chain receipt's hex")?)),
             Err(ureq::Error::Status(404, _)) => Ok(None),
             Err(e) => Err(anyhow!("/chain/{h}: {e}")),
+        }
+    }
+    /// Have the sequencer refuse spends of an exit claim's nullifiers
+    /// (the hub's, signing with `hub`).
+    pub fn hold(&self, hub: &SigningKey, nfs: &[Hash]) -> Result<()> {
+        let sig = lichen_ledger::sign(hub, &lichen_ledger::hold_digest(&self.deployment, nfs));
+        let _: serde_json::Value = self.post("/hold", &serde_json::to_string(&Hold { nfs: nfs.iter().map(hex::encode).collect(), sig: hex::encode(sig) })?)?;
+        Ok(())
+    }
+    /// The exit kit's part for the note at `index`, of nullifier `nf`, at
+    /// sealed height `h`: not checked here (`Kit::check`, against the
+    /// signed root).
+    pub fn kit(&self, index: u32, nf: &Hash, h: u64) -> Result<lichen_ledger::Kit> {
+        let path = format!("/kit/{h}/{index}/{}", hex::encode(nf));
+        match ureq::get(&format!("{}{path}", self.url)).call() {
+            Ok(r) => Ok(r.into_json()?),
+            Err(ureq::Error::Status(_, r)) => Err(anyhow!("the sequencer refused: {}", r.into_json::<Refused>().map_or("refused".into(), |e| e.error))),
+            Err(e) => Err(anyhow!("{path}: {e}")),
         }
     }
     /// The ledger, its sealed roots checked.

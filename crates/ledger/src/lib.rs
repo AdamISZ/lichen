@@ -325,6 +325,11 @@ pub struct Nullifiers {
     /// records'). Absent from ledgers kept before 2026-10-30.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "pairs")]
     tags: BTreeMap<Hash, Hash>,
+    /// The height whose block spent each nullifier, for proofs at an
+    /// earlier height (exit kits). Absent from ledgers kept before
+    /// 2026-10-30, whose nullifiers count as spent from the start.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "pairs")]
+    at: BTreeMap<Hash, u64>,
     #[serde(skip)]
     root: std::sync::OnceLock<Hash>,
 }
@@ -332,13 +337,13 @@ pub struct Nullifiers {
 /// A map of hashes in JSON, as a list of pairs (JSON's keys are strings).
 mod pairs {
     use super::Hash;
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::BTreeMap;
-    pub fn serialize<S: Serializer>(m: &BTreeMap<Hash, Hash>, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer, V: Serialize>(m: &BTreeMap<Hash, V>, s: S) -> Result<S::Ok, S::Error> {
         s.collect_seq(m.iter())
     }
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<Hash, Hash>, D::Error> {
-        Ok(Vec::<(Hash, Hash)>::deserialize(d)?.into_iter().collect())
+    pub fn deserialize<'de, D: Deserializer<'de>, V: Deserialize<'de>>(d: D) -> Result<BTreeMap<Hash, V>, D::Error> {
+        Ok(Vec::<(Hash, V)>::deserialize(d)?.into_iter().collect())
     }
 }
 
@@ -350,6 +355,11 @@ fn empties() -> &'static [Hash] {
 impl Nullifiers {
     pub fn contains(&self, nf: &Hash) -> bool {
         self.set.contains(nf)
+    }
+    /// Spend `nf` in the block of `height`, its leaf `leaf`.
+    pub fn insert_at(&mut self, nf: Hash, leaf: Hash, height: u64) -> bool {
+        self.at.insert(nf, height);
+        self.insert(nf, leaf)
     }
     /// Spend `nf`, its leaf `leaf` (`lichen_validity::smt`: how it was
     /// spent).
@@ -368,9 +378,23 @@ impl Nullifiers {
         self.root = std::sync::OnceLock::new();
         self.set.remove(nf);
         self.tags.remove(nf);
+        self.at.remove(nf);
     }
     fn entries(&self) -> Vec<(Hash, Hash)> {
         self.set.iter().map(|nf| (*nf, self.leaf(nf))).collect()
+    }
+    /// The nullifiers spent by height `h`, with their leaves.
+    fn entries_at(&self, h: u64) -> Vec<(Hash, Hash)> {
+        self.set.iter().filter(|nf| self.at.get(*nf).is_none_or(|&a| a <= h)).map(|nf| (*nf, self.leaf(nf))).collect()
+    }
+    /// The tree's root at height `h`, and `nf`'s path in it.
+    pub fn proof_at(&self, nf: &Hash, h: u64) -> (Hash, lichen_validity::smt::Proof) {
+        let e = self.entries_at(h);
+        (lichen_validity::smt::root(&e, empties()), lichen_validity::smt::proof(&e, nf, empties()))
+    }
+    /// Whether `nf` was spent by height `h`.
+    pub fn spent_by(&self, nf: &Hash, h: u64) -> bool {
+        self.set.contains(nf) && self.at.get(nf).is_none_or(|&a| a <= h)
     }
     pub fn root(&self) -> Hash {
         *self.root.get_or_init(|| lichen_validity::smt::root(&self.entries(), empties()))
@@ -655,6 +679,12 @@ pub struct Ledger {
     /// anchor, until the next.
     #[serde(default)]
     pub anchors: Vec<Anchored>,
+    /// Nullifiers claimed in an exit whose record hasn't retired them (a
+    /// `request` not yet confirmed, or a shielded note's claim, which no
+    /// record retires): their spends are refused, so that a spend can't
+    /// race the claim (docs/EXIT_PLAN.md, "A claim racing a spend").
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub held: BTreeSet<Hash>,
 }
 
 /// An anchoring state, from the height whose seal first carried it.
@@ -747,6 +777,8 @@ impl Ledger {
     }
 
     fn apply_tx(&mut self, tx: &Tx) -> Result<Vec<u32>> {
+        // the height whose block this joins
+        let next = self.sealed.last().map_or(1, |s| s.height + 1);
         match tx {
             Tx::Anchor(r) => {
                 let rec = lichen_validity::AnchorRecord::from_bytes(r).map_err(|e| anyhow::anyhow!("an anchor record: {e:?}"))?;
@@ -772,7 +804,7 @@ impl Ledger {
                     }
                 }
                 for nf in nfs {
-                    self.nullifiers.insert(nf, lichen_validity::smt::exited(x.c));
+                    self.nullifiers.insert_at(nf, lichen_validity::smt::exited(x.c), next);
                 }
                 Ok(vec![])
             }
@@ -785,6 +817,7 @@ impl Ledger {
                     ensure!(self.note(s.index) == Some(&s.note), "spending a note not at index {}", s.index);
                     let nf = nullifier(&s.note);
                     ensure!(!self.nullifiers.contains(&nf) && nfs.insert(nf), "the note at {} is already spent", s.index);
+                    ensure!(!self.held.contains(&nf), "the note at {} is claimed in an exit", s.index);
                     verify(&s.note.owner, &digest, sig).with_context(|| format!("the spend of note {}", s.index))?;
                 }
                 let vin = t.spends.iter().try_fold(0u64, |a, s| a.checked_add(s.note.value));
@@ -793,7 +826,7 @@ impl Ledger {
                 let idx = self.append(&t.outputs)?;
                 let leaf = lichen_validity::spend_leaf(&self.deployment.hub, &t.outputs.iter().map(tnote).collect::<Vec<_>>());
                 for nf in nfs {
-                    self.nullifiers.insert(nf, leaf);
+                    self.nullifiers.insert_at(nf, leaf, next);
                 }
                 Ok(idx)
             }
@@ -809,6 +842,7 @@ impl Ledger {
                 let mut nfs = HashSet::new();
                 for nf in journal.t_nfs.iter().chain(&journal.nfs) {
                     ensure!(!self.nullifiers.contains(nf) && nfs.insert(*nf), "a note already spent");
+                    ensure!(!self.held.contains(nf), "a note claimed in an exit");
                 }
                 self.verify_proof(&journal, &t.proof)?;
                 let nf0 = *journal.nf0().context("a transaction that spends nothing")?;
@@ -817,7 +851,7 @@ impl Ledger {
                 let idx = self.append_leaves(&leaves)?;
                 let leaf = lichen_validity::spend_leaf(&self.deployment.hub, &t.t_outputs.iter().map(tnote).collect::<Vec<_>>());
                 for nf in nfs {
-                    self.nullifiers.insert(nf, leaf);
+                    self.nullifiers.insert_at(nf, leaf, next);
                 }
                 Ok(idx)
             }
@@ -921,6 +955,28 @@ impl Ledger {
         s
     }
 
+    /// Hold the nullifiers of an exit claim the hub has seen (`sig`, its
+    /// signature over [`hold_digest`]): their spends are refused from now
+    /// on.
+    pub fn hold(&mut self, nfs: &[Hash], sig: &[u8]) -> Result<()> {
+        verify(&self.deployment.hub, &hold_digest(&self.deployment, nfs), sig).context("a hold not signed by the hub")?;
+        self.held.extend(nfs);
+        Ok(())
+    }
+
+    /// The exit kit's part for one note (docs/EXIT_PLAN.md, "What Alice
+    /// must hold"): at sealed height `h`, the path of the note at `index`
+    /// to the tree's root then, and its nullifier `nf`'s absence from the
+    /// nullifier tree then.
+    pub fn kit(&self, index: u32, nf: &Hash, h: u64) -> Result<Kit> {
+        let s = self.sealed.get(usize::try_from(h).ok().and_then(|h| h.checked_sub(1)).context("no height 0")?).context("no such height sealed")?;
+        ensure!(index < s.size, "note {index} is not in height {h}'s tree");
+        ensure!(!self.nullifiers.spent_by(nf, h), "the note is spent by height {h}");
+        let (root, unspent) = self.nullifiers.proof_at(nf, h);
+        ensure!(root == s.nullifiers, "height {h}'s nullifiers can't be rebuilt");
+        Ok(Kit { height: h, index, path: self.tree.path_at(index, s.size), bitmap: unspent.bitmap, siblings: unspent.siblings })
+    }
+
     /// The first sealed height that includes note `index`.
     pub fn sealed_with(&self, index: u32) -> Option<&SignedRoot> {
         self.sealed.iter().find(|s| s.size > index)
@@ -945,6 +1001,44 @@ impl Ledger {
     pub fn recent_at(&self, h: u64) -> Option<Hash> {
         let upto = self.sealed.get(..usize::try_from(h).ok()?)?;
         Some(lichen_validity::recent_hash(&upto.iter().rev().take(lichen_validity::RECENT).rev().map(|s| s.tree).collect::<Vec<_>>()))
+    }
+}
+
+/// What the hub signs to hold an exit claim's nullifiers `nfs`, in
+/// deployment `d`.
+pub fn hold_digest(d: &Deployment, nfs: &[Hash]) -> Hash {
+    let mut h = Sha256::new();
+    h.update(b"lichen/hold");
+    h.update(d.id());
+    for nf in nfs {
+        h.update(nf);
+    }
+    h.finalize().into()
+}
+
+/// One note's part of an exit kit: at sealed height `height`, the note's
+/// path to the tree's root, and its nullifier's absence from the nullifier
+/// tree (`lichen_validity::smt::Proof`'s bitmap and siblings).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Kit {
+    pub height: u64,
+    pub index: u32,
+    pub path: Vec<Hash>,
+    pub bitmap: Hash,
+    pub siblings: Vec<Hash>,
+}
+
+impl Kit {
+    /// Whether the note of commitment `cm` and nullifier `nf` is in the
+    /// tree of `sealed` (this kit's height) at the kit's index, its
+    /// nullifier absent from the nullifier tree.
+    pub fn check(&self, sealed: &SignedRoot, cm: &Hash, nf: &Hash) -> bool {
+        let unspent = lichen_validity::smt::Proof { bitmap: self.bitmap, siblings: self.siblings.clone() };
+        sealed.height == self.height
+            && self.index < sealed.size
+            && self.path.len() == TREE_DEPTH
+            && root_from_path(*cm, self.index, &self.path) == sealed.tree
+            && lichen_validity::smt::unspent(&sealed.nullifiers, nf, &unspent, lichen_validity::smt::empties())
     }
 }
 
@@ -1592,6 +1686,39 @@ mod tests {
         );
         let j2 = seal_checked(&mut l, &seq, (j1.to, j1.recent_to));
         assert_ne!(j2.to, j1.to);
+    }
+
+    #[test]
+    fn exit_kits_at_past_heights_and_holds() {
+        let (hub, seq) = (regtest_hub(), regtest_sequencer());
+        let alice = key_from_label("test/alice");
+        let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
+        let (n0, n1) = (note(xonly(&alice), 10, 0), note(xonly(&alice), 4, 0));
+        let idx = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![n0, n1]))).unwrap();
+        let s1 = l.seal(&seq);
+        // height 2: n0 spent
+        l.apply(&transfer(vec![(Spend { note: n0, index: idx[0] }, &alice)], vec![note(xonly(&alice), 10, 0)])).unwrap();
+        let s2 = l.seal(&seq);
+        let (nf0, nf1) = (nullifier(&n0), nullifier(&n1));
+        // at height 1 both are unspent, and the kit shows it under that
+        // height's signed root; at 2, n0 isn't
+        let k = l.kit(idx[0], &nf0, 1).unwrap();
+        assert!(k.check(&s1, &n0.commitment(), &nf0));
+        assert!(!k.check(&s2, &n0.commitment(), &nf0), "another height's root");
+        assert!(!k.check(&s1, &n1.commitment(), &nf0), "another note");
+        assert!(format!("{:#}", l.kit(idx[0], &nf0, 2).unwrap_err()).contains("spent by height 2"));
+        let k = l.kit(idx[1], &nf1, 2).unwrap();
+        assert!(k.check(&s2, &n1.commitment(), &nf1));
+        assert!(l.kit(idx[1] + 5, &nf1, 2).is_err() && l.kit(idx[1], &nf1, 3).is_err() && l.kit(idx[1], &nf1, 0).is_err());
+        // kept and read back: the heights with it
+        let back: Ledger = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+        assert_eq!(back.kit(idx[0], &nf0, 1).unwrap(), l.kit(idx[0], &nf0, 1).unwrap());
+        // the hub holds n1 for a claim: its spend is refused; only the
+        // hub's hold counts
+        assert!(l.hold(&[nf1], &sign(&alice, &hold_digest(&l.deployment, &[nf1]))).is_err());
+        l.hold(&[nf1], &sign(&hub, &hold_digest(&l.deployment, &[nf1]))).unwrap();
+        let e = l.apply(&transfer(vec![(Spend { note: n1, index: idx[1] }, &alice)], vec![note(xonly(&alice), 4, 0)])).unwrap_err();
+        assert!(format!("{e:#}").contains("claimed in an exit"));
     }
 
     #[test]
