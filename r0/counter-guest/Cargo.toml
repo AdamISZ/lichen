@@ -1,0 +1,27 @@
+# The counter guest (docs/EXIT_PLAN.md, "The counter"): proves the hub's
+# counter to an exit claim, `counter::check_counter` of crates/withdraw:
+# a spend of a claimed note at a later anchored state, or its owner's
+# signed claim through another contract. Its journal `D ‖ E`; wrapped in
+# Groth16, it is the `K` the hub signs in `respond`. A workspace of its
+# own, built as the others (r0/build-guest.sh counter).
+[package]
+name = "counter"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+# the toolchain of risczero/risc0-guest-builder:r0.1.88.0
+rust-version = "1.88"
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+lichen-withdraw = { path = "../../crates/withdraw" }
+risc0-zkvm = { version = "=3.0.6", default-features = false, features = ["std"] }
+
+# RISC Zero's accelerated crypto: the trees are SHA-256, the signatures
+# BIP340
+[patch.crates-io]
+sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.9-risczero.0" }
+k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256/v0.13.4-risczero.1" }
+crypto-bigint = { git = "https://github.com/risc0/RustCrypto-crypto-bigint", tag = "v0.5.5-risczero.0" }

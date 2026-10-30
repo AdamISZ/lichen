@@ -9,6 +9,7 @@ WORKDIR /src
 COPY crates/shielded crates/shielded
 COPY crates/validity crates/validity
 COPY crates/withdraw crates/withdraw
+COPY crates/groth16 crates/groth16
 COPY r0/Cargo.toml r0/Cargo.lock r0/
 COPY r0/host r0/host
 RUN cargo build --release --locked --manifest-path r0/Cargo.toml -p lichen-r0
