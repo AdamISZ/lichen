@@ -7,8 +7,9 @@
 //! (`lichen_validity::smt`), and the rules follow it:
 //!
 //! - **an ordinary spend** counts if it was final before the claim:
-//!   `S'`'s anchor confirmed at or before the block of `request`, the
-//!   transaction spending the contract's funding outpoint `O`;
+//!   `S'`'s anchor confirmed no later than [`GRACE`] blocks after the
+//!   block of `request`, the transaction spending the contract's funding
+//!   outpoint `O`;
 //! - **a return to the hub with memo `c`** of at least `b` never counts
 //!   against contract `c`: the hub has its tokens, and the contract pays
 //!   once. Any other return counts as an ordinary spend;
@@ -30,6 +31,14 @@ use crate::{Anchored, Hash, Reject};
 
 /// The journal's length in bytes: `D ‖ E`.
 pub const JOURNAL_LEN: usize = 64;
+
+/// How many blocks after `request`'s an ordinary spend's anchor may
+/// confirm and still count: the operator's cover for a spend it sequenced
+/// before the claim appeared, whose anchor confirmed after it. Safe for
+/// an honest Alice only once a counter must cite her acknowledgment of
+/// the spend (docs/EXIT_PLAN.md, "Sender acknowledgment"); until then 0,
+/// and that race is the operator's loss.
+pub const GRACE: usize = 0;
 
 /// How a nullifier was spent: its leaf.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +76,8 @@ pub struct Request {
 /// it is spent in, with its commitment tree's root and the nullifier's
 /// path; `S` in `S'`'s history (`hist` before `S`, and the roots after it
 /// to the chain receipt's height); and `request`, unless the spend is an
-/// exit record.
+/// exit record, with `earlier`: the header of `S'`'s anchor block and its
+/// parents, newest first, for a `request` before it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CounterInput {
     pub c: u32,
@@ -84,11 +94,16 @@ pub struct CounterInput {
     pub before: Hash,
     pub roots: Vec<Hash>,
     pub request: Option<Request>,
+    pub earlier: Vec<[u8; 80]>,
 }
 
 /// The counter: check `input` against a chain receipt of `chain_id`; on
 /// success, the journal `D ‖ E`.
 pub fn check(input: &CounterInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<[u8; JOURNAL_LEN], Reject> {
+    check_with(input, GRACE, chain_id, verify_chain)
+}
+
+fn check_with(input: &CounterInput, grace: usize, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<[u8; JOURNAL_LEN], Reject> {
     let e = fingerprint(input.c, &input.funding, input.b, input.h_s, &input.sr_s, &input.nullifiers);
     let nf = input.nullifiers.get(input.which as usize).ok_or(Reject::NotSpent)?;
     let needs_cutoff = match input.spent {
@@ -113,9 +128,19 @@ pub fn check(input: &CounterInput, chain_id: &Hash, verify_chain: &mut dyn FnMut
         let a = &input.state.anchor;
         let req = input.request.as_ref().ok_or(Reject::Cutoff)?;
         let header = Header(req.header);
-        let at_or_after = header.hash() == a.block || input.state.headers.iter().any(|h| Header(*h).hash() == header.hash());
+        // the anchor's block and up to `grace` parents, or a block after it
+        let mut back = a.block;
+        let mut earlier = true;
+        for h in &input.earlier {
+            earlier &= Header(*h).hash() == back;
+            back = Header(*h).prev();
+        }
+        let earlier = earlier && input.earlier.len() <= grace + 1;
+        let in_range = header.hash() == a.block
+            || (earlier && input.earlier.iter().any(|h| Header(*h).hash() == header.hash()))
+            || input.state.headers.iter().any(|h| Header(*h).hash() == header.hash());
         let spends_o = btc::parse_tx(&req.tx).is_some_and(|t| t.inputs.contains(&input.funding));
-        if !at_or_after || !spends_o || !btc::in_block(&req.tx, &header, req.index, &req.path, &req.coinbase, &req.coinbase_path) {
+        if !in_range || !spends_o || !btc::in_block(&req.tx, &header, req.index, &req.path, &req.coinbase, &req.coinbase_path) {
             return Err(Reject::Cutoff);
         }
     }
@@ -167,6 +192,7 @@ impl CounterInput {
                 w.list(&r.coinbase_path);
             }
         }
+        w.list(&self.earlier);
         w.0
     }
 
@@ -189,10 +215,11 @@ impl CounterInput {
             [1] => Some(Request { tx: r.bytes()?, header: r.take()?, index: u32::from_be_bytes(r.take()?), path: r.list()?, coinbase: r.bytes()?, coinbase_path: r.list()? }),
             _ => return Err(Reject::Encoding),
         };
+        let earlier = r.list()?;
         if !r.0.is_empty() {
             return Err(Reject::Encoding);
         }
-        Ok(CounterInput { c, funding, b, h_s, sr_s, nullifiers, which, spent, state, tree, proof, before, roots, request })
+        Ok(CounterInput { c, funding, b, h_s, sr_s, nullifiers, which, spent, state, tree, proof, before, roots, request, earlier })
     }
 }
 
@@ -271,7 +298,7 @@ mod tests {
             work: 10 * btc::work(0x207fffff),
         };
         let proof = smt::proof(&set, &nf, smt::empties());
-        let input = CounterInput { c: 42, funding: FUNDING, b: 9, h_s: 3, sr_s, nullifiers: vec![nf, other], which: 0, spent: Spent::Spend, state, tree, proof, before, roots, request: Some(request) };
+        let input = CounterInput { c: 42, funding: FUNDING, b: 9, h_s: 3, sr_s, nullifiers: vec![nf, other], which: 0, spent: Spent::Spend, state, tree, proof, before, roots, request: Some(request), earlier: vec![] };
         (input, [8; 32])
     }
 
@@ -353,6 +380,31 @@ mod tests {
         w.which = 1;
         w.proof = smt::proof(&[(w.nullifiers[0], smt::spent()), ([0x77; 32], smt::spent())], &w.nullifiers[1], smt::empties());
         assert_eq!(counts(&w), Err(Reject::NotSpent));
+    }
+
+    #[test]
+    fn the_grace() {
+        let (mut i, id) = input();
+        // `request` two blocks before the anchor's: its block, a parent,
+        // then the anchor's block
+        let (req_block, request) = block_with(&[0x98; 32], tx_spending(&FUNDING));
+        let parent = header_with(&Header(req_block).hash(), &[0; 32]);
+        let anchor_block = header_with(&Header(parent).hash(), &[0; 32]);
+        i.state.anchor.block = Header(anchor_block).hash();
+        i.state.headers = headers_on(&i.state.anchor.block, 10);
+        i.request = Some(request);
+        i.earlier = vec![anchor_block, parent, req_block];
+        let counts = |i: &CounterInput, grace| check_with(i, grace, &id, &mut ok(i, &id)).map(|_| ());
+        assert_eq!(counts(&i, 2), Ok(()));
+        assert_eq!(counts(&i, 1), Err(Reject::Cutoff), "beyond the grace");
+        assert_eq!(check(&i, &id, &mut ok(&i, &id)), Err(Reject::Cutoff), "none yet");
+        let mut r = i.clone();
+        r.earlier.swap(1, 2);
+        assert_eq!(counts(&r, 2), Err(Reject::Cutoff), "headers that don't link back");
+        let mut r = i.clone();
+        r.earlier.remove(0);
+        assert_eq!(counts(&r, 2), Err(Reject::Cutoff), "not from the anchor's block");
+        assert_eq!(CounterInput::from_bytes(&i.to_bytes()), Ok(i));
     }
 
     #[test]

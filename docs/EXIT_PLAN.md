@@ -419,6 +419,44 @@ only after seeing it anchored), so with it no margin is needed. Until
 then, a wallet must not exit notes it has signed away in a transaction
 that wasn't sequenced; it claims its other notes, or waits.
 
+**What the exit guarantees** (prompted by an outside review asking for
+"every redemption consumes exactly one L2 entitlement, even while the
+sequencer is unavailable"). Lichen doesn't promise that, by design: a
+dead operator posts no exit records and answers no claims, so a note
+can be redeemed twice, and nothing forces a restarted sequencer to
+include the records it missed. The invariant is instead:
+
+1. No user loses to another user or to the operator: an honest claim
+   can't be countered, and every payment received stays good.
+2. Every payout not matched by L2 value retired (an exit record, or a
+   return of at least `b` to `c`) is the operator's loss.
+3. An operator that stays live and follows the protocol (posts records,
+   counters, refuses spends whose notes are under a pending claim) can
+   always avoid that loss.
+
+**Point 3 fails within anchor latency, until acknowledgment.** A
+dishonest Alice pays Bob, and the operator sequences it. She broadcasts
+`request` at once, and it confirms before the anchor holding the
+payment. With no margin the payment is after the cutoff, so she is paid
+`b` and Bob keeps the payment. The operator can't refuse a spend for a
+claim that doesn't exist yet. Dropping the margin narrowed this window
+to anchor latency but didn't close it.
+
+Sender acknowledgment closes it, by allowing a grace the other way: an
+ordinary spend counts if its anchor confirmed no later than `δ` blocks
+after `request`'s block, `δ` at least the anchor latency. This is safe
+for an honest Alice once a counter must cite her acknowledgment, since
+she never claims notes she has acknowledged spending. A dishonest Alice
+who never acknowledges leaves Bob's outputs locked, voided by her exit
+record, and Bob doesn't deliver until he sees the acknowledgment
+anchored. One who acknowledges and then requests at once has the
+acknowledgment anchored within `δ`, where a counter can cite it. So the
+margin comes back reversed: it protects the operator, and acknowledgment
+protects Alice. The counter takes the grace (`counter::GRACE`, with the
+anchor block's header and its parents as input), set to 0 until step
+10. Until then the race is the operator's loss, bounded at one per
+contract.
+
 ### Windows and load
 
 - **`w_H` absorbs `W_c`.** The hub must find and prove any counter within
