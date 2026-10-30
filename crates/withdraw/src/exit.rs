@@ -23,21 +23,21 @@
 //! carries [`Posted`] in its witness, in a block with the contract's work
 //! on it, so that the hub can search for the notes and cite their
 //! owners' signatures against a claim of the same notes through another
-//! contract (docs/EXIT_PLAN.md, "Exit authority on chain").
+//! contract (docs/EXIT_PLAN.md, "Exit authority on chain"). `E` and the
+//! posted claim are `lichen_validity::exit`'s, which the chain guest
+//! checks exit records with.
 //!
 //! Integers are big-endian, as in the other statements.
 
 use alloc::vec::Vec;
 use k256::schnorr::{Signature, VerifyingKey};
 use lichen_shielded::{self as sh, SNote};
+use lichen_validity::btc::Header;
 use lichen_validity::{smt, OutPoint, TNote};
-use sha2::{Digest, Sha256};
+
+pub use lichen_validity::exit::{fingerprint, signed_digest, Posted, PostedNote, MAX_NOTES};
 
 use crate::{root_from_path, Anchored, Hash, Reject, Request, TREE_DEPTH};
-use lichen_validity::btc::Header;
-
-/// At most this many notes in a claim.
-pub const MAX_NOTES: usize = 8;
 
 /// `request`'s witness carries [`Posted`] in its first this many items,
 /// concatenated: at most 520 bytes each (tapscript's limit on a stack
@@ -99,97 +99,20 @@ pub struct ExitInput {
     pub request: Request,
 }
 
-/// What `request` posts of a claim: the rest of `E`'s preimage (`h_S` and
-/// `SR_S`; `c`, `O` and `b` the hub knows), and each note as anyone can
-/// check it. A transparent note: its opening, so its nullifier and owner,
-/// and the owner's signature on the claim. A shielded note: its nullifier
-/// only, since its owner's authority is knowing `nk`, inside the proof, so
-/// its claim can't be cited (until the shielded address holds an owner
-/// key: docs/EXIT_PLAN.md, "Exit authority on chain").
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Posted {
-    pub h_s: u64,
-    pub sr_s: Hash,
-    pub notes: Vec<PostedNote>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PostedNote {
-    Transparent { note: TNote, sig: [u8; 64] },
-    Shielded { nf: Hash },
-}
-
-impl Posted {
-    /// What `input`'s `request` must post.
-    pub fn of(input: &ExitInput) -> Posted {
-        let notes = input
-            .notes
-            .iter()
-            .map(|n| match &n.owned {
-                Owned::Transparent { note, sig } => PostedNote::Transparent { note: *note, sig: *sig },
-                o @ Owned::Shielded { .. } => PostedNote::Shielded { nf: o.nullifier() },
-            })
-            .collect();
-        Posted { h_s: input.state.height, sr_s: input.state.root(&input.tree), notes }
-    }
-
-    pub fn nullifiers(&self) -> Vec<Hash> {
-        self.notes
-            .iter()
-            .map(|n| match n {
-                PostedNote::Transparent { note, .. } => note.nullifier(),
-                PostedNote::Shielded { nf } => *nf,
-            })
-            .collect()
-    }
-
-    /// `E` of this claim for contract `c` funded at `funding`, claiming
-    /// `b`.
-    pub fn fingerprint(&self, c: u32, funding: &OutPoint, b: u32) -> Hash {
-        fingerprint(c, funding, b, self.h_s, &self.sr_s, &self.nullifiers())
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut w = W(Vec::new());
-        w.put(&self.h_s.to_be_bytes());
-        w.put(&self.sr_s);
-        w.put(&[self.notes.len() as u8]);
-        for n in &self.notes {
-            match n {
-                PostedNote::Transparent { note, sig } => {
-                    w.put(&[0]);
-                    write_tnote(&mut w, note);
-                    w.put(sig);
-                }
-                PostedNote::Shielded { nf } => {
-                    w.put(&[1]);
-                    w.put(nf);
-                }
-            }
-        }
-        w.0
-    }
-
-    pub fn from_bytes(b: &[u8]) -> Result<Posted, Reject> {
-        let mut r = R(b);
-        let (h_s, sr_s) = (u64::from_be_bytes(r.take()?), r.take()?);
-        let [count] = r.take()?;
-        if count as usize > MAX_NOTES {
-            return Err(Reject::Notes);
-        }
-        let mut notes = Vec::with_capacity(count as usize);
-        for _ in 0..count {
-            notes.push(match r.take()? {
-                [0] => PostedNote::Transparent { note: read_tnote(&mut r)?, sig: r.take()? },
-                [1] => PostedNote::Shielded { nf: r.take()? },
-                _ => return Err(Reject::Encoding),
-            });
-        }
-        if !r.0.is_empty() {
-            return Err(Reject::Encoding);
-        }
-        Ok(Posted { h_s, sr_s, notes })
-    }
+/// What `input`'s `request` must post ([`Posted`]). A shielded note's
+/// nullifier only: its owner's authority is knowing `nk`, inside the
+/// proof, so its claim can't be cited (until the shielded address holds
+/// an owner key: docs/EXIT_PLAN.md, "Exit authority on chain").
+pub fn posted(input: &ExitInput) -> Posted {
+    let notes = input
+        .notes
+        .iter()
+        .map(|n| match &n.owned {
+            Owned::Transparent { note, sig } => PostedNote::Transparent { note: *note, sig: *sig },
+            o @ Owned::Shielded { .. } => PostedNote::Shielded { nf: o.nullifier() },
+        })
+        .collect();
+    Posted { h_s: input.state.height, sr_s: input.state.root(&input.tree), notes }
 }
 
 /// What a claim proves: its contract's `c` and `D`, `b`, and `E`.
@@ -199,30 +122,6 @@ pub struct Claim {
     pub d: Hash,
     pub b: u32,
     pub e: Hash,
-}
-
-/// `E` for contract `c` funded at `funding`, claiming `b` at the state of
-/// height `h_s` and root `sr_s` with the notes of `nullifiers`.
-pub fn fingerprint(c: u32, funding: &OutPoint, b: u32, h_s: u64, sr_s: &Hash, nullifiers: &[Hash]) -> Hash {
-    let mut h = Sha256::new();
-    h.update(b"lichen/exit");
-    h.update(c.to_be_bytes());
-    h.update(funding.to_bytes());
-    h.update(b.to_be_bytes());
-    h.update(h_s.to_be_bytes());
-    h.update(sr_s);
-    for nf in nullifiers {
-        h.update(nf);
-    }
-    h.finalize().into()
-}
-
-/// What a transparent note's owner signs to claim it in the claim `e`.
-pub fn signed_digest(e: &Hash) -> Hash {
-    let mut h = Sha256::new();
-    h.update(b"lichen/exit-sig");
-    h.update(e);
-    h.finalize().into()
 }
 
 /// The claim's nullifiers, in its order.
@@ -263,7 +162,7 @@ pub fn check(input: &ExitInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[
     // posted on chain where the hub can read it, and as costly to forge as
     // the anchor
     let posted = input.request.spending(&input.funding).filter(|w| w.len() >= POSTED_ITEMS).map(|w| w[..POSTED_ITEMS].concat());
-    if !input.state.deep(&Header(input.request.header)) || posted != Some(Posted::of(input).to_bytes()) {
+    if !input.state.deep(&Header(input.request.header)) || posted != Some(self::posted(input).to_bytes()) {
         return Err(Reject::Posted);
     }
     Ok(Claim { c: input.c, d, b: input.b, e })
@@ -364,7 +263,10 @@ impl ExitInput {
             match &n.owned {
                 Owned::Transparent { note, sig } => {
                     w.put(&[0]);
-                    write_tnote(&mut w, note);
+                    w.put(&note.owner);
+                    w.put(&note.value.to_be_bytes());
+                    w.put(&note.memo.to_be_bytes());
+                    w.put(&note.rho);
                     w.put(sig);
                 }
                 Owned::Shielded { value, rho, nk } => {
@@ -394,7 +296,7 @@ impl ExitInput {
         let mut notes = Vec::with_capacity(count as usize);
         for _ in 0..count {
             let owned = match r.take()? {
-                [0] => Owned::Transparent { note: read_tnote(&mut r)?, sig: r.take()? },
+                [0] => Owned::Transparent { note: TNote { owner: r.take()?, value: u64::from_be_bytes(r.take()?), memo: u32::from_be_bytes(r.take()?), rho: r.take()? }, sig: r.take()? },
                 [1] => Owned::Shielded { value: u64::from_be_bytes(r.take()?), rho: r.take()?, nk: r.take()? },
                 _ => return Err(Reject::Encoding),
             };
@@ -411,16 +313,6 @@ impl ExitInput {
     }
 }
 
-fn write_tnote(w: &mut W, note: &TNote) {
-    w.put(&note.owner);
-    w.put(&note.value.to_be_bytes());
-    w.put(&note.memo.to_be_bytes());
-    w.put(&note.rho);
-}
-
-fn read_tnote(r: &mut R) -> Result<TNote, Reject> {
-    Ok(TNote { owner: r.take()?, value: u64::from_be_bytes(r.take()?), memo: u32::from_be_bytes(r.take()?), rho: r.take()? })
-}
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -483,7 +375,7 @@ pub(crate) mod tests {
                 *sig = key(3).sign_raw(&signed_digest(&e), &[0; 32]).unwrap().to_bytes();
             }
         }
-        post(input, &Posted::of(input).to_bytes());
+        post(input, &posted(input).to_bytes());
     }
 
     /// `bytes` as `request` posts them, in [`POSTED_ITEMS`] items of up
@@ -625,11 +517,11 @@ pub(crate) mod tests {
     #[test]
     fn the_claim_is_posted() {
         let (i, id) = input();
-        let posted = Posted::of(&i);
+        let posted = super::posted(&i);
         assert_eq!(posted.nullifiers(), nullifiers(&i));
         assert_eq!(posted.fingerprint(i.c, &i.funding, i.b), check(&i, &id, &mut |_| true).unwrap().e);
         assert_eq!(Posted::from_bytes(&posted.to_bytes()), Ok(posted.clone()));
-        assert_eq!(Posted::from_bytes(&[posted.to_bytes(), std::vec![0]].concat()), Err(Reject::Encoding));
+        assert!(Posted::from_bytes(&[posted.to_bytes(), std::vec![0]].concat()).is_err());
         // eight transparent notes fit in the items
         let t = PostedNote::Transparent { note: TNote { owner: [1; 32], value: 1, memo: 0, rho: [2; 32] }, sig: [3; 64] };
         let full = Posted { notes: std::vec![t; MAX_NOTES], ..posted.clone() }.to_bytes();

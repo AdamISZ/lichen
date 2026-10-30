@@ -227,7 +227,7 @@ impl EquivocationInput {
         let (c, funding, b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
         let (h_s, sr_s, nullifiers, d) = (u64::from_be_bytes(r.take()?), r.take()?, r.list()?, r.take()?);
         let (other_c, other_funding, other_b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
-        let (other, [which]) = (Posted::from_bytes(&r.bytes()?)?, r.take()?);
+        let (other, [which]) = (Posted::from_bytes(&r.bytes()?).map_err(|_| Reject::Encoding)?, r.take()?);
         if !r.0.is_empty() {
             return Err(Reject::Encoding);
         }
@@ -463,9 +463,9 @@ mod tests {
         let mut other = claim.clone();
         (other.c, other.funding) = (43, OutPoint { txid: [13; 32], vout: 0 });
         crate::exit::tests::sign(&mut other);
-        let posted = Posted::of(&other);
+        let posted = crate::exit::posted(&other);
         let which = posted.notes.iter().position(|n| matches!(n, PostedNote::Transparent { .. })).unwrap() as u8;
-        let p = Posted::of(&claim);
+        let p = crate::exit::posted(&claim);
         EquivocationInput {
             c: claim.c,
             funding: claim.funding,

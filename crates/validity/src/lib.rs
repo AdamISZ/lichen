@@ -9,7 +9,8 @@
 //!
 //! A block is the transactions applied between two seals, in order:
 //! mints (signed by the hub), transparent transfers (each spend signed by
-//! its note's owner, BIP340), and shielded transactions, whose receipts
+//! its note's owner, BIP340), exit records (signed by the hub and by the
+//! claimed notes' owners, [`exit`]), and shielded transactions, whose receipts
 //! the caller checks (`verify_spend`: `env::verify` in the guest) against
 //! the journal recomputed here. Every nullifier is shown unspent and
 //! inserted, in order; every new leaf is appended. Unlike the sequencer
@@ -27,6 +28,7 @@ use lichen_shielded::{self as sh, Hash, TREE_DEPTH};
 use sha2::{Digest, Sha256};
 
 pub mod btc;
+pub mod exit;
 pub mod smt;
 
 pub use btc::OutPoint;
@@ -174,6 +176,11 @@ pub enum Tx {
     Shielded { anchor: Hash, t_spends: Vec<(TNote, u32)>, t_sigs: Vec<[u8; 64]>, nfs: Vec<Hash>, cms: Vec<Hash>, ciphertexts: Vec<Vec<u8>>, t_outputs: Vec<TNote> },
     /// An anchor on Bitcoin of this history ([`AnchorRecord`]).
     Anchor(AnchorRecord),
+    /// An exit record: contract `c`, funded at `funding`, paid a claim of
+    /// `b` as its `request` posted it; the hub's signature
+    /// ([`exit::record_digest`]). Its transparent notes are retired,
+    /// leaf `exited(c)`.
+    Exit { c: u32, funding: OutPoint, b: u32, posted: exit::Posted, sig: [u8; 64] },
 }
 
 /// The history hash after `root`: `hist_h = H(hist_{h-1} ‖ root_h)`, from
@@ -454,6 +461,16 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
     for tx in &input.txs {
         match tx {
             Tx::Anchor(rec) => anchor = check_anchor(&anchor, input.height, &input.hist, rec)?,
+            Tx::Exit { c, funding, b, posted, sig } => {
+                let e = posted.fingerprint(*c, funding, *b);
+                check_sig(&input.hub, &exit::record_digest(&input.anchor.sequencer, &input.hub, &input.anchor.genesis, &e), sig)?;
+                for n in &posted.notes {
+                    if let exit::PostedNote::Transparent { note, sig } = n {
+                        check_sig(&note.owner, &exit::signed_digest(&e), sig)?;
+                        st.spend_nf(&note.nullifier(), &smt::exited(*c))?;
+                    }
+                }
+            }
             Tx::Mint { outputs, sig } => {
                 check_sig(&input.hub, &mint_digest(&input.anchor.sequencer, &input.hub, &input.anchor.genesis, outputs), sig)?;
                 for n in outputs {
@@ -716,6 +733,7 @@ const MINT: u8 = 0;
 const TRANSFER: u8 = 1;
 const SHIELDED: u8 = 2;
 const ANCHOR: u8 = 3;
+const EXIT: u8 = 4;
 
 impl BlockInput {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -760,6 +778,14 @@ impl BlockInput {
                     w.0.push(ANCHOR);
                     w.record(a);
                 }
+                Tx::Exit { c, funding, b, posted, sig } => {
+                    w.0.push(EXIT);
+                    w.put(&c.to_be_bytes());
+                    w.put(&funding.to_bytes());
+                    w.put(&b.to_be_bytes());
+                    w.bytes(&posted.to_bytes());
+                    w.put(sig);
+                }
             }
         }
         w.len(self.nf_proofs.len());
@@ -802,6 +828,7 @@ impl BlockInput {
                     t_outputs: r.notes()?,
                 },
                 ANCHOR => Tx::Anchor(r.record()?),
+                EXIT => Tx::Exit { c: r.u32()?, funding: OutPoint::from_bytes(&r.take()?), b: r.u32()?, posted: exit::Posted::from_bytes(&r.bytes()?)?, sig: r.take()? },
                 _ => return Err(Reject::Encoding),
             })
         })?;

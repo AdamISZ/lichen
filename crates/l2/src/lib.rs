@@ -184,6 +184,9 @@ pub enum Event {
     /// An anchor on Bitcoin recorded: the height it commits, its txid
     /// (internal order). Unknown to readers from before: skipped.
     Anchored { height: u64, txid: Hash },
+    /// An exit recorded: the contract, the amount it paid, the nullifiers
+    /// claimed. Unknown to readers from before: skipped.
+    Exited { c: u32, b: u32, nfs: Vec<Hash> },
 }
 
 impl Event {
@@ -199,6 +202,7 @@ impl Event {
                 }
                 Err(_) => Event::Anchored { height: 0, txid: [0; 32] },
             },
+            Tx::Exit(x) => Event::Exited { c: x.c, b: x.b, nfs: x.claim().map(|p| p.nullifiers()).unwrap_or_default() },
             Tx::Shielded(t) => Event::Shielded {
                 from: t.t_spends.iter().map(|s| s.note.owner).collect(),
                 spent: t.nfs.len(),
