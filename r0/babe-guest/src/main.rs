@@ -7,7 +7,7 @@
 //! the counter guest (`lichen-groth16`). The chain receipt at the
 //! withdrawal's or the claim's root is checked against the chain guest's
 //! image id, an assumption the prover resolves. Its journal: `c ‖ D ‖
-//! H(pk_H)`, or with the exit `c ‖ D ‖ H(pk_H ‖ O)`; never `b`.
+//! H(pk_H)`, or with the exit `c ‖ D ‖ H(pk_H ‖ O_D)`; never `b`.
 
 use lichen_withdraw::fixed::{check, check_exit, ExitStatement, FixedInput};
 use risc0_zkvm::guest::env;

@@ -8,8 +8,8 @@
 //!
 //! - **an ordinary spend** counts if it was final before the claim:
 //!   `S'`'s anchor confirmed no later than [`GRACE`] blocks after the
-//!   block of `request`, the transaction spending the contract's funding
-//!   outpoint `O`;
+//!   block of `request`, the transaction spending the output 0 of the
+//!   contract's funding (the transaction spending its deposit coin);
 //! - **a return to the hub with memo `c`** of at least `b` never counts
 //!   against contract `c`: the hub has its tokens, and the contract pays
 //!   once. Any other return counts as an ordinary spend;
@@ -79,7 +79,7 @@ impl Spent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CounterInput {
     pub c: u32,
-    pub funding: OutPoint,
+    pub deposit: OutPoint,
     pub b: u32,
     pub h_s: u64,
     pub sr_s: Hash,
@@ -102,7 +102,7 @@ pub fn check(input: &CounterInput, chain_id: &Hash, verify_chain: &mut dyn FnMut
 }
 
 fn check_with(input: &CounterInput, grace: usize, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<[u8; JOURNAL_LEN], Reject> {
-    let e = fingerprint(input.c, &input.funding, input.b, input.h_s, &input.sr_s, &input.nullifiers);
+    let e = fingerprint(input.c, &input.deposit, input.b, input.h_s, &input.sr_s, &input.nullifiers);
     let nf = input.nullifiers.get(input.which as usize).ok_or(Reject::NotSpent)?;
     let needs_cutoff = match input.spent {
         Spent::Return { c, r } if c == input.c && r >= u64::from(input.b) => return Err(Reject::Own),
@@ -135,7 +135,7 @@ fn check_with(input: &CounterInput, grace: usize, chain_id: &Hash, verify_chain:
         }
         let earlier = earlier && input.earlier.len() <= grace + 1;
         let in_range = input.state.deep(&header) || (earlier && input.earlier.iter().any(|h| Header(*h).hash() == header.hash()));
-        if !in_range || req.spending(&input.funding).is_none() {
+        if !in_range || req.spending(&input.deposit).is_none() {
             return Err(Reject::Cutoff);
         }
     }
@@ -146,19 +146,19 @@ fn check_with(input: &CounterInput, grace: usize, chain_id: &Hash, verify_chain:
 }
 
 /// An equivocation's input: the claim (`E`'s preimage) and its `D`; the
-/// other claim cited, through contract `c'`, funded at `funding'`, for
+/// other claim cited, through contract `c'`, of deposit coin `deposit'`, for
 /// `b'`, as its `request` posted it; and the note cited (its place there).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EquivocationInput {
     pub c: u32,
-    pub funding: OutPoint,
+    pub deposit: OutPoint,
     pub b: u32,
     pub h_s: u64,
     pub sr_s: Hash,
     pub nullifiers: Vec<Hash>,
     pub d: Hash,
     pub other_c: u32,
-    pub other_funding: OutPoint,
+    pub other_deposit: OutPoint,
     pub other_b: u32,
     pub other: Posted,
     pub which: u8,
@@ -192,13 +192,13 @@ pub fn equivocation(input: &EquivocationInput) -> Result<[u8; JOURNAL_LEN], Reje
     if !input.nullifiers.contains(&note.nullifier()) {
         return Err(Reject::NotSpent);
     }
-    let other = input.other.fingerprint(input.other_c, &input.other_funding, input.other_b);
+    let other = input.other.fingerprint(input.other_c, &input.other_deposit, input.other_b);
     let key = VerifyingKey::from_bytes(&note.owner).map_err(|_| Reject::NotYours)?;
     let sig = Signature::try_from(&sig[..]).map_err(|_| Reject::NotYours)?;
     key.verify_raw(&signed_digest(&other), &sig).map_err(|_| Reject::NotYours)?;
     let mut journal = [0u8; JOURNAL_LEN];
     journal[..32].copy_from_slice(&input.d);
-    journal[32..].copy_from_slice(&fingerprint(input.c, &input.funding, input.b, input.h_s, &input.sr_s, &input.nullifiers));
+    journal[32..].copy_from_slice(&fingerprint(input.c, &input.deposit, input.b, input.h_s, &input.sr_s, &input.nullifiers));
     Ok(journal)
 }
 
@@ -208,14 +208,14 @@ impl EquivocationInput {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut w = crate::exit::W(Vec::new());
         w.put(&self.c.to_be_bytes());
-        w.put(&self.funding.to_bytes());
+        w.put(&self.deposit.to_bytes());
         w.put(&self.b.to_be_bytes());
         w.put(&self.h_s.to_be_bytes());
         w.put(&self.sr_s);
         w.list(&self.nullifiers);
         w.put(&self.d);
         w.put(&self.other_c.to_be_bytes());
-        w.put(&self.other_funding.to_bytes());
+        w.put(&self.other_deposit.to_bytes());
         w.put(&self.other_b.to_be_bytes());
         w.bytes(&self.other.to_bytes());
         w.put(&[self.which]);
@@ -224,14 +224,14 @@ impl EquivocationInput {
 
     pub fn from_bytes(b: &[u8]) -> Result<EquivocationInput, Reject> {
         let mut r = crate::exit::R(b);
-        let (c, funding, b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
+        let (c, deposit, b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
         let (h_s, sr_s, nullifiers, d) = (u64::from_be_bytes(r.take()?), r.take()?, r.list()?, r.take()?);
-        let (other_c, other_funding, other_b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
+        let (other_c, other_deposit, other_b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
         let (other, [which]) = (Posted::from_bytes(&r.bytes()?).map_err(|_| Reject::Encoding)?, r.take()?);
         if !r.0.is_empty() {
             return Err(Reject::Encoding);
         }
-        Ok(EquivocationInput { c, funding, b, h_s, sr_s, nullifiers, d, other_c, other_funding, other_b, other, which })
+        Ok(EquivocationInput { c, deposit, b, h_s, sr_s, nullifiers, d, other_c, other_deposit, other_b, other, which })
     }
 }
 
@@ -257,7 +257,7 @@ impl CounterInput {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut w = crate::exit::W(Vec::new());
         w.put(&self.c.to_be_bytes());
-        w.put(&self.funding.to_bytes());
+        w.put(&self.deposit.to_bytes());
         w.put(&self.b.to_be_bytes());
         w.put(&self.h_s.to_be_bytes());
         w.put(&self.sr_s);
@@ -294,7 +294,7 @@ impl CounterInput {
 
     pub fn from_bytes(b: &[u8]) -> Result<CounterInput, Reject> {
         let mut r = crate::exit::R(b);
-        let (c, funding, b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
+        let (c, deposit, b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
         let (h_s, sr_s, nullifiers) = (u64::from_be_bytes(r.take()?), r.take()?, r.list()?);
         let [which] = r.take()?;
         let spent = match r.take()? {
@@ -315,7 +315,7 @@ impl CounterInput {
         if !r.0.is_empty() {
             return Err(Reject::Encoding);
         }
-        Ok(CounterInput { c, funding, b, h_s, sr_s, nullifiers, which, spent, state, tree, proof, before, roots, request, earlier })
+        Ok(CounterInput { c, deposit, b, h_s, sr_s, nullifiers, which, spent, state, tree, proof, before, roots, request, earlier })
     }
 }
 
@@ -323,7 +323,7 @@ impl CounterInput {
 mod tests {
     extern crate std;
     use super::*;
-    use crate::tests::{block_with, header_with, headers_on, key, xonly};
+    use crate::tests::{block_with, header_with, headers_on, key, request_on, xonly};
     use lichen_validity::{btc, state_root, AnchorState};
     use std::vec;
 
@@ -331,7 +331,12 @@ mod tests {
         crate::tests::tx_spending(op, &[&[1, 2, 3]])
     }
 
-    const FUNDING: OutPoint = OutPoint { txid: [12; 32], vout: 2 };
+    /// `request` spending the funding of `deposit`, in a block on `prev`.
+    fn request(prev: &Hash, deposit: &OutPoint) -> ([u8; 80], Request) {
+        request_on(prev, deposit, &[&[1, 2, 3]])
+    }
+
+    const DEPOSIT: OutPoint = OutPoint { txid: [12; 32], vout: 2 };
 
     /// Contract 42's claim of 9 from `S` (height 3), two notes; the first
     /// spent (an ordinary spend) at `S'`, height 5, anchored; the chain
@@ -346,7 +351,7 @@ mod tests {
         let root = state_root(5, &tree, &n);
         let anchor_block = header_with(&[0x99; 32], &[0; 32]);
         let mut headers = headers_on(&Header(anchor_block).hash(), 2);
-        let (req_block, request) = block_with(&Header(headers[1]).hash(), tx_spending(&FUNDING));
+        let (req_block, request) = request(&Header(headers[1]).hash(), &DEPOSIT);
         headers.push(req_block);
         headers.extend(headers_on(&Header(req_block).hash(), 9));
         let anchor = AnchorState { genesis: OutPoint { txid: [3; 32], vout: 1 }, sequencer: xonly(&seq), seal: OutPoint { txid: [4; 32], vout: 0 }, height: 5, root, block: Header(anchor_block).hash() };
@@ -368,7 +373,7 @@ mod tests {
             work: 10 * btc::work(0x207fffff),
         };
         let proof = smt::proof(&set, &nf, smt::empties());
-        let input = CounterInput { c: 42, funding: FUNDING, b: 9, h_s: 3, sr_s, nullifiers: vec![nf, other], which: 0, spent: Spent::Spend, state, tree, proof, before, roots, request: Some(request), earlier: vec![] };
+        let input = CounterInput { c: 42, deposit: DEPOSIT, b: 9, h_s: 3, sr_s, nullifiers: vec![nf, other], which: 0, spent: Spent::Spend, state, tree, proof, before, roots, request: Some(request), earlier: vec![] };
         (input, [8; 32])
     }
 
@@ -397,10 +402,10 @@ mod tests {
         let (i, id) = input();
         let j = check(&i, &id, &mut ok(&i, &id)).unwrap();
         assert_eq!(&j[..32], &i.state.check(&i.tree, &id, &mut |_| true).unwrap());
-        assert_eq!(&j[32..], &fingerprint(42, &FUNDING, 9, 3, &i.sr_s, &i.nullifiers));
+        assert_eq!(&j[32..], &fingerprint(42, &DEPOSIT, 9, 3, &i.sr_s, &i.nullifiers));
         // the request in the anchor's own block: final at the same time
         let mut same = i.clone();
-        let (anchor_block, req) = block_with(&[0x99; 32], tx_spending(&FUNDING));
+        let (anchor_block, req) = request(&[0x99; 32], &DEPOSIT);
         same.state.anchor.block = Header(anchor_block).hash();
         same.state.headers = headers_on(&same.state.anchor.block, 10);
         same.request = Some(req);
@@ -461,21 +466,21 @@ mod tests {
     fn equivocation_input() -> EquivocationInput {
         let (claim, _) = crate::exit::tests::input();
         let mut other = claim.clone();
-        (other.c, other.funding) = (43, OutPoint { txid: [13; 32], vout: 0 });
+        (other.c, other.deposit) = (43, OutPoint { txid: [13; 32], vout: 0 });
         crate::exit::tests::sign(&mut other);
         let posted = crate::exit::posted(&other);
         let which = posted.notes.iter().position(|n| matches!(n, PostedNote::Transparent { .. })).unwrap() as u8;
         let p = crate::exit::posted(&claim);
         EquivocationInput {
             c: claim.c,
-            funding: claim.funding,
+            deposit: claim.deposit,
             b: claim.b,
             h_s: p.h_s,
             sr_s: p.sr_s,
             nullifiers: p.nullifiers(),
             d: [0x0d; 32],
             other_c: other.c,
-            other_funding: other.funding,
+            other_deposit: other.deposit,
             other_b: other.b,
             other: posted,
             which,
@@ -487,7 +492,7 @@ mod tests {
         let i = equivocation_input();
         let j = equivocation(&i).unwrap();
         assert_eq!(&j[..32], &[0x0d; 32], "D as given: no state");
-        assert_eq!(&j[32..], &fingerprint(42, &i.funding, i.b, i.h_s, &i.sr_s, &i.nullifiers));
+        assert_eq!(&j[32..], &fingerprint(42, &i.deposit, i.b, i.h_s, &i.sr_s, &i.nullifiers));
         let c = Counter::Equivocation(i.clone());
         assert_eq!(check_counter(&c, &[8; 32], &mut |_| false), Ok(j));
         assert_eq!(Counter::from_bytes(&c.to_bytes()), Ok(c.clone()));
@@ -516,7 +521,7 @@ mod tests {
         assert_eq!(equivocation(&x), Err(Reject::NotSpent));
         // someone else's key over the note: not the owner's signature
         let mut x = i.clone();
-        let other_e = x.other.fingerprint(x.other_c, &x.other_funding, x.other_b);
+        let other_e = x.other.fingerprint(x.other_c, &x.other_deposit, x.other_b);
         if let PostedNote::Transparent { sig, .. } = &mut x.other.notes[x.which as usize] {
             *sig = key(9).sign_raw(&signed_digest(&other_e), &[0; 32]).unwrap().to_bytes();
         }
@@ -528,7 +533,7 @@ mod tests {
         let (mut i, id) = input();
         // `request` two blocks before the anchor's: its block, a parent,
         // then the anchor's block
-        let (req_block, request) = block_with(&[0x98; 32], tx_spending(&FUNDING));
+        let (req_block, request) = request(&[0x98; 32], &DEPOSIT);
         let parent = header_with(&Header(req_block).hash(), &[0; 32]);
         let anchor_block = header_with(&Header(parent).hash(), &[0; 32]);
         i.state.anchor.block = Header(anchor_block).hash();
@@ -571,13 +576,22 @@ mod tests {
         // request at the tip: in the headers, but without the work on it
         let mut r = i.clone();
         let tip = Header(*r.state.headers.last().unwrap()).hash();
-        let (h, req) = block_with(&tip, tx_spending(&FUNDING));
+        let (h, req) = request(&tip, &DEPOSIT);
         r.state.headers.push(h);
         r.request = Some(req);
         assert!(r.state.check(&r.tree, &id, &mut ok(&r, &id)).is_ok());
         assert_eq!(counts(&r), Err(Reject::Cutoff), "a block at the tip is cheap to forge");
+        // a request spending the funding of another deposit
         let mut r = i.clone();
-        let (h, req) = block_with(&[0x55; 32], tx_spending(&FUNDING));
+        let (h, req) = request(&Header(i.state.headers[1]).hash(), &OutPoint { txid: [12; 32], vout: 3 });
+        r.state.headers[2] = h;
+        r.state.headers.truncate(3);
+        r.state.headers.extend(headers_on(&Header(h).hash(), 9));
+        r.request = Some(req);
+        assert!(r.state.check(&r.tree, &id, &mut ok(&r, &id)).is_ok());
+        assert_eq!(counts(&r), Err(Reject::Cutoff), "another contract's request");
+        let mut r = i.clone();
+        let (h, req) = request(&[0x55; 32], &DEPOSIT);
         r.request = Some(Request { header: h, ..req });
         assert_eq!(counts(&r), Err(Reject::Cutoff), "a block that isn't on the anchor's");
         let mut r = i.clone();

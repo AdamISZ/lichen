@@ -145,9 +145,10 @@ impl FixedInput {
 // - **counter:** the hub signed `E` and `K` in the counter leaf, and `K`
 //   isn't a counter for `D ‖ E`.
 //
-// The journal is `c ‖ D ‖ H(pk_H ‖ O)`: every key the hub signs with in
-// `respond`, and the funding outpoint, which `E` names and the counter's
-// cutoff reads.
+// The journal is `c ‖ D ‖ H(pk_H ‖ O_D)`: every key the hub signs with
+// in `respond`, and the deposit coin, which `E` names, and whose funding
+// `request` spends (the claim's posting and the counter's cutoff read
+// it).
 
 /// A signature's digits on 32 bytes (`E`): 64, and 3 of checksum.
 pub const E_DIGITS: usize = 67;
@@ -190,23 +191,23 @@ pub struct ExitKeys {
     pub k: Vec<Hash>,
 }
 
-/// `pk_H ‖ O`, as the journal commits it.
-pub fn exit_key_digest(keys: &ExitKeys, funding: &OutPoint) -> Hash {
+/// `pk_H ‖ O_D`, as the journal commits it.
+pub fn exit_key_digest(keys: &ExitKeys, deposit: &OutPoint) -> Hash {
     let mut h = Sha256::new();
     h.update(b"lichen/babe/pk_H/exit");
     for k in keys.b.iter().chain(&keys.e_plain).chain(&keys.e_counter).chain(&keys.k) {
         h.update(k);
     }
-    h.update(funding.to_bytes());
+    h.update(deposit.to_bytes());
     h.finalize().into()
 }
 
-/// The journal `c ‖ D ‖ H(pk_H ‖ O)`.
-pub fn exit_journal(c: u32, d: &Hash, keys: &ExitKeys, funding: &OutPoint) -> [u8; JOURNAL_LEN] {
+/// The journal `c ‖ D ‖ H(pk_H ‖ O_D)`.
+pub fn exit_journal(c: u32, d: &Hash, keys: &ExitKeys, deposit: &OutPoint) -> [u8; JOURNAL_LEN] {
     let mut journal = [0u8; JOURNAL_LEN];
     journal[..4].copy_from_slice(&c.to_le_bytes());
     journal[4..36].copy_from_slice(d);
-    journal[36..].copy_from_slice(&exit_key_digest(keys, funding));
+    journal[36..].copy_from_slice(&exit_key_digest(keys, deposit));
     journal
 }
 
@@ -218,19 +219,19 @@ pub enum Mode {
     Counter { c: u32, d: Hash, e: Hash, k: Vec<u8>, e_sig: [Hash; E_DIGITS], k_sig: Vec<Hash> },
 }
 
-/// The statement's input: the hub's keys, the contract's funding
-/// outpoint, and the mode.
+/// The statement's input: the hub's keys, the contract's deposit coin,
+/// and the mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExitStatement {
     pub keys: ExitKeys,
-    pub funding: OutPoint,
+    pub deposit: OutPoint,
     pub mode: Mode,
 }
 
 /// The statement with the exit: check `input` against a chain receipt of
 /// `chain_id` (`verify_chain`), and a counter's seal against its journal
 /// `D ‖ E` (`verify_counter`, the counter guest's Groth16 verification);
-/// on success, the journal `c ‖ D ‖ H(pk_H ‖ O)`.
+/// on success, the journal `c ‖ D ‖ H(pk_H ‖ O_D)`.
 pub fn check_exit(
     input: &ExitStatement,
     chain_id: &Hash,
@@ -247,7 +248,7 @@ pub fn check_exit(
             (c, d)
         }
         Mode::Claim { claim, b_sig, e_sig } => {
-            if claim.funding != input.funding {
+            if claim.deposit != input.deposit {
                 return Err(Reject::Outpoint);
             }
             let cl = crate::exit::check(claim, chain_id, verify_chain)?;
@@ -269,7 +270,7 @@ pub fn check_exit(
             (*c, *d)
         }
     };
-    Ok(exit_journal(c, &d, keys, &input.funding))
+    Ok(exit_journal(c, &d, keys, &input.deposit))
 }
 
 fn arr<const N: usize>(v: Vec<Hash>) -> Result<[Hash; N], Reject> {
@@ -284,7 +285,7 @@ impl ExitStatement {
         w.list(&k.e_plain);
         w.list(&k.e_counter);
         w.list(&k.k);
-        w.put(&self.funding.to_bytes());
+        w.put(&self.deposit.to_bytes());
         match &self.mode {
             Mode::Return { withdraw, b_sig } => {
                 w.put(&[0]);
@@ -313,7 +314,7 @@ impl ExitStatement {
     pub fn from_bytes(b: &[u8]) -> Result<ExitStatement, Reject> {
         let mut r = crate::exit::R(b);
         let keys = ExitKeys { b: arr(r.list()?)?, e_plain: arr(r.list()?)?, e_counter: arr(r.list()?)?, k: r.list()? };
-        let funding = OutPoint::from_bytes(&r.take()?);
+        let deposit = OutPoint::from_bytes(&r.take()?);
         let mode = match r.take()? {
             [0] => Mode::Return { b_sig: arr(r.list()?)?, withdraw: WithdrawInput::from_bytes(&r.bytes()?)? },
             [1] => Mode::Claim { b_sig: arr(r.list()?)?, e_sig: arr(r.list()?)?, claim: ExitInput::from_bytes(&r.bytes()?)? },
@@ -323,7 +324,7 @@ impl ExitStatement {
         if !r.0.is_empty() {
             return Err(Reject::Encoding);
         }
-        Ok(ExitStatement { keys, funding, mode })
+        Ok(ExitStatement { keys, deposit, mode })
     }
 }
 
@@ -402,9 +403,9 @@ mod tests {
     /// a chain id.
     fn claim() -> (ExitStatement, Hash) {
         let (claim, id) = crate::exit::tests::input();
-        let e = crate::exit::fingerprint(claim.c, &claim.funding, claim.b, claim.state.height, &claim.state.root(&claim.tree), &crate::exit::nullifiers(&claim));
+        let e = crate::exit::fingerprint(claim.c, &claim.deposit, claim.b, claim.state.height, &claim.state.root(&claim.tree), &crate::exit::nullifiers(&claim));
         let mode = Mode::Claim { b_sig: sign(1, &claim.b.to_be_bytes()).try_into().unwrap(), e_sig: sign(2, &e).try_into().unwrap(), claim: claim.clone() };
-        (ExitStatement { keys: keys(), funding: claim.funding, mode }, id)
+        (ExitStatement { keys: keys(), deposit: claim.deposit, mode }, id)
     }
 
     /// The hub's counter leaf on the claim's `D ‖ E`, with seal `k`.
@@ -433,7 +434,7 @@ mod tests {
         let j = check_exit(&s, &id, &mut chain_ok(&s, &id), never).unwrap();
         let Mode::Claim { claim, .. } = &s.mode else { unreachable!() };
         let cl = crate::exit::check(claim, &id, &mut |_| true).unwrap();
-        assert_eq!(j, exit_journal(42, &cl.d, &s.keys, &claim.funding));
+        assert_eq!(j, exit_journal(42, &cl.d, &s.keys, &claim.deposit));
         // a counter that doesn't verify: the same journal
         let (k, _) = counter(std::vec![7; K_LEN]);
         assert_eq!(check_exit(&k, &id, &mut |_| false, never), Ok(j));
@@ -450,7 +451,7 @@ mod tests {
         let withdraw = input_of(9);
         let r = ExitStatement { mode: Mode::Return { withdraw: withdraw.clone(), b_sig: sign(1, &9u32.to_be_bytes()).try_into().unwrap() }, ..s.clone() };
         let d = crate::check(&withdraw, &id, &mut |_| true).unwrap()[8..].try_into().unwrap();
-        assert_eq!(check_exit(&r, &id, &mut chain_ok(&r, &id), never), Ok(exit_journal(42, &d, &s.keys, &s.funding)));
+        assert_eq!(check_exit(&r, &id, &mut chain_ok(&r, &id), never), Ok(exit_journal(42, &d, &s.keys, &s.deposit)));
         // each encodes and decodes
         for x in [&s, &k, &r] {
             assert_eq!(ExitStatement::from_bytes(&x.to_bytes()).as_ref(), Ok(x));
@@ -477,7 +478,7 @@ mod tests {
         assert_eq!(run(&x), Err(Reject::HubAuth));
         // the claim's E naming another outpoint than the journal's
         let mut x = s.clone();
-        x.funding.vout += 1;
+        x.deposit.vout += 1;
         assert_eq!(run(&x), Err(Reject::Outpoint));
         // a counter leaf's E signed under the plain key; K not the one
         // signed; K of another length

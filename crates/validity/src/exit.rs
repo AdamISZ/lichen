@@ -4,10 +4,10 @@
 //! transparent note's owner signs:
 //!
 //! ```text
-//! E = SHA256("lichen/exit" ‖ c ‖ O ‖ b ‖ h_S ‖ SR_S ‖ nf_1 ‖ … ‖ nf_n)
+//! E = SHA256("lichen/exit" ‖ c ‖ O_D ‖ b ‖ h_S ‖ SR_S ‖ nf_1 ‖ … ‖ nf_n)
 //! ```
 //!
-//! for contract `c` funded at the outpoint `O`, claiming `b` from the
+//! for contract `c` of deposit coin `O_D`, claiming `b` from the
 //! state of height `h_S` and root `SR_S`. The hub's exit record
 //! (`Tx::Exit`) carries the claim as posted, and retires its transparent
 //! notes: their owners' signatures are the authority, as for a spend, so
@@ -25,13 +25,13 @@ use crate::{Hash, OutPoint, Reject, TNote, R};
 /// At most this many notes in a claim.
 pub const MAX_NOTES: usize = 8;
 
-/// `E` for contract `c` funded at `funding`, claiming `b` at the state of
+/// `E` for contract `c` of deposit coin `deposit`, claiming `b` at the state of
 /// height `h_s` and root `sr_s` with the notes of `nullifiers`.
-pub fn fingerprint(c: u32, funding: &OutPoint, b: u32, h_s: u64, sr_s: &Hash, nullifiers: &[Hash]) -> Hash {
+pub fn fingerprint(c: u32, deposit: &OutPoint, b: u32, h_s: u64, sr_s: &Hash, nullifiers: &[Hash]) -> Hash {
     let mut h = Sha256::new();
     h.update(b"lichen/exit");
     h.update(c.to_be_bytes());
-    h.update(funding.to_bytes());
+    h.update(deposit.to_bytes());
     h.update(b.to_be_bytes());
     h.update(h_s.to_be_bytes());
     h.update(sr_s);
@@ -93,10 +93,10 @@ impl Posted {
         self.notes.iter().map(PostedNote::nullifier).collect()
     }
 
-    /// `E` of this claim for contract `c` funded at `funding`, claiming
+    /// `E` of this claim for contract `c` of deposit coin `deposit`, claiming
     /// `b`.
-    pub fn fingerprint(&self, c: u32, funding: &OutPoint, b: u32) -> Hash {
-        fingerprint(c, funding, b, self.h_s, &self.sr_s, &self.nullifiers())
+    pub fn fingerprint(&self, c: u32, deposit: &OutPoint, b: u32) -> Hash {
+        fingerprint(c, deposit, b, self.h_s, &self.sr_s, &self.nullifiers())
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {

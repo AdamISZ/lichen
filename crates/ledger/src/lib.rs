@@ -438,7 +438,7 @@ impl Mint {
     }
 }
 
-/// An exit record: contract `c`, funded at `funding`, was claimed for `b`
+/// An exit record: contract `c`, of deposit coin `deposit`, was claimed for `b`
 /// with the notes its `request` posted (`lichen_validity::exit::Posted`'s
 /// encoding), and the hub records it. The claim's transparent notes are
 /// retired as `exited(c)`, each on its owner's signature on the claim; a
@@ -448,7 +448,7 @@ impl Mint {
 pub struct Exit {
     pub c: u32,
     #[serde(with = "outpoint")]
-    pub funding: OutPoint,
+    pub deposit: OutPoint,
     pub b: u32,
     #[serde(with = "hexvec")]
     pub posted: Vec<u8>,
@@ -462,9 +462,9 @@ impl Exit {
     pub fn digest(d: &Deployment, e: &Hash) -> Hash {
         lichen_validity::exit::record_digest(&d.sequencer, &d.hub, &d.seal.unwrap_or_default(), e)
     }
-    pub fn new(hub: &SigningKey, d: &Deployment, c: u32, funding: OutPoint, b: u32, posted: &lichen_validity::exit::Posted) -> Exit {
-        let sig = sign(hub, &Exit::digest(d, &posted.fingerprint(c, &funding, b)));
-        Exit { c, funding, b, posted: posted.to_bytes(), sig }
+    pub fn new(hub: &SigningKey, d: &Deployment, c: u32, deposit: OutPoint, b: u32, posted: &lichen_validity::exit::Posted) -> Exit {
+        let sig = sign(hub, &Exit::digest(d, &posted.fingerprint(c, &deposit, b)));
+        Exit { c, deposit, b, posted: posted.to_bytes(), sig }
     }
     pub fn claim(&self) -> Result<lichen_validity::exit::Posted> {
         lichen_validity::exit::Posted::from_bytes(&self.posted).map_err(|e| anyhow::anyhow!("an exit claim: {e:?}"))
@@ -792,7 +792,7 @@ impl Ledger {
             }
             Tx::Exit(x) => {
                 let posted = x.claim()?;
-                let e = posted.fingerprint(x.c, &x.funding, x.b);
+                let e = posted.fingerprint(x.c, &x.deposit, x.b);
                 verify(&self.deployment.hub, &Exit::digest(&self.deployment, &e), &x.sig).context("an exit record not signed by the hub")?;
                 let mut nfs = vec![];
                 for n in &posted.notes {
@@ -1103,7 +1103,7 @@ fn block_tx(tx: &Tx) -> Result<lichen_validity::Tx> {
             t_outputs: t.t_outputs.iter().map(tn).collect(),
         },
         Tx::Anchor(r) => V::Anchor(lichen_validity::AnchorRecord::from_bytes(r).map_err(|e| anyhow::anyhow!("an anchor record: {e:?}"))?),
-        Tx::Exit(x) => V::Exit { c: x.c, funding: x.funding, b: x.b, posted: x.claim()?, sig: sig(&x.sig)? },
+        Tx::Exit(x) => V::Exit { c: x.c, deposit: x.deposit, b: x.b, posted: x.claim()?, sig: sig(&x.sig)? },
     })
 }
 
@@ -1621,13 +1621,13 @@ mod tests {
         assert_eq!(lichen_withdraw::check(&w, &id, &mut |_| true), Err(lichen_withdraw::Reject::NotAnchored));
     }
 
-    /// Alice's claim through contract `c`, funded at `funding`, of `b`
+    /// Alice's claim through contract `c`, of deposit coin `deposit`, of `b`
     /// from her transparent note `n` and a shielded note's nullifier, as
     /// its `request` posts it: signed by `signer`.
-    fn claim(n: &Note, c: u32, funding: &OutPoint, b: u32, signer: &SigningKey) -> lichen_validity::exit::Posted {
+    fn claim(n: &Note, c: u32, deposit: &OutPoint, b: u32, signer: &SigningKey) -> lichen_validity::exit::Posted {
         use lichen_validity::exit::{signed_digest, Posted, PostedNote};
         let mut p = Posted { h_s: 1, sr_s: [0x33; 32], notes: vec![PostedNote::Transparent { note: tnote(n), sig: [0; 64] }, PostedNote::Shielded { nf: [0x44; 32] }] };
-        let e = p.fingerprint(c, funding, b);
+        let e = p.fingerprint(c, deposit, b);
         if let PostedNote::Transparent { sig, .. } = &mut p.notes[0] {
             *sig = sign(signer, &signed_digest(&e)).try_into().unwrap();
         }
@@ -1648,21 +1648,21 @@ mod tests {
 
         // the claim through 1000: only the hub records it, only with its
         // owner's signature
-        let funding = OutPoint { txid: [12; 32], vout: 2 };
-        let posted = claim(&n0, 1000, &funding, 10, &alice);
-        assert!(format!("{:#}", l.apply(&Tx::Exit(Exit::new(&alice, &l.deployment, 1000, funding, 10, &posted))).unwrap_err()).contains("not signed by the hub"));
-        let forged = claim(&n0, 1000, &funding, 10, &bob);
-        assert!(format!("{:#}", l.apply(&Tx::Exit(Exit::new(&hub, &l.deployment, 1000, funding, 10, &forged))).unwrap_err()).contains("its note's owner"));
-        let other_b = claim(&n0, 1000, &funding, 11, &alice);
-        assert!(l.apply(&Tx::Exit(Exit::new(&hub, &l.deployment, 1000, funding, 10, &other_b))).is_err(), "signed for another b");
-        let x = Tx::Exit(Exit::new(&hub, &l.deployment, 1000, funding, 10, &posted));
+        let deposit = OutPoint { txid: [12; 32], vout: 2 };
+        let posted = claim(&n0, 1000, &deposit, 10, &alice);
+        assert!(format!("{:#}", l.apply(&Tx::Exit(Exit::new(&alice, &l.deployment, 1000, deposit, 10, &posted))).unwrap_err()).contains("not signed by the hub"));
+        let forged = claim(&n0, 1000, &deposit, 10, &bob);
+        assert!(format!("{:#}", l.apply(&Tx::Exit(Exit::new(&hub, &l.deployment, 1000, deposit, 10, &forged))).unwrap_err()).contains("its note's owner"));
+        let other_b = claim(&n0, 1000, &deposit, 11, &alice);
+        assert!(l.apply(&Tx::Exit(Exit::new(&hub, &l.deployment, 1000, deposit, 10, &other_b))).is_err(), "signed for another b");
+        let x = Tx::Exit(Exit::new(&hub, &l.deployment, 1000, deposit, 10, &posted));
         assert_eq!(l.apply(&x).unwrap(), Vec::<u32>::new());
         assert_eq!(l.nullifiers.leaf(&nullifier(&n0)), v::smt::exited(1000));
         assert!(!l.nullifiers.contains(&[0x44; 32]), "a shielded note's claim has no authority to retire it");
         // the note is gone: no spend, no second record
         assert!(l.apply(&transfer(vec![(Spend { note: n0, index: i0 }, &alice)], vec![note(xonly(&alice), 10, 0)])).is_err());
-        let again = claim(&n0, 1001, &funding, 10, &alice);
-        assert!(format!("{:#}", l.apply(&Tx::Exit(Exit::new(&hub, &l.deployment, 1001, funding, 10, &again))).unwrap_err()).contains("already spent"));
+        let again = claim(&n0, 1001, &deposit, 10, &alice);
+        assert!(format!("{:#}", l.apply(&Tx::Exit(Exit::new(&hub, &l.deployment, 1001, deposit, 10, &again))).unwrap_err()).contains("already spent"));
         // kept and read back
         let back: Ledger = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
         assert_eq!(back.pending.len(), 1);
@@ -1678,8 +1678,8 @@ mod tests {
         assert_eq!(refused(&|t| if let v::Tx::Exit { posted, .. } = t { posted.notes.swap(0, 1) }), Err(v::Reject::BadSignature), "another E");
         assert_eq!(
             refused(&|t| if let v::Tx::Exit { posted, sig, .. } = t {
-                *posted = claim(&n0, 1000, &funding, 10, &bob);
-                *sig = sign(&hub, &Exit::digest(&Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: Some(OutPoint { txid: [0x5e; 32], vout: 1 }) }, &posted.fingerprint(1000, &funding, 10))).try_into().unwrap();
+                *posted = claim(&n0, 1000, &deposit, 10, &bob);
+                *sig = sign(&hub, &Exit::digest(&Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: Some(OutPoint { txid: [0x5e; 32], vout: 1 }) }, &posted.fingerprint(1000, &deposit, 10))).try_into().unwrap();
             }),
             Err(v::Reject::BadSignature),
             "the hub's record of someone else's signature"

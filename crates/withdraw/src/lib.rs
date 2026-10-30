@@ -165,9 +165,11 @@ impl Anchored {
 /// serialization), the block's header, the transaction's index and path
 /// in the block's witness tree, and the block's coinbase (non-witness),
 /// its path in the txid tree (which fixes the trees' depth) and its
-/// witness reserved value.
+/// witness reserved value; and the contract's funding transaction
+/// (non-witness), whose output 0 `request` spends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
+    pub funding: Vec<u8>,
     pub tx: Vec<u8>,
     pub header: [u8; 80],
     pub index: u32,
@@ -178,18 +180,25 @@ pub struct Request {
 }
 
 impl Request {
-    /// The witness of the input spending `funding`: none unless the
-    /// transaction spends it and is in the header's block.
-    pub fn spending(&self, funding: &OutPoint) -> Option<Vec<&[u8]>> {
+    /// The witness of the input spending the contract's funding output, the
+    /// funding the transaction spending `deposit` (the contract's deposit
+    /// coin: nothing else can spend it): none unless the transaction spends
+    /// it and is in the header's block.
+    pub fn spending(&self, deposit: &OutPoint) -> Option<Vec<&[u8]>> {
+        if !btc::parse_tx(&self.funding)?.inputs.contains(deposit) {
+            return None;
+        }
+        let funding = OutPoint { txid: btc::sha256d(&self.funding), vout: 0 };
         if !btc::witness_in_block(&self.tx, &Header(self.header), self.index, &self.path, &self.coinbase, &self.coinbase_path, &self.reserved) {
             return None;
         }
         let t = btc::parse_witness_tx(&self.tx)?;
-        let i = t.tx.inputs.iter().position(|o| o == funding)?;
+        let i = t.tx.inputs.iter().position(|o| *o == funding)?;
         t.witness.into_iter().nth(i)
     }
 
     pub(crate) fn write(&self, w: &mut exit::W) {
+        w.bytes(&self.funding);
         w.bytes(&self.tx);
         w.put(&self.header);
         w.put(&self.index.to_be_bytes());
@@ -200,7 +209,7 @@ impl Request {
     }
 
     pub(crate) fn read(r: &mut exit::R) -> Result<Request, Reject> {
-        Ok(Request { tx: r.bytes()?, header: r.take()?, index: u32::from_be_bytes(r.take()?), path: r.list()?, coinbase: r.bytes()?, coinbase_path: r.list()?, reserved: r.take()? })
+        Ok(Request { funding: r.bytes()?, tx: r.bytes()?, header: r.take()?, index: u32::from_be_bytes(r.take()?), path: r.list()?, coinbase: r.bytes()?, coinbase_path: r.list()?, reserved: r.take()? })
     }
 }
 
@@ -474,15 +483,37 @@ pub(crate) mod tests {
         sha256d(&[&a[..], b].concat())
     }
 
+    /// A funding transaction spending `deposit` (non-witness), and its
+    /// output 0.
+    pub(crate) fn funding_of(deposit: &OutPoint) -> (Vec<u8>, OutPoint) {
+        let mut f = std::vec![2, 0, 0, 0, 1];
+        f.extend_from_slice(&deposit.to_bytes());
+        f.extend_from_slice(&[0, 0xff, 0xff, 0xff, 0xff, 1]);
+        f.extend_from_slice(&5000u64.to_le_bytes());
+        f.extend_from_slice(&[1, 0x51, 0, 0, 0, 0]);
+        let o = OutPoint { txid: sha256d(&f), vout: 0 };
+        (f, o)
+    }
+
+    /// A request: a transaction spending the funding of `deposit` with the
+    /// witness `items`, in a block on `prev`: the block's header, and the
+    /// [`Request`].
+    pub(crate) fn request_on(prev: &Hash, deposit: &OutPoint, items: &[&[u8]]) -> ([u8; 80], Request) {
+        let (f, o) = funding_of(deposit);
+        let (header, r) = block_with(prev, tx_spending(&o, items));
+        (header, Request { funding: f, ..r })
+    }
+
     /// A block on `prev` of a coinbase and `tx` (its witness serialization
-    /// and txid): its header, and `tx` in it as a [`Request`].
+    /// and txid): its header, and `tx` in it as a [`Request`] (of no
+    /// funding).
     pub(crate) fn block_with(prev: &Hash, (tx, txid): (Vec<u8>, Hash)) -> ([u8; 80], Request) {
         let reserved = [0x5a; 32];
         let wtxid = sha256d(&tx);
         let cb = coinbase(&pair(&pair(&[0; 32], &wtxid), &reserved));
         let cb_id = sha256d(&cb);
         let header = header_with(prev, &pair(&cb_id, &txid));
-        (header, Request { tx, header, index: 1, path: std::vec![[0; 32]], coinbase: cb, coinbase_path: std::vec![txid], reserved })
+        (header, Request { funding: std::vec![], tx, header, index: 1, path: std::vec![[0; 32]], coinbase: cb, coinbase_path: std::vec![txid], reserved })
     }
 
     /// A header on `prev` at regtest's difficulty (work 2), its nonce

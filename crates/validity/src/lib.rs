@@ -176,11 +176,11 @@ pub enum Tx {
     Shielded { anchor: Hash, t_spends: Vec<(TNote, u32)>, t_sigs: Vec<[u8; 64]>, nfs: Vec<Hash>, cms: Vec<Hash>, ciphertexts: Vec<Vec<u8>>, t_outputs: Vec<TNote> },
     /// An anchor on Bitcoin of this history ([`AnchorRecord`]).
     Anchor(AnchorRecord),
-    /// An exit record: contract `c`, funded at `funding`, paid a claim of
+    /// An exit record: contract `c`, of deposit coin `deposit`, paid a claim of
     /// `b` as its `request` posted it; the hub's signature
     /// ([`exit::record_digest`]). Its transparent notes are retired,
     /// leaf `exited(c)`.
-    Exit { c: u32, funding: OutPoint, b: u32, posted: exit::Posted, sig: [u8; 64] },
+    Exit { c: u32, deposit: OutPoint, b: u32, posted: exit::Posted, sig: [u8; 64] },
 }
 
 /// The history hash after `root`: `hist_h = H(hist_{h-1} ‖ root_h)`, from
@@ -461,8 +461,8 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
     for tx in &input.txs {
         match tx {
             Tx::Anchor(rec) => anchor = check_anchor(&anchor, input.height, &input.hist, rec)?,
-            Tx::Exit { c, funding, b, posted, sig } => {
-                let e = posted.fingerprint(*c, funding, *b);
+            Tx::Exit { c, deposit, b, posted, sig } => {
+                let e = posted.fingerprint(*c, deposit, *b);
                 check_sig(&input.hub, &exit::record_digest(&input.anchor.sequencer, &input.hub, &input.anchor.genesis, &e), sig)?;
                 for n in &posted.notes {
                     if let exit::PostedNote::Transparent { note, sig } = n {
@@ -778,10 +778,10 @@ impl BlockInput {
                     w.0.push(ANCHOR);
                     w.record(a);
                 }
-                Tx::Exit { c, funding, b, posted, sig } => {
+                Tx::Exit { c, deposit, b, posted, sig } => {
                     w.0.push(EXIT);
                     w.put(&c.to_be_bytes());
-                    w.put(&funding.to_bytes());
+                    w.put(&deposit.to_bytes());
                     w.put(&b.to_be_bytes());
                     w.bytes(&posted.to_bytes());
                     w.put(sig);
@@ -828,7 +828,7 @@ impl BlockInput {
                     t_outputs: r.notes()?,
                 },
                 ANCHOR => Tx::Anchor(r.record()?),
-                EXIT => Tx::Exit { c: r.u32()?, funding: OutPoint::from_bytes(&r.take()?), b: r.u32()?, posted: exit::Posted::from_bytes(&r.bytes()?)?, sig: r.take()? },
+                EXIT => Tx::Exit { c: r.u32()?, deposit: OutPoint::from_bytes(&r.take()?), b: r.u32()?, posted: exit::Posted::from_bytes(&r.bytes()?)?, sig: r.take()? },
                 _ => return Err(Reject::Encoding),
             })
         })?;
