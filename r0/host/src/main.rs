@@ -274,15 +274,22 @@ fn chain_check(chain: &Option<Receipt>) -> Result<(Option<Vec<u8>>, [u8; 32])> {
 
 /// Prove the fixed statement with the exit (BABE's; or, `execute_only`,
 /// run it), checked natively first, the counter's Groth16 check too.
+/// Executed only, input the statement rejects is run anyway, to check
+/// that the guest refuses it too.
 fn prove_babe_exit(input: &[u8], chain: Option<Receipt>, execute_only: bool) -> Result<Option<Receipt>> {
     let s = lichen_withdraw::fixed::ExitStatement::from_bytes(input).map_err(|r| anyhow::anyhow!("the statement's input: {r:?}"))?;
     let counter: [u8; 32] = image_id(&committed("counter")?)?.as_bytes().try_into()?;
     let (known, chain_id) = chain_check(&chain)?;
     let mut assumed = Vec::new();
-    let journal = lichen_withdraw::fixed::check_exit(&s, &chain_id, &mut |j| assume(&known, j, &mut assumed, execute_only), &mut |k, j| lichen_groth16::verify(&counter, k, j))
-        .map_err(|r| anyhow::anyhow!("the statement rejects the input: {r:?}"))?;
+    let checked = lichen_withdraw::fixed::check_exit(&s, &chain_id, &mut |j| assume(&known, j, &mut assumed, execute_only), &mut |k, j| lichen_groth16::verify(&counter, k, j));
     // tag 1: with the exit
-    prove_guest("babe", &[&[1][..], input].concat(), &journal, chain, &assumed, execute_only)
+    let input = [&[1][..], input].concat();
+    match checked {
+        Ok(journal) => prove_guest("babe", &input, &journal, chain, &assumed, execute_only),
+        // executed only: whether the guest refuses it too
+        Err(r) if execute_only => refused("babe", &input, chain, &assumed, &format!("{r:?}")).map(|()| None),
+        Err(r) => bail!("the statement rejects the input: {r:?}"),
+    }
 }
 
 /// Prove the counter (or, `execute_only`, run it), checked natively first.
@@ -316,18 +323,7 @@ fn assume(known: &Option<Vec<u8>>, j: &[u8], assumed: &mut Vec<Vec<u8>>, execute
 fn prove_guest(name: &str, input: &[u8], journal: &[u8], chain: Option<Receipt>, assumed: &[Vec<u8>], execute_only: bool) -> Result<Option<Receipt>> {
     let guest = committed(name)?;
     let id = image_id(&guest)?;
-    let mut env = ExecutorEnv::builder();
-    env.write(&(input.len() as u32))?.write_slice(&words(&input));
-    if let Some(c) = chain {
-        env.add_assumption(c);
-    }
-    if !assumed.is_empty() {
-        let chain_id = image_id(&committed("chain")?)?;
-        for j in assumed {
-            env.add_assumption(MaybePruned::Value(ReceiptClaim::ok(chain_id, j.clone())));
-        }
-    }
-    let env = env.build()?;
+    let env = guest_env(input, chain, assumed)?;
     if execute_only {
         let s = default_executor().execute(env, &guest)?;
         ensure!(s.journal.bytes == journal, "the execution's journal isn't the statement's");
@@ -341,6 +337,35 @@ fn prove_guest(name: &str, input: &[u8], journal: &[u8], chain: Option<Receipt>,
     info.receipt.verify(id)?;
     ensure!(info.receipt.journal.bytes == journal, "the receipt's journal isn't the statement's");
     Ok(Some(info.receipt))
+}
+
+/// Execute the guest `name` on `input` that the statement rejects
+/// (`why`): an error unless the guest fails too.
+fn refused(name: &str, input: &[u8], chain: Option<Receipt>, assumed: &[Vec<u8>], why: &str) -> Result<()> {
+    match default_executor().execute(guest_env(input, chain, assumed)?, &committed(name)?) {
+        Ok(_) => bail!("the guest {name} accepts what the statement rejects ({why})"),
+        Err(e) => {
+            eprintln!("lichen-r0: the statement rejects the input ({why}), and the guest {name} fails too: {e}");
+            Ok(())
+        }
+    }
+}
+
+/// The executor's environment for a guest: `input`, and the chain receipt
+/// as an assumption if any (or the chain journals `assumed`, unresolved).
+fn guest_env(input: &[u8], chain: Option<Receipt>, assumed: &[Vec<u8>]) -> Result<ExecutorEnv<'static>> {
+    let mut env = ExecutorEnv::builder();
+    env.write(&(input.len() as u32))?.write_slice(&words(&input));
+    if let Some(c) = chain {
+        env.add_assumption(c);
+    }
+    if !assumed.is_empty() {
+        let chain_id = image_id(&committed("chain")?)?;
+        for j in assumed {
+            env.add_assumption(MaybePruned::Value(ReceiptClaim::ok(chain_id, j.clone())));
+        }
+    }
+    env.build()
 }
 
 /// Which of the guests whose receipts are wrapped (the withdrawal's,

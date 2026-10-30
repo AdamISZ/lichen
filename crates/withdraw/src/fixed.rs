@@ -527,15 +527,31 @@ mod tests {
     /// with no chain receipt, assume the chain journal they ask for):
     /// claims of 1 and of 8 transparent notes (8 the most a request
     /// posts), a failed counter whose `K` is a real BABE proof's points
-    /// (crates/babe/tests/data), and a counter on each ground.
+    /// (crates/babe/tests/data), and a counter on each ground. With
+    /// `LICHEN_EXEC_COUNTER`, a real counter's proof as `bitvmx-input`
+    /// writes it, also the hub's countering leaf signed for it: a counter
+    /// that holds, which the guest must refuse as a failed one.
     #[test]
     #[ignore]
     fn exec_inputs() {
         use crate::counter::{tests as ct, Counter};
         let dir = std::path::PathBuf::from(std::env::var("LICHEN_EXEC_DIR").expect("LICHEN_EXEC_DIR"));
-        let hex = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../babe/tests/data/babe-60-42.hex")).unwrap();
-        let bytes: Vec<u8> = (0..hex.trim().len()).step_by(2).map(|i| u8::from_str_radix(&hex.trim()[i..i + 2], 16).unwrap()).collect();
-        let k = bytes[32..32 + K_LEN].to_vec();
+        let unhex = |path: &str| -> Vec<u8> {
+            let hex = std::fs::read_to_string(path).unwrap();
+            (0..hex.trim().len()).step_by(2).map(|i| u8::from_str_radix(&hex.trim()[i..i + 2], 16).unwrap()).collect()
+        };
+        // BitVMX's input: the journal's length in words, the image id, the
+        // points (a K), the journal
+        let points = |input: &[u8]| input[36..36 + K_LEN].to_vec();
+        let k = points(&unhex(concat!(env!("CARGO_MANIFEST_DIR"), "/../babe/tests/data/babe-60-42.hex")));
+        if let Ok(path) = std::env::var("LICHEN_EXEC_COUNTER") {
+            let real = unhex(&path);
+            let (k, j) = (points(&real), &real[36 + K_LEN..]);
+            let (d, e): (Hash, Hash) = (j[..32].try_into().unwrap(), j[32..].try_into().unwrap());
+            let (s, _) = claim();
+            let mode = Mode::Counter { c: 42, d, e, e_sig: sign(3, &e).try_into().unwrap(), k_sig: sign(4, &k), k };
+            std::fs::write(dir.join("true-counter"), ExitStatement { mode, ..s }.to_bytes()).unwrap();
+        }
         let checked = |(s, id): (ExitStatement, Hash)| {
             check_exit(&s, &id, &mut |_| true, &mut |_, _| false).unwrap();
             s.to_bytes()
