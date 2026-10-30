@@ -40,9 +40,19 @@ pub use lichen_validity::exit::{fingerprint, signed_digest, Posted, PostedNote, 
 use crate::{root_from_path, Anchored, Hash, Reject, Request, TREE_DEPTH};
 
 /// `request`'s witness carries [`Posted`] in its first this many items,
-/// concatenated: at most 520 bytes each (tapscript's limit on a stack
-/// item), and as many as the script drops, empty ones padding.
-pub const POSTED_ITEMS: usize = 3;
+/// concatenated: as many as the script drops, empty ones padding, enough
+/// for the largest claim (1,169 bytes).
+pub const POSTED_ITEMS: usize = 15;
+
+/// The largest item: Bitcoin Core relays no tapscript witness item larger.
+pub const POSTED_ITEM: usize = 80;
+
+/// `bytes` (a claim, [`Posted`]'s encoding) as `request`'s witness carries
+/// them: [`POSTED_ITEMS`] items of up to [`POSTED_ITEM`] bytes, bottom
+/// first. None if they don't fit.
+pub fn posted_items(bytes: &[u8]) -> Option<Vec<&[u8]>> {
+    (bytes.len() <= POSTED_ITEMS * POSTED_ITEM).then(|| (0..POSTED_ITEMS).map(|i| bytes.get(i * POSTED_ITEM..).map_or(&[][..], |b| &b[..b.len().min(POSTED_ITEM)])).collect())
+}
 
 /// A claimed note's opening, and its owner's authority over it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -378,10 +388,8 @@ pub(crate) mod tests {
         post(input, &posted(input).to_bytes());
     }
 
-    /// `bytes` as `request` posts them, in [`POSTED_ITEMS`] items of up
-    /// to 520 bytes.
     pub(crate) fn items(bytes: &[u8]) -> Vec<&[u8]> {
-        (0..POSTED_ITEMS).map(|i| bytes.get(i * 520..).map_or(&[][..], |b| &b[..b.len().min(520)])).collect()
+        posted_items(bytes).unwrap()
     }
 
     /// `request` posting `bytes`, in a block on the anchor's, nine headers
@@ -526,7 +534,8 @@ pub(crate) mod tests {
         let t = PostedNote::Transparent { note: TNote { owner: [1; 32], value: 1, memo: 0, rho: [2; 32] }, sig: [3; 64] };
         let full = Posted { notes: std::vec![t; MAX_NOTES], ..posted.clone() }.to_bytes();
         assert_eq!(full.len(), 8 + 32 + 1 + MAX_NOTES * (1 + 76 + 64));
-        assert!(full.len() <= POSTED_ITEMS * 520);
+        assert!(full.len() <= POSTED_ITEMS * POSTED_ITEM && posted_items(&full).is_some());
+        assert!(posted_items(&[0; POSTED_ITEMS * POSTED_ITEM + 1]).is_none());
         // the script's own items after them don't matter
         let mut x = i.clone();
         let bytes = posted.to_bytes();

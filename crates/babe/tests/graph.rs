@@ -7,10 +7,11 @@ use std::collections::HashMap;
 
 use bitcoincore_rpc::json::{AddressType, SignRawTransactionInput};
 use bitcoincore_rpc::RpcApi;
-use lichen_babe::graph::{Babe, Spec, Windows};
+use lichen_babe::graph::{Babe, ExitKeys, Spec, Windows};
 use lichen_babe::reveal::{check_presigs, complete, extract, points, reveal_args, AdaptorKeys, LamportKey};
 use lichen_babe::setup::{Hash, Secret, DIGITS};
 use lichen_babe::vsss::{deal, Dealer};
+use lichen_withdraw::fixed::K_LEN;
 use lngap_btc::bitcoin::hashes::{sha256, Hash as _};
 use lngap_btc::bitcoin::{Amount, OutPoint, Transaction, TxIn, Txid};
 use lngap_btc::keys::Seed;
@@ -34,6 +35,16 @@ struct Parties {
     msgs: Vec<[u8; 32]>,
     dealer: Dealer,
     dealing: lichen_babe::vsss::Dealing,
+    exit: Exit,
+}
+
+/// The exit's one-time keys: Alice's for `E`, the hub's for `E` in each
+/// leaf and for `K`.
+struct Exit {
+    e: WotsSecret,
+    plain: Wots256Secret,
+    counter: Wots256Secret,
+    k: Wots256Secret,
 }
 
 fn parties(label: &str) -> Parties {
@@ -50,6 +61,21 @@ fn parties(label: &str) -> Parties {
         msgs: (0..3).map(|_| core::array::from_fn(|_| rng.next_u32() as u8)).collect(),
         dealer,
         dealing,
+        exit: Exit {
+            e: WotsSecret::from_entropy(WotsParams::for_bytes(32), a.derive_bytes("e")),
+            plain: Wots256Secret::from_entropy(WotsParams::for_bytes(32), Seed::from_label(&format!("{label}/hub")).derive_bytes("e_plain")),
+            counter: Wots256Secret::from_entropy(WotsParams::for_bytes(32), Seed::from_label(&format!("{label}/hub")).derive_bytes("e_counter")),
+            k: Wots256Secret::from_entropy(WotsParams::for_bytes(K_LEN as u32), Seed::from_label(&format!("{label}/hub")).derive_bytes("k")),
+        },
+    }
+}
+
+/// [`spec`] with the exit.
+fn exit_spec(p: &Parties, t_close: u32, t_a: u32) -> Spec {
+    let x = &p.exit;
+    Spec {
+        exit: Some(ExitKeys { e_key: x.e.public(), hub_e_plain: x.plain.public(), hub_e_counter: x.counter.public(), hub_k: x.k.public() }),
+        ..spec(p, t_close, t_a)
     }
 }
 
@@ -73,6 +99,7 @@ fn spec(p: &Parties, t_close: u32, t_a: u32) -> Spec {
         adaptor: p.adaptor.public(),
         hmsg: p.msgs.iter().map(|m| sha256::Hash::hash(m).to_byte_array()).collect::<Vec<Hash>>(),
         windows: Windows { w_h: 6, t_a, delta2: 12, delta1: 6 },
+        exit: None,
     }
 }
 
@@ -162,6 +189,10 @@ struct Opened {
 }
 
 fn open(rt: &Regtest, label: &str) -> Opened {
+    open_with(rt, label, spec)
+}
+
+fn open_with(rt: &Regtest, label: &str, spec: fn(&Parties, u32, u32) -> Spec) -> Opened {
     let p = parties(label);
     let h = rt.height().unwrap();
     let babe = Babe::new(spec(&p, h + 2_000, h + 60)).unwrap();
@@ -228,6 +259,22 @@ impl Opened {
         let alice_b = WotsSig::from_consumption_order(WotsParams::for_bytes(4), &Self::args(&req)).unwrap();
         let read = u32::from_be_bytes(alice_b.message().try_into().unwrap());
         self.link(rt, "respond", Babe::respond_wire(&self.p.hub_b.sign(&read.to_be_bytes()).unwrap(), &alice_b))
+    }
+    /// Alice's request of `b` with her claim `e`, posted as `posted`; her
+    /// signatures on `b` and `E`, read back from it.
+    fn request_exit(&self, rt: &Regtest, b: u32, e: &[u8; 32], posted: &[u8]) -> (Transaction, WotsSig, WotsSig) {
+        let wire = Babe::request_exit_wire(&self.p.b_key.sign(&b.to_be_bytes()).unwrap(), &self.p.exit.e.sign(e).unwrap(), posted).unwrap();
+        let req = self.link(rt, "request", wire);
+        let (alice_b, alice_e, read) = Babe::read_request_exit(&Self::args(&req)).unwrap();
+        assert_eq!((alice_b.message(), alice_e.message(), &read[..]), (b.to_be_bytes().to_vec(), e.to_vec(), posted));
+        (req, alice_b, alice_e)
+    }
+    /// The hub's response to that request: the plain leaf (`k` none) or the
+    /// counter leaf, its `E` signed under `key`.
+    fn respond_exit_wire(&self, alice_b: &WotsSig, alice_e: &WotsSig, key: &Wots256Secret, k: Option<&[u8; K_LEN]>) -> Vec<Vec<u8>> {
+        let hub_b = self.p.hub_b.sign(&alice_b.message()).unwrap();
+        let k = k.map(|k| self.p.exit.k.sign(k).unwrap());
+        Babe::respond_exit_wire(&hub_b, alice_b, alice_e, &key.sign(&alice_e.message()).unwrap(), k.as_ref())
     }
     /// Alice asserts π1 (here, digits at random).
     fn assert(&self, rt: &Regtest) -> Transaction {
@@ -299,4 +346,45 @@ fn every_ending_on_regtest() {
     let (h, a) = c.sigs("respond");
     let lie = c.set["respond"].finish(Babe::respond_wire(&c.p.hub_b.sign(&200_000u32.to_be_bytes()).unwrap(), &alice_b), h, a);
     assert!(rt.test_accept(&lie).is_err(), "the digits must agree");
+}
+
+/// The exit's leaves, on regtest: `request` with Alice's `E` and the
+/// largest claim posted in its first witness items; `respond` plain and
+/// `respond_counter` (with `K`), one transaction, each continued by
+/// `assert`; the hub's `E` must be Alice's, under the leaf's key.
+#[test]
+fn the_exit_on_regtest() {
+    let rt = Regtest::start_standard().unwrap();
+    let e = sha256::Hash::hash(b"a claim").to_byte_array();
+    let posted: Vec<u8> = (0..8 + 32 + 1 + 8 * 141).map(|i| i as u8).collect();
+    let k = [7u8; K_LEN];
+
+    let c = open_with(&rt, "babe/exit-plain", exit_spec);
+    assert_eq!(c.set["respond"].tx, c.set["respond_counter"].tx, "one transaction, either leaf");
+    let (req, alice_b, alice_e) = c.request_exit(&rt, 300_000, &e, &posted);
+    let first: Vec<u8> = req.input[0].witness.iter().take(lichen_withdraw::exit::POSTED_ITEMS).flatten().copied().collect();
+    assert_eq!(first, posted, "the claim in the first items, as the statement reads it");
+    c.link(&rt, "respond", c.respond_exit_wire(&alice_b, &alice_e, &c.p.exit.plain, None));
+    c.assert(&rt);
+
+    let c = open_with(&rt, "babe/exit-counter", exit_spec);
+    let (_, alice_b, alice_e) = c.request_exit(&rt, 300_000, &e, &posted);
+    // the hub's E must be Alice's, under the leaf's own key
+    let (h, a) = c.sigs("respond_counter");
+    let other = Babe::respond_exit_wire(
+        &c.p.hub_b.sign(&300_000u32.to_be_bytes()).unwrap(),
+        &alice_b,
+        &alice_e,
+        &c.p.exit.counter.sign(&[1; 32]).unwrap(),
+        Some(&c.p.exit.k.sign(&k).unwrap()),
+    );
+    assert!(rt.test_accept(&c.set["respond_counter"].finish(other, h, a)).is_err(), "another E");
+    let plain_key = c.respond_exit_wire(&alice_b, &alice_e, &c.p.exit.plain, Some(&k));
+    assert!(rt.test_accept(&c.set["respond_counter"].finish(plain_key, h, a)).is_err(), "E under the plain key");
+    let (h, a) = c.sigs("respond");
+    let counter_key = c.respond_exit_wire(&alice_b, &alice_e, &c.p.exit.counter, None);
+    assert!(rt.test_accept(&c.set["respond"].finish(counter_key, h, a)).is_err(), "E under the counter key");
+    let responded = c.link(&rt, "respond_counter", c.respond_exit_wire(&alice_b, &alice_e, &c.p.exit.counter, Some(&k)));
+    println!("respond_counter: {} witness items", responded.input[0].witness.len());
+    c.assert(&rt);
 }

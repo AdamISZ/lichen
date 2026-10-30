@@ -217,6 +217,7 @@ impl Record {
             adaptor: k.adaptor.clone(),
             hmsg: k.hmsg.clone(),
             windows: k.windows,
+            exit: None,
         })
     }
     /// The statement's journal: `c ‖ D ‖ H(pk_H)`.
