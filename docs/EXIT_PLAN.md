@@ -971,10 +971,29 @@ timeout.
 
 ## Steps (BABE)
 
-0. **Spikes**, to size what is unmeasured:
-   - a BN254 Groth16 verification in a RISC Zero guest (`ark-groth16`,
-     or RISC Zero's own verifier): its cycles;
-   - the same, as the chain guest's check of an exit record's proof.
+0. **Spikes**, to size what is unmeasured. Done (2026-10-30), on a
+   real Groth16 receipt of the BABE guest, in RISC Zero 3.0.6's executor
+   on lichen-vps (a scratch crate, not kept):
+
+   | Verifier | User cycles | Segments (2^20) |
+   |---|---|---|
+   | `risc0-groth16` (arkworks, unaccelerated) | 174.4M | 180 |
+   | `substrate-bn`, RISC Zero's fork (`bigint2`), points as in the seal | 45.9M | 47 |
+   | the same, points compressed | 47.6M | 48 |
+   | the same, a counter for another journal (fails) | 47.5M | 48 |
+
+   - Use RISC Zero's `substrate-bn` fork (`risc0/paritytech-bn`, tag
+     `v0.6.0-risczero.0`), not `risc0-groth16`: 3.8× fewer cycles.
+   - Decompression costs 1.7M cycles (4%), so `K` compressed is cheap.
+   - A failing verification costs the same as a passing one. Proving
+     ~48 segments at the measured 2^20 rates is roughly 1.5 h on the
+     Mac's CPU and 7–9 h on the VPS (the BABE guest's one segment took
+     660 s there), against days to `T_A`: fine for Alice's rare case.
+     A GPU prover would make it minutes.
+   - In the chain guest it's too heavy per exit record (~47M cycles
+     each, against 0.4M for a block of one mint today). So the record carries the
+     owner's signature on `c ‖ E`, made inside the exit proof (the
+     alternative in "After an exit"), not the Groth16.
 1. **The statements, native** (`crates/withdraw`). The claim and the
    counter are built, the nullifier tree's leaves tagged, and the three
    branches behind the fixed statement (`fixed::check_exit`); done:
