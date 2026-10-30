@@ -346,33 +346,78 @@ proved by the counter guest from the request transaction in a block on
 the anchors' headers; the guest knows the contract's funding outpoint
 through `D` or `E`'s preimage (detail).
 
-### Open before the counter (found building step 1)
+### Decided while building step 1 (2026-10-30)
 
-Alice's claim is built (`crates/withdraw/src/exit.rs`), with `E`'s
-preimage gaining the funding outpoint `O`. Two things stand in the
-counter's way:
+Built natively in `crates/withdraw`: the claim (`exit.rs`) and the
+counter (`counter.rs`). Building them settled three points the sections
+above left open.
 
-- **Nothing binds `O`.** The counter's cutoff is the confirmation of
-  the transaction spending `O`. But BABE fixes the journal
-  (`c ‖ D ‖ H(pk_H)`) in `babe_setup`, when the deposit is asked for,
-  before any funding transaction exists. So Alice's guest can't check
-  `E`'s `O`: she could name an outpoint spent long ago, a stale cutoff,
-  and hide a later spend. Identifying `request` some other way (Alice's
-  signature in its witness, the hub's in `respond`'s, the taproot leaf
-  it reveals) fails: each can be copied into an earlier or later
-  transaction by whoever gains from it. Proposed: run the setup once the
-  funding transaction is built (its txid known, nothing broadcast yet),
-  and fold `O` into the journal's third word, `H(pk_H ‖ O)`. Nothing is
-  broadcast before the presignatures, so Alice's deposit is no more
-  exposed than now. The setup's 19 s moves to after funding is built.
-- **The counter can't see which transaction inserted a nullifier.**
-  Both exclusions (contract `c`'s own return; exit records, exempt from
-  the cutoff) depend on it, but the history commits only each height's
-  state root. Proposed: the history commits each block's transactions
-  too, `hist_h = H(hist_{h-1} ‖ root_h ‖ txs_h)`, with `txs_h` a hash of
-  the block's transaction digests. The counter opens the one transaction
-  and checks its kind. This changes the chain guest, which step 2
-  replaces anyway, and what anchors commit.
+**The contract's outpoint is bound by the setup.** The counter's cutoff
+is the confirmation of `request`, the transaction spending the funding
+outpoint `O`, so `E`'s preimage carries `O`. Something fixed must vouch
+for it, or Alice could name an outpoint spent long ago, a stale cutoff,
+and hide a later spend. Any other way to recognise `request` (Alice's
+signature in its witness, the hub's in `respond`'s, the leaf it reveals)
+can be copied into another transaction by whoever gains from it. Today
+BABE fixes the journal in `babe_setup`, when the deposit address is
+handed out, before any funding transaction exists. So the open flow
+changes:
+
+1. `/deposit`: the address only, no setup.
+2. Alice pays; her deposit is in the mempool, so its txid is known.
+3. `/open`: her keys; the hub builds the funding transaction, so `O` is
+   known, and runs the setup with the journal `c ‖ D ‖ H(pk_H ‖ O)`.
+4. Her kept instances (a message of their own now, since they depend on
+   the setup's commitments), the checks of the opened ones, the
+   presignatures; she signs the deposit's spend last.
+
+The funding transaction still waits for the deposit's confirmation, so
+the setup runs during that wait. The deposit tree doesn't depend on the
+setup, and nothing is broadcast before the presignatures, so Alice is no
+more exposed than now. A side benefit: today anyone can make the hub
+run a setup by asking for an address; afterwards it takes a payment.
+
+**The nullifier tree records how each note was spent.** The counter's
+exceptions depend on what spent a nullifier, which a plain "spent" leaf
+can't say. Each leaf now does (`lichen_validity::smt`):
+
+- `spent`: an ordinary transaction;
+- `returned(c, r)`: a transaction paying the hub exactly one note, of
+  `r` with memo `c ≠ 0` (memo 0 is "no contract", and contract numbers
+  start at 1000);
+- `exited(c)`: contract `c`'s exit record (`Tx::Exit`, step 2).
+
+The chain guest and the ledger set the leaf on insertion; old ledgers
+read as all `spent`. Exits are outside the L2's own rules, so exit
+records are how they enter its double-spend protection; the tags decide
+which spends may be held against which exit. The counter's rules:
+
+- `spent` counts if final before the cutoff;
+- `returned(c', r)` is an ordinary spend unless `c' = c` and `r ≥ b`.
+  Then it never counts: the hub has at least `b` of her tokens for
+  contract `c`, which pays once. A smaller return, or one to another
+  contract, can't shelter a spend, or Alice could tag a payment to Bob
+  with a token return and exit the old notes. So `b` joins `E`'s
+  preimage, and a wallet exiting after a censored return claims no more
+  than the return;
+- `exited(c')` counts whenever anchored, unless `c' = c`.
+
+The counter's journal is `D ‖ E`.
+
+**No margin on the cutoff.** The plan above lets a counter cite only an
+anchor confirmed `m` blocks before `request`, to protect an honest
+Alice from a transaction of hers that the operator held and sequenced
+after she checked the tip. But the margin is a window for a dishonest
+Alice: she pays Bob, sees the spend anchored, and requests within `m`
+blocks, claiming the old notes. No counter can cite the spend, so she
+is paid while Bob keeps the payment, at the hub's cost, once per
+contract. The counter as built cites any anchor confirmed at or before
+`request`'s block. What the margin protected is the held-transaction
+case of data availability, which sender acknowledgment closes (a spend
+can be cited only with its sender's acknowledgment, which she gives
+only after seeing it anchored), so with it no margin is needed. Until
+then, a wallet must not exit notes it has signed away in a transaction
+that wasn't sequenced; it claims its other notes, or waits.
 
 ### Windows and load
 
@@ -850,7 +895,9 @@ timeout.
    - a BN254 Groth16 verification in a RISC Zero guest (`ark-groth16`,
      or RISC Zero's own verifier): its cycles;
    - the same, as the chain guest's check of an exit record's proof.
-1. **The statements, native** (`crates/withdraw`):
+1. **The statements, native** (`crates/withdraw`). The claim and the
+   counter are built, and the nullifier tree's leaves tagged; the two
+   modes remain:
    - exit mode: notes in `T_S`, unspent in `N_S` (non-membership in the
      nullifier set's sparse Merkle tree, `validity/smt.rs`), Alice's
      authority (`nk`, or a signature for transparent notes), distinct

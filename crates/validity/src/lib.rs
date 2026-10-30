@@ -307,21 +307,12 @@ pub fn check_anchor(state: &AnchorState, height: u64, hist: &Hash, rec: &AnchorR
     if h != *hist {
         return Err(Reject::Seal);
     }
-    // in the block it names, at a leaf: its path as long as the
-    // coinbase's (index 0), which can't pass for a node of the tree (it
-    // isn't 64 bytes, and it is a coinbase), so the tree's real depth. A
-    // shorter or longer path could pass a forged transaction off as half
-    // of a real 64-byte one, or as a node (CVE-2017-12842).
+    // in the block it names, at a leaf
     let header = btc::Header(rec.header);
-    let depth = rec.coinbase_path.len();
-    if rec.coinbase.len() == 64 || !btc::is_coinbase(&rec.coinbase) || btc::merkle_root(&btc::sha256d(&rec.coinbase), 0, &rec.coinbase_path) != header.merkle_root() {
+    if !btc::in_block(&rec.tx, &header, rec.index, &rec.path, &rec.coinbase, &rec.coinbase_path) {
         return Err(Reject::Seal);
     }
-    let txid = btc::sha256d(&rec.tx);
-    if rec.path.len() != depth || depth >= 32 || rec.index >> depth != 0 || rec.index == 0 || btc::merkle_root(&txid, rec.index, &rec.path) != header.merkle_root() {
-        return Err(Reject::Seal);
-    }
-    Ok(AnchorState { seal: OutPoint { txid, vout: 0 }, height: at, root: rec.roots[0], block: header.hash(), ..*state })
+    Ok(AnchorState { seal: OutPoint { txid: btc::sha256d(&rec.tx), vout: 0 }, height: at, root: rec.roots[0], block: header.hash(), ..*state })
 }
 
 /// The statement's input: the state at height `i`, the block, and the
@@ -406,9 +397,9 @@ struct State<'a> {
 }
 
 impl State<'_> {
-    fn spend_nf(&mut self, nf: &Hash) -> Result<(), Reject> {
+    fn spend_nf(&mut self, nf: &Hash, leaf: &Hash) -> Result<(), Reject> {
         let p = self.nf_proofs.next().ok_or(Reject::Shape)?;
-        self.nullifiers = smt::insert(&self.nullifiers, nf, p, self.e).ok_or(Reject::Spent)?;
+        self.nullifiers = smt::insert(&self.nullifiers, nf, leaf, p, self.e).ok_or(Reject::Spent)?;
         Ok(())
     }
     /// A transparent note at `index`: under `T_i` (a path), or made
@@ -431,6 +422,17 @@ impl State<'_> {
         let i = self.tree.append(cm)?;
         self.made.push((i, cm));
         Ok(())
+    }
+}
+
+/// The leaf a transaction's spends get in the nullifier tree: a return of
+/// `r` with memo `c` if it pays the hub one note, `r` with a contract's
+/// memo (not 0); else an ordinary spend.
+pub fn spend_leaf(hub: &Hash, outputs: &[TNote]) -> Hash {
+    let mut to_hub = outputs.iter().filter(|n| n.owner == *hub);
+    match (to_hub.next(), to_hub.next()) {
+        (Some(n), None) if n.memo != 0 => smt::returned(n.memo, n.value),
+        _ => smt::spent(),
     }
 }
 
@@ -466,10 +468,11 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                     return Err(Reject::Shape);
                 }
                 let d = transfer_digest(spends, outputs);
+                let leaf = spend_leaf(&input.hub, outputs);
                 for ((n, i), sig) in spends.iter().zip(sigs) {
                     st.in_tree(n, *i)?;
                     check_sig(&n.owner, &d, sig)?;
-                    st.spend_nf(&n.nullifier())?;
+                    st.spend_nf(&n.nullifier(), &leaf)?;
                 }
                 if sum(spends.iter().map(|s| s.0.value))? != sum(outputs.iter().map(|n| n.value))? {
                     return Err(Reject::Unbalanced);
@@ -507,8 +510,9 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                     st.in_tree(n, *i)?;
                     check_sig(&n.owner, &d, sig)?;
                 }
+                let leaf = spend_leaf(&input.hub, t_outputs);
                 for n in t_spends.iter().map(|s| s.0.nullifier()).chain(nfs.iter().copied()) {
-                    st.spend_nf(&n)?;
+                    st.spend_nf(&n, &leaf)?;
                 }
                 for cm in cms {
                     st.make(*cm)?;

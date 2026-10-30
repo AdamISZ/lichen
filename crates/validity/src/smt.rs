@@ -1,10 +1,11 @@
 //! The nullifier set as a sparse Merkle tree (docs/SHIELDED_PLAN.md,
 //! phase 2), so that a block guest can show a nullifier unspent and add
 //! it. 256 levels, a leaf per nullifier by its bits (most significant
-//! first, from the root); a leaf is zero if unspent, [`spent`] if
-//! spent; empty subtrees are the precomputed [`empties`]. Its root
-//! is the state root's `N`, which the withdrawal statement takes as
-//! opaque.
+//! first, from the root); a leaf is zero if unspent, and if spent says
+//! how (docs/EXIT_PLAN.md, "The counter"): [`spent`] by an ordinary
+//! transaction, [`returned`] by a return to a contract, [`exited`] by a
+//! contract's exit record. Empty subtrees are the precomputed
+//! [`empties`]. Its root is the state root's `N`.
 
 use super::{sha256, Hash};
 use alloc::vec::Vec;
@@ -46,9 +47,19 @@ const fn words_be(st: &[u32; 8]) -> Hash {
     out
 }
 
-/// A spent nullifier's leaf.
+/// A nullifier's leaf, spent by an ordinary transaction.
 pub fn spent() -> Hash {
     sha256(&[b"lichen/nf-spent"])
+}
+
+/// A nullifier's leaf, spent by a return of `r` to the hub with memo `c`.
+pub fn returned(c: u32, r: u64) -> Hash {
+    sha256(&[b"lichen/nf-return", &c.to_be_bytes(), &r.to_be_bytes()])
+}
+
+/// A nullifier's leaf, retired by contract `c`'s exit record.
+pub fn exited(c: u32) -> Hash {
+    sha256(&[b"lichen/nf-exit", &c.to_be_bytes()])
 }
 
 /// `empties()[h]`: the root of an empty subtree of height `h`
@@ -129,10 +140,10 @@ impl Proof {
     }
 }
 
-/// The root after spending `key` in a tree of root `root`, if `proof`
-/// shows it unspent there.
-pub fn insert(root: &Hash, key: &Hash, proof: &Proof, empties: &[Hash]) -> Option<Hash> {
-    let (mut absent, mut with) = (empties[0], spent());
+/// The root after spending `key` (its leaf now `leaf`) in a tree of root
+/// `root`, if `proof` shows it unspent there.
+pub fn insert(root: &Hash, key: &Hash, leaf: &Hash, proof: &Proof, empties: &[Hash]) -> Option<Hash> {
+    let (mut absent, mut with) = (empties[0], *leaf);
     let mut sibs = proof.siblings.iter();
     for h in 0..DEPTH {
         let sib = if proof.has(h) { *sibs.next()? } else { empties[h] };
@@ -150,7 +161,13 @@ pub fn insert(root: &Hash, key: &Hash, proof: &Proof, empties: &[Hash]) -> Optio
 /// Whether `proof` shows `key` unspent in a tree of root `root`: what
 /// [`insert`] checks before spending it.
 pub fn unspent(root: &Hash, key: &Hash, proof: &Proof, empties: &[Hash]) -> bool {
-    let mut absent = empties[0];
+    holds(root, key, &empties[0], proof, empties)
+}
+
+/// Whether `proof` shows `key`'s leaf to be `leaf` in a tree of root
+/// `root` (zero: unspent).
+pub fn holds(root: &Hash, key: &Hash, leaf: &Hash, proof: &Proof, empties: &[Hash]) -> bool {
+    let mut absent = *leaf;
     let mut sibs = proof.siblings.iter();
     for h in 0..DEPTH {
         let sib = if proof.has(h) {
@@ -166,30 +183,30 @@ pub fn unspent(root: &Hash, key: &Hash, proof: &Proof, empties: &[Hash]) -> bool
     sibs.next().is_none() && absent == *root
 }
 
-/// The root of the subtree at depth `d` holding `keys` (sorted, all
-/// sharing their first `d` bits).
-pub fn subtree(keys: &[Hash], d: usize, empties: &[Hash]) -> Hash {
+/// The root of the subtree at depth `d` holding `keys` (sorted, each
+/// with its leaf, all sharing their first `d` bits).
+pub fn subtree(keys: &[(Hash, Hash)], d: usize, empties: &[Hash]) -> Hash {
     if keys.is_empty() {
         return empties[DEPTH - d];
     }
     if d == DEPTH {
-        return spent();
+        return keys[0].1;
     }
-    let i = keys.partition_point(|k| !bit(k, d));
+    let i = keys.partition_point(|k| !bit(&k.0, d));
     node(&subtree(&keys[..i], d + 1, empties), &subtree(&keys[i..], d + 1, empties))
 }
 
-/// The root of the set `keys` (sorted).
-pub fn root(keys: &[Hash], empties: &[Hash]) -> Hash {
+/// The root of the set `keys` (sorted, each with its leaf).
+pub fn root(keys: &[(Hash, Hash)], empties: &[Hash]) -> Hash {
     subtree(keys, 0, empties)
 }
 
-/// The path of `key` in the set `keys` (sorted).
-pub fn proof(keys: &[Hash], key: &Hash, empties: &[Hash]) -> Proof {
+/// The path of `key` in the set `keys` (sorted, each with its leaf).
+pub fn proof(keys: &[(Hash, Hash)], key: &Hash, empties: &[Hash]) -> Proof {
     let mut top_down = Vec::with_capacity(DEPTH);
     let mut here = keys;
     for d in 0..DEPTH {
-        let i = here.partition_point(|k| !bit(k, d));
+        let i = here.partition_point(|k| !bit(&k.0, d));
         let (zero, one) = here.split_at(i);
         let (same, other) = if bit(key, d) { (one, zero) } else { (zero, one) };
         top_down.push((!other.is_empty()).then(|| subtree(other, d + 1, empties)));
@@ -249,34 +266,43 @@ mod tests {
     #[test]
     fn the_nullifier_tree() {
         let e = empties();
-        let mut keys: Vec<Hash> = vec![];
-        let mut root = super::root(&keys, &e);
+        let mut keys: Vec<(Hash, Hash)> = vec![];
+        let mut root = super::root(&keys, e);
         assert_eq!(root, e[DEPTH]);
         // spend them one by one, each shown unspent first, in an order
-        // the sorted set isn't
-        for k in [h(9), h(1), [0x80; 32], h(2), [0x81; 32], h(0)] {
-            let p = proof(&keys, &k, &e);
-            let next = insert(&root, &k, &p, &e).expect("unspent");
-            keys.push(k);
+        // the sorted set isn't, with each kind of leaf
+        let leaves = [spent(), returned(1000, 9), exited(1001), spent(), returned(1001, 9), spent()];
+        for (k, leaf) in [h(9), h(1), [0x80; 32], h(2), [0x81; 32], h(0)].into_iter().zip(leaves) {
+            let p = proof(&keys, &k, e);
+            let next = insert(&root, &k, &leaf, &p, e).expect("unspent");
+            keys.push((k, leaf));
             keys.sort();
-            assert_eq!(next, super::root(&keys, &e), "the insert's root is the set's");
+            assert_eq!(next, super::root(&keys, e), "the insert's root is the set's");
             root = next;
-            // spent now: no proof of it unspent
-            assert_eq!(insert(&root, &k, &proof(&keys, &k, &e), &e), None);
-            assert!(!unspent(&root, &k, &proof(&keys, &k, &e), &e));
+            // spent now: no proof of it unspent, a proof of its leaf
+            let p = proof(&keys, &k, e);
+            assert_eq!(insert(&root, &k, &spent(), &p, e), None);
+            assert!(!unspent(&root, &k, &p, e));
+            assert!(holds(&root, &k, &leaf, &p, e));
+        }
+        // a leaf says how: not another kind, nor another contract or amount
+        let p = proof(&keys, &h(1), e);
+        assert!(holds(&root, &h(1), &returned(1000, 9), &p, e));
+        for other in [spent(), returned(1000, 8), returned(1001, 9), exited(1000)] {
+            assert!(!holds(&root, &h(1), &other, &p, e));
         }
         // unspent agrees with insert
-        assert!(unspent(&root, &h(5), &proof(&keys, &h(5), &e), &e));
+        assert!(unspent(&root, &h(5), &proof(&keys, &h(5), e), e));
         // a proof against another root, or tampered, is refused
         let k = h(5);
-        let p = proof(&keys, &k, &e);
-        assert!(insert(&root, &k, &p, &e).is_some());
-        assert_eq!(insert(&e[DEPTH], &k, &p, &e), None);
+        let p = proof(&keys, &k, e);
+        assert!(insert(&root, &k, &spent(), &p, e).is_some());
+        assert_eq!(insert(&e[DEPTH], &k, &spent(), &p, e), None);
         let mut bad = p.clone();
         bad.siblings[0][0] ^= 1;
-        assert_eq!(insert(&root, &k, &bad, &e), None);
+        assert_eq!(insert(&root, &k, &spent(), &bad, e), None);
         let mut short = p;
         short.siblings.pop();
-        assert_eq!(insert(&root, &k, &short, &e), None);
+        assert_eq!(insert(&root, &k, &spent(), &short, e), None);
     }
 }

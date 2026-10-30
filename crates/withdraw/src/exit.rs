@@ -5,11 +5,13 @@
 //! the hub's counter, if any, must name:
 //!
 //! ```text
-//! E = SHA256("lichen/exit" ‖ c ‖ O ‖ h_S ‖ SR_S ‖ nf_1 ‖ … ‖ nf_n)
+//! E = SHA256("lichen/exit" ‖ c ‖ O ‖ b ‖ h_S ‖ SR_S ‖ nf_1 ‖ … ‖ nf_n)
 //! ```
 //!
-//! `O` is the contract's funding outpoint. The counter's cutoff is the
-//! confirmation of the transaction spending it (`request`).
+//! `O` is the contract's funding outpoint: the counter's cutoff is the
+//! confirmation of the transaction spending it (`request`). `b` is the
+//! amount claimed, at most the notes' total: a return of at least `b` to
+//! the contract can't counter the claim ([`crate::counter`]).
 //!
 //! Each note is in `S`'s commitment tree and its nullifier isn't in `S`'s
 //! nullifier tree. Authority over a note is its owner's: knowing `nk` for
@@ -72,33 +74,35 @@ pub struct Claimed {
 }
 
 /// The claim's input: the anchored state `S` and its commitment tree's
-/// root, the contract (`c`, and its funding outpoint `O`), the notes.
+/// root, the contract (`c`, and its funding outpoint `O`), the amount `b`,
+/// the notes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExitInput {
     pub state: Anchored,
     pub tree: Hash,
     pub c: u32,
     pub funding: OutPoint,
+    pub b: u32,
     pub notes: Vec<Claimed>,
 }
 
-/// What a claim proves: its contract's `c` and `D`, `E`, and the notes'
-/// total value.
+/// What a claim proves: its contract's `c` and `D`, `b`, and `E`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Claim {
     pub c: u32,
     pub d: Hash,
+    pub b: u32,
     pub e: Hash,
-    pub total: u64,
 }
 
-/// `E` for contract `c` funded at `funding`, at the state of height `h_s`
-/// and root `sr_s`, claiming `nullifiers`.
-pub fn fingerprint(c: u32, funding: &OutPoint, h_s: u64, sr_s: &Hash, nullifiers: &[Hash]) -> Hash {
+/// `E` for contract `c` funded at `funding`, claiming `b` at the state of
+/// height `h_s` and root `sr_s` with the notes of `nullifiers`.
+pub fn fingerprint(c: u32, funding: &OutPoint, b: u32, h_s: u64, sr_s: &Hash, nullifiers: &[Hash]) -> Hash {
     let mut h = Sha256::new();
     h.update(b"lichen/exit");
     h.update(c.to_be_bytes());
     h.update(funding.to_bytes());
+    h.update(b.to_be_bytes());
     h.update(h_s.to_be_bytes());
     h.update(sr_s);
     for nf in nullifiers {
@@ -129,7 +133,7 @@ pub fn check(input: &ExitInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[
     if nfs.windows(2).any(|w| w[0] >= w[1]) {
         return Err(Reject::Order);
     }
-    let e = fingerprint(input.c, &input.funding, input.state.height, &input.state.root(&input.tree), &nfs);
+    let e = fingerprint(input.c, &input.funding, input.b, input.state.height, &input.state.root(&input.tree), &nfs);
     let empties = smt::empties();
     let mut total = 0u64;
     for (n, nf) in input.notes.iter().zip(&nfs) {
@@ -146,30 +150,37 @@ pub fn check(input: &ExitInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[
         }
         total = total.checked_add(n.owned.value()).ok_or(Reject::TooLarge)?;
     }
+    if total < u64::from(input.b) {
+        return Err(Reject::Short);
+    }
     let d = input.state.check(&input.tree, chain_id, verify_chain)?;
-    Ok(Claim { c: input.c, d, e, total })
+    Ok(Claim { c: input.c, d, b: input.b, e })
 }
 
 // ----- the encoding -----
 
-struct W(Vec<u8>);
+pub(crate) struct W(pub(crate) Vec<u8>);
 
 impl W {
-    fn put(&mut self, b: &[u8]) {
+    pub(crate) fn put(&mut self, b: &[u8]) {
         self.0.extend_from_slice(b);
     }
-    fn list<const N: usize>(&mut self, items: &[[u8; N]]) {
+    pub(crate) fn list<const N: usize>(&mut self, items: &[[u8; N]]) {
         self.put(&(items.len() as u32).to_be_bytes());
         for i in items {
             self.put(i);
         }
     }
+    pub(crate) fn bytes(&mut self, b: &[u8]) {
+        self.put(&(b.len() as u32).to_be_bytes());
+        self.put(b);
+    }
 }
 
-struct R<'a>(&'a [u8]);
+pub(crate) struct R<'a>(pub(crate) &'a [u8]);
 
 impl R<'_> {
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], Reject> {
+    pub(crate) fn take<const N: usize>(&mut self) -> Result<[u8; N], Reject> {
         if self.0.len() < N {
             return Err(Reject::Encoding);
         }
@@ -177,17 +188,26 @@ impl R<'_> {
         self.0 = rest;
         Ok(a.try_into().unwrap())
     }
-    fn list<const N: usize>(&mut self) -> Result<Vec<[u8; N]>, Reject> {
+    pub(crate) fn list<const N: usize>(&mut self) -> Result<Vec<[u8; N]>, Reject> {
         let n = u32::from_be_bytes(self.take()?) as usize;
         if n > self.0.len() / N {
             return Err(Reject::Encoding);
         }
         (0..n).map(|_| self.take()).collect()
     }
+    pub(crate) fn bytes(&mut self) -> Result<Vec<u8>, Reject> {
+        let n = u32::from_be_bytes(self.take()?) as usize;
+        if n > self.0.len() {
+            return Err(Reject::Encoding);
+        }
+        let (a, rest) = self.0.split_at(n);
+        self.0 = rest;
+        Ok(a.to_vec())
+    }
 }
 
 impl Anchored {
-    fn write(&self, w: &mut W) {
+    pub(crate) fn write(&self, w: &mut W) {
         w.put(&self.height.to_be_bytes());
         w.put(&self.nullifiers);
         w.put(&self.signature);
@@ -201,7 +221,7 @@ impl Anchored {
         w.list(&self.headers);
         w.put(&self.work.to_be_bytes());
     }
-    fn read(r: &mut R) -> Result<Anchored, Reject> {
+    pub(crate) fn read(r: &mut R) -> Result<Anchored, Reject> {
         Ok(Anchored {
             height: u64::from_be_bytes(r.take()?),
             nullifiers: r.take()?,
@@ -226,6 +246,7 @@ impl ExitInput {
         w.put(&self.tree);
         w.put(&self.c.to_be_bytes());
         w.put(&self.funding.to_bytes());
+        w.put(&self.b.to_be_bytes());
         w.put(&[self.notes.len() as u8]);
         for n in &self.notes {
             match &n.owned {
@@ -255,7 +276,7 @@ impl ExitInput {
     pub fn from_bytes(b: &[u8]) -> Result<ExitInput, Reject> {
         let mut r = R(b);
         let state = Anchored::read(&mut r)?;
-        let (tree, c, funding) = (r.take()?, u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?));
+        let (tree, c, funding, b) = (r.take()?, u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
         let [count] = r.take()?;
         if count as usize > MAX_NOTES {
             return Err(Reject::Notes);
@@ -275,7 +296,7 @@ impl ExitInput {
         if !r.0.is_empty() {
             return Err(Reject::Encoding);
         }
-        Ok(ExitInput { state, tree, c, funding, notes })
+        Ok(ExitInput { state, tree, c, funding, b, notes })
     }
 }
 
@@ -289,7 +310,8 @@ pub(crate) mod tests {
     /// Alice's notes at `S` (height 3): a transparent one of 5 at index 0
     /// (her key 3) and a shielded one of 7 at index 1 (`nk` 4s), in a
     /// nullifier tree holding two others' spends; `S` signed, anchored,
-    /// ten headers on its block; contract 42, its funding outpoint.
+    /// ten headers on its block; contract 42, its funding outpoint; `b`
+    /// the notes' total.
     pub(crate) fn input() -> (ExitInput, Hash) {
         let (seq, hub, alice) = (key(1), key(2), key(3));
         let t = TNote { owner: xonly(&alice), value: 5, memo: 0, rho: [7; 32] };
@@ -299,7 +321,7 @@ pub(crate) mod tests {
         let path = |sib: Hash| -> Vec<Hash> { core::iter::once(sib).chain(z[1..TREE_DEPTH].iter().copied()).collect() };
         let tree = root_from_path(cm0, 0, &path(cm1));
         let e = smt::empties();
-        let spent = [[0x11; 32], [0xee; 32]];
+        let spent = [([0x11; 32], smt::spent()), ([0xee; 32], smt::spent())];
         let n_s = smt::root(&spent, e);
         let root = state_root(3, &tree, &n_s);
         let genesis = OutPoint { txid: [3; 32], vout: 1 };
@@ -324,14 +346,14 @@ pub(crate) mod tests {
         };
         let mut notes = std::vec![claimed(Owned::Transparent { note: t, sig: [0; 64] }, 0, cm1), claimed(s, 1, cm0)];
         notes.sort_by_key(|n| n.owned.nullifier());
-        let mut input = ExitInput { state, tree, c: 42, funding: OutPoint { txid: [12; 32], vout: 2 }, notes };
+        let mut input = ExitInput { state, tree, c: 42, funding: OutPoint { txid: [12; 32], vout: 2 }, b: 12, notes };
         sign(&mut input);
         (input, [8; 32])
     }
 
     /// Alice signs her transparent notes' claim, as it now stands.
     pub(crate) fn sign(input: &mut ExitInput) {
-        let e = fingerprint(input.c, &input.funding, input.state.height, &input.state.root(&input.tree), &nullifiers(input));
+        let e = fingerprint(input.c, &input.funding, input.b, input.state.height, &input.state.root(&input.tree), &nullifiers(input));
         for n in &mut input.notes {
             if let Owned::Transparent { sig, .. } = &mut n.owned {
                 *sig = key(3).sign_raw(&signed_digest(&e), &[0; 32]).unwrap().to_bytes();
@@ -348,11 +370,11 @@ pub(crate) mod tests {
     fn a_claim_of_unspent_notes() {
         let (i, id) = input();
         let claim = check(&i, &id, &mut ok(&i, &id)).unwrap();
-        assert_eq!(claim.total, 12);
-        assert_eq!(claim.c, 42);
+        assert_eq!((claim.c, claim.b), (42, 12));
         assert_eq!(claim.d, crate::contract_id(&crate::deployment_id(&i.state.sequencer, &i.state.hub), &i.state.anchor.genesis, i.state.work));
-        assert_eq!(claim.e, fingerprint(42, &i.funding, 3, &i.state.anchor.root, &nullifiers(&i)));
-        // E is the claim's: another contract, outpoint or note set, another E
+        assert_eq!(claim.e, fingerprint(42, &i.funding, 12, 3, &i.state.anchor.root, &nullifiers(&i)));
+        // E is the claim's: another contract, outpoint, amount or note set,
+        // another E
         let mut c = i.clone();
         c.c = 43;
         sign(&mut c);
@@ -361,10 +383,15 @@ pub(crate) mod tests {
         o.funding.vout = 3;
         sign(&mut o);
         assert_ne!(check(&o, &id, &mut ok(&o, &id)).unwrap().e, claim.e);
+        let mut less = i.clone();
+        less.b = 11;
+        sign(&mut less);
+        assert_ne!(check(&less, &id, &mut ok(&less, &id)).unwrap().e, claim.e);
         let mut one = i.clone();
         one.notes.retain(|n| matches!(n.owned, Owned::Shielded { .. }));
+        one.b = 7;
         let one = check(&one, &id, &mut ok(&one, &id)).unwrap();
-        assert_eq!((one.total, one.d), (7, claim.d));
+        assert_eq!(one.d, claim.d);
         assert_ne!(one.e, claim.e);
         // the encoding round-trips, and refuses a byte more or less
         assert_eq!(ExitInput::from_bytes(&i.to_bytes()).unwrap(), i);
@@ -377,6 +404,11 @@ pub(crate) mod tests {
     #[test]
     fn what_a_claim_refuses() {
         let (i, id) = input();
+        // notes worth less than b
+        let mut short = i.clone();
+        short.b = 13;
+        sign(&mut short);
+        assert_eq!(check(&short, &id, &mut |_| true), Err(Reject::Short));
         // no notes, too many, a note twice, out of order
         let mut n = i.clone();
         n.notes.clear();
@@ -413,7 +445,7 @@ pub(crate) mod tests {
         assert_eq!(check(&n, &id, &mut |_| true), Err(Reject::NotInTree));
         // a note spent at S: its nullifier in the tree, so no proof of absence
         let mut s = i.clone();
-        let mut set = std::vec![[0x11; 32], [0xee; 32], s.notes[0].owned.nullifier()];
+        let mut set = std::vec![([0x11; 32], smt::spent()), ([0xee; 32], smt::spent()), (s.notes[0].owned.nullifier(), smt::spent())];
         set.sort();
         s.state.nullifiers = smt::root(&set, smt::empties());
         for c in &mut s.notes {

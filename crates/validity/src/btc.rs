@@ -117,6 +117,26 @@ pub fn merkle_root(txid: &Hash, mut index: u32, path: &[Hash]) -> Hash {
     h
 }
 
+/// Whether `tx` (a non-witness serialization) is in the block of
+/// `header`, at `index` by `path`: its path as long as the coinbase's
+/// (index 0), which can't pass for a node of the tree (it isn't 64 bytes,
+/// and it is a coinbase), so the tree's real depth. A shorter or longer
+/// path could pass a forged transaction off as half of a real 64-byte
+/// one, or as a node (CVE-2017-12842); and a 64-byte transaction could
+/// pass for a node itself.
+pub fn in_block(tx: &[u8], header: &Header, index: u32, path: &[Hash], coinbase: &[u8], coinbase_path: &[Hash]) -> bool {
+    let depth = coinbase_path.len();
+    tx.len() != 64
+        && coinbase.len() != 64
+        && is_coinbase(coinbase)
+        && merkle_root(&sha256d(coinbase), 0, coinbase_path) == header.merkle_root()
+        && path.len() == depth
+        && depth < 32
+        && index >> depth == 0
+        && index != 0
+        && merkle_root(&sha256d(tx), index, path) == header.merkle_root()
+}
+
 /// Whether `b` (a non-witness serialization) is a coinbase: one input,
 /// spending the null outpoint.
 pub fn is_coinbase(b: &[u8]) -> bool {

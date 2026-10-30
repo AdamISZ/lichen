@@ -32,6 +32,7 @@ use lichen_validity::btc::{work, Header};
 use lichen_validity::{state_root, AnchorState, ChainJournal, OutPoint, TNote};
 use sha2::{Digest, Sha256};
 
+pub mod counter;
 pub mod exit;
 pub mod fixed;
 
@@ -177,6 +178,19 @@ pub enum Reject {
     /// No authority over a claimed note: the owner's signature on the
     /// claim, for a transparent note.
     NotYours,
+    /// An exit claims more than its notes are worth.
+    Short,
+    /// A counter cites the contract's own return (of at least `b`) or
+    /// exit record.
+    Own,
+    /// A counter's spend isn't the leaf it names in the later state.
+    NotSpent,
+    /// A counter's later state isn't in the claim's history.
+    History,
+    /// A counter's spend isn't shown final before the request: no request
+    /// spending the contract's outpoint in a block on the later state's
+    /// anchor.
+    Cutoff,
     Encoding,
 }
 
@@ -356,8 +370,14 @@ pub(crate) mod tests {
     /// A header on `prev` at regtest's difficulty (work 2), its nonce
     /// ground until it is within its target.
     fn header_on(prev: &Hash) -> [u8; 80] {
+        header_with(prev, &[0; 32])
+    }
+
+    /// As [`header_on`], its block's Merkle root `merkle`.
+    pub(crate) fn header_with(prev: &Hash, merkle: &Hash) -> [u8; 80] {
         let mut h = [0u8; 80];
         h[4..36].copy_from_slice(prev);
+        h[36..68].copy_from_slice(merkle);
         h[72..76].copy_from_slice(&0x207fffffu32.to_le_bytes());
         for n in 0u32.. {
             h[76..].copy_from_slice(&n.to_le_bytes());

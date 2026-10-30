@@ -20,7 +20,7 @@
 
 pub mod files;
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use anyhow::{bail, ensure, Context, Result};
 pub use k256;
@@ -316,8 +316,25 @@ impl Tree {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Nullifiers {
     set: BTreeSet<Hash>,
+    /// The leaves that aren't an ordinary spend's: returns' (and exit
+    /// records'). Absent from ledgers kept before 2026-10-30.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "pairs")]
+    tags: BTreeMap<Hash, Hash>,
     #[serde(skip)]
     root: std::sync::OnceLock<Hash>,
+}
+
+/// A map of hashes in JSON, as a list of pairs (JSON's keys are strings).
+mod pairs {
+    use super::Hash;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::collections::BTreeMap;
+    pub fn serialize<S: Serializer>(m: &BTreeMap<Hash, Hash>, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(m.iter())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<Hash, Hash>, D::Error> {
+        Ok(Vec::<(Hash, Hash)>::deserialize(d)?.into_iter().collect())
+    }
 }
 
 /// The empty subtrees of the nullifier tree.
@@ -329,16 +346,34 @@ impl Nullifiers {
     pub fn contains(&self, nf: &Hash) -> bool {
         self.set.contains(nf)
     }
-    pub fn insert(&mut self, nf: Hash) -> bool {
+    /// Spend `nf`, its leaf `leaf` (`lichen_validity::smt`: how it was
+    /// spent).
+    pub fn insert(&mut self, nf: Hash, leaf: Hash) -> bool {
         self.root = std::sync::OnceLock::new();
+        if leaf != lichen_validity::smt::spent() {
+            self.tags.insert(nf, leaf);
+        }
         self.set.insert(nf)
     }
-    pub fn root(&self) -> Hash {
-        *self.root.get_or_init(|| lichen_validity::smt::root(&self.set.iter().copied().collect::<Vec<_>>(), empties()))
+    /// The leaf of a spent `nf`.
+    pub fn leaf(&self, nf: &Hash) -> Hash {
+        self.tags.get(nf).copied().unwrap_or_else(lichen_validity::smt::spent)
     }
-    /// The path of `nf` in the tree (unspent: a proof that it is).
+    fn remove(&mut self, nf: &Hash) {
+        self.root = std::sync::OnceLock::new();
+        self.set.remove(nf);
+        self.tags.remove(nf);
+    }
+    fn entries(&self) -> Vec<(Hash, Hash)> {
+        self.set.iter().map(|nf| (*nf, self.leaf(nf))).collect()
+    }
+    pub fn root(&self) -> Hash {
+        *self.root.get_or_init(|| lichen_validity::smt::root(&self.entries(), empties()))
+    }
+    /// The path of `nf` in the tree (unspent: a proof that it is; spent,
+    /// a proof of its leaf).
     pub fn proof(&self, nf: &Hash) -> lichen_validity::smt::Proof {
-        lichen_validity::smt::proof(&self.set.iter().copied().collect::<Vec<_>>(), nf, empties())
+        lichen_validity::smt::proof(&self.entries(), nf, empties())
     }
     pub fn iter(&self) -> impl Iterator<Item = &Hash> {
         self.set.iter()
@@ -699,8 +734,9 @@ impl Ledger {
                 let vout = t.outputs.iter().try_fold(0u64, |a, n| a.checked_add(n.value));
                 ensure!(vin.is_some() && vin == vout, "values don't balance");
                 let idx = self.append(&t.outputs)?;
+                let leaf = lichen_validity::spend_leaf(&self.deployment.hub, &t.outputs.iter().map(tnote).collect::<Vec<_>>());
                 for nf in nfs {
-                    self.nullifiers.insert(nf);
+                    self.nullifiers.insert(nf, leaf);
                 }
                 Ok(idx)
             }
@@ -722,8 +758,9 @@ impl Ledger {
                 let mut leaves: Vec<Leaf> = t.outputs.iter().enumerate().map(|(i, o)| Leaf::Shielded { cm: o.cm, ciphertext: o.ciphertext.clone(), nf0, i: i as u32 }).collect();
                 leaves.extend(t.t_outputs.iter().map(|n| Leaf::Note(*n)));
                 let idx = self.append_leaves(&leaves)?;
+                let leaf = lichen_validity::spend_leaf(&self.deployment.hub, &t.t_outputs.iter().map(tnote).collect::<Vec<_>>());
                 for nf in nfs {
-                    self.nullifiers.insert(nf);
+                    self.nullifiers.insert(nf, leaf);
                 }
                 Ok(idx)
             }
@@ -758,31 +795,35 @@ impl Ledger {
         let size0 = self.sealed.last().map_or(0, |s| s.size);
         let height = self.sealed.last().map_or(0, |s| s.height);
         let txs: Vec<v::Tx> = self.pending.iter().map(block_tx).collect::<Result<_>>()?;
-        // the block's nullifiers, in the statement's order
+        // the block's nullifiers, in the statement's order, with their
+        // leaves
         let mut nfs = vec![];
         let mut spent_before = vec![];
         for t in &txs {
             match t {
                 v::Tx::Mint { .. } | v::Tx::Anchor(_) => {}
-                v::Tx::Transfer { spends, .. } => {
-                    nfs.extend(spends.iter().map(|s| s.0.nullifier()));
+                v::Tx::Transfer { spends, outputs, .. } => {
+                    let leaf = v::spend_leaf(&self.deployment.hub, outputs);
+                    nfs.extend(spends.iter().map(|s| (s.0.nullifier(), leaf)));
                     spent_before.extend(spends.iter().map(|s| s.1).filter(|&i| i < size0));
                 }
-                v::Tx::Shielded { t_spends, nfs: s_nfs, .. } => {
-                    nfs.extend(t_spends.iter().map(|s| s.0.nullifier()));
-                    nfs.extend(s_nfs.iter().copied());
+                v::Tx::Shielded { t_spends, nfs: s_nfs, t_outputs, .. } => {
+                    let leaf = v::spend_leaf(&self.deployment.hub, t_outputs);
+                    nfs.extend(t_spends.iter().map(|s| (s.0.nullifier(), leaf)));
+                    nfs.extend(s_nfs.iter().map(|nf| (*nf, leaf)));
                     spent_before.extend(t_spends.iter().map(|s| s.1).filter(|&i| i < size0));
                 }
             }
         }
         let mut before = self.nullifiers.clone();
-        before.set.retain(|nf| !nfs.contains(nf));
-        before.root = std::sync::OnceLock::new();
+        for (nf, _) in &nfs {
+            before.remove(nf);
+        }
         let nullifiers = before.root();
         let mut nf_proofs = vec![];
-        for nf in &nfs {
+        for (nf, leaf) in &nfs {
             nf_proofs.push(before.proof(nf));
-            before.insert(*nf);
+            before.insert(*nf, *leaf);
         }
         // the frontier at size0: at each level whose bit is set, the left
         // node there
@@ -883,9 +924,13 @@ pub fn with_chain(input: &WithdrawInput, chain: &lichen_validity::ChainJournal, 
 }
 
 /// A ledger transaction as the block statement reads it.
+fn tnote(n: &Note) -> lichen_validity::TNote {
+    lichen_validity::TNote { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho }
+}
+
 fn block_tx(tx: &Tx) -> Result<lichen_validity::Tx> {
-    use lichen_validity::{TNote, Tx as V};
-    let tn = |n: &Note| TNote { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho };
+    use lichen_validity::Tx as V;
+    let tn = tnote;
     let sig = |s: &Vec<u8>| -> Result<[u8; 64]> { s.as_slice().try_into().context("a signature of 64 bytes") };
     Ok(match tx {
         Tx::Mint(m) => V::Mint { outputs: m.outputs.iter().map(tn).collect(), sig: sig(&m.sig)? },
@@ -1357,6 +1402,8 @@ mod tests {
         }
         assert_eq!(v::check(&bad, &mut |_| true), Err(v::Reject::BadSignature));
         let j4 = seal_checked(&mut l, &seq, (j3.to, j3.recent_to));
+        let nf_ret = shielded::nullifier(&bob_nk, &shielded::rho(&nf_pay, 0));
+        assert_eq!(l.nullifiers.leaf(&nf_ret), v::smt::returned(42, 12), "the return's spend says so, and the statement agrees");
 
         // block 5: an anchor of height 4 (a mined block holding it), a
         // forged one refused
@@ -1429,11 +1476,22 @@ mod tests {
         let nf = nullifier(&n0);
         let p = l.nullifiers.proof(&nf);
         l.apply(&transfer(vec![(Spend { note: n0, index: i0 }, &alice)], vec![note(xonly(&alice), 10, 0)])).unwrap();
-        assert_eq!(lichen_validity::smt::insert(&empty, &nf, &p, lichen_validity::smt::empties()), Some(l.nullifiers.root()));
+        assert_eq!(lichen_validity::smt::insert(&empty, &nf, &lichen_validity::smt::spent(), &p, lichen_validity::smt::empties()), Some(l.nullifiers.root()));
         assert_ne!(l.seal(&seq).nullifiers, empty);
-        // kept and read back: the same root
+        // a return (one note to the hub, a contract's memo) leaves its
+        // spends' leaves saying so; a payment to the hub with memo 0, or
+        // two notes to it, doesn't
+        let i1 = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![note(xonly(&alice), 30, 0)]))).unwrap()[0];
+        let n1 = *l.note(i1).unwrap();
+        let ret = l.apply(&transfer(vec![(Spend { note: n1, index: i1 }, &alice)], vec![note(xonly(&hub), 20, 1000), note(xonly(&alice), 10, 0)])).unwrap();
+        assert_eq!(l.nullifiers.leaf(&nullifier(&n1)), lichen_validity::smt::returned(1000, 20));
+        let n2 = *l.note(ret[1]).unwrap();
+        l.apply(&transfer(vec![(Spend { note: n2, index: ret[1] }, &alice)], vec![note(xonly(&hub), 5, 1000), note(xonly(&hub), 5, 1001)])).unwrap();
+        assert_eq!(l.nullifiers.leaf(&nullifier(&n2)), lichen_validity::smt::spent());
+        // kept and read back: the same root, the tags with it
         let back: Ledger = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
         assert_eq!(back.nullifiers.root(), l.nullifiers.root());
+        assert_eq!(back.nullifiers.leaf(&nullifier(&n1)), lichen_validity::smt::returned(1000, 20));
     }
 
     #[test]
