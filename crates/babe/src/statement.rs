@@ -99,11 +99,18 @@ pub fn mock_counter(journal: &CounterJournal) -> [u8; K_LEN] {
     core::array::from_fn(|i| h[i % 32])
 }
 
-/// The counter guest's image id, once it is built and committed
-/// (`r0/guests/counter.id`); none before, and no counter verifies on the
-/// real statement.
+/// The counter guest's image id, hex (the build committed in
+/// `r0/guests/counter.id`; with the file's newline).
+pub const COUNTER_ID: &str = include_str!("../../../r0/guests/counter.id");
+
+/// The counter guest's image id.
 pub fn counter_image_id() -> Option<[u8; 32]> {
-    None
+    hex32(COUNTER_ID)
+}
+
+fn hex32(s: &str) -> Option<[u8; 32]> {
+    let s = s.trim();
+    (s.len() == 64).then(|| core::array::from_fn(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap_or(0)))
 }
 
 impl Kind {
