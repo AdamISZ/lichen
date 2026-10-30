@@ -191,6 +191,10 @@ pub enum Reject {
     /// spending the contract's outpoint in a block on the later state's
     /// anchor.
     Cutoff,
+    /// An exit's `E` names another funding outpoint than the contract's.
+    Outpoint,
+    /// The hub's counter verifies: no way to win.
+    Countered,
     Encoding,
 }
 

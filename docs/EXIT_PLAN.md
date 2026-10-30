@@ -294,7 +294,9 @@ by `T_A` and `respond_timeout` takes her contract.
   payout reads) and `E` under a second one-time key, 32 bytes. She posts
   the nullifier list in the witness, unsigned since `E` binds it, at 32
   bytes a note (up to 8). That is how the hub learns what to search for.
-- **`respond`:** the hub signs `b` (as now), `E`, and `H(K)`, all under
+- **`respond`** (superseded in part: two leaves, and `K` signed itself,
+  not `H(K)`; see "The statement's three branches" below): the hub signs
+  `b` (as now), `E`, and `H(K)`, all under
   its SHA-256 Winternitz keys. Its script compares the hub's `b` and `E`
   with Alice's, digit by digit, as it compares `b` today. Without that,
   the hub could sign some other `E` and leave her nothing provable. `K`
@@ -312,6 +314,7 @@ Fixed at setup, with the journal `c ‖ D ‖ H(pk_H)` as now; `b`, `E` and
 `b`. One guest, two modes:
 
 ```
+(superseded by "The statement's three branches", below)
 the hub signed (b, E, H(K)), and either
    return mode:  a return of b with memo c, anchored, as today
    exit mode:    ( K = none  and  my notes, by E, were in S's tree and
@@ -456,6 +459,45 @@ protects Alice. The counter takes the grace (`counter::GRACE`, with the
 anchor block's header and its parents as input), set to 0 until step
 10. Until then the race is the operator's loss, bounded at one per
 contract.
+
+**The statement's three branches; `K` signed itself.** The design above
+has the hub sign `H(K)` and post `K` beside it. But no script can check
+that the posted `K` hashes to the signed digits: `OP_SHA256` gives 32
+bytes whole, the signature gives nibbles, and without `OP_CAT` neither
+becomes the other. So a hub could sign `H(K*)` for a valid counter `K*`
+it keeps, post other bytes, and leave Alice no preimage to prove `K*`
+false with. She couldn't claim "no counter" either, and
+`respond_timeout` would take her contract.
+
+So the hub signs `K` itself: a Groth16 seal compressed to 128 bytes (two
+G1 points of 32, a G2 of 64), 256 digits and 3 of checksum. Uncompressed
+(256 bytes, 516 digits) would exceed the 1,000-element stack limit at
+two elements a digit. To keep that off the honest path, `respond` has
+two leaves, both comparing `b` and `E` with `request`'s:
+
+- **plain:** the hub signs `b`, and `E` under `e_plain`. About 77 digits.
+- **counter:** the hub signs `b`, `E` under `e_counter`, and `K`. About
+  336 digits, 672 elements, roughly 11 kB of witness, paid by a hub
+  countering a dishonest claim.
+
+Which `E` key signed shows which leaf ran; each signs once. Alice's
+statement (`fixed::check_exit`) wins on any of:
+
+- **return:** the hub signed `b`, and a return of `b` with memo `c` is
+  anchored, as today. In either mode: a return pays once, and its `E`
+  and `K` don't matter;
+- **claim:** the hub signed `b` and `E` in the plain leaf, and her claim
+  of `b` with that `E` holds;
+- **failed counter:** the hub signed `E` and `K` in the counter leaf,
+  and `K` doesn't verify for her `D ‖ E` (decompression failing
+  included). A counter for another `D` or `E` fails the same way, so no
+  separate check is needed.
+
+The journal is `c ‖ D ‖ H(pk_H ‖ O)` with `pk_H` all four keys (`b`'s,
+both `E`s, `K`'s). The Groth16 check is passed in, as the chain
+receipt's is; the guest supplies RISC Zero's verifier with the counter
+guest's image id (step 4). The old statement (`fixed::check`, return
+only, today's journal) stays until the graph changes (step 3).
 
 ### Windows and load
 
@@ -934,8 +976,8 @@ timeout.
      or RISC Zero's own verifier): its cycles;
    - the same, as the chain guest's check of an exit record's proof.
 1. **The statements, native** (`crates/withdraw`). The claim and the
-   counter are built, and the nullifier tree's leaves tagged; the two
-   modes remain:
+   counter are built, the nullifier tree's leaves tagged, and the three
+   branches behind the fixed statement (`fixed::check_exit`); done:
    - exit mode: notes in `T_S`, unspent in `N_S` (non-membership in the
      nullifier set's sparse Merkle tree, `validity/smt.rs`), Alice's
      authority (`nk`, or a signature for transparent notes), distinct
@@ -944,8 +986,8 @@ timeout.
      final before the cutoff, not contract `c`'s own return or exit
      record, in the same history as `S`, with the cutoff proved from
      `request`'s confirmation;
-   - the two modes behind the fixed statement, with `K`'s check (none,
-     another `D` or `E`, or verification).
+   - the branches behind the fixed statement: return, claim, failed
+     counter (below).
 
    Unit tests for each, including every case in "The counter".
 2. **The L2** (`ledger`, `validity`, `sequencer`):
@@ -956,7 +998,9 @@ timeout.
    - The sequencer refuses spends of nullifiers in pending claims.
 3. **The graph** (`crates/babe`):
    - `request` signs `E` and carries the nullifiers;
-   - `respond` signs `E` and `H(K)`, compares `E`, and carries `K`.
+   - `respond` gets two leaves, both comparing `b` and `E` with
+     `request`'s: plain (`b`, `E` under `e_plain`) and counter (`b`, `E`
+     under `e_counter`, and `K` signed itself). Alice presigns both.
 
    Sizes measured, with the 1,000-element limit checked as for the reveal.
 4. **The guests** (`r0/`, built on lichen-vps):

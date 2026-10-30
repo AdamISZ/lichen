@@ -27,3 +27,24 @@ fn the_hubs_signer_is_ln_gaps() {
         assert!(!verify(&auth, b ^ 1));
     }
 }
+
+/// So are its digits and signatures on `E` and `K`, the exit's (32 and
+/// 128 bytes).
+#[test]
+fn e_and_k_are_ln_gaps() {
+    use lichen_withdraw::fixed::{digits_of, verify_msg, E_DIGITS, K_DIGITS, K_LEN};
+    for (len, n) in [(32, E_DIGITS), (K_LEN, K_DIGITS)] {
+        let sk = Wots256Secret::from_entropy(WotsParams::for_bytes(len as u32), [7; 32]);
+        let key = sk.public().digits;
+        assert_eq!(key.len(), n);
+        for fill in [0u8, 0x5a, 0xff] {
+            let msg = vec![fill; len];
+            let sig = sk.sign(&msg).unwrap();
+            assert_eq!(sig.digits, digits_of(&msg));
+            assert!(verify_msg(&key, &sig.hashes, &msg));
+            let mut other = msg.clone();
+            other[len - 1] ^= 1;
+            assert!(!verify_msg(&key, &sig.hashes, &other));
+        }
+    }
+}
