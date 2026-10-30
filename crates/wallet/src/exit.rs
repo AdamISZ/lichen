@@ -139,6 +139,16 @@ impl Wallet {
                 p
             }
         };
-        self.dispute(chain, statement, dir, cid, plan.b, input)
+        let r = self.dispute(chain, statement, dir, cid, plan.b, input)?;
+        if let (Outcome::ProofDue(_), true) = (&r.0, input.is_empty()) {
+            // the claim's proof takes the chain receipt its state is under
+            let h = plan.input(Request { funding: vec![], tx: vec![], header: [0; 80], index: 0, path: vec![], coinbase: vec![], coinbase_path: vec![], reserved: [0; 32] }, vec![])?.state.chain_height;
+            let to = crate::engine::babe::data_dir(dir, cid).join("exit-chain.receipt");
+            match crate::chain_receipt(&self.sequencer, h) {
+                Ok(r) => std::fs::write(&to, r)?,
+                Err(e) => self.step(format!("the chain receipt at height {h}, for the claim's proof: {e:#}")),
+            }
+        }
+        Ok(r)
     }
 }

@@ -74,7 +74,7 @@ impl Wallet {
         Ok(())
     }
 
-    fn step(&self, msg: String) {
+    pub(crate) fn step(&self, msg: String) {
         if let Some(f) = &self.progress {
             f(msg);
         }
