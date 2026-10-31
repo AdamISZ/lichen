@@ -40,7 +40,7 @@ Worth mentioning these as idiosyncracies: first, this was built without a user-s
 
 * Creating a commitment mechanism (seals) for the L2 sequencer to gain finality from the Bitcoin chain (on a slower timescale) :white_check_mark:
 
-* As per the above, but further strengthening against malicious or disruptive sequencer behavior. (planned via a proof-counterproof method, not yet implemented)
+* As per the above, but further strengthening against malicious or disruptive sequencer behavior. :white_check_mark: (see the [exit explainer](docs/explainers/exit.md))
 
 * Replacement of BitVMX with a BABE-style construction. Done; vastly improves the onchain dispute case scalability. :white_check_mark:
 
