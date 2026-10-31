@@ -151,8 +151,9 @@ pub fn windows(net: Net, t_close: u32) -> Windows {
     // contract's work on request's block (ten blocks), then the counter
     // guest's proof and its wrap
     let (w_h, delta2, delta1) = match net {
-        // blocks every 150 ms in the dispute tests
-        Net::Regtest => (24, 24, 12),
+        // blocks every 150 ms in the dispute tests; her answer opens the
+        // kept instances first, seconds on a slow runner
+        Net::Regtest => (24, 24, 40),
         // 30 s blocks: 2 h, 2 h, 40 min
         Net::Mutinynet => (240, 240, 80),
         // 10 min blocks: 6 h, 12 h, 6 h

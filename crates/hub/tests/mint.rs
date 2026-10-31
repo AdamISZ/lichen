@@ -51,7 +51,10 @@ fn the_mint_is_alices_only_once_the_funding_is_out() {
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
         max_bits: 24,
-        duration: 500,
+        // past the blocks M2 and M4 mine (the deposit's timeout and half of
+        // it): a contract reaching T_close would be defaulted, its fee coin
+        // leaving the hub's coins unconfirmed for the next opening
+        duration: 2_000,
         refuse_folds: false,
         dispute_true_claims: false,
         first_cid: 1000,
