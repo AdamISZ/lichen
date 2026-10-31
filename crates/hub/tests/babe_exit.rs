@@ -91,7 +91,8 @@ fn exits_on_the_mock_statement() {
         seed: "test-hub".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 21,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 2_000,
         refuse_folds: true,
         dispute_true_claims: false,
@@ -107,7 +108,7 @@ fn exits_on_the_mock_statement() {
         })
     };
     let c = Client::new(&seq.url).unwrap();
-    let ask = Ask { deposit: 200_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 200_000, liquidity: 1_000_000, reserve: 20_000 };
     // a wallet with `n` contracts opened, its deposits ours and anchored
     let open = |user: &str, n: usize| -> (Wallet, Chain, Vec<u32>) {
         let ch = chain(user);

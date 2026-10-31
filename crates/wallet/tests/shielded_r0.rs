@@ -100,7 +100,7 @@ fn shield_pay_and_return_with_receipts() {
     let input = bob.withdraw_input(42).unwrap();
     let anchor = bob.kept(index).and_then(|k| k.anchor).expect("the anchor kept");
     let checkpoint = lichen_proto::Checkpoint::tip(&chain()).unwrap();
-    let full = lichen_wallet::prover_input(input.clone(), Some(&anchor), Some(&checkpoint), &chain()).unwrap();
+    let full = lichen_wallet::prover_input(input.clone(), Some(&anchor), Some(&checkpoint), 1, &chain()).unwrap();
     let (json, chain_file, receipt) = (dir.join("withdraw-input.json"), dir.join("chain.receipt"), dir.join("withdraw.receipt"));
     std::fs::write(&json, serde_json::to_vec_pretty(&full).unwrap()).unwrap();
     std::fs::write(&chain_file, bob.chain_receipt(42).unwrap()).unwrap();

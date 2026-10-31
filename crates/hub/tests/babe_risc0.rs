@@ -74,7 +74,7 @@ fn babe_disputes_on_a_risc0_proof() {
         let (_, points, _) = lngap_zk::groth16::split_input(&d).unwrap();
         lichen_babe::statement::proof_to_bytes(&lichen_babe::risc0::proof(points).unwrap())
     };
-    let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
     for (label, dispute_true_claims) in [("T", false), ("W", true), ("F", false)] {
         let hub_name = format!("hub-{label}");
         rt.fund(&chain(&hub_name).new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
@@ -90,7 +90,8 @@ fn babe_disputes_on_a_risc0_proof() {
             seed: "test-babe-risc0".into(),
             l2_key: lichen_ledger::regtest_hub(),
             reserve_ppm: 20_000,
-            max_bits: 24,
+            fee_ppm: 0,
+        max_liquidity: 10_000_000,
             duration: 2_000,
             refuse_folds: true,
             dispute_true_claims,

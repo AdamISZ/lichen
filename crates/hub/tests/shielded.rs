@@ -61,7 +61,8 @@ fn shielded_deposits_a_fold_and_a_dispute_input() {
         seed: "test-hub".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 21,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 2_000,
         refuse_folds: false,
         dispute_true_claims: false,
@@ -74,7 +75,7 @@ fn shielded_deposits_a_fold_and_a_dispute_input() {
         let ch = chain(name);
         rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
         let mut w = Wallet::create(&dir.join(format!("{name}.json")), &seq.url).unwrap();
-        let held = w.open_contract(&hub.url, &ch, &mock(), &dir.join(name), Ask { deposit, bits: 21, reserve: 20_000 }, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
+        let held = w.open_contract(&hub.url, &ch, &mock(), &dir.join(name), Ask { deposit, liquidity: 1_000_000, reserve: 20_000 }, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
         users.push((w, ch, held));
     }
     rt.mine(1).unwrap();

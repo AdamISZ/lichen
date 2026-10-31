@@ -36,18 +36,28 @@ file holds secrets: keep it, and the directory beside it (`alice.d/`), private.
 
 ```sh
 lw init                                  # a fresh key; pins the deployment the sequencer announces
-lw open 400000 --payout <an address of yours>
+lw open 100000 --liquidity 200000 --payout <an address of yours>
 ```
 
 `init` pins the deployment: check the sequencer's key it prints against
-the operator's. `open` asks the hub for a contract of a 400,000-sat
-deposit (a cap of 2^21 − 1 sats by default, `--bits`), then prints a
-deposit address and an amount, `D` plus your reserve, a share of the
-funding fee and a fee budget for a dispute, and waits. Pay it from any
-wallet or faucet. The deposit address is the hub's key and yours
-together, or yours alone after about a day: if the contract never
-opens, `lw refund <contract>` takes it back. Once the hub funds the
-contract, your deposit is minted to you on the L2.
+the operator's. `open` asks the hub for a contract of a 100,000-sat
+deposit with 200,000 sats of **liquidity**: what you can receive beyond
+your balance. The hub charges for the liquidity (1% by default), kept
+out of what it mints you, so `open` first prints its quote:
+
+```
+the hub's fee for 200000 sats of liquidity: 2000 sats; you'll be minted 98000 sats, with a cap of 298424 sats
+```
+
+The cap, your balance plus the liquidity, is rounded up a little to the
+contract's unit (a few hundred sats, in which a dispute pays). `open`
+then prints a deposit address and an amount, `D` plus your reserve, a
+share of the funding fee and a fee budget for a dispute, and waits. Pay
+it from any wallet or faucet; if you don't like the quote, don't pay.
+The deposit address is the hub's key and yours together, or yours alone
+after about a day: if the contract never opens, `lw refund <contract>`
+takes it back. Once the hub funds the contract, your deposit, less the
+fee, is minted to you on the L2.
 
 `lw contracts` lists your contracts: each one's cap, its end `T_close`,
 and its payout address.

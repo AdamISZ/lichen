@@ -370,8 +370,8 @@ impl Wallet {
     pub fn prover_input(&mut self, c: u32, chain: &Chain) -> Result<lichen_ledger::ProverInput> {
         let input = self.withdraw_input(c)?;
         let anchor = self.kept(input.index).and_then(|k| k.anchor);
-        let checkpoint = self.contracts.iter().find(|h| h.record.cid() == c).and_then(|h| h.record.checkpoint);
-        prover_input(input, anchor.as_ref(), checkpoint.as_ref(), chain)
+        let record = &self.contracts.iter().find(|h| h.record.cid() == c).with_context(|| format!("no contract {c}"))?.record;
+        prover_input(input, anchor.as_ref(), record.checkpoint.as_ref(), record.terms.unit.to_sat(), chain)
     }
 
     /// What's kept for the return at note `idx`.
@@ -389,16 +389,16 @@ impl Wallet {
     }
 }
 
-/// The prover's input for a withdrawal: ln-gap's `input`, and under an
-/// anchor the headers on its block that `checkpoint`'s `W` asks, from
-/// `chain`.
-pub fn prover_input(input: WithdrawInput, anchor: Option<&lichen_ledger::Anchored>, checkpoint: Option<&lichen_proto::Checkpoint>, chain: &Chain) -> Result<lichen_ledger::ProverInput> {
+/// The prover's input for a withdrawal: ln-gap's `input`, the contract's
+/// unit, and under an anchor the headers on its block that `checkpoint`'s
+/// `W` asks, from `chain`.
+pub fn prover_input(input: WithdrawInput, anchor: Option<&lichen_ledger::Anchored>, checkpoint: Option<&lichen_proto::Checkpoint>, unit: u64, chain: &Chain) -> Result<lichen_ledger::ProverInput> {
     match (anchor, checkpoint) {
         (Some(a), Some(c)) => {
             let headers = lichen_proto::headers_for(chain, &a.anchor.block, c.work())?;
-            Ok(lichen_ledger::ProverInput { input, headers: headers.iter().map(hex::encode).collect(), work: c.work().to_string() })
+            Ok(lichen_ledger::ProverInput { input, headers: headers.iter().map(hex::encode).collect(), work: c.work().to_string(), unit })
         }
-        (None, None) => Ok(lichen_ledger::ProverInput { input, headers: vec![], work: String::new() }),
+        (None, None) => Ok(lichen_ledger::ProverInput { input, headers: vec![], work: String::new(), unit }),
         _ => bail!("an anchored withdrawal needs its anchor and its contract's checkpoint"),
     }
 }
@@ -408,13 +408,43 @@ pub fn chain_receipt(seq: &Client, h: u64) -> Result<Vec<u8>> {
     seq.chain_receipt(h)?.with_context(|| format!("the sequencer hasn't proved height {h} yet (its chain prover proves each height after it seals): try again in a few minutes"))
 }
 
-/// What Alice asks for in a contract: her deposit `D`, a cap of
-/// `2^bits - 1` sats, her reserve `r_A`.
+/// What Alice asks for in a contract: her deposit `D`, the liquidity `L`
+/// (what she can receive beyond her balance), her reserve `r_A`. The
+/// hub's fee for `L` is kept out of what it mints her ([`Ask::quote`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Ask {
     pub deposit: u64,
-    pub bits: u32,
+    pub liquidity: u64,
     pub reserve: u64,
+}
+
+/// A hub's terms for an [`Ask`], from its `/info`: its fee, what it
+/// mints her (`D` less the fee), and the cap (`D - fee + L`, scaled).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Quote {
+    pub fee: u64,
+    pub minted: u64,
+    pub cap: u64,
+    /// The contract's unit, which its `D` holds.
+    pub unit: u64,
+}
+
+impl Ask {
+    /// The hub's terms for this ask: its fee at its rate, and the cap
+    /// they make. Refused if the liquidity is above the hub's most, or the
+    /// deposit doesn't cover the fee.
+    pub fn quote(&self, info: &Info) -> Result<Quote> {
+        ensure!(self.liquidity <= info.max_liquidity, "liquidity of {} sats, above the hub's most, {}", self.liquidity, info.max_liquidity);
+        let fee = lichen_proto::liquidity_fee(self.liquidity, info.fee_ppm);
+        ensure!(fee < self.deposit, "a deposit of {} sats doesn't cover the hub's fee of {fee}", self.deposit);
+        let (bits, unit) = lichen_proto::scale(self.deposit - fee + self.liquidity)?;
+        Ok(Quote { fee, minted: self.deposit - fee, cap: unit * ((1u64 << bits) - 1), unit })
+    }
+}
+
+/// The hub's offer (`GET /info`): its deployment, statement and terms.
+pub fn hub_info(hub: &str) -> Result<Info> {
+    hub_call(&format!("{hub}/info"), None)
 }
 
 /// A request to the hub, its error passed through.
@@ -496,6 +526,7 @@ impl Wallet {
             ensure!(info.depths == p.depths(), "the hub's statement has {} depths, ours {}", info.depths, p.depths());
         }
         bitcoin::Address::from_script(&payout, net.bitcoin()).with_context(|| format!("the payout address isn't a {net} address"))?;
+        let quote = ask.quote(&info)?;
 
         // the deposit: an address of the hub's and ours, paid, confirmed
         let nonce = hex::encode(fresh_rho());
@@ -512,7 +543,7 @@ impl Wallet {
         let amount = Wallet::deposit_amount(&ask, net);
         pay(&bitcoin::Address::from_script(&dep_spk, net.bitcoin())?, amount)?;
         let coin = self.wait_deposit(chain, &dep_spk, amount)?;
-        self.open_with(hub, chain, statement, dir, program.as_ref(), ask, dep, coin)
+        self.open_with(hub, chain, statement, dir, program.as_ref(), ask, quote, dep, coin)
     }
 
     /// Finish the opening of contract `cid` with the deposit already paid
@@ -528,19 +559,20 @@ impl Wallet {
         }
         let info: Info = hub_call(&format!("{hub}/info"), None)?;
         ensure!(info.network == chain.network, "the hub is on {}, this wallet's coins on {}", info.network, chain.network);
+        let quote = ask.quote(&info)?;
         let program = statement.program_if(dir)?;
         let dep_spk = deposit_tree(&self.deposit_key(&dep.nonce).x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();
         chain.watch(&dep_spk)?;
         let coin = self.wait_deposit(chain, &dep_spk, Wallet::deposit_amount(&ask, chain.network))?;
-        self.open_with(hub, chain, statement, dir, program.as_ref(), ask, dep, coin)
+        self.open_with(hub, chain, statement, dir, program.as_ref(), ask, quote, dep, coin)
     }
 
         /// The opening, the deposit `coin` confirmed: the hub's offer checked,
     /// the pre-signed set and the deposit input signed. Under BABE, the
     /// setup's cut-and-choose first, checked before anything is signed.
     #[allow(clippy::too_many_arguments)]
-    fn open_with(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, program: Option<&Program>, ask: Ask, dep: Deposit, coin: (bitcoin::OutPoint, bitcoin::TxOut)) -> Result<Held> {
-        let Ask { deposit, bits, reserve } = ask;
+    fn open_with(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, program: Option<&Program>, ask: Ask, quote: Quote, dep: Deposit, coin: (bitcoin::OutPoint, bitcoin::TxOut)) -> Result<Held> {
+        let Ask { deposit, liquidity, reserve } = ask;
         let (net, d) = (chain.network, self.sequencer.deployment);
         let (nonce, payout) = (dep.nonce.clone(), dep.payout.clone());
         let dep_kp = self.deposit_key(&nonce);
@@ -555,16 +587,17 @@ impl Wallet {
         let (dispute, setup) = match statement.gadget() {
             Gadget::BitVmx => (RequestKeys::BitVmx(engine::bitvmx::request_keys(&secrets, program.context("the statement's program")?)), None),
             Gadget::Babe => {
-                let (keys, setup) = self.babe_request(hub, dep.cid, coin.0, &secrets, net)?;
+                let (keys, setup) = self.babe_request(hub, dep.cid, coin.0, quote.unit, &secrets, net)?;
                 (RequestKeys::Babe(Box::new(keys)), Some(setup))
             }
         };
         let fees = self.fees(&nonce, net);
-        let req = OpenRequest { alice, l2_address: self.address(), deposit, bits, reserve, dispute, cid: dep.cid, deposit_coin: coin.clone(), fee_spk: fees.spk() };
+        let req = OpenRequest { alice, l2_address: self.address(), deposit, liquidity, fee: quote.fee, reserve, dispute, cid: dep.cid, deposit_coin: coin.clone(), fee_spk: fees.spk() };
         let offer: OpenOffer = hub_call(&format!("{hub}/open"), Some(serde_json::to_string(&req)?))?;
         // the contract as the offer makes it, checked before signing
         ensure!(offer.cid == dep.cid, "the offer is for contract {}, the deposit for {}", offer.cid, dep.cid);
         let t = terms(offer.cid, &req, offer.t_close, offer.reserve_hub)?;
+        ensure!(t.unit.to_sat() == quote.unit && t.v_max().to_sat() == quote.cap, "the terms aren't the quote's");
         // time to withdraw, and to dispute, before the default
         let least = chain.height()? + lichen_proto::min_duration(net);
         ensure!(offer.t_close >= least, "the hub's T_close, block {}, is too soon (at least block {least})", offer.t_close);
@@ -583,7 +616,7 @@ impl Wallet {
         let mut record = Record {
             statement: statement.id().to_string(),
             network: net,
-            deployment: lichen_proto::contract_word(&d, offer.checkpoint.as_ref())?,
+            deployment: lichen_proto::contract_word(&d, offer.checkpoint.as_ref(), t.unit)?,
             checkpoint: offer.checkpoint,
             terms: t,
             pubs: [req.alice.clone(), offer.hub.clone()],
@@ -591,6 +624,7 @@ impl Wallet {
             funding: bitcoin::OutPoint { txid: offer.funding.compute_txid(), vout: 0 },
             hub_sigs: offer.hub_sigs.clone(),
             alice_sigs: Default::default(),
+            fee: quote.fee,
             dispute,
         };
         let c = record.build(statement, program)?;
@@ -617,7 +651,7 @@ impl Wallet {
         record.alice_sigs = sign_all(&set, &keys.payment)?;
         // D, minted already to a key we can spend once this funding is out:
         // there, and sealed, before we sign the funding
-        self.wait_mint(offer.mint_index, &mint_owner(&self.address(), &offer.mint_point)?, u64::from(t.deposit))?;
+        self.wait_mint(offer.mint_index, &mint_owner(&self.address(), &offer.mint_point)?, record.minted())?;
         // our pre-signature on the funding's deposit input, locked to T
         // (taproot signs every input's prevout: ours and the hub's coins)
         let known: Vec<(bitcoin::OutPoint, bitcoin::TxOut)> = std::iter::once(coin.clone()).chain(offer.hub_coins.iter().cloned()).collect();

@@ -100,7 +100,7 @@ impl Inner {
     }
     /// The journal of the contract of `setup` (its checkpoint, its exit).
     fn journal_of(&self, setup: &Setup) -> Result<[u8; lichen_withdraw::fixed::JOURNAL_LEN]> {
-        let d = lichen_proto::contract_word(&self.seq.deployment, setup.checkpoint.as_ref())?;
+        let d = lichen_proto::contract_word(&self.seq.deployment, setup.checkpoint.as_ref(), bitcoin::Amount::from_sat(setup.unit))?;
         Ok(babe_journal(setup.cid, &d, &setup.hub_b, setup.exit.as_ref()))
     }
     /// Instance `i` of contract `cid` (from 1), built again from its seed.
@@ -118,8 +118,10 @@ impl Inner {
     pub(crate) fn babe_setup(&self, req: SetupRequest) -> Result<Setup> {
         let cid = req.cid;
         ensure!(self.deposits.lock().unwrap().contains_key(&cid), "no deposit asked for contract {cid}");
+        ensure!(req.unit >= 1, "a unit of 0");
         if let Ok(p) = self.prepared(cid) {
             ensure!(p.setup.exit.as_ref().map(|x| x.deposit) == req.deposit, "contract {cid}'s setup is for another deposit");
+            ensure!(p.setup.unit == req.unit, "contract {cid}'s setup is for a unit of {} sats, not {}", p.setup.unit, req.unit);
             return Ok(p.setup);
         }
         let exit = match req.deposit {
@@ -137,7 +139,7 @@ impl Inner {
         };
         let (dealer, dealing) = dealing(&self.cfg.seed, cid, n, m);
         let kind = self.babe_kind()?;
-        let mut setup = Setup { cid, n, m, checkpoint, hub_b: hub_b(&self.cfg.seed, cid).public(), exit, commitments: vec![], dealing: dealing_to_hex(&dealing) };
+        let mut setup = Setup { cid, n, m, checkpoint, unit: req.unit, hub_b: hub_b(&self.cfg.seed, cid).public(), exit, commitments: vec![], dealing: dealing_to_hex(&dealing) };
         let journal = self.journal_of(&setup)?;
         let (vk, public) = (kind.verifying_key(), kind.public_inputs(&journal));
         let start = std::time::Instant::now();
@@ -173,8 +175,9 @@ impl Inner {
     /// A BABE contract's keys, from Alice's request (checked against the
     /// setup) and the hub's own: the record's, and the offer's, with the
     /// instances she doesn't keep opened.
-    pub(crate) fn babe_open_keys(&self, cid: u32, req: &BabeRequest, deposit: &OutPoint, t_close: u32) -> Result<(DisputeKeys, OfferKeys, Option<Checkpoint>)> {
+    pub(crate) fn babe_open_keys(&self, cid: u32, req: &BabeRequest, deposit: &OutPoint, t_close: u32, unit: bitcoin::Amount) -> Result<(DisputeKeys, OfferKeys, Option<Checkpoint>)> {
         let p = self.prepared(cid)?;
+        ensure!(p.setup.unit == unit.to_sat(), "the setup is for a unit of {} sats, the opening's terms {}", p.setup.unit, unit.to_sat());
         let Setup { n, m, .. } = p.setup;
         check_request(req, n, m)?;
         let exit = match (&p.setup.exit, &req.e_key) {
@@ -383,11 +386,11 @@ impl Inner {
                 let spent = lichen_withdraw::counter::Spent::Exit { c: *c2 };
                 return Ok(Some((format!("a note of it was retired by contract {c2}'s exit record"), Ground::Spent { which: which as u8, spent, anchor: *a })));
             }
-            // a return: of at least b to this contract never counts; any
-            // other, as an ordinary spend
+            // a return: of at least b units to this contract never counts;
+            // any other, as an ordinary spend
             let ret = state.transparent().find(|(_, n)| n.owner == hub && n.memo != 0 && lichen_ledger::lichen_validity::smt::returned(n.memo, n.value) == leaf).map(|(_, n)| (n.memo, n.value));
             let spent = match ret {
-                Some((m, r)) if m == c && r >= u64::from(b) => continue,
+                Some((m, r)) if m == c && r / record.terms.unit.to_sat() >= u64::from(b) => continue,
                 Some((m, r)) => lichen_withdraw::counter::Spent::Return { c: m, r },
                 None => lichen_withdraw::counter::Spent::Spend,
             };
@@ -481,6 +484,7 @@ impl Inner {
                         anchor: a.anchor,
                         headers,
                         work,
+                        unit: record.terms.unit.to_sat(),
                     },
                     tree: s2.tree,
                     proof: self.seq.nullifier_proof(&nf, h2)?,

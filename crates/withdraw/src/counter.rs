@@ -104,8 +104,12 @@ pub fn check(input: &CounterInput, chain_id: &Hash, verify_chain: &mut dyn FnMut
 fn check_with(input: &CounterInput, grace: usize, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<[u8; JOURNAL_LEN], Reject> {
     let e = fingerprint(input.c, &input.deposit, input.b, input.h_s, &input.sr_s, &input.nullifiers);
     let nf = input.nullifiers.get(input.which as usize).ok_or(Reject::NotSpent)?;
+    if input.state.unit == 0 {
+        return Err(Reject::Encoding);
+    }
+    // her own return to this contract of at least b units never counts
     let needs_cutoff = match input.spent {
-        Spent::Return { c, r } if c == input.c && r >= u64::from(input.b) => return Err(Reject::Own),
+        Spent::Return { c, r } if c == input.c && r / input.state.unit >= u64::from(input.b) => return Err(Reject::Own),
         Spent::Exit { c } if c == input.c => return Err(Reject::Own),
         Spent::Exit { .. } => false,
         Spent::Spend | Spent::Return { .. } => true,
@@ -371,6 +375,7 @@ pub(crate) mod tests {
             anchor,
             headers,
             work: 10 * btc::work(0x207fffff),
+            unit: 1,
         };
         let proof = smt::proof(&set, &nf, smt::empties());
         let input = CounterInput { c: 42, deposit: DEPOSIT, b: 9, h_s: 3, sr_s, nullifiers: vec![nf, other], which: 0, spent: Spent::Spend, state, tree, proof, before, roots, request: Some(request), earlier: vec![] };
@@ -430,6 +435,12 @@ pub(crate) mod tests {
         // never
         assert_eq!(counts(&spent_as(&i, Spent::Return { c: 42, r: 9 })), Err(Reject::Own));
         assert_eq!(counts(&spent_as(&i, Spent::Return { c: 42, r: 20 })), Err(Reject::Own));
+        // in the contract's units: of 2 sats, 18 covers b's 9, 17 doesn't
+        for (r, want) in [(18, Err(Reject::Own)), (17, Ok(()))] {
+            let mut u = spent_as(&i, Spent::Return { c: 42, r });
+            u.state.unit = 2;
+            assert_eq!(counts(&u), want, "a return of {r}");
+        }
         assert_eq!(counts(&spent_as(&i, Spent::Exit { c: 42 })), Err(Reject::Own));
         // a return of less than b, or to another contract: an ordinary
         // spend, so only with the request

@@ -27,9 +27,10 @@ impl Wallet {
     /// Ask the hub for contract `cid`'s setup, with the exit for the
     /// deposit coin `deposit`, check its parameters, and choose the
     /// instances to keep: her opening request's keys.
-    pub(crate) fn babe_request(&self, hub: &str, cid: u32, deposit: bitcoin::OutPoint, s: &ContractSecrets, net: Net) -> Result<(BabeRequest, Setup)> {
-        let setup: Setup = hub_call(&format!("{hub}/babe/setup"), Some(serde_json::to_string(&SetupRequest { cid, deposit: Some(deposit) })?))?;
+    pub(crate) fn babe_request(&self, hub: &str, cid: u32, deposit: bitcoin::OutPoint, unit: u64, s: &ContractSecrets, net: Net) -> Result<(BabeRequest, Setup)> {
+        let setup: Setup = hub_call(&format!("{hub}/babe/setup"), Some(serde_json::to_string(&SetupRequest { cid, deposit: Some(deposit), unit })?))?;
         ensure!(setup.cid == cid, "the setup is for contract {}, not {cid}", setup.cid);
+        ensure!(setup.unit == unit, "the setup is for a unit of {} sats, not {unit}", setup.unit);
         let x = setup.exit.as_ref().context("the hub's setup has no exit")?;
         x.check()?;
         ensure!(x.deposit == deposit, "the setup is for another deposit");
@@ -74,6 +75,7 @@ impl Wallet {
     pub(crate) fn babe_check(&self, hub: &str, dir: &Path, statement: &Statement, record: &mut Record, s: &ContractSecrets, setup: &Setup, offer: &BabeOffer, set: &[Presign]) -> Result<Vec<[Presig; VALUES]>> {
         let cid = record.cid();
         ensure!(setup.checkpoint == record.checkpoint, "the offer's checkpoint is not the setup's");
+        ensure!(setup.unit == record.terms.unit.to_sat(), "the terms' unit is not the setup's");
         let keys = record.babe()?.clone();
         let (n, m) = (setup.n, setup.m);
         let dealing = dealing_from_hex(&setup.dealing, (n - m) as usize)?;

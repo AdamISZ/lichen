@@ -89,13 +89,16 @@ enum Cmd {
     /// Write the sequencer's chain receipt at the height of a return's
     /// root, which the withdrawal's proof needs.
     ChainReceipt { memo: u32, out: PathBuf },
-    /// Open a contract with the hub: deposit `deposit` sats, a cap of
-    /// 2^bits - 1 sats, a reserve of `reserve` sats. Prints a deposit
-    /// address and the amount to pay it (from any wallet), and waits.
+    /// Open a contract with the hub: deposit `deposit` sats, with
+    /// `liquidity` sats of inbound (what you can receive beyond your
+    /// balance), a reserve of `reserve` sats. Prints the hub's fee for the
+    /// liquidity (kept out of what it mints you) and the cap, then a
+    /// deposit address and the amount to pay it (from any wallet), and
+    /// waits.
     Open {
         deposit: u64,
-        #[arg(long, default_value_t = 21)]
-        bits: u32,
+        #[arg(long, default_value_t = 0)]
+        liquidity: u64,
         #[arg(long, default_value_t = 20_000)]
         reserve: u64,
         /// Where withdrawals, refunds and the fee budget's rest are paid
@@ -139,7 +142,8 @@ enum Cmd {
     /// Run again to resume (the claim is kept with the contract).
     Dispute {
         contract: u32,
-        /// The amount withdrawn (not needed to resume).
+        /// The amount withdrawn, in sats (not needed to resume): a dispute
+        /// pays it in the contract's units, rounded down.
         amount: Option<u32>,
         /// The statement program's input for the claim, hex (for Groth16:
         /// the verifier's 204-byte input for the proof). The mock's is
@@ -346,10 +350,12 @@ fn main() -> Result<()> {
             std::fs::write(out, w.chain_receipt(memo)?)?;
             println!("{}: the chain receipt for the return with memo {memo}", out.display());
         }
-        Cmd::Open { deposit, bits, reserve, ref payout, resume } => {
+        Cmd::Open { deposit, liquidity, reserve, ref payout, resume } => {
             let chain = chain(&a)?;
             let dir = a.wallet.with_extension("d");
-            let ask = lichen_wallet::Ask { deposit, bits, reserve };
+            let ask = lichen_wallet::Ask { deposit, liquidity, reserve };
+            let q = ask.quote(&lichen_wallet::hub_info(&a.hub)?)?;
+            println!("the hub's fee for {liquidity} sats of liquidity: {} sats; you'll be minted {} sats, with a cap of {} sats", q.fee, q.minted, q.cap);
             let h = match resume {
                 Some(cid) => w.resume_open(&a.hub, &chain, &a.statement, &dir, ask, cid)?,
                 None => {
@@ -362,7 +368,7 @@ fn main() -> Result<()> {
                 }
             };
             let t = &h.record.terms;
-            println!("contract {} (memo {}): deposit {} sats, cap {} sats, T_close {}; funding {}", h.record.cid(), t.id, t.deposit, t.v_max().to_sat(), t.t_close, h.record.funding.txid);
+            println!("contract {} (memo {}): deposit {} sats ({} minted), cap {} sats, T_close {}; funding {}", h.record.cid(), t.id, t.deposit, h.record.minted(), t.v_max().to_sat(), t.t_close, h.record.funding.txid);
         }
         Cmd::Contracts => {
             let addr = |spk: &bitcoin::Script| bitcoin::Address::from_script(spk, a.network.bitcoin()).map_or_else(|_| spk.to_hex_string(), |x| x.to_string());
@@ -409,7 +415,11 @@ fn main() -> Result<()> {
         Cmd::Dispute { contract, amount, ref input, ref lie, false_claim } => {
             anyhow::ensure!(!false_claim || a.network.is_test(), "--false-claim is for test networks only, not {}", a.network);
             let chain = chain(&a)?;
-            let kept = w.contracts.iter().find(|h| h.record.cid() == contract).and_then(|h| h.claim.clone());
+            let held = w.contracts.iter().find(|h| h.record.cid() == contract).with_context(|| format!("no contract {contract}"))?;
+            let kept = held.claim.clone();
+            // the amount in sats, as returned; the dispute's b in the
+            // contract's units, rounded down (what a dispute pays)
+            let amount = amount.map(|sats| (u64::from(sats) / held.record.terms.unit.to_sat()) as u32);
             let real_babe = matches!(a.statement, lichen_proto::Statement::Babe { mock: false });
             // under babe, a RISC Zero claim (lichen-r0 babe-claim's) becomes its proof
             let read = |p: &PathBuf, w: &lichen_wallet::Wallet| -> Result<Vec<u8>> {
@@ -440,7 +450,7 @@ fn main() -> Result<()> {
                 lichen_wallet::dispute::Outcome::ProofDue(t_a) => {
                     let auth = lichen_wallet::engine::babe::data_dir(&a.wallet.with_extension("d"), contract).join("hub-auth.json");
                     println!(
-                        "The hub signed b. Your proof is due: assert it before block {t_a} (T_A), after which the hub may take the contract. Prove on x86 Linux with Docker (the README, \"Disputes on the real statement\"), with this command's --network, --wallet and --statement:\n    lichen withdraw-input {contract} > withdraw-input.json\n    lichen chain-receipt {contract} chain.receipt\n    lichen-r0 babe-claim withdraw-input.json {} chain.receipt claim.hex\n    lichen dispute {contract} --input claim.hex\nor, once proved, with a tower: lichen export-dispute {contract} --input claim.hex --out package.json",
+                        "The hub signed b. Your proof is due: assert it before block {t_a} (T_A), after which the hub may take the contract. Prove with lichen-r0, on Linux or a Mac (the README, \"Disputes on the real statement\"), with this command's --network, --wallet and --statement:\n    lichen withdraw-input {contract} > withdraw-input.json\n    lichen chain-receipt {contract} chain.receipt\n    lichen-r0 babe-claim withdraw-input.json {} chain.receipt claim.hex\n    lichen dispute {contract} --input claim.hex\nor, once proved, with a tower: lichen export-dispute {contract} --input claim.hex --out package.json",
                         auth.display()
                     );
                 }
@@ -462,7 +472,7 @@ fn main() -> Result<()> {
                     let data = lichen_wallet::engine::babe::data_dir(&dir, contract);
                     let (stmt, receipt) = (data.join("exit-statement.bin"), data.join("exit-chain.receipt"));
                     println!(
-                        "The hub responded. Your proof is due: assert it before block {t_a} (T_A), after which the hub may take the contract. Prove on x86 Linux with Docker (the README, \"Disputes on the real statement\"):\n    lichen-r0 babe-exit {} exit.receipt {}\n    lichen-r0 wrap exit.receipt exit.groth16\n    lichen-r0 bitvmx-input exit.groth16 claim.hex\n    lichen exit {contract} --input claim.hex\n(after a false counter, babe-exit takes no chain receipt; anyone can prove it)",
+                        "The hub responded. Your proof is due: assert it before block {t_a} (T_A), after which the hub may take the contract. Prove with lichen-r0, on Linux or a Mac (the README, \"Disputes on the real statement\"):\n    lichen-r0 babe-exit {} exit.receipt {}\n    lichen-r0 wrap exit.receipt exit.groth16\n    lichen-r0 bitvmx-input exit.groth16 claim.hex\n    lichen exit {contract} --input claim.hex\n(after a false counter, babe-exit takes no chain receipt; anyone can prove it)",
                         stmt.display(),
                         receipt.display()
                     );

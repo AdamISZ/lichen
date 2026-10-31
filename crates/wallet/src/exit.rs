@@ -73,8 +73,9 @@ impl Wallet {
         notes.truncate(MAX_NOTES);
         ensure!(!notes.is_empty(), "no notes of ours at the anchored height {hs}");
         notes.sort_by_key(|o| nullifier(&o.note));
-        let cap = (1u64 << record.terms.bits) - 1;
-        let b = u32::try_from(notes.iter().map(|o| o.note.value).sum::<u64>().min(cap)).context("b fits in a u32")?;
+        // b in the contract's units: the notes' total, up to the cap
+        let total = notes.iter().map(|o| o.note.value).sum::<u64>().min(record.terms.v_max().to_sat());
+        let b = u32::try_from(total / record.terms.unit.to_sat()).context("b fits in a u32")?;
         let deposit = lichen_proto::babe::statement_outpoint(&x.hub.deposit);
         let nfs: Vec<Hash> = notes.iter().map(|o| nullifier(&o.note)).collect();
         let e = fingerprint(cid, &deposit, b, hs, &s.root(), &nfs);
@@ -106,6 +107,7 @@ impl Wallet {
             anchor: a.anchor,
             headers: vec![],
             work: checkpoint.work(),
+            unit: record.terms.unit.to_sat(),
         };
         let empty = Request { funding: vec![], tx: vec![], header: [0; 80], index: 0, path: vec![], coinbase: vec![], coinbase_path: vec![], reserved: [0; 32] };
         let input = ExitInput { state: st, tree: s.tree, c: cid, deposit, b, notes: claimed, request: empty };

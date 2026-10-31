@@ -35,7 +35,10 @@ const B: u32 = 300_000;
 
 /// The mock statement: the return of `B` with memo 1000 is true.
 fn statement() -> Statement {
-    Statement::BitVmxMock { session: 1000, returns: vec![(B, 1000)] }
+    // the return of B, in the contract's units: the test's ask's cap
+    // (400,000 + 1,000,000, no fee) scaled
+    let (_, unit) = lichen_proto::scale(400_000 + 1_000_000).unwrap();
+    Statement::BitVmxMock { session: 1000, returns: vec![((u64::from(B) / unit) as u32, 1000)] }
 }
 
 fn background(stop: &Arc<AtomicBool>, every: Duration, f: impl Fn() + Send + 'static) -> std::thread::JoinHandle<()> {
@@ -72,7 +75,8 @@ fn disputes_on_the_mock_statement() {
         seed: format!("test-{name}"),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 2_000,
         refuse_folds: true,
         dispute_true_claims,
@@ -93,7 +97,7 @@ fn disputes_on_the_mock_statement() {
             let _ = rpc.generate_to_address(1, &addr);
         })
     };
-    let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
 
     for (label, user, hub, claim_c) in [("A", "alice", &hub_a, Some(1000u32)), ("B", "bob", &hub_b, Some(1000)), ("C", "carol", &hub_a, None), ("M", "mallory", &hub_a, Some(1000))] {
         let ch = chain(user);
@@ -102,6 +106,8 @@ fn disputes_on_the_mock_statement() {
         let mut w = Wallet::create(&dir.join(format!("{user}.json")), &seq.url).unwrap();
         w.progress = Some(Arc::new(move |m: String| println!("LICHEN {label}: {m}")));
         let held = w.open_contract(&hub.url, &ch, &statement(), &wdir, ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
+        // b in the contract's units: what a dispute signs and pays
+        let b = (u64::from(B) / held.record.terms.unit.to_sat()) as u32;
         let cid = held.record.cid();
         let want = if label == "B" { hub_b_windows } else { lichen_proto::bitvmx::windows(lichen_proto::Net::Regtest) };
         assert_eq!(held.record.bitvmx().unwrap().windows, Some(want), "{label}: the contract records its hub's windows");
@@ -114,18 +120,18 @@ fn disputes_on_the_mock_statement() {
         let refused = w.withdraw(&hub.url, &statement(), &wdir, cid, u64::from(B)).unwrap_err();
         println!("LICHEN {label}: contract {cid}; Alice returned {B} on the L2; the hub refused to fold ({refused:#})");
         // she enforces it: her claim's input (the mock's: b and the memo)
-        let input = statement().mock_input(B, claim_c.unwrap_or(cid)).unwrap();
+        let input = statement().mock_input(b, claim_c.unwrap_or(cid)).unwrap();
         if label == "M" {
             // the wallet refuses a claim that breaks a check; a careless (or
             // dishonest) one could escalate it anyway: the hub's check takes it
-            let e = w.dispute(&ch, &statement(), &wdir, cid, B, &input).unwrap_err();
+            let e = w.dispute(&ch, &statement(), &wdir, cid, b, &input).unwrap_err();
             println!("LICHEN M: the wallet refuses the claim ({e:#}); escalated anyway:");
             w.unchecked_claims = true;
         }
         // A: a hub as they were before they collected their bit outputs
         hub.set_leave_bits(label == "A");
         let t = Instant::now();
-        let (outcome, swept) = w.dispute(&ch, &statement(), &wdir, cid, B, &input).unwrap();
+        let (outcome, swept) = w.dispute(&ch, &statement(), &wdir, cid, b, &input).unwrap();
         println!("LICHEN {label}: {outcome:?} in {:.1?}; swept {swept:?}", t.elapsed());
         let t = held.record.terms;
         match label {
@@ -142,7 +148,7 @@ fn disputes_on_the_mock_statement() {
             };
             let op = payout.input[0].previous_output;
             let floors = t.v_max() + t.reserves() - rt.get_tx(&op.txid).unwrap().output[op.vout as usize].value;
-            let paid = Amount::from_sat(u64::from(B / 512 * 512)) + t.reserves() - floors;
+            let paid = t.unit * u64::from(b) + t.reserves() - floors;
             println!("LICHEN {label}: the floors of the links played: {floors}");
             let start = Instant::now();
             while ch.confirmations(&sweep).unwrap() == 0 {
@@ -160,7 +166,7 @@ fn disputes_on_the_mock_statement() {
             let won = swept - extra;
             assert!(won <= paid && won > paid - Amount::from_sat(20_000), "{label}: swept {won} of {paid}, and {extra} besides");
             // the hub collects its bit outputs, those of the bits clear in b
-            let mine: Vec<u32> = (t.low_bits..t.bits).filter(|i| (B >> i) & 1 == 0).collect();
+            let mine: Vec<u32> = (t.low_bits..t.bits).filter(|i| (b >> i) & 1 == 0).collect();
             let bit_out = |i: &u32| bitcoin::OutPoint { txid: payout.compute_txid(), vout: i - t.low_bits };
             if label == "A" {
                 // closed and left; once the hub collects, its first tick

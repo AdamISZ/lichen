@@ -64,7 +64,8 @@ fn fold_and_default() {
         seed: "test-hub".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 40,
         refuse_folds: false,
         dispute_true_claims: false,
@@ -72,7 +73,7 @@ fn fold_and_default() {
         windows: None,
     })
     .unwrap();
-    let ask = |deposit| Ask { deposit, bits: 21, reserve: 20_000 };
+    let ask = |deposit| Ask { deposit, liquidity: 1_000_000, reserve: 20_000 };
     let mut users = vec![];
     for (name, deposit) in [("alice", 400_000u64), ("bob", 100_000), ("carol", 100_000)] {
         let ch = chain(name);

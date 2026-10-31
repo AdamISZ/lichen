@@ -71,7 +71,8 @@ fn a_keyless_tower_plays_the_babe_dispute() {
         seed: "test-babe-tower".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 2_000,
         refuse_folds: true,
         dispute_true_claims: true,
@@ -92,8 +93,10 @@ fn a_keyless_tower_plays_the_babe_dispute() {
     rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
     let wdir = dir.join("alice");
     let mut w = Wallet::create(&dir.join("alice.json"), &seq.url).unwrap();
-    let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
     let held = w.open_contract(&hub.url, &ch, &statement(), &wdir, ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
+    // b in the contract's units: what a dispute signs and pays
+    let b = (u64::from(B) / held.record.terms.unit.to_sat()) as u32;
     let cid = held.record.cid();
     let refused = w.withdraw(&hub.url, &statement(), &wdir, cid, u64::from(B)).unwrap_err();
     println!("LICHEN contract {cid}: Alice returned {B} on the L2; the hub refused to fold ({refused:#})");
@@ -106,7 +109,7 @@ fn a_keyless_tower_plays_the_babe_dispute() {
     assert!(w.export_dispute(&statement(), None, cid, Some(&other)).is_err(), "a proof the hub would win against");
     assert!(w.export_dispute(&statement(), None, cid, None).is_err(), "no proof, no package");
     let pkg = w.export_dispute(&statement(), None, cid, Some(&input)).unwrap();
-    assert_eq!(pkg.b, B);
+    assert_eq!(pkg.b, b);
     let path = dir.join("tower").join("contract.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, serde_json::to_vec_pretty(&pkg).unwrap()).unwrap();
@@ -148,7 +151,7 @@ fn a_keyless_tower_plays_the_babe_dispute() {
     // both reserves, less the floors of the links played and the sweep's
     // fee; and the fee budget's rest
     let state: tower::TowerState = serde_json::from_slice(&std::fs::read(path.with_extension("state.json")).unwrap()).unwrap();
-    let (_, swept) = w.sweep_dispute(&ch, &statement(), &wdir, cid, B, state.payout.clone().unwrap()).unwrap();
+    let (_, swept) = w.sweep_dispute(&ch, &statement(), &wdir, cid, b, state.payout.clone().unwrap()).unwrap();
     let (sweep, value) = swept.expect("swept");
     let start = Instant::now();
     while ch.confirmations(&sweep).unwrap() == 0 {
@@ -156,7 +159,7 @@ fn a_keyless_tower_plays_the_babe_dispute() {
         std::thread::sleep(Duration::from_millis(200));
     }
     let terms = held.record.terms;
-    let paid = Amount::from_sat(u64::from(B / 512 * 512)) + terms.reserves();
+    let paid = terms.unit * u64::from(b) + terms.reserves();
     println!("LICHEN Alice swept {value} ({sweep}) for {paid}");
     assert!(value > paid - Amount::from_sat(60_000) && value < paid + lichen_proto::fee_budget(lichen_proto::Net::Regtest), "swept {value} for {paid}");
 

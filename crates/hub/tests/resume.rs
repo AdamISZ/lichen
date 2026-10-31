@@ -62,7 +62,8 @@ fn a_dispute_resumes_after_restarts() {
         seed: "test-hub".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 2_000,
         refuse_folds: true,
         dispute_true_claims: true,
@@ -81,7 +82,7 @@ fn a_dispute_resumes_after_restarts() {
     rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
     let (wfile, wdir) = (dir.join("alice.json"), dir.join("alice"));
     let mut w = Wallet::create(&wfile, &seq.url).unwrap();
-    let cid = w.open_contract(&hub.url, &ch, &statement(), &wdir, Ask { deposit: 400_000, bits: 21, reserve: 20_000 }, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap().record.cid();
+    let cid = w.open_contract(&hub.url, &ch, &statement(), &wdir, Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 }, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap().record.cid();
     let start = Instant::now();
     while w.balance().unwrap() < 400_000 {
         assert!(start.elapsed() < Duration::from_secs(60), "the deposit");

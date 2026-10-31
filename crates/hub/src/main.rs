@@ -50,8 +50,13 @@ struct Args {
     /// The hub's reserve, parts per million of the cap.
     #[arg(long, default_value_t = 20_000)]
     reserve_ppm: u64,
-    #[arg(long, default_value_t = 24)]
-    max_bits: u32,
+    /// The hub's fee for a contract's liquidity, parts per million of it,
+    /// kept out of the user's minted deposit.
+    #[arg(long, default_value_t = 10_000)]
+    fee_ppm: u64,
+    /// The most liquidity a contract may ask, in sats.
+    #[arg(long, default_value_t = 10_000_000)]
+    max_liquidity: u64,
     /// Blocks from opening to T_close (the network's default: a week on
     /// Mutinynet).
     #[arg(long)]
@@ -123,7 +128,8 @@ fn main() -> Result<()> {
         seed,
         l2_key,
         reserve_ppm: a.reserve_ppm,
-        max_bits: a.max_bits,
+        fee_ppm: a.fee_ppm,
+        max_liquidity: a.max_liquidity,
         duration: a.duration.unwrap_or(lichen_proto::default_duration(a.network)),
         windows: a.windows,
         refuse_folds: a.hostile || a.refuse_folds,

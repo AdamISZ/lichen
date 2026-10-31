@@ -92,10 +92,22 @@ pub struct SetupRequest {
     pub cid: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deposit: Option<bitcoin::OutPoint>,
+    /// The contract's unit, which its `D` holds ([`crate::scale`] of the
+    /// cap she will ask): 1 sat if not given.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub unit: u64,
+}
+
+fn one() -> u64 {
+    1
+}
+
+fn is_one(n: &u64) -> bool {
+    *n == 1
 }
 
 /// The hub's setup: what the contract's statement is (its journal's
-/// checkpoint and `pk_H`), and its commitments to `n` instances, of which
+/// checkpoint, unit and `pk_H`), and its commitments to `n` instances, of which
 /// Alice keeps `m`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Setup {
@@ -103,6 +115,9 @@ pub struct Setup {
     pub n: u32,
     pub m: u32,
     pub checkpoint: Option<Checkpoint>,
+    /// The contract's unit, in its journal's `D`.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub unit: u64,
     pub hub_b: Wots256Public,
     /// With the exit, the hub's keys for it and the deposit coin.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -70,7 +70,7 @@ fn disputes_on_the_groth16_verifier() {
             }
         })
     };
-    let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
     for (label, dispute_true_claims, input, want) in [("G1", false, &valid, "HubTimedOut"), ("G2", true, &valid, "Proved"), ("G3", false, &tampered, "Lost")] {
         let hub_name = format!("hub-{label}");
         rt.fund(&chain(&hub_name).new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
@@ -86,7 +86,8 @@ fn disputes_on_the_groth16_verifier() {
             seed: format!("test-{hub_name}"),
             l2_key: lichen_ledger::regtest_hub(),
             reserve_ppm: 20_000,
-            max_bits: 24,
+            fee_ppm: 0,
+        max_liquidity: 10_000_000,
             duration: 5_000,
             refuse_folds: true,
             dispute_true_claims,

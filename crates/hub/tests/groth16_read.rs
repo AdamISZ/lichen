@@ -110,7 +110,8 @@ fn a_read_lie_on_the_groth16_verifier() {
         seed: "test-g16r-hub".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 5_000,
         refuse_folds: true,
         dispute_true_claims: false,
@@ -121,7 +122,7 @@ fn a_read_lie_on_the_groth16_verifier() {
     let ch = chain("alice");
     rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
     let mut w = Wallet::create(&dir.join("alice.json"), &seq.url).unwrap();
-    let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
     let held = w.open_contract(&hub.url, &ch, &statement, &dir.join("alice"), ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
     assert_eq!(held.record.cid(), 42);
     w.lie = Some(lie);

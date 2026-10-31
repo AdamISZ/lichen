@@ -173,11 +173,18 @@ struct LnGapInput {
     sequencer: [u8; 32],
     hub: [u8; 32],
     /// Beside it (docs/ANCHOR_PLAN.md): the headers on top of the chain
-    /// receipt's last anchor (hex), and the contract's `W` (decimal).
+    /// receipt's last anchor (hex), the contract's `W` (decimal) and its
+    /// unit (sats; 1 if not given).
     #[serde(default)]
     headers: Vec<String>,
     #[serde(default)]
     work: String,
+    #[serde(default = "one")]
+    unit: u64,
+}
+
+fn one() -> u64 {
+    1
 }
 
 #[derive(serde::Deserialize)]
@@ -224,8 +231,9 @@ fn withdraw_input(json: &str, chain: &Receipt) -> Result<(lichen_withdraw::Withd
         anchor: c.anchor,
         headers,
         work,
+        unit: i.unit,
     };
-    eprintln!("lichen-r0: the return of {} with memo {} at index {}, under the root of height {}", n.value, n.memo, input.index, input.height);
+    eprintln!("lichen-r0: the return of {} with memo {} at index {}, under the root of height {}, in units of {} sats", n.value, n.memo, input.index, input.height, i.unit);
     Ok((input, chain_id))
 }
 

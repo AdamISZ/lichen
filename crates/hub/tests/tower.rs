@@ -31,7 +31,10 @@ const B: u32 = 300_000;
 
 /// The mock statement: the return of `B` with memo 1000 is true.
 fn statement() -> Statement {
-    Statement::BitVmxMock { session: 1000, returns: vec![(B, 1000)] }
+    // the return of B, in the contract's units: the test's ask's cap
+    // (400,000 + 1,000,000, no fee) scaled
+    let (_, unit) = lichen_proto::scale(400_000 + 1_000_000).unwrap();
+    Statement::BitVmxMock { session: 1000, returns: vec![((u64::from(B) / unit) as u32, 1000)] }
 }
 
 fn background(stop: &Arc<AtomicBool>, every: Duration, f: impl Fn() + Send + 'static) -> std::thread::JoinHandle<()> {
@@ -71,7 +74,8 @@ fn a_tower_plays_the_dispute_from_a_package() {
         seed: "test-tower-hub".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 2_000,
         windows: None,
         refuse_folds: true,
@@ -93,8 +97,10 @@ fn a_tower_plays_the_dispute_from_a_package() {
     rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
     let wdir = dir.join("alice");
     let mut w = Wallet::create(&dir.join("alice.json"), &seq.url).unwrap();
-    let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
     let held = w.open_contract(&hub.url, &ch, &statement(), &wdir, ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
+    // b in the contract's units: what a dispute signs and pays
+    let b = (u64::from(B) / held.record.terms.unit.to_sat()) as u32;
     let cid = held.record.cid();
     let start = Instant::now();
     while w.balance().unwrap() < ask.deposit {
@@ -114,7 +120,7 @@ fn a_tower_plays_the_dispute_from_a_package() {
     // nor b's key
     let program = statement().program(&wdir).unwrap();
     let pkg = w.export_dispute(&statement(), Some(&program), cid, None).unwrap();
-    assert_eq!(pkg.b, B);
+    assert_eq!(pkg.b, b);
     let path = dir.join("tower").join("contract.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, serde_json::to_vec_pretty(&pkg).unwrap()).unwrap();
@@ -143,7 +149,8 @@ fn a_tower_plays_the_dispute_from_a_package() {
     let claim = tower::prove(&pkg, &ch, &dir.join("proof"), &stub).unwrap();
     assert_eq!(claim, vec![0xc1, 0xa1], "the prover's claim, read back");
     let seen: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("seen.json")).unwrap()).unwrap();
-    let given = lichen_ledger::ProverInput { input: w.withdraw_input(cid).unwrap(), headers: vec![], work: String::new() };
+    let unit = w.contracts.iter().find(|h| h.record.cid() == cid).unwrap().record.terms.unit.to_sat();
+    let given = lichen_ledger::ProverInput { input: w.withdraw_input(cid).unwrap(), headers: vec![], work: String::new(), unit };
     assert_eq!(seen, serde_json::to_value(&given).unwrap(), "the prover was given the withdrawal's input (no anchoring here: no headers)");
     assert_eq!(std::fs::read(dir.join("seen.chain")).unwrap(), [7, 7, 7], "and the sequencer's chain receipt");
     assert!(tower::prove(&pkg, &ch, &dir.join("proof"), std::path::Path::new("/usr/bin/false")).is_err(), "a failing prover is an error");
@@ -162,8 +169,8 @@ fn a_tower_plays_the_dispute_from_a_package() {
     // its links went at their floors: no anchor of hers was spent
     // the wallet sweeps what the tower won
     let state: tower::TowerState = serde_json::from_slice(&std::fs::read(path.with_extension("state.json")).unwrap()).unwrap();
-    assert_eq!(state.claim.as_ref().map(|c| c.0), Some(B));
-    let (_, swept) = w.sweep_dispute(&ch, &statement(), &wdir, cid, B, state.payout.clone().unwrap()).unwrap();
+    assert_eq!(state.claim.as_ref().map(|c| c.0), Some(b));
+    let (_, swept) = w.sweep_dispute(&ch, &statement(), &wdir, cid, b, state.payout.clone().unwrap()).unwrap();
     let (sweep, value) = swept.expect("swept");
     // b rounded down to 512 sats, and both reserves less the floors of the
     // links played, less the sweep's fee; the sweep takes the fee budget's
@@ -172,7 +179,7 @@ fn a_tower_plays_the_dispute_from_a_package() {
     let payout = rt.get_tx(&outcome.payout().unwrap()).unwrap();
     let op = payout.input[0].previous_output;
     let floors = t.v_max() + t.reserves() - rt.get_tx(&op.txid).unwrap().output[op.vout as usize].value;
-    let paid = Amount::from_sat(u64::from(B / 512 * 512)) + t.reserves() - floors;
+    let paid = t.unit * u64::from(b) + t.reserves() - floors;
     let start = Instant::now();
     while ch.confirmations(&sweep).unwrap() == 0 {
         assert!(start.elapsed() < Duration::from_secs(30), "the sweep confirms");

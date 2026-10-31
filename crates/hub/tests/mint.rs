@@ -50,7 +50,8 @@ fn the_mint_is_alices_only_once_the_funding_is_out() {
         seed: "test-hub".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 500,
         refuse_folds: false,
         dispute_true_claims: false,
@@ -58,7 +59,7 @@ fn the_mint_is_alices_only_once_the_funding_is_out() {
         windows: None,
     })
     .unwrap();
-    let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
     let user = |name: &str| {
         let chain = Chain::connect(rt.rpc_url(), rt.cookie(), name).unwrap();
         (Wallet::create(&dir.join(format!("{name}.json")), &seq.url).unwrap(), chain)
@@ -111,11 +112,12 @@ fn the_mint_is_alices_only_once_the_funding_is_out() {
     // M4: resumed too late, with half the refund's timeout gone
     hub.set_opening_fault(OpeningFault::None);
     let (mut dave, chain) = user("dave");
-    let too_big = Ask { bits: 25, ..ask };
-    dave.open_contract(&hub.url, &chain, &mock(), &dir.join("dave"), too_big, chain.new_spk().unwrap(), &pay).unwrap_err();
+    hub.set_opening_fault(OpeningFault::Refuse);
+    dave.open_contract(&hub.url, &chain, &mock(), &dir.join("dave"), ask, chain.new_spk().unwrap(), &pay).unwrap_err();
+    hub.set_opening_fault(OpeningFault::None);
     let cid = dave.deposits[0].cid;
     rt.mine(u64::from(deposit_timeout(Net::Regtest)) / 2).unwrap();
-    let err = dave.resume_open(&hub.url, &chain, &mock(), &dir.join("dave"), Ask { deposit: 400_000, bits: 21, reserve: 20_000 }, cid).unwrap_err();
+    let err = dave.resume_open(&hub.url, &chain, &mock(), &dir.join("dave"), Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 }, cid).unwrap_err();
     assert!(format!("{err:#}").contains("matures too soon"), "{err:#}");
     println!("LICHEN M4: resumed too late: {err:#}");
     let _ = std::fs::remove_dir_all(&dir);
