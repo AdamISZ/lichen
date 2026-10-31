@@ -392,6 +392,10 @@ fn state(d: &Demo) -> Result<Value> {
                     detail = format!("{spent}commitments [{}] · proof {} KB", list(&cms), proof.div_ceil(1024));
                     (if to.iter().any(|t| t.0 == HUB_KEY) { "return" } else if from.is_empty() { "shielded" } else { "shield" }, parts.join("; "))
                 }
+                Event::Exited { c, b, nfs } => {
+                    detail = format!("nullifiers [{}]", nfs.iter().map(short).collect::<Vec<_>>().join(", "));
+                    ("exit", format!("contract {c} paid an exit of {b} sats; its notes are retired"))
+                }
                 Event::Sealed { height: h, notes, root } => {
                     height = json!(h);
                     ("sealed", format!("height {h} sealed and signed: {notes} notes, root {}…", &hex::encode(root)[..12]))

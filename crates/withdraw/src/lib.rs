@@ -28,10 +28,12 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use k256::schnorr::{Signature, VerifyingKey};
-use lichen_validity::btc::{work, Header};
+use lichen_validity::btc::{self, work, Header};
 use lichen_validity::{state_root, AnchorState, ChainJournal, OutPoint, TNote};
 use sha2::{Digest, Sha256};
 
+pub mod counter;
+pub mod exit;
 pub mod fixed;
 
 pub type Hash = [u8; 32];
@@ -93,6 +95,124 @@ pub struct WithdrawInput {
     pub work: u128,
 }
 
+/// An anchored state, as a statement proves it: the state root's height
+/// and nullifier tree (the commitment tree's root is the statement's own),
+/// the sequencer's signature on the root, the chain receipt's journal but
+/// for what's rebuilt, the headers on top of the anchor's block, and the
+/// work the contract asks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Anchored {
+    pub height: u64,
+    pub nullifiers: Hash,
+    pub signature: [u8; 64],
+    pub sequencer: Hash,
+    pub hub: Hash,
+    pub chain_height: u64,
+    pub chain_root: Hash,
+    pub recent: Hash,
+    pub hist: Hash,
+    pub anchor: AnchorState,
+    pub headers: Vec<[u8; 80]>,
+    pub work: u128,
+}
+
+impl Anchored {
+    /// The state root with commitment tree `tree`.
+    pub fn root(&self, tree: &Hash) -> Hash {
+        state_root(self.height, tree, &self.nullifiers)
+    }
+
+    /// The chain journal a receipt must have, under the chain guest
+    /// `chain_id`.
+    pub fn chain_journal(&self, chain_id: &Hash) -> ChainJournal {
+        ChainJournal { hub: self.hub, height: self.chain_height, root: self.chain_root, recent: self.recent, chain_id: *chain_id, hist: self.hist, anchor: self.anchor }
+    }
+
+    /// Check the state with commitment tree `tree`: its root signed by the
+    /// sequencer, the last one anchored in a chain receipt of `chain_id`,
+    /// with the contract's work on top. On success, the contract's `D`.
+    pub fn check(&self, tree: &Hash, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<Hash, Reject> {
+        let root = self.root(tree);
+        let key = VerifyingKey::from_bytes(&self.sequencer).map_err(|_| Reject::BadSignature)?;
+        let sig = Signature::try_from(&self.signature[..]).map_err(|_| Reject::BadSignature)?;
+        key.verify_raw(&root, &sig).map_err(|_| Reject::BadSignature)?;
+        let a = &self.anchor;
+        if !a.anchored() || a.root != root || a.height != self.height || a.sequencer != self.sequencer {
+            return Err(Reject::NotAnchored);
+        }
+        if !verify_chain(&self.chain_journal(chain_id).to_bytes()) {
+            return Err(Reject::Chain);
+        }
+        if self.headers.is_empty() || work_on(&a.block, &self.headers).is_none_or(|w| w < self.work) {
+            return Err(Reject::Depth);
+        }
+        Ok(contract_id(&deployment_id(&self.sequencer, &self.hub), &a.genesis, self.work))
+    }
+
+    /// Whether `header` is the anchor's block, or one of the headers on
+    /// it with the contract's work from it on, so as costly to forge as
+    /// the anchor's. (Any header would do for the chain, but one at the
+    /// tip is cheap: its own bits set its work.) For a state that
+    /// [`check`](Self::check) passed, whose headers link.
+    pub fn deep(&self, header: &Header) -> bool {
+        let h = header.hash();
+        h == self.anchor.block
+            || self.headers.iter().position(|x| Header(*x).hash() == h).is_some_and(|p| self.headers[p..].iter().fold(0u128, |s, x| s.saturating_add(work(Header(*x).bits()))) >= self.work)
+    }
+}
+
+/// `request` in a block, with its witness: the transaction (witness
+/// serialization), the block's header, the transaction's index and path
+/// in the block's witness tree, and the block's coinbase (non-witness),
+/// its path in the txid tree (which fixes the trees' depth) and its
+/// witness reserved value; and the contract's funding transaction
+/// (non-witness), whose output 0 `request` spends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Request {
+    pub funding: Vec<u8>,
+    pub tx: Vec<u8>,
+    pub header: [u8; 80],
+    pub index: u32,
+    pub path: Vec<Hash>,
+    pub coinbase: Vec<u8>,
+    pub coinbase_path: Vec<Hash>,
+    pub reserved: Hash,
+}
+
+impl Request {
+    /// The witness of the input spending the contract's funding output, the
+    /// funding the transaction spending `deposit` (the contract's deposit
+    /// coin: nothing else can spend it): none unless the transaction spends
+    /// it and is in the header's block.
+    pub fn spending(&self, deposit: &OutPoint) -> Option<Vec<&[u8]>> {
+        if !btc::parse_tx(&self.funding)?.inputs.contains(deposit) {
+            return None;
+        }
+        let funding = OutPoint { txid: btc::sha256d(&self.funding), vout: 0 };
+        if !btc::witness_in_block(&self.tx, &Header(self.header), self.index, &self.path, &self.coinbase, &self.coinbase_path, &self.reserved) {
+            return None;
+        }
+        let t = btc::parse_witness_tx(&self.tx)?;
+        let i = t.tx.inputs.iter().position(|o| *o == funding)?;
+        t.witness.into_iter().nth(i)
+    }
+
+    pub(crate) fn write(&self, w: &mut exit::W) {
+        w.bytes(&self.funding);
+        w.bytes(&self.tx);
+        w.put(&self.header);
+        w.put(&self.index.to_be_bytes());
+        w.list(&self.path);
+        w.bytes(&self.coinbase);
+        w.list(&self.coinbase_path);
+        w.put(&self.reserved);
+    }
+
+    pub(crate) fn read(r: &mut exit::R) -> Result<Request, Reject> {
+        Ok(Request { funding: r.bytes()?, tx: r.bytes()?, header: r.take()?, index: u32::from_be_bytes(r.take()?), path: r.list()?, coinbase: r.bytes()?, coinbase_path: r.list()?, reserved: r.take()? })
+    }
+}
+
 /// Why an input is rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reject {
@@ -110,11 +230,46 @@ pub enum Reject {
     /// The hub's signature on `b` doesn't verify (the fixed statement's,
     /// [`fixed`]).
     HubAuth,
+    /// An exit claims no notes, or more than [`exit::MAX_NOTES`].
+    Notes,
+    /// An exit's nullifiers aren't in increasing order, so not distinct.
+    Order,
+    /// A claimed note isn't in the state's commitment tree.
+    NotInTree,
+    /// A claimed note was spent at the state.
+    Spent,
+    /// No authority over a claimed note: the owner's signature on the
+    /// claim, for a transparent note. For an equivocation counter, the
+    /// cited claim's signature (or a shielded note, which has none).
+    NotYours,
+    /// An exit claims more than its notes are worth.
+    Short,
+    /// A counter cites the contract's own return (of at least `b`), exit
+    /// record, or signed claim.
+    Own,
+    /// A counter's spend isn't the leaf it names in the later state, or
+    /// an equivocation cites a note the claim doesn't.
+    NotSpent,
+    /// A counter's later state isn't in the claim's history.
+    History,
+    /// A counter's spend isn't shown final before the request: no request
+    /// spending the contract's outpoint in a block on the later state's
+    /// anchor (the contract's work on it), or within the grace before it.
+    Cutoff,
+    /// An exit's `E` names another funding outpoint than the contract's.
+    Outpoint,
+    /// The hub's counter verifies: no way to win.
+    Countered,
+    /// A claim's `request` doesn't carry it: not in a block on the
+    /// anchor's with the contract's work on it, not spending the
+    /// contract's outpoint, or not posting the claim's notes and
+    /// signatures (`exit::Posted`).
+    Posted,
     Encoding,
 }
 
 /// The root a leaf at `index` reaches through `path`, leaf level first.
-fn root_from_path(leaf: Hash, index: u32, path: &[Hash]) -> Hash {
+pub(crate) fn root_from_path(leaf: Hash, index: u32, path: &[Hash]) -> Hash {
     let node = |l: &Hash, r: &Hash| -> Hash {
         let mut h = Sha256::new();
         h.update(l);
@@ -130,14 +285,13 @@ fn root_from_path(leaf: Hash, index: u32, path: &[Hash]) -> Hash {
 
 /// The signed (and anchored) root `input`'s note and path reach.
 pub fn signed_root(input: &WithdrawInput) -> Hash {
-    let tree = root_from_path(input.note.commitment(), input.index, &input.path);
-    state_root(input.height, &tree, &input.nullifiers)
+    input.anchored().root(&input.tree())
 }
 
 /// The chain journal a receipt must have for `input`, under the chain
 /// guest `chain_id`.
 pub fn chain_journal(input: &WithdrawInput, chain_id: &Hash) -> ChainJournal {
-    ChainJournal { hub: input.hub, height: input.chain_height, root: input.chain_root, recent: input.recent, chain_id: *chain_id, hist: input.hist, anchor: input.anchor }
+    input.anchored().chain_journal(chain_id)
 }
 
 /// The work of headers on top of block `from`, if each follows the last
@@ -177,26 +331,36 @@ pub fn withdrawal(input: &WithdrawInput, chain_id: &Hash, verify_chain: &mut dyn
         return Err(Reject::PathLength);
     }
     let b = u32::try_from(input.note.value).map_err(|_| Reject::TooLarge)?;
-    let root = signed_root(input);
-    let key = VerifyingKey::from_bytes(&input.sequencer).map_err(|_| Reject::BadSignature)?;
-    let sig = Signature::try_from(&input.signature[..]).map_err(|_| Reject::BadSignature)?;
-    key.verify_raw(&root, &sig).map_err(|_| Reject::BadSignature)?;
-    let a = &input.anchor;
-    if !a.anchored() || a.root != root || a.height != input.height || a.sequencer != input.sequencer {
-        return Err(Reject::NotAnchored);
-    }
-    if !verify_chain(&chain_journal(input, chain_id).to_bytes()) {
-        return Err(Reject::Chain);
-    }
-    if input.headers.is_empty() || work_on(&a.block, &input.headers).is_none_or(|w| w < input.work) {
-        return Err(Reject::Depth);
-    }
-    Ok((b, input.note.memo, contract_id(&deployment_id(&input.sequencer, &input.hub), &a.genesis, input.work)))
+    let d = input.anchored().check(&input.tree(), chain_id, verify_chain)?;
+    Ok((b, input.note.memo, d))
 }
 
 // ----- the encoding: what the withdrawal guest reads -----
 
 impl WithdrawInput {
+    /// The commitment tree's root its note and path reach.
+    pub fn tree(&self) -> Hash {
+        root_from_path(self.note.commitment(), self.index, &self.path)
+    }
+
+    /// The anchored state it proves the return in.
+    pub fn anchored(&self) -> Anchored {
+        Anchored {
+            height: self.height,
+            nullifiers: self.nullifiers,
+            signature: self.signature,
+            sequencer: self.sequencer,
+            hub: self.hub,
+            chain_height: self.chain_height,
+            chain_root: self.chain_root,
+            recent: self.recent,
+            hist: self.hist,
+            anchor: self.anchor,
+            headers: self.headers.clone(),
+            work: self.work,
+        }
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut w = Vec::with_capacity(600 + 32 * self.path.len() + 80 * self.headers.len());
         w.extend_from_slice(&self.height.to_be_bytes());
@@ -269,19 +433,100 @@ pub(crate) mod tests {
     use k256::schnorr::SigningKey;
     use lichen_validity::btc::sha256d;
 
-    fn key(n: u8) -> SigningKey {
+    pub(crate) fn key(n: u8) -> SigningKey {
         SigningKey::from_bytes(&[n; 32]).unwrap()
     }
 
-    fn xonly(k: &SigningKey) -> Hash {
+    pub(crate) fn xonly(k: &SigningKey) -> Hash {
         k.verifying_key().to_bytes().into()
+    }
+
+    fn varint(n: usize) -> Vec<u8> {
+        if n < 0xfd {
+            std::vec![n as u8]
+        } else {
+            [&[0xfd][..], &(n as u16).to_le_bytes()].concat()
+        }
+    }
+
+    /// A transaction spending `op` with the witness `items`: its witness
+    /// serialization, and its txid.
+    pub(crate) fn tx_spending(op: &OutPoint, items: &[&[u8]]) -> (Vec<u8>, Hash) {
+        let mut body = std::vec![1];
+        body.extend_from_slice(&op.to_bytes());
+        body.extend_from_slice(&[0, 0xff, 0xff, 0xff, 0xff, 1]);
+        body.extend_from_slice(&1000u64.to_le_bytes());
+        body.extend_from_slice(&[1, 0x51]);
+        let mut witness = varint(items.len());
+        for i in items {
+            witness.extend(varint(i.len()));
+            witness.extend_from_slice(i);
+        }
+        let (version, lock) = ([2u8, 0, 0, 0], [0u8; 4]);
+        (std::vec![&version[..], &[0, 1], &body, &witness, &lock].concat(), sha256d(&[&version[..], &body, &lock].concat()))
+    }
+
+    /// A coinbase (non-witness) committing `commitment`, with a script of
+    /// two bytes.
+    fn coinbase(commitment: &Hash) -> Vec<u8> {
+        let mut c = std::vec![2, 0, 0, 0, 1];
+        c.extend_from_slice(&OutPoint { txid: [0; 32], vout: u32::MAX }.to_bytes());
+        c.extend_from_slice(&[2, 1, 7, 0xff, 0xff, 0xff, 0xff, 1]);
+        c.extend_from_slice(&0u64.to_le_bytes());
+        c.extend_from_slice(&[38, 0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed]);
+        c.extend_from_slice(commitment);
+        c.extend_from_slice(&[0; 4]);
+        c
+    }
+
+    fn pair(a: &Hash, b: &Hash) -> Hash {
+        sha256d(&[&a[..], b].concat())
+    }
+
+    /// A funding transaction spending `deposit` (non-witness), and its
+    /// output 0.
+    pub(crate) fn funding_of(deposit: &OutPoint) -> (Vec<u8>, OutPoint) {
+        let mut f = std::vec![2, 0, 0, 0, 1];
+        f.extend_from_slice(&deposit.to_bytes());
+        f.extend_from_slice(&[0, 0xff, 0xff, 0xff, 0xff, 1]);
+        f.extend_from_slice(&5000u64.to_le_bytes());
+        f.extend_from_slice(&[1, 0x51, 0, 0, 0, 0]);
+        let o = OutPoint { txid: sha256d(&f), vout: 0 };
+        (f, o)
+    }
+
+    /// A request: a transaction spending the funding of `deposit` with the
+    /// witness `items`, in a block on `prev`: the block's header, and the
+    /// [`Request`].
+    pub(crate) fn request_on(prev: &Hash, deposit: &OutPoint, items: &[&[u8]]) -> ([u8; 80], Request) {
+        let (f, o) = funding_of(deposit);
+        let (header, r) = block_with(prev, tx_spending(&o, items));
+        (header, Request { funding: f, ..r })
+    }
+
+    /// A block on `prev` of a coinbase and `tx` (its witness serialization
+    /// and txid): its header, and `tx` in it as a [`Request`] (of no
+    /// funding).
+    pub(crate) fn block_with(prev: &Hash, (tx, txid): (Vec<u8>, Hash)) -> ([u8; 80], Request) {
+        let reserved = [0x5a; 32];
+        let wtxid = sha256d(&tx);
+        let cb = coinbase(&pair(&pair(&[0; 32], &wtxid), &reserved));
+        let cb_id = sha256d(&cb);
+        let header = header_with(prev, &pair(&cb_id, &txid));
+        (header, Request { funding: std::vec![], tx, header, index: 1, path: std::vec![[0; 32]], coinbase: cb, coinbase_path: std::vec![txid], reserved })
     }
 
     /// A header on `prev` at regtest's difficulty (work 2), its nonce
     /// ground until it is within its target.
     fn header_on(prev: &Hash) -> [u8; 80] {
+        header_with(prev, &[0; 32])
+    }
+
+    /// As [`header_on`], its block's Merkle root `merkle`.
+    pub(crate) fn header_with(prev: &Hash, merkle: &Hash) -> [u8; 80] {
         let mut h = [0u8; 80];
         h[4..36].copy_from_slice(prev);
+        h[36..68].copy_from_slice(merkle);
         h[72..76].copy_from_slice(&0x207fffffu32.to_le_bytes());
         for n in 0u32.. {
             h[76..].copy_from_slice(&n.to_le_bytes());
@@ -292,7 +537,7 @@ pub(crate) mod tests {
         unreachable!()
     }
 
-    fn headers_on(from: &Hash, n: usize) -> Vec<[u8; 80]> {
+    pub(crate) fn headers_on(from: &Hash, n: usize) -> Vec<[u8; 80]> {
         let mut out: Vec<[u8; 80]> = Vec::new();
         for _ in 0..n {
             let prev = out.last().map_or(*from, |h| sha256d(h));

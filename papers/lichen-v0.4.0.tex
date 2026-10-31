@@ -49,22 +49,22 @@
 
 \title{\textbf{Lichen}\\L2s In CHannels ENforced by bitcoin}
 \author{waxwing}
-\date{Version 0.3, October 2026}
+\date{Version 0.4, October 2026}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
 A \emph{contract} with a hub lets a user hold the hub's tokens on a layer 2 and
-withdraw them as bitcoin without trusting the hub for honesty or liveness. The L2 tokens are collateralised by the bitcoin in the user-hub multisig output\footnote{a standalone 2-of-2 output (a channel embedding is possible; Section~\ref{sec:contract})}, and if the hub refuses a withdrawal, or cannot answer because it is offline, it is enforced on Bitcoin. The only assumptions are those of the layer 2 itself, kept apart from the hub. No change to Bitcoin's
-consensus is required. A withdrawal is a claim that a program, the withdrawal statement, ran on some input and produced an output: the statement is proved with RISC Zero and wrapped in Groth16, and a disputed claim is settled on Bitcoin by a verification gadget that checks the Groth16 proof: BABE, by witness encryption and garbled circuits, in four or five transactions; or BitVMX, the first one built, by an interactive search.  Withdrawals are executed cooperatively in the contract --- with overwhelming likeliness because the statement is deterministically verifiable in milliseconds --- or, otherwise, a refused one is played as a dispute on chain, set up at the start of each contract. The trustlessness gain is paid for with liquidity (with receiving ability only contingent on offered ``inbound'' from the hub, as in Lightning). The hub (but not user) must also stay live during normal operation, since an offline hub loses disputes by timeout. The design, including a privacy-focused shielded note L2, is built and measured in~\cite{lichencode}.
+withdraw them as bitcoin without trusting the hub for honesty or liveness. The L2 tokens are collateralised by the bitcoin in the user-hub multisig output\footnote{a standalone 2-of-2 output (a channel embedding is possible; Section~\ref{sec:contract})}, and if the hub refuses a withdrawal, or cannot answer because it is offline, it is enforced on Bitcoin. The only assumptions are those of the layer 2 itself. \underline{No change to Bitcoin's
+consensus is required}. A withdrawal is a claim that a program, the withdrawal statement, ran on some input and produced an output: the statement is proved with RISC Zero and wrapped in Groth16, and a disputed claim is settled on Bitcoin by a \emph{verification gadget} that checks the Groth16 proof: the one chosen is BABE~\cite{babe}, using witness encryption and garbled circuits, in four or five transactions (BitVMX~\cite{bitvmx} is also implemented and tested).  Withdrawals are executed cooperatively in the contract --- the normal case, because the statement is deterministically verifiable in milliseconds --- or, otherwise, a refused one is played as a dispute on chain, set up at the start of each contract. The trustlessness gain is paid for with liquidity (with receiving ability only contingent on offered ``inbound'' from the hub, as in Lightning). The hub (but not user) must also stay live during normal operation, since an offline hub loses disputes by timeout. The design, including an example privacy-focused, shielded note style L2, is built and measured in~\cite{lichencode}.
 \end{abstract}
 
 \tableofcontents
 
-\section{Introduction}
+%\section{Introduction}
 
-\subsection{Obvious objections to Lichen and why they're mostly wrong}
+\section{Obvious objections to Lichen and why they're mostly wrong}
 
 \paragraph{One central hub is dangerous.} If the hub disappears, the user gets the money. The hub cannot Sybil attack users by printing tokens fictitiously; the honest users' money is all backed. The only remaining risks are inherent to the L2 itself (is it a validity rollup or a quorum? Does it inherit finality from Bitcoin or is finality weaker? Etc.)
 
@@ -72,37 +72,37 @@ consensus is required. A withdrawal is a claim that a program, the withdrawal st
 
 \paragraph{Don't these constructions usually require a 1 of n honesty assumption from a signing committee?} Not here: we avoid this by the LN-GAP~\cite{lngap} trick: the contract is a \emph{bilateral} contract between the hub and each user; the presigning happens between them, just as in Lightning.
 
-\paragraph{But if a bunch of users open contract with a hub, they can just .. pay each other through Lightning channels?} A correct critique, partly, \underline{if} the L2 ledger doesn't do anything but plain payments. Even then, you could avoid receiver liveness being needed, avoid routing and other minor things. But the real answer is: the L2 can offer more functionality. It can use zcash style shielded notes, allowing very high privacy while staying in the L2. It can also (in a different ``lichen'' on a different hub) offer rich smart contracting, etc.
+\paragraph{But if a bunch of users open contracts with a hub, they can just .. pay each other through Lightning channels?} A correct critique, partly, \underline{if} the L2 ledger doesn't do anything but plain payments. Even then, you could avoid receiver liveness being needed, avoid routing and other minor things. But the real answer is: the L2 can offer more functionality. It can offer private payments, smart contracts, etc.
 
-\paragraph{But this is an IOU/ hub's token, so it's not actually bitcoin.} Incorrect with a crucial caveat. See the first point: every sat is redeemable via the user-hub contracts, \emph{without} the hub's permission, one-to-one, so these are actually bitcoin \emph{but only as long as you have liquidity to receive them}. A new user on L2 without a contract with the hub, or a user holding a balance on L2 far in excess of their inbound liquidity in their own contract, is holding \emph{credit}, and has no such guarantee. But that's their choice.
+\paragraph{But this is an IOU/ hub's token, so it's not actually bitcoin.} Incorrect with a crucial caveat. See the first point: every sat is redeemable via the user-hub contracts, \emph{without} the hub's permission, via the contract utxo, so these are actually bitcoin \emph{but only as long as you have liquidity to receive them}. A new user on L2 without a contract with the hub, or a user holding a balance on L2 in excess of their inbound liquidity in their own contract, is holding \emph{credit}, and has no such guarantee. But that's their choice.
 
 \paragraph{But still, a single central hub feels like bad design. Why not multiple hubs?} Having multiple hubs \emph{will} make sense --- see Section~\ref{sec:multihub}, but done naively, it is broken. It's because of what these L2 tokens are. They are fungible, \underline{enforceable} claims on the hub's money; they are minted by the hub itself, just on its own say-so. If you had hub 1 and hub 2, those claims are not transferrable trustlessly to the hubs themselves. If hub 2 prints a billion sats out of nothing and users accept it on the L2 they can redeem it with hub1, leaving hub1 out of pocket. From this line of thinking we see an interesting comparison with ecash servers: the hub can print as much as it likes, but it cannot steal/``rug''.
 
-\paragraph{So what's the catch?} The negatives are twofold: one is liquidity, and this is easy to understand as the analog of the inbound liquidity pain point in Lightning, because it's basically the same thing. Such a hub \emph{can} choose to give no inbound liquidity to a user: they get tokens on L2 to spend, but they cannot (safely) receive. If they receive, it's just credit that someone else will hopefully buy from them. But the design does not assume that, of course, it allows receiving up to a ``cap'': the user negotiates that extra potential receiving amount (inbound liquidity) when it sets up the contract with the hub. The second is the on-chain dispute, whose size depends on the gadget: four or five transactions and 10--31~kvB under BABE, lichen's gadget, against tens of transactions and 100--200~kvB under BitVMX, the first, both as measured on Mutinynet~\cite{lichenbabe,lichenbitvmx}.
+\paragraph{So what's the catch?} The negatives are twofold: one is liquidity, and this is easy to understand as the analog of the inbound liquidity pain point in Lightning, because it's basically the same thing. Such a hub \emph{can} choose to give no inbound liquidity to a user: they get tokens on L2 to spend, but they cannot (safely) receive. If they receive, it's just credit that someone else will hopefully buy from them. But the design does not assume that, of course, it allows receiving up to a ``cap'': the user negotiates that extra potential receiving amount (inbound liquidity) when it sets up the contract with the hub. The second is the on-chain dispute, whose size depends on the gadget: four or five transactions and 10--31~kvB under BABE, lichen's gadget, against tens of transactions and 100--200~kvB under BitVMX, the first, both as measured on Mutinynet~\cite{lichenbuilt,lichenbitvmx}.
 
-\subsection{A note on the delta to LN-GAP}
-\label{sec:family}
+%\subsection{A note on the delta to LN-GAP}
+%\label{sec:family}
 
-LN-GAP~\cite{lngap} puts contracts governed by arbitrary programs into Lightning~\cite{lightning}
-channels: a contract's outcome is decided by a game whose moves are
-signed off-chain, with pre-signed transactions that let either party
-take a dispute to Bitcoin~\cite{lngap}. Lichen mainly differs in trying to achieve trustlessness at the expense of a potentially larger (though still O(1) in the size of the withdrawal statement) onchain resolution; a tradeoff that fits well with the intent of creating \emph{an L2 from a bunch of contracts with a hub}:
+%LN-GAP~\cite{lngap} puts contracts governed by arbitrary programs into Lightning~\cite{lightning}
+%channels: a contract's outcome is decided by a game whose moves are
+%signed off-chain, with pre-signed transactions that let either party
+%take a dispute to Bitcoin~\cite{lngap}. Lichen mainly differs in trying to achieve trustlessness at the expense of a potentially larger (though still O(1) in the size of the withdrawal statement) onchain resolution; a tradeoff that fits well with the intent of creating \emph{an L2 from a bunch of contracts with a hub}:
 
-\begin{center}
-\small
-\begin{tabularx}{\linewidth}{p{24mm}LL}
-\toprule
-& LN-GAP &  Lichen w/ BABE  \\
-\midrule
-venue & trusted: a majority of members attests moves & none \\
-a dispute is decided by & the venue's attestations  & the chain: a challenge, answered from garbled circuits \\
-suited to & interactive games where time has value  & withdrawals from a hub's layer 2 \\
-on-chain cost of a dispute & constant & constant: about 30~kvB at most (BitVMX: log of the verifier's run) \\
-\bottomrule
-\end{tabularx}
-\end{center}
+%\begin{center}
+%\small
+%\begin{tabularx}{\linewidth}{p{24mm}LL}
+%\toprule
+%& LN-GAP &  Lichen w/ BABE  \\
+%\midrule
+%venue & trusted: a majority of members attests moves & none \\
+%a dispute is decided by & the venue's attestations  & the chain: a challenge, answered from garbled circuits \\
+%suited to & interactive games where time has value  & withdrawals from a hub's layer 2 \\
+%on-chain cost of a dispute & constant & constant: about 30~kvB \\
+%\bottomrule
+%\end{tabularx}
+%\end{center}
 
-\paragraph{Why Lichen needs no venue.}  It's more about choice than logical requirement. In LN-GAP the parties \emph{could} just play ForceMove and accept that the game goes onchain when someone is not cooperative. That's not much fun for a 100 move chess game or similar. However the tradeoff of trust vs length of game is drastically different for Lichen: the game length is fixed in advance, and with BABE it is short: four or five transactions. While for such an L2 to be viable it's absolutely crucial to try to remove third party trust. That's why the ``venue'' concept is removed here.
+%\paragraph{Why Lichen needs no venue.}  It's more about choice than logical requirement. In LN-GAP the parties \emph{could} just play ForceMove and accept that the game goes onchain when someone is not cooperative. That's not much fun for a 100 move chess game or similar. However the tradeoff of trust vs length of game is drastically different for Lichen: the game length is fixed in advance, and with BABE it is short: four or five transactions. While for such an L2 to be viable it's absolutely crucial to try to remove third party trust. That's why the ``venue'' concept is removed here.
 
 \section{Contracts with the hub}
 \label{sec:terms}
@@ -113,29 +113,28 @@ on-chain cost of a dispute & constant & constant: about 30~kvB at most (BitVMX: 
 \begin{tabularx}{\linewidth}{p{16mm}L}
 \toprule
 $D$ & Alice's deposit: she puts $D$ bitcoin in and receives $D$ of the hub's tokens on the L2 \\
-$\vmax$ & the most she can withdraw: her $D$ and the hub's liquidity $\vmax - D$ \\
-$r_A, r_H$ & the \emph{contract reserves}, Alice's and the hub's: returned in every honest outcome, forfeited to the other side by losing a dispute (Section~\ref{sec:outcomes}); the contract holds $\vmax + r_A + r_H$ \\
+$\vmax$ & the most she can withdraw: her $D$ plus the hub's liquidity $\vmax - D$ (which can be zero)\\
+$r_A, r_H$ & the \emph{contract reserves}, for fees. Forfeited by losing side of a dispute, otherwise returned to owner. (Section~\ref{sec:outcomes}); the contract holds $\vmax + r_A + r_H$ \\
 $b$ & the amount she withdraws, by returning $b$ tokens to the hub on the L2 with the memo $c$ \\
 $c$ & the contract's identifier, its memo \\
 $\Tc$ & the contract's end: with no withdrawal by then, the hub takes it \\
 \bottomrule
 \end{tabularx}
 \end{center}
-Every token is a liability of the hub, collateralised by the contract of whoever holds it, within that holder's cap; within $\vmax$ and before $\Tc$, Alice trusts the hub for nothing, not even to be online: a withdrawal it does not answer is paid by timeout. The hub's provided liquidity is the sum of its users'
-$\vmax - D + r_H$.
+Every token is a liability of the hub, collateralised by the contract of whoever holds it, within that holder's cap; within $\vmax$ and before $\Tc$, Alice trusts the hub for nothing, not even to be online: a withdrawal it does not answer is paid by timeout.
 
-\paragraph{Opening is a swap.} Alice's $D$ goes into the contract and her
-$D$ tokens onto the L2, and neither may come without the other: a hub
+\paragraph{Opening is atomic.} Alice's $D$ goes into the contract and this entitles her
+$D$ tokens on the L2. This must be atomic: a hub
 that took the funding and never minted would leave her nothing to
 return, and the default at $\Tc$ would hand it her $D$; a hub that
 minted first could be left with tokens backed by no contract. Alice
-first pays a deposit output, the hub's key and hers together, or hers
+first pays a deposit output\footnote{A well known design pattern to avoid the need for Alice's external wallet to support some kind of co-signing event}, the hub's key and hers together, or hers
 alone after a timeout. The hub then mints $D$ to the key
 $P = H(A \,\|\, T)\cdot A + T$, where $A$ is Alice's L2 key and $T = t\cdot G$
 a point of the funding transaction's own (the coefficient keeps Alice
 from choosing $A$ against $T$), and Alice, once she sees that mint
-sealed, signs the funding's deposit input as an adaptor pre-signature
-locked to $T$. The hub can spend the deposit only by completing it,
+final on L2, signs the funding's deposit input as an adaptor pre-signature
+locked to $T$. The hub can lock the deposit only by completing the adaptor,
 which publishes $t$ and so unlocks her tokens. The hub's side needs no
 refund: if it never broadcasts, Alice refunds the deposit, and the
 locked tokens, which cost nothing to print, stay where they are. Its one
@@ -161,8 +160,8 @@ broadcasts only well before the deposit's refund matures.
 \draw[->] (fold) -- (end);
 \draw[->] (ladder) -- (end);
 \end{tikzpicture}
-\caption{The life of a contract. Green states stay off-chain or settle
-cooperatively; red states are on chain.}
+\caption{The life of a contract. Green states settle
+cooperatively (and could remain offchain in channels).}
 \label{fig:life}
 \end{figure}
 
@@ -171,41 +170,30 @@ cooperatively; red states are on chain.}
 
 \subsection{The statement proved}
 
-For brevity we have not yet given a description of what such an L2 must look like, but its main features are here, to explain the proof structure.
+The details of the statement proved will of course depend on the L2's architecture. In abstract, the withdrawal request must be accompanied by a satisfaction of the predicate:
 
-The L2 is a ledger of notes, with state updates signed by a sequencer\footnote{We'll talk more about achieving finality via Bitcoin or otherwise later~[\ref{sec:finality}].}. A note is an owner, a value, a memo and a
-random $\rho$, which makes every note distinct (two equal payments to the
-same owner are still two notes); its commitment is a SHA-256 hash of
-these, and the commitments form an append-only Merkle tree. A spent note
-is not removed from the tree, which would change every other note's
-path, but recorded by its \emph{nullifier}, a hash of its commitment, in
-a set the sequencer keeps: spending a note twice repeats its nullifier.
-So a note's path under a root stays valid however the ledger moves on.
-In case we want \emph{shielded} transactions, as implemented in ~\cite{lichencode}, $\rho$
-also hides the note's contents, and the nullifier is derived from a
-secret key so that nobody can link it to its note. A
-state root SR hashes the height, the tree's root and the nullifier
-set's root, and the L2's sequencer signs it (BIP340). 
+\[\mathcal{R}_L(\mathcal{D}, c, \ldots ; w=(b, \ldots))\]
 
-With this context, we can understand what the withdrawal proof actually does. The user provides:
+where $\mathcal{D}$ is the deployment context (the settings of the L2), $c$ is the contract in Lichen between hub and user, $b$ is the amount in satoshis of withdrawal claimed, and $w$ is the secret witness used by the user to satisfy the predicate.
 
-\begin{enumerate}
-\item A note owned by the hub, of value b and memo c, marked as ``withdrawal'' is in the commitment tree of a state root SR. This is a Merkle path from the note to the root.
+\paragraph{A note on secret inputs and public inputs.} Some parts of $w$ may not actually be secrets. Here we specifically include the withdrawal amount $b$; a peculiarity of our chosen verification gadget BABE is that practical usage of it requires a cut-and-choose setup that fixes the public input at contract setup; thus including any later-defined data must necessarily be in $w$. The mechanism to make this work is described in~\cite[\S 5]{lichenbuilt}.
 
-\item The sequencer published that root. SR carries the sequencer's signature, for its L2 height.
-\item Validity back to genesis. A chain receipt (the sequencer's recursive proof) shows that every L2 block from genesis to now was a valid state transition. The same receipt covers anchoring: each anchor spends the previous anchor's output, starting from the L2's genesis seal. Each is in a real Bitcoin block, by Merkle path to that block's header. The last\footnote{See Section ~\ref{sec:finality}; this needn't be the last SR in time, but only a unique history, because (currently) we are using a special withdrawal transaction, not any arbitrary note} anchor committed exactly SR, at its height. So SR is the root of the one anchored history.
-\item Finality. Bitcoin headers follow on from the anchor's block, each meeting its own difficulty target, with total work of at least W. W is fixed when the contract opens, about 10 blocks' worth.
-\end{enumerate}
 
-The result is the amount $b$, the memo $c$ and $\mathcal{D}$, which identifies the contract: the sequencer's and hub's keys, the genesis output and W. So a proof for another deployment, history or finality threshold is a proof of a different statement. Under BitVMX the public output is $b \,\|\, c \,\|\, \mathcal{D}$: Bitcoin reads $b$ for the payout, and checks $c$ and $\mathcal{D}$ against the contract's terms. Under BABE, whose public input is fixed when the contract opens, the statement also checks the hub's one-time signature on $b$, and its public output is $c \,\|\, \mathcal{D} \,\|\, H(pk_H)$, the same for every amount (Section~\ref{sec:blocks}). Since the chain proof's program id is built into the withdrawal program, the one program id the contract pins covers both.
+Our verification gadget will verify a proof of satisfaction (specifically a Groth16 proof string) of this predicate.
 
-Not fully addressed yet, however:
+ Let's take the simplest conceivable example, a single signing entity in full control of the L2. In that case, $w$ will include a signature by the signer, of the current state, and an inclusion proof of a withdrawal transaction/note whose value is $b$.
+ 
+In more realistically interesting cases, for example:
 
 \begin{itemize}
-\item This is not (yet) a proof of heaviest chain; that would require a counter-proof mechanism. It's currently judged that building a 10 block fork is expensive enough to make attack uneconomic.
-\item Sequencer going quiet, or censoring user transfers: it is planned to implement a counter-proof design, slightly different from the above, in which the prover proves owning the note, and the hub can counter-prove spentness, because in the current design, a dead sequencer loses the user's money at $\Tc$.
-\item The data availability question has not been addressed.
+\item An L2 managed by a large quorum with threshold signing of some form
+\item an L2 hosted on another blockchain such as Ethereum
+\item an L2 using a single use seal on Bitcoin itself to achieve finality and validity proofs of state transition (such as our own design described in~\cite{lichenbuilt})
 \end{itemize}
+
+\ldots the degree to which trustless exit can be claimed will vary, but that is a matter for the L2 architecture: \underline{lichen simply enforces the L2's ruleset, and that part \emph{is} trustless}.
+
+In the remainder of Section 3, we will focus on the mechanical details by which this is achieved.
 
 \subsection{From a program to a verifiable claim}
 
@@ -234,20 +222,16 @@ stage, under both gadgets~\cite{pipeline}.}
 \paragraph{What the contract must bind.} Whatever gadget settles a
 dispute, the contract must tie the disputed proof to three things: the
 program, since a valid proof of another program proves nothing; this
-contract's terms, its memo $c$ and identifier $\mathcal{D}$ (the deployment's keys,
-the genesis seal and the work $W$), so that a proof for another contract,
-deployment, history or finality threshold fails; and the amount $b$, in a
+contract's terms, the contract $c$ and identifier $\mathcal{D}$ (the deployment's keys, and any other deployment-specific parameters such as a genesis), so that a proof for another contract or deployment fails; and the amount $b$, in a
 form Script can read, for the payout (Section~\ref{sec:outcomes}). With
 RISC Zero, the proof's public input is a digest of the program's image id
 and its journal $b \,\|\, c \,\|\, \mathcal{D}$; because RISC Zero's Groth16 key is
-the same for every program, the image id must be checked explicitly (one
-suffices, since the withdrawal program has the chain program's id built
-in). How the binding is enforced is the gadget's business. Under BitVMX,
+the same for every program, the image id must be checked explicitly. How the binding is enforced is the gadget's business. Under BitVMX,
 Alice signs the verifier's input word by word and the contract checks the
 image id, $c$ and $\mathcal{D}$, and reads $b$, from those signatures
 \cite[\S 2]{lichenbitvmx}. Under BABE, the image id, $c$ and $\mathcal{D}$ are fixed
 when the contract is set up, and $b$, which cannot be, is bound by the
-hub's signature on the amount Alice asserts \cite[\S 5]{lichenbabe}.
+hub's signature on the amount Alice asserts \cite[\S 5]{lichenbuilt}.
 
 
 
@@ -255,12 +239,12 @@ hub's signature on the amount Alice asserts \cite[\S 5]{lichenbabe}.
 \label{sec:blocks}
 
 The contract is a single taproot output, 2-of-2 between Alice and the
-hub, whose leaves hold the ways it can end; transactions pre-signed at
+hub with three spending leaves. Transactions pre-signed at
 opening let either party carry out its side of a dispute without the
-other. What settles a dispute is an on-chain \emph{verification gadget}.
+other. What settles a dispute is the on-chain \emph{verification gadget}.
 
-The idea is, given a proof whose public input binds the
-program's context ($b \,\|\, c \,\|\, \mathcal{D}$ as mentioned above), adjudicate the
+The idea is, given a proof whose input binds the
+program's context ($c , \mathcal{D}, b \ldots )$ as mentioned above, adjudicate the
 claim on Bitcoin. The context is checked, the amount $b$ is read into Script, and the loser pays. To emphasize: this is all verification. The proving side, up to the Groth16 proof, is the same whichever gadget is used, but for the statement's public output and BABE's check of the hub's signature on $b$.
 
 \subsection{Values that Script can read: one-time signatures}
@@ -277,19 +261,18 @@ Every gadget below reads $b$ this way.
 
 \subsection{The first gadget: BitVMX}
 
-BitVMX~\cite{bitvmx} settles a claim about a RISC-V program's run by an
+The first experiments were done with BitVMX~\cite{bitvmx}, a heavier but simpler mechanism than BABE. BitVMX settles a claim about a RISC-V program's run by an
 interactive search over its execution. Alice claims that the Groth16
 verifier, run on her signed input, halts with success; if the hub
 disagrees, they narrow the run down, eight segments a round, to a single
 step, which Alice then proves in Script or the hub disproves. Each move
 is a pre-signed transaction carrying the mover's one-time signatures,
 and a lie about a memory read is caught through an authenticated jump
-list instead of a second search. It was built first, has been played to
-the end on Mutinynet, and is still built; the companion
+list instead of a second search. The companion
 paper~\cite{lichenbitvmx} gives the transaction graph and the
-measurements.
+measurements from tests carried out on regtest and Mutinynet.
 
-\subsection{Lichen's gadget: BABE with authenticated amounts}
+\subsection{Lichen's current gadget: BABE with authenticated amounts}
 
 BABE~\cite{babe} replaces the search with a challenge. At setup, the hub
 garbles a small circuit that turns the first element of Alice's proof
@@ -299,7 +282,7 @@ the hub challenges, it must reveal the circuit's input labels for it,
 and with a valid proof Alice decrypts and posts the message. Against a
 hub that garbles wrongly, Alice checks the garbling by cut-and-choose: the
 hub makes 78 instances, she opens 68 and keeps 10, and lichen replaces
-BABE's soldering with verifiable secret sharing, so that the setup takes
+BABE's soldering with verifiable secret sharing, taking the design from Glock~\cite{glock}, so that the setup takes
 about 19 seconds and the kept instances about 240~MiB. BABE's obstacle is
 that the statement is fixed at setup, while Alice chooses $b$ only when
 she withdraws. The amount therefore moves into the witness, together with
@@ -307,9 +290,8 @@ the hub's one-time signature on it, which the hub must give on chain for
 exactly the amount Alice asserted, or lose by timeout. This is our
 proposal~\cite{delving}. Unlike GOAT's cryptographic
 alternative~\cite{goat}, in our proposal, BABE's cryptography is
-unchanged. It is built, it is lichen's default gadget, and three of its
-endings have been played on Mutinynet with a real RISC Zero proof; a
-companion paper~\cite{lichenbabe} gives the construction as built, a
+unchanged. It is built as lichen's default gadget. A
+companion paper~\cite{lichenbuilt} gives the construction as built, a
 sketch of its security, and the measurements.
 
 \begin{table}[!htp]
@@ -319,7 +301,7 @@ sketch of its security, and the measurements.
 \toprule
 & BitVMX & BABE \\
 \midrule
-exit against a vanished hub & 23~kvB, 5 transactions & ${\sim}1.2$~kvB, 2 (est.; played on regtest) \\
+a withdrawal the hub never answers & 23~kvB, 5 transactions & ${\sim}1.2$~kvB, 2 (est.; played on regtest) \\
 a true claim refused, played to the end & ${\sim}120$~kvB, 23 transactions & 9.7~kvB, 4; 30.5~kvB, 5 if the hub challenges \\
 a false claim & 100--200~kvB & 29.9~kvB, 5 \\
 the worst case & ${\sim}200$~kvB (a lie about a read) & 30.5~kvB \\
@@ -328,7 +310,7 @@ setup per contract, beyond pre-signing & none & 19~s on a laptop; ${\sim}240$~Mi
 contracts a hub can hold, disputes lasting a week\textsuperscript{*} & 3,300 (8,350 with a window per move) & ${\sim}47{,}000$ \\
 \bottomrule
 \end{tabularx}
-\caption{The two gadgets, as measured on Mutinynet but where marked~\cite{lichenbitvmx,lichenbabe}.
+\caption{The two gadgets, as measured on Mutinynet but where marked~\cite{lichenbitvmx,lichenbuilt}.
 \textsuperscript{*}Before congesting the chain becomes a profitable
 attack: for $N$ contracts, every move due within a window of $w$ blocks
 must fit in it, $N s \le w \cdot 1\,\mathrm{MvB}$~\cite{floodloot}, and
@@ -349,8 +331,8 @@ A contract ends in one of three ways; its output carries three leaves (not inclu
 \item \tx{default}: after $\Tc$, a transaction pre-signed at the
   contract's opening pays the hub $\vmax + r_H$ and returns Alice's
   reserve $r_A$. This is the liveness requirement on Alice: turn up at the end, i.e. it's a very low bar requirement; whereas the hub must always be ready to answer disputes.
-\item \tx{request} (BitVMX's \tx{escalate}): Alice's claim goes on chain
-  as the first step of the dispute. This will almost never happen, because given Alice's proof, the hub can calculate $\sim$ immediately that he's guaranteed to lose (since Groth16 verification is fast), so just pays out cooperatively (\emph{fold} as above).
+\item \tx{request}: Alice's claim goes on chain
+  as the first step of the dispute.
 \end{itemize}
 
 \paragraph{On its own, or in a channel?} A contract is a standalone
@@ -360,13 +342,11 @@ one this paper assumes. The same output could sit in a Lightning channel
 commitment, making the fold a channel update and letting deposits arrive
 as Lightning payments, as earlier LN-GAP code demonstrates. But the
 price is high. Every channel update re-signs the contract's pre-signed
-transactions for both commitments (19 each under BABE, 141 under
+transactions for both commitments (20 each under BABE, 141 under
 BitVMX); renewal,
 though off chain, is still a new contract and, under BABE, a new setup;
 and a channel's revoked states bring back the always-on watchtower that a
-standalone contract avoids (Section~\ref{sec:watch}). We treat it as a
-possible later optimisation, not part of the design.
-
+standalone contract avoids (Section~\ref{sec:watch}). Since we have switched to BABE as our main verification gadget, this option becomes less attractive unless some new engineering is possible to reduce the setup cost.
 \subsection{Outcomes}
 \label{sec:outcomes}
 
@@ -426,78 +406,27 @@ its outputs in one transaction. The reserves sit in one more output,
 paid to the winner, with an \tx{equiv\_b} leaf of its own. In the
 cooperative fold none of this appears: the fold simply pays $b$.
 
-\paragraph{The contract reserve.} As in Lightning, a penalty deters only
-a party with something to lose, and here that is not what each party put
-in but what each loses by losing a dispute. Without reserves, Alice
-risks only her honest outcome, the return she could actually prove,
-which is nothing once she has spent her tokens: a false claim of $\vmax$
-is then a free option on the hub being offline. The hub makes no
-claims, only refusals, and losing a dispute would cost it only fees, so
-it could refuse a valid withdrawal and hope Alice cannot play her side
-in time. Hence a reserve on each side, moved only by a lost dispute.
-
-Each reserve deters one side and is the other side's prize. Write
-$S = \vmax + r_A + r_H$ for the contract, and ignore $F$, which only
-shrinks the prizes. Alice, with an honest balance $\beta$, probes with a
-claim of $\vmax$, which succeeds with chance $p$, the chance that the hub
-fails to answer in time: against a fold it gains her
-$\vmax - \beta + r_H$ and otherwise costs her $\beta + r_A$. The hub
-refuses a valid withdrawal of $b$, which succeeds with chance $q$, the
-chance that Alice fails to finish: it gains $b + r_A$ and otherwise
-costs $r_H$. In the worst case for each ($\beta = 0$; $b = \vmax$),
-neither pays when
-\[
-  p < \frac{r_A}{S} \qquad\text{and}\qquad q < \frac{r_H}{S}.
-\]
-Both must hold at once, since the terms are fixed at opening, before
-anyone knows which side, if either, will cheat; and the reserves cannot
-be set independently, since raising $r_H$ to deter a refusing hub also
-raises the prize for probing it. Together the two conditions require
-\[
-  (r_A + r_H)(1 - p - q) > (p + q)\,\vmax .
-\]
-For $p + q < 1$ the reserves must total more than
-$(p + q)\vmax / (1 - p - q)$, about $(p + q)\vmax$ when both are small,
-at the least $r_A = p\vmax/(1 - p - q)$ and $r_H = q\vmax/(1 - p - q)$.
-That grows without bound as $p + q$ approaches 1, and for $p + q \ge 1$
-no reserves deter both. Deterring $p = q = 10\%$ takes $\vmax/8$ on each
-side; $p = q = 1/3$ takes $\vmax$ on each side, twice the cap locked
-beside it.
-
-Reserves that large are rarely worth locking. What sets a floor is fees:
-a lost dispute should cost the loser at least the other side's fees.
-Part of those is known when the contract is signed: the fee floors of
-its pre-signed transactions, 30,981~sats in the deepest dispute under
-BABE~\cite[\S 8]{lichenbabe}, and 197,356 under
-BitVMX~\cite[\S 6]{lichenbitvmx}. So neither reserve should be smaller,
-and lichen's hub takes for its own the larger of its share of the cap
-(2\% by default) and that figure. At $K = 24$ that deters refusals with
-less than about a 2\% chance; Alice's reserve at BABE's floor deters
-probes with less than about 0.2\%, at BitVMX's about 1\%. In practice, then, the reserves pay
-for the dispute, and what deters is liveness: the hub's own, which keeps
-$p$ small, and Alice's tower (Section~\ref{sec:watch}), which keeps $q$
-small.
-
-Two cautions on $p$. It is not the hub's average downtime but its
-chance of missing a whole response window at a moment Alice chooses:
-she can wait for an outage she can see, or cause one, though it must
-then outlast the window, which the hub can make hard with redundant
-signers of its own. And an outage is shared by all of the hub's
-contracts, so its users can all probe at once: what an outage puts at
-risk is the sum over its contracts of $\vmax - \beta + r_H$, not one
-contract's worth, part of the mass-exit problem of
-Section~\ref{sec:multihub}.
-
-\paragraph{Who it suits.} A reserve is locked, not spent: an honest
-party loses it only by losing a dispute, which for an honest Alice means
-going absent in the middle of one. The binding cost falls on the hub,
-whose reserve must cover Alice's worst-case dispute however small her
-balance. Under BABE that is at most about 31~kvB, 31,000~sats at
-1~sat/vB and 310,000 at 10, so the contract suits balances from about a
-hundred thousand sats; under BitVMX, about 117~kvB, 117,000~sats at
-1~sat/vB and 1.2 million at 10, so balances from about half a million. Large balances add no cost: the dispute does not grow
-with $b$. Amounts are 32-bit counts of one satoshi, so a contract holds
-up to about 42.9~BTC.
+\paragraph{The contract reserve.} Without reserves, a false claim costs
+Alice nothing once she has spent her tokens, so it is a free option on
+the hub missing a response window; and a refusal costs the hub only
+fees, so it can refuse and hope Alice fails to finish. So each side
+locks a reserve, forfeited to the other if it loses a dispute. Reserves
+alone deter expensively: if $p$ is the chance that the hub misses a
+window and $q$ the chance that Alice fails to finish, the worst cases
+need $r_A > pS$ and $r_H > qS$, $S = \vmax + r_A + r_H$, about
+$(p + q)\vmax$ in all when both are small, and already $\vmax/8$ a side
+at $p = q = 10\%$. In practice the reserves pay for the dispute: each is
+at least the fee floors of the deepest dispute's pre-signed
+transactions, 30,981~sats under BABE~\cite[\S 9]{lichenbuilt}, and
+lichen's hub takes the larger of that and 2\% of the cap. What deters is
+liveness: the hub's, which keeps $p$ small (though an outage exposes all
+its contracts at once, Section~\ref{sec:multihub}), and Alice's tower
+(Section~\ref{sec:watch}), which keeps $q$ small. The binding cost is
+the hub's reserve, which must cover Alice's worst-case dispute however
+small her balance: about 31~kvB under BABE, 31,000--310,000~sats at
+1--10~sat/vB, so a contract suits balances from about a hundred thousand
+sats; larger ones cost nothing more, since the dispute does not grow
+with $b$.
 
 \subsection{User liveness and watchtowers}
 \label{sec:watch}
@@ -522,7 +451,7 @@ element and on the answer, and her fee budget's key: no key that signs a
 move, so at worst it stays silent, and several can run at once, run by
 strangers. One played a dispute on Mutinynet from lichen's Docker image
 on a rented machine, while Alice's own device did nothing from handing it
-the dispute to sweeping her payout~\cite[\S 7]{lichenbabe}. Under BitVMX
+the dispute to sweeping her payout~\cite[\S 7]{lichenbuilt}. Under BitVMX
 it holds her contract's pre-signed transactions and the keys for her
 moves, but not the key to her amount, so it can play her side, and at
 worst play it badly, but cannot claim a different amount; lichen's
@@ -531,67 +460,18 @@ on Mutinynet in about 75 minutes~\cite[\S 10]{lichenbitvmx}. Embedding
 the contract in a Lightning channel gives this up: a channel's revoked
 states bring back the need for an always-on watchtower.
 
-\section{Finality from Bitcoin}
-\label{sec:finality}
-
-With a single, or indeed a distributed, sequencer signing updates to L2 state, without a consensus mechanism like proof of work or proof of stake, it's free to ``rewrite history'' for transactions on the L2, enabling double spend attacks. The techniques used in ETH L2s to handle this involve the rollup data publication and contract state on the base chain; that is not available here. So in the absence of proposing expensive consensus on L2, it makes the most sense to inherit finality from Bitcoin, as Shielded CSV~\cite{shieldedcsv} and Shielded Bitcoin~\cite{shieldedbtc} do (the first by publishing each transaction's nullifier on Bitcoin, the second by publishing every transaction there in full), but here using the single use seal concept~\cite{toddseals}, with one commitment per batch.
-
-If each sealed batch's root is committed in a Bitcoin transaction that spends the previous batch's commitment output, a fork of the layer 2 needs a double spend on Bitcoin. It costs one small transaction per batch, not per layer 2 transaction. A committee of sequencers then needs only one honest member for inclusion (members append batches in turn); forks are excluded by Bitcoin, not by a threshold.
-
-What sealing does not provide is availability: a seal commits to a root, not to the data behind it. This paper \underline{does not} answer this question; it is a function of exactly how the L2 ledger is constructed (with a Bitcoin publication component, or not). But if data availability is not addressed, the user does have to trust the sequencer in a very concrete sense: if the sequencer refuses to provide the Merkle path for her return note, the user has no way to retrieve their funds in the contract, and loses them. This strongly argues for the above-mentioned ``committee of sequencers'', because you just need 1 to include your withdrawal and give you its path to be safe\footnote{A more advanced idea is publishing withdrawals on Bitcoin, requiring L2 to read L1 in a similar way to what is described next}.
-
-\paragraph{What the withdrawal statement checks.} The sequencer's
-anchors form one chain of spends on Bitcoin: each spends the output the
-previous one created, starting from the layer 2's \emph{genesis seal},
-and commits to the history of state roots up to its height. Each anchor
-is recorded on L2, and the chain proof
-checks it with the rest: that its transaction spends the previous seal, and
-that it sits in the block it names, by a Merkle path to that block's
-header. 
-When Alice withdraws (in the currently implemented design) she provides a root that has been anchored (not necessarily the most recent) along with a withdrawal transaction she performed, which is sufficient for proof, because the anchors provide a unique history (there is no other history, we claim, where she keeps the money on L2 while withdrawing).
-
-The withdrawal
-statement also requires that Bitcoin headers follow the anchor's block, each
-linking to the one before and meeting its own difficulty target, with
-total work at least $W$. The genesis seal and $W$ are part of the
-contract's identifier $\mathcal{D}$, so the contract fixes both: $W$
-is set when the contract opens, as ten blocks' work at the difficulty of
-that moment. A header declares its own difficulty, but that gains a
-forger nothing: work is summed, and producing headers worth $W$ in total
-costs about $W$ hashes however the difficulty is split among them. So
-no retarget rule needs checking, and the contract's length does not
-matter.
-
-\paragraph{The cost is small.} About ten headers, each two or three
-SHA-256 compressions, which RISC Zero accelerates: a few thousand cycles
-of a withdrawal statement that costs 389,020 cycles in all. For the
-sequencer, the chain proof's check of an anchor record is about 135,000
-cycles. The dispute is unchanged. In the cooperative case, the hub
-checks the anchors with its own node.
-
-Forgery then becomes a matter of mining a fork in Bitcoin itself. In current Bridge designs, like Union~\cite{union}, a challenger answers the claimant's chain with a
-heavier one, which the claimant may dispute in turn, in a second BitVMX
-game with the roles reversed.
-
-But we don't want to or need to do that; the claimant is always the user and the dispute is settled on one statement.
-
-So any forgery attack is on the side of the user; and such an attack to achieve maximum returns \emph{could} use it to steal from the hub across multiple contracts.
-So the bound is not one contract's cap but
-the hub's total headroom exposed to a single forged chain. As long as
-that stays well below the reward of the blocks a fork must replace, the attack remains un-economic. This is the kind of security you can claim for Bitcoin itself, basically.
-
 \section{Scaling with multiple hubs}
 \label{sec:multihub}
 
-The worst failure mode for a Lichen-style L2 is \underline{mass exit}. As we know even in Lightning there is the idea that, if the number of users is high enough, mass publication of old/invalid states could lead to an excessive reliance on prompt confirmation on a blockchain where space is a scarce resource.
+If your chosen L2 is properly trust minimized (so that you can always access a valid claim to the money you own, to pass to the lichen verification gadget), then the worst remaining failure mode for a Lichen-style L2 is \underline{mass exit}. As we know even in Lightning there is the idea that, if the number of users is high enough, mass publication of old/invalid states could lead to an excessive reliance on prompt confirmation on a blockchain where space is a scarce resource.
 
-Now imagine lichen similarly, but with that problem exacerbated: a hub holding 60,000 users (note: the problem is not \emph{necessarily} any better with the 60k spread over multiple hubs). Now each withdrawal may take a number of transactions and a chunk of vB, with the numbers depending on the verifier gadget used. It's clearly the case that a malicious hub can trigger a very large block space demand and, with a lot of difficulty to be fair, \emph{could} steal from many honest users at once depending on the order in which transactions get confirmed. The same attack exists in reverse: if a user-attack generates a ton of Sybil contracts with one hub, they could trigger mass exit with fraudulent exit requests.
+Now imagine lichen similarly, but with that problem exacerbated: a hub holding 60,000 users (note: the problem is not \emph{necessarily} any better with the 60k spread over multiple hubs). Now each withdrawal may take a number of transactions and a chunk of vB; as we noted in Table~\ref{tab:gadgets}, this is about 30 kvB worst case with our chosen gadget BABE. It's clearly the case that a malicious hub can trigger a large block space demand and, with a lot of difficulty to be fair, \emph{could} steal from many honest users at once depending on the order in which transactions get confirmed. The same attack exists in reverse: if a user-attack generates a ton of Sybil contracts with one hub, they could trigger mass exit with fraudulent exit requests.
 
 It is worth mentioning that the more likely failure mode --- that is of hub infrastructure failure leading to offlineness --- tends to use up less onchain space with any verifier gadget used for the onchain transactions, but it can still be quite significant, even here.
 
-Two things must be chosen to get a sense of the potential safe scale of a Lichen L2: how long is the dispute phase allowed to last? And, how much fees must be held in reserve by both parties to ensure that the dispute can fully play out in time? Given this data, some specific, though estimated, numbers of how many users a hub can support, can be generated. These numbers are laid out in~\cite{lichenbitvmx} and~\cite{lichenbabe}.
+Two things must be chosen to get a sense of the potential safe scale of a Lichen L2: how long is the dispute phase allowed to last? And, how much fees must be held in reserve by both parties to ensure that the dispute can fully play out in time? Given this data, some specific, though estimated, numbers of how many users a hub can support, can be generated. These numbers are laid out in~\cite{lichenbitvmx} and~\cite{lichenbuilt}.
 
-We can improve these figures on \emph{some} axes by having multiple hubs. If we had 20 distinct hubs of 3000 users and not 1 hub of 60,000 it would reduce some risk for users in particular. Which leads to the question:
+We can improve these figures on \emph{some} axes by having multiple hubs. If we had 20 distinct hubs of 3000 users and not 1 hub of 60,000 it would reduce some risk for users in particular, and also reduce the liquidity burden on individual hubs. Which leads to the question:
 
 \paragraph{ Can you pay users in a different hub?} Certainly you can, with some infrastructure. There's more than one way to do it, but for brevity we describe the simplest: if Hub 1 and Hub 2 exist, with their own distinct ledgers, Alice on Hub 1 can pay Bob on Hub 2, in bitcoin, if Hub 2 has a contract on Hub 1 with inbound capacity. She simply pays Hub2's address on Hub 1's ledger, contingent on an atomic swap set up with the payment to Bob on Hub 2's ledger. There could also be routing, but the principle is clear.
 
@@ -600,7 +480,7 @@ We can improve these figures on \emph{some} axes by having multiple hubs. If we 
 \section{Costs}
 \label{sec:costs}
 
-Many costs will be specific to the verifier gadget chosen, so we point the reader at~\cite{lichenbitvmx} and~\cite{lichenbabe}. However some costs come from the generic Risc0 architecture chosen:
+Some costs will be specific to the L2 architecture. Others depend on the verifier gadget chosen; here we focus on figures for our chosen gadget BABE. Yet other costs come from the generic Risc Zero architecture chosen:
 
 \paragraph{Can a user dispute on her own hardware?} A dispute needs
 a non-urgent (only $\Tc$ bounds
@@ -610,24 +490,21 @@ the statement costs 389,020 zkVM cycles, one segment, using RISC Zero's
 accelerators (about 10 cycles for a 256-bit modular multiplication, 68
 for a SHA-256 block~\cite{risc0accel}); without them it was 5.9
 million, almost all of them in the sequencer's signature. Proving it
-takes 74~s on an Apple M4 Pro and 359~s on a
+takes about 30~s on an Apple M4 Pro's CPU (est., from a measured segment of the same size) and 359~s on a
 4-vCPU x86 server, which smaller
 segments reduce~\cite{risc0data}; a CUDA GPU would be faster still.
 BABE's statement, which also checks the hub's signature on $b$, runs in
 about 480,000 cycles, still one segment, and proves in 640--660~s on that
 server; under BABE Alice proves only after the hub has signed $b$ on
-chain, and has until shortly before $\Tc$ to do it. The Groth16 wrap is a fixed cost of a few minutes with 8~GB of memory at peak, today on x86
-only; it can be delegated, since the wrapper sees only the receipt and
+chain, and has until shortly before $\Tc$ to do it. The Groth16 wrap is a fixed cost, run in RISC Zero's Docker image: about 4 minutes on that server and 134~s on the laptop, with 8~GB of memory at peak; it can be delegated, since the wrapper sees only the receipt and
 its public journal. A phone is plausible for the proof with small segments and a delegated wrap.
 
-\paragraph{Opening a contract} Under BABE, opening costs the hub about ten seconds of garbling and Alice a download of about 240~MiB, the instances she keeps until the contract closes; both are paid again at renewal~\cite[\S 8]{lichenbabe}.
-
-\paragraph{Onchain costs} For the anchoring of L2 state updates, there is an anchor per batch, 269 vB, including the OP\_RETURN output for SR. For each individual contract, a fold costs 193 vB. Even for faster L2s with more aggressive finality, a cost of 269 vB every block or few blocks is trivial. A dispute under BABE is 9.7~kvB if the hub does not challenge, and at most about 31~kvB if it does (Table~\ref{tab:gadgets}).
+\paragraph{Opening a contract.} Under BABE, opening costs the hub about ten seconds of garbling (19~s in all, with Alice's checks) and Alice a download of about 240~MiB, the instances she keeps until the contract closes; both are paid again at renewal~\cite[\S 9]{lichenbuilt}. This download size could possibly be dramatically reduced with Duty Free Bits~\cite{dutyfree}, but this has not yet been investigated, so for now counts only as speculation.
 
 \section{Positioning}
 \label{sec:positioning}
 
-We have already briefly discussed how this is different from just ``payments over Lightning via a hub'' in the Introduction. We'll list here some key differences to some other existing L2 or L2-like Bitcoin constructions.
+We have already briefly discussed how this is different from just ``payments over Lightning via a hub'' in Section 1. We'll list here some key differences to some other existing L2 or L2-like Bitcoin constructions.
 
 \paragraph{Against BitVM2 and Union.} We consider BitVM2~\cite{bitvm2usenix}, and
 Union~\cite{union}, a bridge to Rootstock built on BitVMX by BitVMX's
@@ -659,7 +536,7 @@ expiry & none & none & $\Tc$: withdraw, or renew, before it \\
 \bottomrule
 \end{tabularx}
 \caption{Two bridges and lichen. The bridges' figures are their
-authors' estimates; lichen's depend on the gadget; see~\cite{lichenbitvmx},~\cite{lichenbabe} for measurements and estimates.}
+authors' estimates; lichen's depend on the gadget; see~\cite{lichenbitvmx},~\cite{lichenbuilt} for measurements and estimates.}
 \label{tab:bitvm2}
 \end{table}
 
@@ -682,9 +559,7 @@ They pre-sign it themselves, so there is no committee and no setup
 trust; only the hub can be robbed by a false claim, so only the hub
 challenges; and the dispute between them needs no search: a challenge,
 answered from garbled circuits Alice checked when the contract opened
-(under BitVMX, it is Union's game with a single pair). Splitting the pool has its own price: the hub's locked liquidity,
-a token that is bitcoin only within each user's cap, an expiry, and a
-user who must take part in her own dispute. \textbf{The bridges ask their users
+(under BitVMX, it is Union's game with a single pair). \textbf{The bridges ask their users
 to trust one signer at setup and one challenger afterwards, and to be
 present for none of it; lichen asks them to trust no one, but to be
 present for their own disputes}.
@@ -713,9 +588,7 @@ present for their own disputes}.
 
 The design is implemented in proof-of-concept form as two code bases, LN-GAP~\cite{lngapcode} and Lichen~\cite{lichencode}, with tests and demos executed on bitcoin regtest and on mutinynet. Any bitcoin-related data in this paper come from the concrete executions there, including playing out disputes fully.
 
-The implementation uses the BABE gadget~\cite{lichenbabe} by default, with the BitVMX gadget~\cite{lichenbitvmx} also built, and a shielded-notes L2 for private offchain transfers. Validity proofs are implemented, along with anchors in bitcoin transactions for finality. Under BABE, three endings of a dispute have been played on Mutinynet with a real RISC Zero proof (a true claim challenged and answered, a true claim unchallenged and played by a tower, and a false claim), and the others on regtest.
-
-Some features are not yet in place, though: in particular, there is not currently a way for the user to exit when the sequencer dies or censors. This should be addressable, as has been noted, with a counter-proof mechanism for the hub, a slight design change. Under BABE, Alice's download at each opening, about 240~MiB, is the largest cost to reduce; and the anchors through which a tower would bump her transactions' fees need a key of their own.
+The implementation uses the BABE gadget~\cite{lichenbuilt} by default, with the BitVMX gadget~\cite{lichenbitvmx} also built, and a shielded-notes L2 for private offchain transfers. Details on this implemented L2 are found in the accompanying paper~\cite{lichenbuilt}.
 
 \begin{thebibliography}{99}
 
@@ -723,11 +596,15 @@ Some features are not yet in place, though: in particular, there is not currentl
 
 \bibitem{pipeline} lichen's explainers. From a Rust program to a check on Bitcoin: how a withdrawal is proved, wrapped, and checked under BABE or BitVMX. October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/docs/explainers/pipeline.md}
 
-\bibitem{lichenbitvmx} waxwing. Lichen over BitVMX: the dispute, as built and measured. Version 0.1, October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-bitvmx-v0.1.1.pdf}
+\bibitem{lichenbitvmx} waxwing. Lichen over BitVMX: the dispute, as built and measured. Version 0.1 (not maintained), October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-bitvmx-v0.1.2.pdf}
 
-\bibitem{lichenbabe} waxwing. Lichen over BABE: withdrawals of a variable amount, by authenticated request. Version 0.1, October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-babe-v0.1.7.pdf}
+\bibitem{lichenbuilt} waxwing. Lichen as built: the BABE gadget, the hub's ledger and the exit. Version 0.1 (draft), October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-built-v0.1.0.pdf}
 
 \bibitem{babe} S.~Garg, D.~Kolonelos, M.~Sergeevitch, S.~Sridhar and D.~Tse. BABE: verifying proofs on Bitcoin made 1000x cheaper. ePrint 2026/065, revised October 2026. \url{https://eprint.iacr.org/2026/065}
+
+\bibitem{glock} L.~Eagen. Glock: garbled locks for Bitcoin. ePrint 2025/1485. \url{https://eprint.iacr.org/2025/1485}
+
+\bibitem{dutyfree} A.~Khambhati, S.~Bhattacharya and D.~Heath. Duty-free bits. ePrint 2026/476. \url{https://eprint.iacr.org/2026/476}
 
 \bibitem{goat} GOAT Network research. Dynamic public inputs in BABE (deferred binding). HackMD, 2026. \url{https://hackmd.io/@goatresearch/B1N9g2uOee}
 
@@ -739,11 +616,6 @@ Some features are not yet in place, though: in particular, there is not currentl
 
 \bibitem{bitvmx} S.~D.~Lerner, R.~Amela, S.~Mishra, M.~Jonas and J.~\'Alvarez Cid-Fuentes. BitVMX: a CPU for universal computation on Bitcoin, 2024. \url{https://arxiv.org/abs/2405.06842}
 
-\bibitem{bitvmxcpu} FairgateLabs. BitVMX-CPU: the emulator, the $n$-ary search and the Groth16 verifier for BitVMX. \url{https://github.com/FairgateLabs/BitVMX-CPU}
-\bibitem{bitvmxfork} BitVMX-CPU with LN-GAP's changes (two bug fixes, the authenticated jump list), branch \texttt{lngap}. \url{https://github.com/AdamISZ/BitVMX-CPU}
-
-\bibitem{lightning} J.~Poon and T.~Dryja. The Bitcoin Lightning Network: scalable off-chain instant payments, 2016. \url{https://lightning.network/lightning-network-paper.pdf}
-
 \bibitem{bitvm} R.~Linus. BitVM: compute anything on Bitcoin, 2023. \url{https://bitvm.org/bitvm.pdf}
 
 \bibitem{bitvm2usenix} R.~Linus Woll, L.~Aumayr, Z.~Avarikioti, M.~Maffei, A.~Pelosi, O.~S.~Thyfronitis Litos, C.~Stefo, D.~Tse and A.~Zamyatin. Bridging Bitcoin to second layers via BitVM2. USENIX Security 2026; ePrint 2025/1158. \url{https://eprint.iacr.org/2025/1158}
@@ -752,21 +624,13 @@ Some features are not yet in place, though: in particular, there is not currentl
 
 \bibitem{risc0} RISC Zero. The RISC Zero zkVM and its Groth16 receipts. \url{https://dev.risczero.com}
 
-\bibitem{bitvmxinnov} S.~D.~Lerner. Latest innovations in BitVMX (trace Merkle tree, authenticated skiplist and jumplist), June 2024. \url{https://bitvmx.org/knowledge/latest-innovations-in-bitvmx}
-
 \bibitem{floodloot} J.~Harris and A.~Zohar. Flood \& Loot: a systemic attack on the Lightning Network. AFT 2020. \url{https://arxiv.org/abs/2006.08513}
-
-\bibitem{toddseals} P.~Todd. Preventing consensus fraud with commitments and single-use-seals, 2016. \url{https://petertodd.org/2016/commitments-and-single-use-seals}
 
 \bibitem{risc0accel} RISC Zero. Cryptography acceleration (SHA-256 and 256-bit modular multiplication circuits; patched \texttt{k256}, \texttt{sha2}). \url{https://dev.risczero.com/api/zkvm/acceleration}
 
 \bibitem{risc0data} RISC Zero. zkVM datasheet: proving time and memory by cycle count, CPU, Metal and CUDA, April 2023. \url{https://dev.risczero.com/datasheet.pdf}
 
 \bibitem{dlcnumeric} DLC specifications: numeric outcome compression. \url{https://github.com/discreetlogcontracts/dlcspecs}
-
-\bibitem{shieldedcsv} J.~Nick, L.~Eagen and R.~Linus. Shielded CSV: private and efficient client-side validation. ePrint 2025/068. \url{https://eprint.iacr.org/2025/068}
-
-\bibitem{shieldedbtc} C.~Shikhelman, M.~Komarov and A.~Moskvin. Shielded Bitcoin: private transfers on the Bitcoin L1. [alloc] init, September 2026. \url{https://www.allocinit.xyz/uploads/shielded-bitcoin.pdf}
 
 \end{thebibliography}
 

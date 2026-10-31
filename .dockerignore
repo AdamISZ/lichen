@@ -5,6 +5,7 @@
 !crates/shielded
 !crates/validity
 !crates/withdraw
+!crates/groth16
 !r0
 r0/target
 r0/*/target

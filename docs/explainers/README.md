@@ -23,11 +23,11 @@ its runs are kept below as records.
 - [How a dispute pays out](payout.md): how one pre-signed transaction
   pays Alice exactly `b`, in bits, and the hub the rest. A toy example,
   then Test B's payout traced down to the witness.
-- [Exiting against a hostile operator](exit.md): a design, not built.
-  How a user exits from anchored state when the operator censors, stops
-  sealing or vanishes: her exit proof, the operator's counter proof,
-  and the verification gadget, kept abstract, used in one of two
-  places on chain.
+- [Exiting against a hostile operator](exit.md): built, played on
+  regtest. How a user exits from anchored state when the operator
+  censors, stops sealing or vanishes: her claim, posted and signed in
+  BABE's `request`; the hub's counter, a later spend or a second claim,
+  signed in `respond`; her statement's three ways to win; four runs.
 
 ## BABE
 

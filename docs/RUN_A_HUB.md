@@ -119,6 +119,21 @@ deploy/hub/hub.sh balance
 deploy/hub/hub.sh fund 10        # regtest: from the miner's coins
 ```
 
+## Exits
+
+A user whose withdrawal the hub won't fold can exit instead: claim her
+notes from a state already anchored on Bitcoin (`lichen exit`; [the
+explainer](explainers/exit.md)). The hub answers each claim in its
+`respond`: plainly, holding the claimed notes and recording the exit on
+the L2, or with a counter when one of the notes was spent at an anchored
+state before the claim, or claimed through another contract. On the real
+statement a counter is a RISC Zero proof, wrapped in Groth16, which the
+hub makes with a prover: `lichen-hub --prover <lichen-r0>` (x86 Linux
+with Docker, for the wrap). The Docker deployment here passes none yet,
+so it answers every claim plainly: a claim from an old state is then
+paid, at the hub's cost. The response window `w_H` is long enough for a
+counter's proof: two hours on Mutinynet.
+
 ## Testers
 
 Testers run only the `lichen` wallet, on their own machines, with no

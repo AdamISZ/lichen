@@ -12,7 +12,7 @@ Just want the idea, no maths, no complex diagrams, no code or demo or blah blah?
 
 Choose your adventure:
 
-*Want the full design* - read this short intro, then go to the main [design paper](./papers/lichen-v0.3.0.pdf)
+*Want the full design* - read this short intro, then go to the main [design paper](./papers/lichen-v0.4.0.pdf)
 
 *Want to run the web demo* - that is, running the stack on regtest locally and playing with it in the browser to see how it operates: go [here](#the-demo).
 

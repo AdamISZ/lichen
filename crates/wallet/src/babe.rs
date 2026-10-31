@@ -24,11 +24,15 @@ use crate::engine::ContractSecrets;
 use crate::{hub_call, Wallet};
 
 impl Wallet {
-    /// Ask the hub for contract `cid`'s setup, check its parameters, and
-    /// choose the instances to keep: her opening request's keys.
-    pub(crate) fn babe_request(&self, hub: &str, cid: u32, s: &ContractSecrets, net: Net) -> Result<(BabeRequest, Setup)> {
-        let setup: Setup = hub_call(&format!("{hub}/babe/setup"), Some(serde_json::to_string(&SetupRequest { cid })?))?;
+    /// Ask the hub for contract `cid`'s setup, with the exit for the
+    /// deposit coin `deposit`, check its parameters, and choose the
+    /// instances to keep: her opening request's keys.
+    pub(crate) fn babe_request(&self, hub: &str, cid: u32, deposit: bitcoin::OutPoint, s: &ContractSecrets, net: Net) -> Result<(BabeRequest, Setup)> {
+        let setup: Setup = hub_call(&format!("{hub}/babe/setup"), Some(serde_json::to_string(&SetupRequest { cid, deposit: Some(deposit) })?))?;
         ensure!(setup.cid == cid, "the setup is for contract {}, not {cid}", setup.cid);
+        let x = setup.exit.as_ref().context("the hub's setup has no exit")?;
+        x.check()?;
+        ensure!(x.deposit == deposit, "the setup is for another deposit");
         let (n, m) = (setup.n, setup.m);
         ensure!(m >= 1 && m < n, "a cut-and-choose keeping {m} of {n}");
         ensure!(soundness(n, m) >= min_soundness(net), "keeping {m} of {n} instances: a cheating hub escapes with odds of 1 in 2^{}, not 2^{}", soundness(n, m), min_soundness(net));
@@ -54,6 +58,10 @@ impl Wallet {
             hmsg: theirs.hmsg.clone(),
             windows: theirs.windows,
             presigs: vec![],
+            exit: match (&ours.e_key, &setup.exit) {
+                (Some(e_key), Some(x)) => Some(lichen_proto::babe::BabeExit { e_key: e_key.clone(), hub: x.clone() }),
+                _ => None,
+            },
         })))
     }
 

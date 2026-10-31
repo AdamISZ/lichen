@@ -40,8 +40,12 @@ use super::{confirmed_at, wait_link, ContractSecrets, Engine, Next, Outcome, Wal
 /// `wrongly_challenged` was made at the opening), so a tower can play it
 /// from the signatures alone.
 pub trait Secrets {
-    /// Her signature on `b`, as `request` takes it.
-    fn request_wire(&self, b: u32) -> Result<Vec<Vec<u8>>>;
+    /// Her signature on `b`, as `request` takes it (with the exit, her
+    /// signature on [`RETURN_E`] beside it: a return's dispute).
+    fn request_wire(&self, b: u32, exit: bool) -> Result<Vec<Vec<u8>>>;
+    /// An exit's `request` wire: her signatures on `b` and on the claim's
+    /// `E`, and the claim as posted.
+    fn exit_wire(&self, b: u32, e: &[u8; 32], posted: &[u8]) -> Result<Vec<Vec<u8>>>;
     /// Her Lamport signature on π1's digits: a preimage a digit.
     fn sign_pi1(&self, digits: &[u8]) -> Result<Vec<Preimage>>;
 }
@@ -59,20 +63,43 @@ impl ContractSecrets {
     pub fn babe_adaptor(&self) -> AdaptorKeys {
         AdaptorKeys::new(&self.babe_seed(), DIGITS)
     }
+    /// Her one-time key for `E`, the exit's claim (32 bytes).
+    pub fn babe_e(&self) -> WotsSecret {
+        WotsSecret::from_entropy(WotsParams::for_bytes(32), self.wots("babe/e"))
+    }
+}
+
+/// The `E` a return's dispute signs in a contract with the exit: no
+/// exit's claim (its branch of the statement doesn't read `E`).
+pub const RETURN_E: [u8; 32] = [0; 32];
+
+/// `request`'s wire for a return's dispute of `b`: her signature on `b`;
+/// with the exit, on [`RETURN_E`] too, and nothing posted.
+pub fn return_wire(s: &ContractSecrets, b: u32, exit: bool) -> Result<Vec<Vec<u8>>> {
+    let b = s.babe_b().sign(&b.to_be_bytes())?;
+    if exit {
+        Babe::request_exit_wire(&b, &s.babe_e().sign(&RETURN_E)?, &[])
+    } else {
+        Ok(Babe::request_wire(&b))
+    }
 }
 
 impl Secrets for WalletSigner {
-    fn request_wire(&self, b: u32) -> Result<Vec<Vec<u8>>> {
-        Ok(Babe::request_wire(&self.secrets.babe_b().sign(&b.to_be_bytes())?))
+    fn request_wire(&self, b: u32, exit: bool) -> Result<Vec<Vec<u8>>> {
+        return_wire(&self.secrets, b, exit)
+    }
+    fn exit_wire(&self, b: u32, e: &[u8; 32], posted: &[u8]) -> Result<Vec<Vec<u8>>> {
+        Babe::request_exit_wire(&self.secrets.babe_b().sign(&b.to_be_bytes())?, &self.secrets.babe_e().sign(e)?, posted)
     }
     fn sign_pi1(&self, digits: &[u8]) -> Result<Vec<Preimage>> {
         Ok(self.secrets.babe_lamport().sign(digits))
     }
 }
 
-/// Her BABE keys for an opening request, and the instances she keeps.
+/// Her BABE keys for an opening request (with the exit's), and the
+/// instances she keeps.
 pub fn request_keys(s: &ContractSecrets, kept: Vec<u32>) -> BabeRequest {
-    BabeRequest { b_key: s.babe_b().public(), lamport: s.babe_lamport().public(), adaptor: s.babe_adaptor().public(), kept }
+    BabeRequest { b_key: s.babe_b().public(), lamport: s.babe_lamport().public(), adaptor: s.babe_adaptor().public(), kept, e_key: Some(s.babe_e().public()) }
 }
 
 /// Her signature on `b` as the payout's leaves take it.
@@ -131,7 +158,12 @@ impl Engine<'_> {
             std::thread::sleep(Duration::from_millis(200));
         }
         self.step(format!("requesting {b} sats, {}", d.txid("request")));
-        let at = self.post_link(chain, "request", d.finish("request", secrets.request_wire(b)?)?)?;
+        let exit = self.store.exit();
+        let wire = match &exit {
+            Some(p) => secrets.exit_wire(b, &p.e()?, &p.posted()?)?,
+            None => secrets.request_wire(b, record.babe()?.exit.is_some())?,
+        };
+        let at = self.post_link(chain, "request", d.finish("request", wire)?)?;
         if self.opts.pause_after == Some(1) {
             return Ok(Outcome::Paused);
         }
@@ -153,15 +185,13 @@ impl Engine<'_> {
             self.step(format!("no assertion by T_A, block {}: respond_timeout took the contract", w.t_a));
             return self.lost(s_op.txid);
         }
-        let Some(proof) = proof else {
-            // the hub's signature on b, for the proof
-            let auth = d.hub_auth(&chain.get_tx(&d.txid("respond")).context("respond")?)?;
-            let data = data_dir(dir, cid);
-            std::fs::create_dir_all(&data)?;
-            let path = data.join("hub-auth.json");
-            std::fs::write(&path, serde_json::to_vec_pretty(&auth)?)?;
-            self.step(format!("the hub responded: its signature on b is in {}; the proof is due by T_A, block {}", path.display(), w.t_a));
-            return Ok(Outcome::ProofDue(w.t_a));
+        let proof = match (&exit, proof) {
+            (Some(plan), given) => match self.exit_proof(chain, &d, statement, dir, plan, given)? {
+                Ok(p) => p,
+                Err(o) => return Ok(o),
+            },
+            (None, Some(p)) => p,
+            (None, None) => return self.proof_due(chain, &d, dir),
         };
         ensure!(chain.height()? < w.t_a || chain.get_tx(&d.txid("assert")).is_some(), "T_A, block {}, has passed: the assertion is too late", w.t_a);
         let bits = lichen_babe::gadget::input(&proof.a);
@@ -192,6 +222,114 @@ impl Engine<'_> {
             }
             ensure!(!stall.stalled(h), "the chain stalled");
             std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// On the real statement, the hub responded and her proof is due: its
+    /// signature on `b`, which the proof takes, written beside the
+    /// instances.
+    fn proof_due(&self, chain: &Chain, d: &Disputed, dir: &Path) -> Result<Outcome> {
+        let t_a = d.babe.spec.windows.t_a;
+        let auth = d.hub_auth(&chain.get_tx(&d.txid("respond")).context("respond")?)?;
+        let data = data_dir(dir, d.record.cid());
+        std::fs::create_dir_all(&data)?;
+        let path = data.join("hub-auth.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&auth)?)?;
+        self.step(format!("the hub responded: its signature on b is in {}; the proof is due by T_A, block {t_a}", path.display()));
+        Ok(Outcome::ProofDue(t_a))
+    }
+
+    /// An exit's proof, once the hub has responded: the statement's branch
+    /// its response leaves (`fixed::check_exit`), checked natively first.
+    /// After `respond_counter`, `K` proved false, or (a real counter) no
+    /// way to win; after a plain `respond`, her claim, `request` in its
+    /// block with the contract's work on it. On the mock, the mock's proof;
+    /// on the real statement `given`, or with none the statement's input
+    /// written for the prover (`lichen-r0 babe-exit`) and the proof due.
+    fn exit_proof(&mut self, chain: &Chain, d: &Disputed, statement: &Statement, dir: &Path, plan: &crate::exit::ExitPlan, given: Option<ark_groth16::Proof<ark_bn254::Bn254>>) -> Result<std::result::Result<ark_groth16::Proof<ark_bn254::Bn254>, Outcome>> {
+        use lichen_withdraw::fixed::{check_exit, ExitStatement, Mode};
+        let record = &d.record;
+        let cid = record.cid();
+        let kind = statement.babe_kind().context("not a BABE statement")?;
+        let keys = record.babe()?;
+        let x = keys.exit.as_ref().context("a contract without the exit")?;
+        let respond = chain.get_tx(&d.txid("respond")).context("respond")?;
+        let w = &respond.input[0].witness;
+        let counter = w.len() >= 2 && w.nth(w.len() - 2) == Some(d.set["respond_counter"].leaf.as_bytes());
+        let r = Babe::read_respond_exit(&Disputed::args(&respond), counter)?;
+        let e = plan.e()?;
+        ensure!(r.e == e, "the hub responded to another E than the claim's");
+        let b_sig = Disputed::hub_b(&respond)?.hashes.try_into().map_err(|_| anyhow::anyhow!("the hub's signature on b, of another length"))?;
+        let e_sig = r.hub_e.try_into().map_err(|_| anyhow::anyhow!("the hub's signature on E, of another length"))?;
+        let mode = match r.k {
+            Some(k) => {
+                let seal = k.message();
+                let journal: lichen_babe::statement::CounterJournal = [&record.deployment[..], &e[..]].concat().try_into().expect("64 bytes");
+                if kind.verify_counter(&seal, &journal) {
+                    self.step("the hub countered the claim, truly: no branch of the statement holds; respond_timeout takes the contract from T_A".into());
+                    return Ok(Err(Outcome::Countered));
+                }
+                self.step("the hub's counter isn't one: proving it false".into());
+                Mode::Counter { c: cid, d: record.deployment, e, k: seal, e_sig, k_sig: k.hashes }
+            }
+            None => {
+                let funding = chain.get_tx(&record.funding.txid).context("the funding")?;
+                let request = lichen_proto::exit::request_proof(chain, &funding, &d.txid("request"))?;
+                let claim = plan.input(request, vec![])?;
+                let headers = self.exit_headers(chain, &claim)?;
+                Mode::Claim { claim: plan.input(claim.request, headers)?, b_sig, e_sig }
+            }
+        };
+        let stmt = ExitStatement { keys: lichen_proto::babe::exit_keys(&keys.hub_b, &x.hub), deposit: lichen_proto::babe::statement_outpoint(&x.hub.deposit), mode };
+        // natively, as the guest: on the mock without the chain receipt
+        let checked = match kind {
+            lichen_babe::statement::Kind::Mock => check_exit(&stmt, &[0; 32], &mut |_| true, &mut |k, j| kind.verify_counter(k, j)),
+            lichen_babe::statement::Kind::Risc0 => {
+                let id: [u8; 32] = hex::decode(lichen_ledger::CHAIN_IMAGE_ID.trim())?.try_into().map_err(|_| anyhow::anyhow!("the chain guest's image id"))?;
+                let journal = match &stmt.mode {
+                    Mode::Claim { claim, .. } => Some(claim.state.chain_journal(&id).to_bytes()),
+                    _ => None,
+                };
+                check_exit(&stmt, &id, &mut |j| journal.as_deref() == Some(j), &mut |k, j| kind.verify_counter(k, j))
+            }
+        };
+        if let Err(r) = checked {
+            ensure!(self.opts.unchecked_claims, "the exit's statement rejects the claim ({r:?}): the hub would challenge it and win");
+            self.step(format!("the exit's statement rejects the claim ({r:?}), asserting anyway"));
+        }
+        match (kind, given) {
+            (lichen_babe::statement::Kind::Mock, _) => Ok(Ok(lichen_babe::statement::mock_prove(&record.babe_journal()?))),
+            (_, Some(p)) => Ok(Ok(p)),
+            (_, None) => {
+                let data = data_dir(dir, cid);
+                std::fs::create_dir_all(&data)?;
+                let path = data.join("exit-statement.bin");
+                std::fs::write(&path, stmt.to_bytes())?;
+                let t_a = d.babe.spec.windows.t_a;
+                self.step(format!("the hub responded: the statement's input is in {} (lichen-r0 babe-exit); the proof is due by T_A, block {t_a}", path.display()));
+                Ok(Err(Outcome::ProofDue(t_a)))
+            }
+        }
+    }
+
+    /// The headers from the claim's anchor block on, once `request`'s
+    /// block has the contract's work on it (waiting for blocks until then).
+    fn exit_headers(&self, chain: &Chain, claim: &lichen_withdraw::exit::ExitInput) -> Result<Vec<[u8; 80]>> {
+        use bitcoin::hashes::Hash as _;
+        let anchor = bitcoin::BlockHash::from_byte_array(claim.state.anchor.block);
+        let at = chain.block_height(&anchor)?.context("the claim's anchor block isn't on the chain")?;
+        let req = lichen_ledger::lichen_validity::btc::Header(claim.request.header).hash();
+        let mut stall = Stall::new(chain.height()?, chain.network);
+        loop {
+            let tip = chain.height()?;
+            let headers = chain.headers_after(&anchor, (tip - at) as usize)?;
+            let from = headers.iter().position(|h| lichen_ledger::lichen_validity::btc::Header(*h).hash() == req);
+            let work: u128 = from.map_or(0, |p| headers[p..].iter().map(|h| lichen_ledger::lichen_validity::btc::work(u32::from_le_bytes(h[72..76].try_into().unwrap()))).sum());
+            if work >= claim.state.work {
+                return Ok(headers);
+            }
+            ensure!(!stall.stalled(tip), "the chain stalled before the request's block was deep enough");
+            std::thread::sleep(Duration::from_millis(200));
         }
     }
 

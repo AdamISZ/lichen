@@ -1,6 +1,8 @@
 //! What the statements read of Bitcoin (docs/ANCHOR_PLAN.md): a
 //! transaction's non-witness serialization (its txid's), a block header,
-//! a Merkle path from a txid to the header's root, and proof of work.
+//! a Merkle path from a txid to the header's root, and proof of work;
+//! and, for what a transaction carries in its witness, its witness
+//! serialization and a path in the block's witness tree (BIP141).
 //! Hashes in Bitcoin's internal byte order, as they are hashed (a txid or
 //! block hash displayed is this reversed).
 
@@ -117,6 +119,26 @@ pub fn merkle_root(txid: &Hash, mut index: u32, path: &[Hash]) -> Hash {
     h
 }
 
+/// Whether `tx` (a non-witness serialization) is in the block of
+/// `header`, at `index` by `path`: its path as long as the coinbase's
+/// (index 0), which can't pass for a node of the tree (it isn't 64 bytes,
+/// and it is a coinbase), so the tree's real depth. A shorter or longer
+/// path could pass a forged transaction off as half of a real 64-byte
+/// one, or as a node (CVE-2017-12842); and a 64-byte transaction could
+/// pass for a node itself.
+pub fn in_block(tx: &[u8], header: &Header, index: u32, path: &[Hash], coinbase: &[u8], coinbase_path: &[Hash]) -> bool {
+    let depth = coinbase_path.len();
+    tx.len() != 64
+        && coinbase.len() != 64
+        && is_coinbase(coinbase)
+        && merkle_root(&sha256d(coinbase), 0, coinbase_path) == header.merkle_root()
+        && path.len() == depth
+        && depth < 32
+        && index >> depth == 0
+        && index != 0
+        && merkle_root(&sha256d(tx), index, path) == header.merkle_root()
+}
+
 /// Whether `b` (a non-witness serialization) is a coinbase: one input,
 /// spending the null outpoint.
 pub fn is_coinbase(b: &[u8]) -> bool {
@@ -158,6 +180,78 @@ impl<'a> Rd<'a> {
 pub fn parse_tx(b: &[u8]) -> Option<Tx<'_>> {
     let mut r = Rd(b);
     r.take(4)?;
+    let tx = body(&mut r)?;
+    r.take(4)?;
+    r.0.is_empty().then_some(tx)
+}
+
+/// A transaction read from its witness serialization: its inputs and
+/// outputs, and each input's witness stack.
+pub struct WitnessTx<'a> {
+    pub tx: Tx<'a>,
+    pub witness: Vec<Vec<&'a [u8]>>,
+}
+
+/// Parse a transaction serialized with its witnesses (the marker and flag
+/// `00 01`); none if it isn't one.
+pub fn parse_witness_tx(b: &[u8]) -> Option<WitnessTx<'_>> {
+    let mut r = Rd(b);
+    r.take(4)?;
+    if r.take(2)? != [0, 1] {
+        return None;
+    }
+    let tx = body(&mut r)?;
+    let mut witness = Vec::with_capacity(tx.inputs.len());
+    for _ in 0..tx.inputs.len() {
+        let n = r.varint()?;
+        let mut items = Vec::with_capacity(n);
+        for _ in 0..n {
+            let s = r.varint()?;
+            items.push(r.take(s)?);
+        }
+        witness.push(items);
+    }
+    r.take(4)?;
+    r.0.is_empty().then_some(WitnessTx { tx, witness })
+}
+
+/// The witness commitment a coinbase (non-witness) carries: its last
+/// output whose script starts `OP_RETURN 0x24 aa21a9ed`, 38 bytes at
+/// least (BIP141).
+pub fn witness_commitment(coinbase: &[u8]) -> Option<Hash> {
+    let tx = parse_tx(coinbase)?;
+    let (_, s) = tx.outputs.iter().rev().find(|(_, s)| s.len() >= 38 && s[..6] == [0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed])?;
+    s[6..38].try_into().ok()
+}
+
+/// Whether `tx` (a witness serialization) is in the block of `header`
+/// with its witness: at `index` by `path` in the block's witness tree,
+/// whose root the coinbase (non-witness, at index 0 by `coinbase_path` in
+/// the txid tree) commits with `reserved`, the coinbase's witness value.
+/// The trees have the same leaves, so the path is as long as the
+/// coinbase's, for the reasons [`in_block`] gives.
+pub fn witness_in_block(tx: &[u8], header: &Header, index: u32, path: &[Hash], coinbase: &[u8], coinbase_path: &[Hash], reserved: &Hash) -> bool {
+    let depth = coinbase_path.len();
+    let Some(commitment) = witness_commitment(coinbase) else {
+        return false;
+    };
+    let mut b = [0u8; 64];
+    b[..32].copy_from_slice(&merkle_root(&sha256d(tx), index, path));
+    b[32..].copy_from_slice(reserved);
+    tx.len() != 64
+        && coinbase.len() != 64
+        && is_coinbase(coinbase)
+        && merkle_root(&sha256d(coinbase), 0, coinbase_path) == header.merkle_root()
+        && path.len() == depth
+        && depth < 32
+        && index >> depth == 0
+        && index != 0
+        && parse_witness_tx(tx).is_some()
+        && sha256d(&b) == commitment
+}
+
+/// The inputs and outputs, after the version (and any witness marker).
+fn body<'a>(r: &mut Rd<'a>) -> Option<Tx<'a>> {
     let n = r.varint()?;
     if n == 0 {
         return None; // a witness marker, or no inputs
@@ -176,6 +270,5 @@ pub fn parse_tx(b: &[u8]) -> Option<Tx<'_>> {
         let s = r.varint()?;
         outputs.push((v, r.take(s)?));
     }
-    r.take(4)?;
-    r.0.is_empty().then_some(Tx { inputs, outputs })
+    Some(Tx { inputs, outputs })
 }

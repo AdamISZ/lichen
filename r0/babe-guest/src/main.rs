@@ -1,16 +1,21 @@
 //! The BABE withdrawal guest: the fixed statement of `lichen-withdraw`
-//! (`fixed`). Its input is the statement's input in bytes, read raw (as
-//! the other guests'): the hub's key and signature on `b`, then the
-//! withdrawal's. The chain receipt at the withdrawal's root is checked
-//! against the chain guest's image id, an assumption the prover resolves.
-//! Its journal: `c ‖ D ‖ H(pk_H)`, without `b`.
+//! (`fixed`). Its input, read raw (as the other guests'): a tag, then the
+//! statement's input in bytes. Tag 0: a return only, the hub's key and
+//! signature on `b`, then the withdrawal's (`fixed::check`, today's
+//! contracts). Tag 1: with the exit, its three branches
+//! (`fixed::check_exit`), a counter `K` checked as a Groth16 receipt of
+//! the counter guest (`lichen-groth16`). The chain receipt at the
+//! withdrawal's or the claim's root is checked against the chain guest's
+//! image id, an assumption the prover resolves. Its journal: `c ‖ D ‖
+//! H(pk_H)`, or with the exit `c ‖ D ‖ H(pk_H ‖ O_D)`; never `b`.
 
-use lichen_withdraw::fixed::{check, FixedInput};
+use lichen_withdraw::fixed::{check, check_exit, ExitStatement, FixedInput};
 use risc0_zkvm::guest::env;
 use risc0_zkvm::sha::Digest;
 
-/// The committed chain guest's image id.
+/// The committed chain and counter guests' image ids.
 const CHAIN_ID: &str = include_str!("../../guests/chain.id");
+const COUNTER_ID: &str = include_str!("../../guests/counter.id");
 
 fn hex32(s: &str) -> [u8; 32] {
     let s = s.trim().as_bytes();
@@ -24,8 +29,16 @@ fn main() {
     let mut words = vec![0u32; (n as usize).div_ceil(4)];
     env::read_slice(&mut words);
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).take(n as usize).collect();
-    let input = FixedInput::from_bytes(&bytes).expect("the statement's input");
     let chain_id = hex32(CHAIN_ID);
-    let journal = check(&input, &chain_id, &mut |j| env::verify(Digest::from_bytes(chain_id), j).is_ok()).expect("the fixed statement");
+    let verify_chain = &mut |j: &[u8]| env::verify(Digest::from_bytes(chain_id), j).is_ok();
+    let journal = match bytes.split_first() {
+        Some((0, rest)) => check(&FixedInput::from_bytes(rest).expect("the statement's input"), &chain_id, verify_chain).expect("the fixed statement").to_vec(),
+        Some((1, rest)) => {
+            let input = ExitStatement::from_bytes(rest).expect("the statement's input");
+            let counter_id = hex32(COUNTER_ID);
+            check_exit(&input, &chain_id, verify_chain, &mut |k, j| lichen_groth16::verify(&counter_id, k, j)).expect("the fixed statement with the exit").to_vec()
+        }
+        _ => panic!("no such statement"),
+    };
     env::commit_slice(&journal);
 }

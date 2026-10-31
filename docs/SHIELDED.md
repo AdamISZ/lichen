@@ -239,6 +239,13 @@ What it takes ([RUN_A_TOWER.md](RUN_A_TOWER.md) has the setup):
   root, path and chain proof once the sequencer has them, so a
   sequencer that stops after that can't stop that withdrawal. The ledger's data lives with the
   sequencer; data availability is out of scope.
+- **Shielded notes can't exit yet.** An exit, a claim from anchored
+  state against an operator that censors or vanishes
+  ([the explainer](explainers/exit.md)), posts each note's owner
+  signature on chain, and a shielded note has none to post: its owner's
+  authority is knowledge of its key, inside the proof. `lichen exit`
+  claims a wallet's transparent notes. Shielded addresses will gain an
+  owner key for it.
 - **Hardware signers aren't supported.** The right to spend a shielded
   note is knowledge of a key inside the proof, not a signature a device
   could make.

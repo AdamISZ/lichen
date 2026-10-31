@@ -9,7 +9,8 @@
 //!
 //! A block is the transactions applied between two seals, in order:
 //! mints (signed by the hub), transparent transfers (each spend signed by
-//! its note's owner, BIP340), and shielded transactions, whose receipts
+//! its note's owner, BIP340), exit records (signed by the hub and by the
+//! claimed notes' owners, [`exit`]), and shielded transactions, whose receipts
 //! the caller checks (`verify_spend`: `env::verify` in the guest) against
 //! the journal recomputed here. Every nullifier is shown unspent and
 //! inserted, in order; every new leaf is appended. Unlike the sequencer
@@ -27,6 +28,7 @@ use lichen_shielded::{self as sh, Hash, TREE_DEPTH};
 use sha2::{Digest, Sha256};
 
 pub mod btc;
+pub mod exit;
 pub mod smt;
 
 pub use btc::OutPoint;
@@ -174,6 +176,11 @@ pub enum Tx {
     Shielded { anchor: Hash, t_spends: Vec<(TNote, u32)>, t_sigs: Vec<[u8; 64]>, nfs: Vec<Hash>, cms: Vec<Hash>, ciphertexts: Vec<Vec<u8>>, t_outputs: Vec<TNote> },
     /// An anchor on Bitcoin of this history ([`AnchorRecord`]).
     Anchor(AnchorRecord),
+    /// An exit record: contract `c`, of deposit coin `deposit`, paid a claim of
+    /// `b` as its `request` posted it; the hub's signature
+    /// ([`exit::record_digest`]). Its transparent notes are retired,
+    /// leaf `exited(c)`.
+    Exit { c: u32, deposit: OutPoint, b: u32, posted: exit::Posted, sig: [u8; 64] },
 }
 
 /// The history hash after `root`: `hist_h = H(hist_{h-1} ‖ root_h)`, from
@@ -307,21 +314,12 @@ pub fn check_anchor(state: &AnchorState, height: u64, hist: &Hash, rec: &AnchorR
     if h != *hist {
         return Err(Reject::Seal);
     }
-    // in the block it names, at a leaf: its path as long as the
-    // coinbase's (index 0), which can't pass for a node of the tree (it
-    // isn't 64 bytes, and it is a coinbase), so the tree's real depth. A
-    // shorter or longer path could pass a forged transaction off as half
-    // of a real 64-byte one, or as a node (CVE-2017-12842).
+    // in the block it names, at a leaf
     let header = btc::Header(rec.header);
-    let depth = rec.coinbase_path.len();
-    if rec.coinbase.len() == 64 || !btc::is_coinbase(&rec.coinbase) || btc::merkle_root(&btc::sha256d(&rec.coinbase), 0, &rec.coinbase_path) != header.merkle_root() {
+    if !btc::in_block(&rec.tx, &header, rec.index, &rec.path, &rec.coinbase, &rec.coinbase_path) {
         return Err(Reject::Seal);
     }
-    let txid = btc::sha256d(&rec.tx);
-    if rec.path.len() != depth || depth >= 32 || rec.index >> depth != 0 || rec.index == 0 || btc::merkle_root(&txid, rec.index, &rec.path) != header.merkle_root() {
-        return Err(Reject::Seal);
-    }
-    Ok(AnchorState { seal: OutPoint { txid, vout: 0 }, height: at, root: rec.roots[0], block: header.hash(), ..*state })
+    Ok(AnchorState { seal: OutPoint { txid: btc::sha256d(&rec.tx), vout: 0 }, height: at, root: rec.roots[0], block: header.hash(), ..*state })
 }
 
 /// The statement's input: the state at height `i`, the block, and the
@@ -406,9 +404,9 @@ struct State<'a> {
 }
 
 impl State<'_> {
-    fn spend_nf(&mut self, nf: &Hash) -> Result<(), Reject> {
+    fn spend_nf(&mut self, nf: &Hash, leaf: &Hash) -> Result<(), Reject> {
         let p = self.nf_proofs.next().ok_or(Reject::Shape)?;
-        self.nullifiers = smt::insert(&self.nullifiers, nf, p, self.e).ok_or(Reject::Spent)?;
+        self.nullifiers = smt::insert(&self.nullifiers, nf, leaf, p, self.e).ok_or(Reject::Spent)?;
         Ok(())
     }
     /// A transparent note at `index`: under `T_i` (a path), or made
@@ -434,6 +432,17 @@ impl State<'_> {
     }
 }
 
+/// The leaf a transaction's spends get in the nullifier tree: a return of
+/// `r` with memo `c` if it pays the hub one note, `r` with a contract's
+/// memo (not 0); else an ordinary spend.
+pub fn spend_leaf(hub: &Hash, outputs: &[TNote]) -> Hash {
+    let mut to_hub = outputs.iter().filter(|n| n.owner == *hub);
+    match (to_hub.next(), to_hub.next()) {
+        (Some(n), None) if n.memo != 0 => smt::returned(n.memo, n.value),
+        _ => smt::spent(),
+    }
+}
+
 fn sum(mut ns: impl Iterator<Item = u64>) -> Result<u64, Reject> {
     ns.try_fold(0u64, |a, v| a.checked_add(v)).ok_or(Reject::Unbalanced)
 }
@@ -452,6 +461,16 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
     for tx in &input.txs {
         match tx {
             Tx::Anchor(rec) => anchor = check_anchor(&anchor, input.height, &input.hist, rec)?,
+            Tx::Exit { c, deposit, b, posted, sig } => {
+                let e = posted.fingerprint(*c, deposit, *b);
+                check_sig(&input.hub, &exit::record_digest(&input.anchor.sequencer, &input.hub, &input.anchor.genesis, &e), sig)?;
+                for n in &posted.notes {
+                    if let exit::PostedNote::Transparent { note, sig } = n {
+                        check_sig(&note.owner, &exit::signed_digest(&e), sig)?;
+                        st.spend_nf(&note.nullifier(), &smt::exited(*c))?;
+                    }
+                }
+            }
             Tx::Mint { outputs, sig } => {
                 check_sig(&input.hub, &mint_digest(&input.anchor.sequencer, &input.hub, &input.anchor.genesis, outputs), sig)?;
                 for n in outputs {
@@ -466,10 +485,11 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                     return Err(Reject::Shape);
                 }
                 let d = transfer_digest(spends, outputs);
+                let leaf = spend_leaf(&input.hub, outputs);
                 for ((n, i), sig) in spends.iter().zip(sigs) {
                     st.in_tree(n, *i)?;
                     check_sig(&n.owner, &d, sig)?;
-                    st.spend_nf(&n.nullifier())?;
+                    st.spend_nf(&n.nullifier(), &leaf)?;
                 }
                 if sum(spends.iter().map(|s| s.0.value))? != sum(outputs.iter().map(|n| n.value))? {
                     return Err(Reject::Unbalanced);
@@ -507,8 +527,9 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                     st.in_tree(n, *i)?;
                     check_sig(&n.owner, &d, sig)?;
                 }
+                let leaf = spend_leaf(&input.hub, t_outputs);
                 for n in t_spends.iter().map(|s| s.0.nullifier()).chain(nfs.iter().copied()) {
-                    st.spend_nf(&n)?;
+                    st.spend_nf(&n, &leaf)?;
                 }
                 for cm in cms {
                     st.make(*cm)?;
@@ -712,6 +733,7 @@ const MINT: u8 = 0;
 const TRANSFER: u8 = 1;
 const SHIELDED: u8 = 2;
 const ANCHOR: u8 = 3;
+const EXIT: u8 = 4;
 
 impl BlockInput {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -756,6 +778,14 @@ impl BlockInput {
                     w.0.push(ANCHOR);
                     w.record(a);
                 }
+                Tx::Exit { c, deposit, b, posted, sig } => {
+                    w.0.push(EXIT);
+                    w.put(&c.to_be_bytes());
+                    w.put(&deposit.to_bytes());
+                    w.put(&b.to_be_bytes());
+                    w.bytes(&posted.to_bytes());
+                    w.put(sig);
+                }
             }
         }
         w.len(self.nf_proofs.len());
@@ -798,6 +828,7 @@ impl BlockInput {
                     t_outputs: r.notes()?,
                 },
                 ANCHOR => Tx::Anchor(r.record()?),
+                EXIT => Tx::Exit { c: r.u32()?, deposit: OutPoint::from_bytes(&r.take()?), b: r.u32()?, posted: exit::Posted::from_bytes(&r.bytes()?)?, sig: r.take()? },
                 _ => return Err(Reject::Encoding),
             })
         })?;

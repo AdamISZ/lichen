@@ -21,6 +21,15 @@
 //! and every transaction has one input. A challenge spends `success`'s
 //! output, so the two can't race, and `Δ2 > Δ1 + 2u` is not needed.
 //!
+//! With the exit (docs/EXIT_PLAN.md, "Under BABE"; [`ExitKeys`]),
+//! `request` also carries Alice's signature on her claim's fingerprint
+//! `E` and the claim as posted (`lichen_withdraw::exit::Posted`, in its
+//! first witness items), and `respond` has two leaves, one transaction:
+//! `respond` (plain: the hub signs `E` under its plain key) and
+//! `respond_counter` (`E` under its counter key, and the counter `K`
+//! itself). Both check the hub's `E` digit for digit against Alice's, as
+//! `b`'s. Which key signed `E` tells the statement which leaf ran.
+//!
 //! `wrongly_challenged` is 2-of-2, as every leaf here, so that its output
 //! is fixed; but Alice keeps her signature on it from the hub
 //! ([`Babe::withheld`]), for her towers only. The hub, which knows `msg`,
@@ -29,6 +38,8 @@
 //! (version 3), which bounds what a tower holding it could pin with.
 
 use anyhow::{ensure, Context, Result};
+use lichen_withdraw::exit::{posted_items, POSTED_ITEMS};
+use lichen_withdraw::fixed::K_LEN;
 use lngap_btc::bitcoin::opcodes::all::*;
 use lngap_btc::bitcoin::script::Builder;
 use lngap_btc::bitcoin::transaction::Version;
@@ -78,6 +89,27 @@ pub struct Spec {
     /// The kept instances' hashlocks, `SHA-256(msg)`.
     pub hmsg: Vec<Hash>,
     pub windows: Windows,
+    /// The exit's keys; none for a graph of returns only.
+    pub exit: Option<ExitKeys>,
+}
+
+/// The exit's keys: Alice's one-time key for `E` (`request`'s second
+/// signature, 32 bytes), and the hub's for `respond`, SHA-256 chains (the
+/// statement checks them, `lichen_withdraw::fixed::ExitKeys`): `E` in the
+/// plain leaf, `E` in the counter leaf, and `K` (`K_LEN` bytes).
+#[derive(Clone, Debug)]
+pub struct ExitKeys {
+    pub e_key: WotsPublic,
+    pub hub_e_plain: Wots256Public,
+    pub hub_e_counter: Wots256Public,
+    pub hub_k: Wots256Public,
+}
+
+/// What `respond` carries with the exit ([`Babe::read_respond_exit`]).
+pub struct RespondExit {
+    pub e: Vec<u8>,
+    pub hub_e: Vec<[u8; 32]>,
+    pub k: Option<Wots256Sig>,
 }
 
 /// `assert`'s arguments: the preimages, π2, π3.
@@ -99,8 +131,21 @@ fn after(blocks: u16) -> (Builder, Timelock) {
 
 /// Drop a word's 8 digits, which `wots_verify` leaves.
 fn drop_digits(b: Builder) -> Builder {
-    (0..4).fold(b, |b, _| b.push_opcode(OP_2DROP))
+    drop_n(b, 8)
 }
+
+/// Drop `n` stack items (`n` even, or one `OP_DROP` more).
+fn drop_n(b: Builder, n: usize) -> Builder {
+    let b = (0..n / 2).fold(b, |b, _| b.push_opcode(OP_2DROP));
+    if n % 2 == 1 {
+        b.push_opcode(OP_DROP)
+    } else {
+        b
+    }
+}
+
+/// `E`'s 64 digits (32 bytes).
+const E_DIGITS: usize = 64;
 
 impl Babe {
     pub fn new(spec: Spec) -> Result<Babe> {
@@ -111,6 +156,11 @@ impl Babe {
         let w = spec.windows;
         ensure!(w.w_h > POST_CSV && w.delta1 > POST_CSV && w.delta2 > POST_CSV, "each window longer than a post's lock");
         ensure!(w.t_a < spec.terms.t_close, "T_A before T_close");
+        if let Some(x) = &spec.exit {
+            let e = WotsParams::for_bytes(32);
+            ensure!(x.e_key.params == e && x.hub_e_plain.params == e && x.hub_e_counter.params == e, "the keys for E sign 32 bytes");
+            ensure!(x.hub_k.params == WotsParams::for_bytes(K_LEN as u32), "the key for K signs {K_LEN} bytes");
+        }
         Ok(Babe { spec })
     }
     pub fn core(&self) -> Core<'_> {
@@ -129,24 +179,54 @@ impl Babe {
 
     /// The contract output's tree: `fold`, `default`, and `request`, Alice's
     /// signature on `b` (after the channel's `to_self_delay`, as BitVMX's
-    /// `escalate`).
+    /// `escalate`); with the exit, her signature on `E` too, and the claim
+    /// posted below them, unchecked (the statement checks it).
     pub fn tree(&self) -> Result<TapTree> {
         let d = self.spec.params.to_self_delay;
         let (b, tl) = self.signed(if d > 0 { after(d) } else { (Builder::new(), Timelock::NONE) });
-        self.core().tree(ok_leaf("request", drop_digits(b.wots_verify(&self.spec.b_key)), tl))
+        let mut b = drop_digits(b.wots_verify(&self.spec.b_key));
+        if let Some(x) = &self.spec.exit {
+            b = drop_n(drop_n(b.wots_verify(&x.e_key), E_DIGITS), POSTED_ITEMS);
+        }
+        self.core().tree(ok_leaf("request", b, tl))
+    }
+    /// A `respond` leaf's check of `E`: Alice's signature (from `request`)
+    /// leaves its digits, and the hub's under `key` is verified tied to
+    /// them, so on the same `E`.
+    fn same_e(b: Builder, alice: &WotsPublic, key: &Wots256Public) -> Builder {
+        let pos: Vec<usize> = (0..E_DIGITS).collect();
+        drop_n(b.wots_verify(alice).wots_verify_tied(key, E_DIGITS, &pos), E_DIGITS)
     }
     /// `request`'s output: the hub's `respond`, the two signatures on `b`
-    /// digit by digit equal; or, after `w_H`, `request_timeout`.
+    /// digit by digit equal; or, after `w_H`, `request_timeout`. With the
+    /// exit, `respond` checks `E` the same way under the hub's plain key,
+    /// and `respond_counter` under its counter key, with its signature on
+    /// `K`.
     pub fn requested(&self) -> Result<TapTree> {
-        let (mut b, tl) = self.signed(after(POST_CSV));
-        b = b.wots_verify(&self.spec.hub_b);
-        b = (0..8).fold(b, |b, _| b.push_opcode(OP_TOALTSTACK)).wots_verify(&self.spec.b_key);
-        b = (0..8).fold(b, |b, _| b.push_opcode(OP_FROMALTSTACK));
-        // Alice's digits a_0..a_7 below the hub's h_0..h_7: a_k is k + 1
-        // deep under h_k
-        b = (1..=8).rev().fold(b, |b, k| b.push_int(k).push_opcode(OP_ROLL).push_opcode(OP_NUMEQUALVERIFY));
+        let respond = || {
+            let (mut b, tl) = self.signed(after(POST_CSV));
+            b = b.wots_verify(&self.spec.hub_b);
+            b = (0..8).fold(b, |b, _| b.push_opcode(OP_TOALTSTACK)).wots_verify(&self.spec.b_key);
+            b = (0..8).fold(b, |b, _| b.push_opcode(OP_FROMALTSTACK));
+            // Alice's digits a_0..a_7 below the hub's h_0..h_7: a_k is k + 1
+            // deep under h_k
+            b = (1..=8).rev().fold(b, |b, k| b.push_int(k).push_opcode(OP_ROLL).push_opcode(OP_NUMEQUALVERIFY));
+            (b, tl)
+        };
         let (t, ttl) = self.signed(after(self.spec.windows.w_h));
-        TapTree::new(vec![ok_leaf("respond", b, tl), ok_leaf("request_timeout", t, ttl)])
+        let (b, tl) = respond();
+        let mut leaves = vec![];
+        match &self.spec.exit {
+            None => leaves.push(ok_leaf("respond", b, tl)),
+            Some(x) => {
+                leaves.push(ok_leaf("respond", Self::same_e(b, &x.e_key, &x.hub_e_plain), tl));
+                let (b, tl) = respond();
+                let b = Self::same_e(b, &x.e_key, &x.hub_e_counter).wots_verify(&x.hub_k);
+                leaves.push(ok_leaf("respond_counter", drop_n(b, 2 * K_LEN), tl));
+            }
+        }
+        leaves.push(ok_leaf("request_timeout", t, ttl));
+        TapTree::new(leaves)
     }
     /// `respond`'s output: Alice's `assert`, π1's digits under her Lamport
     /// key, then π2 and π3, unsigned (so that the hub can check the whole
@@ -195,17 +275,47 @@ impl Babe {
             _ => Role::Hub,
         }
     }
-    /// A witness of link `name`'s shape, for its floor.
+    /// A witness of link `name`'s shape, for its floor: with the exit, its
+    /// largest (`respond_counter`'s for `respond`, the largest claim for
+    /// `request`).
     fn shape(&self, name: &str) -> Vec<Vec<u8>> {
-        match name {
-            "request" => wots_shape([&self.spec.b_key]),
-            "respond" => (0..self.spec.hub_b.params.total_digits()).flat_map(|_| [vec![0u8; 32], vec![15u8]]).chain(wots_shape([&self.spec.b_key])).collect(),
-            "assert" => vec![vec![0u8; 20]; DIGITS].into_iter().chain([vec![0u8; 64], vec![0u8; 32]]).collect(),
+        let wots256 = |k: &Wots256Public| (0..k.params.total_digits()).flat_map(|_| [vec![0u8; 32], vec![15u8]]).collect::<Vec<_>>();
+        match (name, &self.spec.exit) {
+            ("request", None) => wots_shape([&self.spec.b_key]),
+            ("request", Some(x)) => {
+                let posted = 8 + 32 + 1 + lichen_withdraw::exit::MAX_NOTES * (1 + 76 + 64);
+                posted_items(&vec![0u8; posted])
+                    .expect("the largest claim fits")
+                    .into_iter()
+                    .map(<[u8]>::to_vec)
+                    .chain(wots_shape([&x.e_key, &self.spec.b_key]))
+                    .collect()
+            }
+            ("respond", exit) => {
+                let mut w = wots256(&self.spec.hub_b).into_iter().chain(wots_shape([&self.spec.b_key])).collect::<Vec<_>>();
+                if let Some(x) = exit {
+                    let e = &x.hub_e_counter.params;
+                    w.extend(wots_shape([&x.e_key]));
+                    w.extend((0..e.total_digits()).map(|_| vec![0u8; 32]).chain((0..e.checksum_digits).map(|_| vec![15u8])));
+                    w.extend(wots256(&x.hub_k));
+                }
+                w
+            }
+            ("assert", _) => vec![vec![0u8; 20]; DIGITS].into_iter().chain([vec![0u8; 64], vec![0u8; 32]]).collect(),
             _ => (0..DIGITS).flat_map(|_| [vec![0u8; 20], vec![0u8; 64]]).collect(),
         }
     }
     fn link(&self, name: &str, prev: &TapTree, op: OutPoint, prev_out: &TxOut, next: &TapTree) -> Result<Presign> {
-        self.core().link(name, Self::poster(name), self.shape(name), prev, name, op, prev_out, next.script_pubkey())
+        // with the exit, `respond`'s floor is for its counter leaf, the
+        // larger, so that both leaves spend into one transaction
+        let leaf = if name == "respond" && self.spec.exit.is_some() { "respond_counter" } else { name };
+        let mut p = self.core().link(name, Self::poster(name), self.shape(name), prev, leaf, op, prev_out, next.script_pubkey())?;
+        if leaf != name {
+            let plain = Presign::new(name, prev, name, op, prev_out, p.tx.output.clone(), true)?;
+            ensure!(plain.tx == p.tx, "respond's leaves spend into one transaction");
+            (p.leaf, p.control) = (plain.leaf, plain.control);
+        }
+        Ok(p)
     }
 
     /// Every transaction the parties pre-sign, the contract output at
@@ -228,8 +338,12 @@ impl Babe {
         for (name, next, terminal, pay) in chain {
             let link = self.link(name, &prev, op, &prev_out, &next)?;
             let n_out = link.tx.output[0].clone();
+            let counter = (name == "respond" && self.spec.exit.is_some())
+                .then(|| Presign::new("respond_counter", &prev, "respond_counter", op, &prev_out, link.tx.output.clone(), true))
+                .transpose()?;
             op = OutPoint { txid: link.tx.compute_txid(), vout: 0 };
             out.push(link);
+            out.extend(counter);
             out.push(Presign::new(terminal, &next, terminal, op, &n_out, pay(self, n_out.value)?, false)?);
             (prev, prev_out) = (next, n_out);
         }
@@ -261,10 +375,72 @@ impl Babe {
     pub fn request_wire(b: &WotsSig) -> Vec<Vec<u8>> {
         b.consumption_order().into_iter().rev().collect()
     }
+    /// `request`'s with the exit: the claim as posted (`posted`, in
+    /// [`POSTED_ITEMS`] items of up to `POSTED_ITEM` bytes, its first
+    /// items), then
+    /// Alice's signature on `E`, then on `b`.
+    pub fn request_exit_wire(b: &WotsSig, e: &WotsSig, posted: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let items = posted_items(posted).with_context(|| format!("a claim of {} bytes posted", posted.len()))?;
+        Ok(items.into_iter().map(<[u8]>::to_vec).chain(e.consumption_order().into_iter().rev()).chain(Self::request_wire(b)).collect())
+    }
+    /// Read `request`'s arguments with the exit (consumption order, below
+    /// both signatures): Alice's signatures on `b` and `E`, and the claim
+    /// as posted.
+    pub fn read_request_exit(args: &[Vec<u8>]) -> Result<(WotsSig, WotsSig, Vec<u8>)> {
+        let (nb, ne) = (2 * WotsParams::for_bytes(4).total_digits() as usize, 2 * WotsParams::for_bytes(32).total_digits() as usize);
+        ensure!(args.len() == nb + ne + POSTED_ITEMS, "a request of {} arguments", args.len());
+        let b = WotsSig::from_consumption_order(WotsParams::for_bytes(4), &args[..nb])?;
+        let e = WotsSig::from_consumption_order(WotsParams::for_bytes(32), &args[nb..nb + ne])?;
+        Ok((b, e, args[nb + ne..].iter().rev().flatten().copied().collect()))
+    }
     /// `respond`'s: the hub's signature on `b`, consumed first, then
     /// Alice's (from `request`).
     pub fn respond_wire(hub: &Wots256Sig, alice: &WotsSig) -> Vec<Vec<u8>> {
         hub.consumption_order().into_iter().chain(alice.consumption_order()).rev().collect()
+    }
+    /// What `respond` carries with the exit, from its arguments
+    /// (consumption order, below both signatures; `counter` for
+    /// `respond_counter`'s): the `E` both signed, the hub's signature on it
+    /// (its hashes, the statement's), and on `K`.
+    pub fn read_respond_exit(args: &[Vec<u8>], counter: bool) -> Result<RespondExit> {
+        let (b, e) = (2 * WotsParams::for_bytes(4).total_digits() as usize, WotsParams::for_bytes(32));
+        let (n, msg) = (e.total_digits() as usize, e.message_digits as usize);
+        let alice_e = WotsSig::from_consumption_order(e, args.get(2 * b..2 * b + 2 * n).context("respond's arguments are too few")?)?;
+        // the tied signature, top first: each checksum digit's value and
+        // reveal, last first, then the message digits' reveals, last first
+        let tied = args.get(2 * b + 2 * n..2 * b + 3 * n + (n - msg)).context("respond's arguments are too few")?;
+        let mut hub_e = vec![[0u8; 32]; n];
+        for (k, i) in (msg..n).rev().enumerate() {
+            hub_e[i] = tied[2 * k + 1][..].try_into().context("a reveal of 32 bytes")?;
+        }
+        for (k, i) in (0..msg).rev().enumerate() {
+            hub_e[i] = tied[2 * (n - msg) + k][..].try_into().context("a reveal of 32 bytes")?;
+        }
+        let at = 2 * b + 3 * n + (n - msg);
+        let k = if counter {
+            let p = WotsParams::for_bytes(K_LEN as u32);
+            Some(Wots256Sig::from_consumption_order(p, args.get(at..at + 2 * p.total_digits() as usize).context("respond_counter's arguments are too few")?)?)
+        } else {
+            None
+        };
+        Ok(RespondExit { e: alice_e.message(), hub_e, k })
+    }
+    /// `respond`'s with the exit: as [`Babe::respond_wire`], then Alice's
+    /// signature on `E` (from `request`) and the hub's, tied to it (its
+    /// reveals, and its checksum digits); for `respond_counter`, then the
+    /// hub's signature on `K`.
+    pub fn respond_exit_wire(hub_b: &Wots256Sig, alice_b: &WotsSig, alice_e: &WotsSig, hub_e: &Wots256Sig, k: Option<&Wots256Sig>) -> Vec<Vec<u8>> {
+        let msg = hub_e.params.message_digits as usize;
+        // the tied signature, bottom first: each reveal, a checksum digit's
+        // value above its reveal
+        let tied = hub_e
+            .hashes
+            .iter()
+            .zip(&hub_e.digits)
+            .enumerate()
+            .flat_map(|(i, (h, d))| std::iter::once(h.to_vec()).chain((i >= msg).then(|| if *d == 0 { vec![] } else { vec![*d] })));
+        let k = k.map(|k| k.consumption_order().into_iter().rev()).into_iter().flatten();
+        k.chain(tied).chain(alice_e.consumption_order().into_iter().rev()).chain(Self::respond_wire(hub_b, alice_b)).collect()
     }
     /// `assert`'s: π1's digits, Lamport-signed, then π2 and π3.
     pub fn assert_wire(preimages: &[Preimage], pi2: &[u8], pi3: &[u8]) -> Vec<Vec<u8>> {

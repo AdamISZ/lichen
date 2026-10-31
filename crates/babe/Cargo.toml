@@ -11,6 +11,8 @@ anyhow.workspace = true
 lngap-zk.workspace = true
 # the journal's key digest and length, as the guest's
 lichen-withdraw.workspace = true
+# the counter K's check, as the BABE guest's
+lichen-groth16.workspace = true
 # the reveal on chain: adaptor signatures, scripts, keys
 lngap-btc.workspace = true
 # the graph, on ln-gap's skeleton

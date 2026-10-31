@@ -1,5 +1,5 @@
 # A guest (GUEST_DIR: r0/guest, the spend guest; r0/chain-guest;
-# r0/withdraw-guest, r0/babe-guest), in RISC
+# r0/withdraw-guest, r0/counter-guest, r0/babe-guest), in RISC
 # Zero's pinned builder image (x86; on Apple silicon, emulated). Context:
 # lichen's root. r0/build-guest.sh runs it.
 FROM --platform=linux/amd64 risczero/risc0-guest-builder:r0.1.88.0
@@ -7,8 +7,8 @@ WORKDIR /src
 COPY crates/shielded crates/shielded
 COPY crates/validity crates/validity
 COPY crates/withdraw crates/withdraw
-COPY r0/guests/spend.id r0/guests/spend.id
-COPY r0/guests/chain.id r0/guests/chain.id
+COPY crates/groth16 crates/groth16
+COPY r0/guests/*.id r0/guests/
 ARG GUEST_DIR=r0/guest
 COPY ${GUEST_DIR} ${GUEST_DIR}
 ARG FLAGS

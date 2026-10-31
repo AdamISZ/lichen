@@ -277,7 +277,18 @@ mints transparent so the withdrawal statement is unchanged; then the
 validity chain, so the withdrawal proof judged in a dispute attests a
 proven valid history.
 
+## The exit (branch `exit`, 2026-10-30)
+
+Planned in [EXIT_PLAN.md](EXIT_PLAN.md): a user exits from anchored state
+when the operator (hub and sequencer) censors or vanishes, and the hub
+may answer only with a counter, a later anchored spend or her own signed
+claim through another contract. Built under BABE and played on regtest
+on the mock statement (2026-10-31); still to do: the real-proof run,
+towers' and shielded notes' exits, and sender acknowledgment for the
+data-availability gap. Its status and decisions are at the top of that
+plan.
+
 ## Later
 
-Watchtowers: a turnkey tower, planned in [TOWER_PLAN.md](TOWER_PLAN.md) (papers/lichen-bitvmx-v0.1.1.pdf, the tower section); several hubs
+Watchtowers: a turnkey tower, planned in [TOWER_PLAN.md](TOWER_PLAN.md) (papers/lichen-bitvmx-v0.1.2.pdf, the tower section); several hubs
 (colours, clearing lines); a GUI.

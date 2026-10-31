@@ -156,6 +156,18 @@ enum Cmd {
         #[arg(long, hide = true)]
         false_claim: bool,
     },
+    /// Exit through a contract when the operator won't return a
+    /// withdrawal: claim our notes at the latest anchored state on Bitcoin,
+    /// and play the dispute to its end. Run again to resume (the claim is
+    /// kept with the contract); on the real statement, with --input once
+    /// proved.
+    Exit {
+        contract: u32,
+        /// The claim's proof (lichen-r0's, `bitvmx-input` of the BABE
+        /// guest's receipt), hex.
+        #[arg(long)]
+        input: Option<PathBuf>,
+    },
     /// Write the package a tower needs to play a contract's dispute (once
     /// the withdrawal is returned on the L2 and the hub has refused it):
     /// the contract and its one-time secrets, never the wallet's key.
@@ -432,6 +444,30 @@ fn main() -> Result<()> {
                         auth.display()
                     );
                 }
+                _ => println!("{outcome:?}; swept {swept:?}"),
+            }
+        }
+        Cmd::Exit { contract, ref input } => {
+            let chain = chain(&a)?;
+            let input = match (input, &a.statement) {
+                (Some(p), lichen_proto::Statement::Babe { mock: false }) => w.babe_claim_input(contract, &hex::decode(std::fs::read_to_string(p)?.trim())?)?,
+                (Some(_), _) => anyhow::bail!("--input is the real statement's proof; the mock proves here"),
+                (None, _) => vec![],
+            };
+            w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
+            let dir = a.wallet.with_extension("d");
+            let (outcome, swept) = w.exit(&chain, &a.statement, &dir, contract, &input)?;
+            match outcome {
+                lichen_wallet::dispute::Outcome::ProofDue(t_a) => {
+                    let data = lichen_wallet::engine::babe::data_dir(&dir, contract);
+                    let (stmt, receipt) = (data.join("exit-statement.bin"), data.join("exit-chain.receipt"));
+                    println!(
+                        "The hub responded. Your proof is due: assert it before block {t_a} (T_A), after which the hub may take the contract. Prove on x86 Linux with Docker (the README, \"Disputes on the real statement\"):\n    lichen-r0 babe-exit {} exit.receipt {}\n    lichen-r0 wrap exit.receipt exit.groth16\n    lichen-r0 bitvmx-input exit.groth16 claim.hex\n    lichen exit {contract} --input claim.hex\n(after a false counter, babe-exit takes no chain receipt; anyone can prove it)",
+                        stmt.display(),
+                        receipt.display()
+                    );
+                }
+                lichen_wallet::dispute::Outcome::Countered => println!("The hub countered the claim: a note of it was spent, or claimed through another contract, at an anchored state. No branch of the statement holds."),
                 _ => println!("{outcome:?}; swept {swept:?}"),
             }
         }

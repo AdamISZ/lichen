@@ -1776,6 +1776,7 @@ dependencies = [
  "blake3",
  "hex",
  "k256",
+ "lichen-groth16",
  "lichen-withdraw",
  "lngap-btc",
  "lngap-channel",
@@ -1824,6 +1825,16 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "tiny_http",
+]
+
+[[package]]
+name = "lichen-groth16"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "lngap-zk",
+ "sha2",
+ "substrate-bn",
 ]
 
 [[package]]
@@ -1968,6 +1979,7 @@ dependencies = [
  "lichen-proto",
  "lichen-sequencer",
  "lichen-validity",
+ "lichen-withdraw",
  "lngap-btc",
  "lngap-channel",
  "lngap-ladder",
@@ -1987,6 +1999,7 @@ name = "lichen-withdraw"
 version = "0.1.0"
 dependencies = [
  "k256",
+ "lichen-shielded",
  "lichen-validity",
  "sha2",
 ]
@@ -3063,6 +3076,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-hex"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e75f6a532d0fd9f7f13144f392b6ad56a32696bfcd9c78f797f16bbb6f072d6"
+
+[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3422,6 +3441,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "substrate-bn"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b5bbfa79abbae15dd642ea8176a21a635ff3c00059961d1ea27ad04e5b441c"
+dependencies = [
+ "byteorder",
+ "crunchy",
+ "lazy_static",
+ "rand 0.8.8",
+ "rustc-hex",
 ]
 
 [[package]]

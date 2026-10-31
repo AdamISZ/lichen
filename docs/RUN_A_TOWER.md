@@ -17,6 +17,11 @@ contract's verification gadget:
   and answers each of the hub's moves, to the payout. At worst it can
   lose this one dispute (which is the hub's gain), not take your money.
 
+A tower plays a refused withdrawal's dispute, not yet an exit (`lichen
+exit`, a claim from anchored state when the operator censors or
+vanishes): an exit's proof depends on how the hub responds, so it can't
+be signed ahead into a package.
+
 This is the manual route, on a machine outside your own network (a VPS).
 Both have been run on Mutinynet: BitVMX's from a GCE `n2-highmem-4`,
 BABE's from a 4-vCPU x86 VPS
