@@ -26,7 +26,7 @@ The contracts and the dispute machinery are in [ln-gap](https://github.com/AdamI
 
 ### A few operational details that are mostly PoC limitations
 
-Worth mentioning these as idiosyncracies: first, this was built without a user-side bitcoin wallet as that's probably the right choice anyway: you fund an intermediate joint-control address and then from there the contract is funded. Explained in the procedures below. Second: in case you actually want to test *disputes*, and not normal usage, you'll have to create proofs to do withdrawals. The instructions are [here](#disputes-on-the-real-statement), and note that this involves running a proving step on x86 architecture that might take about 5 minutes. Notably, this step is delegatable, and that is addressed with the idea of [watchtowers](docs/RUN_A_TOWER.md).
+Worth mentioning these as idiosyncracies: first, this was built without a user-side bitcoin wallet as that's probably the right choice anyway: you fund an intermediate joint-control address and then from there the contract is funded. Explained in the procedures below. Second: in case you actually want to test *disputes*, and not normal usage, you'll have to create proofs to do withdrawals. The instructions are [here](#disputes-on-the-real-statement), and note that this involves running a proving step that might take about 5 minutes. Notably, this step is delegatable, and that is addressed with the idea of [watchtowers](docs/RUN_A_TOWER.md).
 
 ### High level plan of work to do:
 
@@ -85,26 +85,18 @@ claim challenged, on Mutinynet](docs/explainers/babe-challenged.md)).
 Disputes run on BABE's mock statement, where each claim's proof is of a
 toy circuit, so every claim is true (the contract's memo check still
 applies). It stands in for the real withdrawal proof, which takes
-minutes on x86 ([Disputes on the real statement](#disputes-on-the-real-statement)).
+a few minutes ([Disputes on the real statement](#disputes-on-the-real-statement)).
 
-## Running a sequencer or a hub
+## Running a hub (and sequencer)
 
-The sequencer and the hub are separate parties, deployed separately,
-normally on different machines. Each has its own Docker image, settings
-and data, and its own guide:
+In our example L2, the hub runs its own sequencer for the L2.
 
-- [Running a sequencer](docs/RUN_A_SEQUENCER.md): the L2's sequencer.
-  It has no node and no coins, and needs only the hub's key.
-- [Running a hub](docs/RUN_A_HUB.md): the hub and its Bitcoin node. It
-  reaches the sequencer by URL. The guide also covers setting the two up
-  together, and what testers need.
+- [Running a hub](docs/RUN_A_HUB.md): deploying the bitcoin node, hub
+and sequencer and making them accessible to clients/users.
 
-A user whose withdrawal is refused can hand the dispute to a machine she
-rents, a tower that plays it while she is away: [Running a
-tower](docs/RUN_A_TOWER.md). Under BitVMX's Groth16 statement the tower
-proves too, and holds the contract's one-time secrets (never her
-wallet's key); under BABE she proves first, and the tower holds only
-her signatures.
+Usage for clients/users is explained in [Using a wallet](docs/USE_A_WALLET.md).
+
+Deploying a watchtower for handling disputes is in [running a tower](docs/RUN_A_TOWER.md).
 
 The L2 has private payments, with every block proved valid: what is
 hidden, how long things take and what a dispute costs are in [Shielded
@@ -115,76 +107,53 @@ transfers](docs/SHIELDED.md).
 
 ## Try it
 
+The quickest look is [the demo](#the-demo). To run the stack as it is
+deployed, on regtest:
+
+```sh
+cp deploy/.env.example deploy/.env    # NETWORK=regtest, COMPOSE_PROFILES=regtest
+deploy/build.sh
+deploy/lichen.sh up
+deploy/smoke.sh     # funds the sequencer and the hub from the miner, deposits, withdraws cooperatively
+```
+
+On a test network such as Mutinynet, the hub's operator follows
+[Running a hub](docs/RUN_A_HUB.md), and users run only the `lichen`
+wallet ([Using a wallet](docs/USE_A_WALLET.md)), reading Bitcoin from
+the network's public Esplora server: no node, and no coins held by the
+wallet. Deposits are paid from any wallet or faucet; withdrawals go to
+an address of any wallet.
+
 Each deployment has its own keys, made on first start: the hub's L2 key
-(it mints; returns are paid to it) and its contract seed, in the hub's
-data directory, and the sequencer's key. The withdrawal statement takes
-the keys as input and its journal commits to them (the deployment id),
-so one guest serves every deployment; each contract checks its own.
-
-```sh
-cargo build
-./target/debug/lichen-hub --dir hub-data --print-key          # the hub's L2 key
-./target/debug/lichen-sequencer --ledger ledger.json --issuer <that key> &
-./target/debug/lichen-hub --dir hub-data --rpc-url ... --cookie ... &
-./target/debug/lichen --wallet alice.json init                 # pins the deployment
-./target/debug/lichen --wallet alice.json balance
-```
-
-A wallet pins the deployment the sequencer announces when it is made,
-and won't open a contract with a hub in another.
-
-## Networks, and no wallet of the user's
-
-`--network regtest|mutinynet|signet|testnet4` (hub and wallet): each a
-whole profile, the addresses and the contracts' timing in blocks. The hub runs a node and
-its wallet. The user runs neither: `lichen` reads Bitcoin from an
-Esplora server (`--esplora`, by default the network's public one) and
-holds keys, not coins. Opening a contract:
-
-```sh
-lichen --network mutinynet --wallet alice.json --statement babe open 400000 --payout <an address of yours>
-# pay 451000 sats to tb1p... (from any wallet, or a faucet); it waits
-```
-
-The deposit address is the hub's and yours together, or yours alone
-after about a day: if the contract never opens, `lichen refund
-<contract>` takes it back. It carries `D + r_A`, a share of the funding
-fee, and a fee budget for a dispute, which the funding transaction pays
-to a key of yours; `lichen sweep-fees <contract>` returns what is left
-once the contract is closed. Withdrawals and dispute payouts go to the
-payout address. `--toy` (sequencer and
-hub) runs the toy deployment instead, whose keys anyone can derive
-(`lngap-toy/sequencer`, `lngap-toy/hub`): the tests and the demo use it,
-so that a proof made in advance is valid for them.
+(it mints; returns are paid to it) and its contract seed, and the
+sequencer's key. The withdrawal statement takes the keys as input and
+its journal commits to them (the deployment id), so one guest serves
+every deployment, and each contract checks its own. A wallet pins the
+deployment the sequencer announces when it is made, and won't open a
+contract with a hub in another. `--toy` (sequencer and hub) runs the toy
+deployment instead, whose keys anyone can derive (`lngap-toy/sequencer`,
+`lngap-toy/hub`): the tests and the demo use it, so that a proof made in
+advance is valid for them.
 
 ## Disputes on the real statement
 
 A withdrawal the hub refuses is enforced with a proof of the return, made
-with RISC Zero and wrapped in Groth16 (the wrap runs on x86 Linux). The
-proof also shows that the return's root ends a valid history, with the
-sequencer's chain receipt at its height
-([Shielded transfers](docs/SHIELDED.md)). On BitVMX's statement:
+with RISC Zero and wrapped in Groth16. The proof also shows that the
+return's root ends a valid history, with the sequencer's chain receipt
+at its height, and that the root is anchored on Bitcoin
+([Shielded transfers](docs/SHIELDED.md)). It is made with `lichen-r0`:
 
 ```sh
-# 1. the claim: the return note, its path, the sequencer's signed root;
-#    and the chain receipt at that root's height
-lichen --wallet alice.json withdraw-input <memo> > withdraw-input.json
-lichen --wallet alice.json chain-receipt <memo> chain.receipt
-# 2. on x86 Linux with Docker, lichen-r0 (r0/host; or the prover image,
-#    docker build -f r0/Dockerfile -t lichen-r0 ., with r0/withdraw-prover.sh,
-#    which gives it the host's Docker for the wrap). 4 vCPUs, 16 GB: 6 min
-#    to prove, 4.5 to wrap
-lichen-r0 claim withdraw-input.json chain.receipt claim.hex
-#    (on a Mac, r0/withdraw-prover.sh withdraw ... proves the STARK only)
-# 3. the dispute, on the Groth16 verifier
-lichen --wallet alice.json --statement bitvmx dispute <contract> <amount> --input claim.hex
+cargo build --release --manifest-path r0/Cargo.toml -p lichen-r0
 ```
 
-`--statement bitvmx` finds BitVMX's verifier in the cargo checkout (by
-its SHA-256; `LICHEN_VERIFIER_ELF` overrides). The wallet checks the
-claim's words against the contract (memo, image id, deployment, journal
-length) before escalating; a dispute in progress resumes
-when the command is run again (`lichen dispute <contract>`).
+on Linux, or on a Mac with Xcode and its Metal toolchain
+(`xcodebuild -downloadComponent MetalToolchain`; build with
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`). Either way
+it proves on the CPU, and the wrap runs RISC Zero's prover image on
+Docker, its files in `RISC0_WORK_DIR`. On a Mac, set that to a directory
+under your home folder, which Docker Desktop shares. The proof needs no
+secret of the user's, so anyone can make it for her.
 
 ### Under BABE
 
@@ -199,16 +168,37 @@ after it opened). Then:
 ```sh
 lichen --wallet alice.json withdraw-input <contract> > withdraw-input.json
 lichen --wallet alice.json chain-receipt <contract> chain.receipt
-# on x86 Linux with Docker, lichen-r0 (r0/host, or in the prover image
-# with the host's Docker for the wrap). 4 vCPUs: 11 min to prove, 4 to wrap
+# a minute or so to prove and two to wrap on an M4 Pro laptop (est.);
+# 11 and 4 minutes on a 4-vCPU server
 lichen-r0 babe-claim withdraw-input.json alice.d/babe-<contract>/hub-auth.json chain.receipt claim.hex
 lichen --wallet alice.json --statement babe dispute <contract> --input claim.hex
 ```
 
 Or, with the proof made, hand the rest to a tower: `lichen export-dispute
-<contract> --input claim.hex --out package.json`. The wallet checks the
-claim's journal and verifies its proof before it asserts. If the hub
-challenges a true claim, the wallet (or the tower) answers it from the
-garbled circuits kept when the contract opened ([a true claim
-challenged, on Mutinynet](docs/explainers/babe-challenged.md)).
+<contract> --input claim.hex --out package.json`
+([Running a tower](docs/RUN_A_TOWER.md)). The wallet checks the claim's
+journal and verifies its proof before it asserts. If the hub challenges
+a true claim, the wallet (or the tower) answers it from the garbled
+circuits kept when the contract opened ([a true claim challenged, on
+Mutinynet](docs/explainers/babe-challenged.md)). If the operator won't
+even take the return on the L2, the wallet exits instead: `lichen exit
+<contract>` ([the exit](docs/explainers/exit.md)).
 
+### Under BitVMX
+
+BitVMX, lichen's first gadget, is still built. Its proof covers the
+amount itself, so it is made before the dispute starts:
+
+```sh
+lichen --wallet alice.json withdraw-input <memo> > withdraw-input.json
+lichen --wallet alice.json chain-receipt <memo> chain.receipt
+# 6 minutes to prove and 4.5 to wrap on a 4-vCPU server
+lichen-r0 claim withdraw-input.json chain.receipt claim.hex
+lichen --wallet alice.json --statement bitvmx dispute <contract> <amount> --input claim.hex
+```
+
+`--statement bitvmx` finds BitVMX's verifier in the cargo checkout (by
+its SHA-256; `LICHEN_VERIFIER_ELF` overrides). The wallet checks the
+claim's words against the contract (memo, image id, deployment, journal
+length) before escalating; a dispute in progress resumes when the
+command is run again (`lichen dispute <contract>`).
