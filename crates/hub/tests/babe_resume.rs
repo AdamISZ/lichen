@@ -125,8 +125,9 @@ fn a_babe_dispute_resumes_and_alice_gone_loses_at_t_a() {
     // (then it is dropped waiting for a block that won't come), or not
     mining.store(false, Ordering::Relaxed);
     println!("LICHEN R: Alice's wallet stopped after assert; the chain halted");
-    let before = hub.log();
-    drop(hub);
+    // (its log once it has stopped: it may judge her proof, and note it,
+    // until then)
+    let before = hub.stop();
     let hub = Hub::start(config()).unwrap();
     println!("LICHEN R: the hub restarted at {}", hub.url);
     drop(w);

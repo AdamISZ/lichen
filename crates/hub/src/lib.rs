@@ -285,6 +285,15 @@ impl Hub {
     pub fn log(&self) -> Vec<String> {
         self.inner.log.lock().unwrap().clone()
     }
+    /// Stop the hub, its threads joined, and return its whole log: what
+    /// it noted up to the moment it stopped, which [`Hub::log`] taken
+    /// before dropping it may miss.
+    pub fn stop(self) -> Vec<String> {
+        let inner = self.inner.clone();
+        drop(self);
+        let log = inner.log.lock().unwrap().clone();
+        log
+    }
     /// The misbehaviour switches are for test networks only.
     fn misbehave(&self) {
         let net = self.inner.cfg.network;
