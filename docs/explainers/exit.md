@@ -155,8 +155,10 @@ two transactions:
 A true counter leaves her no branch: she can't assert, and from `T_A`
 the contract is the hub's. A false one pays her through the third
 branch. That branch's proof checks a Groth16 proof inside RISC Zero,
-about 47 million cycles (an hour or two on a laptop's CPU, minutes on a
-GPU), and needs no secret of hers: anyone can prove it for her.
+56.3 million cycles in 58 segments (about an hour on a laptop's CPU,
+about a minute on a CUDA GPU, estimated from measured segments), and
+needs no secret of hers: anyone can prove it for her. It has days to
+run, since her deadline is `T_A`, near the contract's end.
 
 The rest is BABE's: a false assertion is challenged, a true one pays
 her `b` and the reserves after `Δ2`, and a hub that never responds lets
