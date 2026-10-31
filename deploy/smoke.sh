@@ -64,11 +64,11 @@ minted="$(grep -o "you'll be minted [0-9]*" "$log" | grep -o '[0-9]*$')"
 
 echo "== minted on the L2: the deposit less the hub's fee, $minted sats"
 for _ in $(seq 60); do
-    [ "$(wallet balance | head -1 | cut -d" " -f1)" -ge "$minted" ] && break
+    [ "$(wallet balance | awk 'NR == 1 {print $1}')" -ge "$minted" ] && break
     sleep 2
 done
 wallet balance
-[ "$(wallet balance | head -1 | cut -d" " -f1)" = "$minted" ] || { echo "FAIL: not $minted minted" >&2; exit 1; }
+[ "$(wallet balance | awk 'NR == 1 {print $1}')" = "$minted" ] || { echo "FAIL: not $minted minted" >&2; exit 1; }
 
 echo "== withdraw 300000 cooperatively"
 wallet withdraw "$cid" 300000

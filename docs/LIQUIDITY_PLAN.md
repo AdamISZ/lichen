@@ -66,7 +66,10 @@ needs: at the default, about 2M sats a contract, whatever she asked.
    could make (`babe-claim` proved the statement without the exit, whose
    journal no contract has now). The hub auth the wallet writes carries
    the exit's keys and coin, and `babe-claim` proves the statement with
-   the exit, a return (`Mode::Return`). The smoke test remains.
+   the exit, a return (`Mode::Return`). The smoke test passes on a regtest
+   deployment (`lichen:liquidity`, 2026-11-01): 200,000 of liquidity for
+   a fee of 2,000, 398,000 minted, cap 598,455 (u 585, K 10); 300,000
+   folded with the reserve.
 
 Existing contracts keep their terms; contracts opened after this use the
 new guests.
