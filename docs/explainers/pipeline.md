@@ -120,7 +120,7 @@ signature over SHA-256 chains, 10 digits of 4 bits. It commits
 **`c ‖ D ‖ H(pk_H)`**, 68 bytes, the same for every amount: `pk_H` is the
 hub's one-time key for `b`, fixed at opening. A proof for an amount the
 hub didn't sign doesn't exist, and the hub signs only the `b` Alice
-asserted on chain ([the BABE companion](../../papers/lichen-babe-v0.1.8.pdf),
+asserted on chain ([the BABE companion](../../papers/lichen-babe-v0.1.9.pdf),
 section 5). BitVMX's guest (`r0/withdraw-guest`) skips the signature and
 commits **`b ‖ c ‖ D`**, 40 bytes, since BitVMX reads `b` from the proof's
 input on chain.
@@ -316,7 +316,7 @@ loser's reserve covers the floors: at most 30,981 sats. The walkthroughs
 are [babe-challenged.md](babe-challenged.md) and
 [babe-endings.md](babe-endings.md). The transaction graph and the
 measurements are in the
-[BABE companion](../../papers/lichen-babe-v0.1.8.pdf).
+[BABE companion](../../papers/lichen-babe-v0.1.9.pdf).
 
 **A tower needs none of Alice's keys.** Her signatures, on `b` and on A,
 are made before anything she must answer. Her one answer is a hash

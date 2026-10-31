@@ -102,7 +102,9 @@ they differ.
 Since version 0.1.7 the graph also carries lichen's exit, Alice's claim
 from anchored state against a hub that censors or vanishes, and the
 hub's counter to it (Section~\ref{sec:counter}). It is built and played
-on regtest on the mock statement, not yet on real proofs. The sizes of
+on regtest on the mock statement; its guests are run on made-up inputs
+and a real counter is proved and wrapped, but it is not yet played on
+chain with real proofs. The sizes of
 Section~\ref{sec:costs} were measured on Mutinynet before it was added;
 Section~\ref{sec:counter} gives what it adds.
 
@@ -924,11 +926,25 @@ $pk_H$ all four of the hub's keys in \tx{respond}. Alice wins on any of:
 Which key signed $E$ says which leaf ran; the hub's mode is a private
 input, like $b$, since it isn't known at setup. A true counter leaves
 her no branch, and \tx{respond\_timeout} takes the contract from $T_A$.
-The third branch verifies a Groth16 proof inside RISC Zero: 47M cycles
-with RISC Zero's accelerated substrate-bn (174M with arkworks), about
-48 segments, so an hour or two on a laptop and minutes on a GPU. It needs
-no secret of Alice's, so anyone can prove it for her. The guest with the
-exit is 892~kB.
+A claim of one note runs in 1.74M user cycles and one of eight in 5.27M,
+two segments and six; the first proves on a 14-core laptop's CPU in about
+two minutes (lichen).
+
+The third branch verifies a Groth16 proof inside RISC Zero, with RISC
+Zero's accelerated fork of substrate-bn (174M cycles with arkworks): 56.3M
+user cycles in 58 segments of $2^{20}$, run with $K$ a real proof's points
+(lichen). On the laptop's CPU such a segment proves in about 53~s and
+takes 11~s more to lift and join (lichen), so the branch takes about an
+hour, then 134~s to wrap; on the 4-vCPU server, about ten hours (est.).
+RISC Zero proves on the GPU with CUDA only, the version lichen uses having
+no Metal prover; at its published throughput on an RTX~4090 the branch's
+segments take about a minute (est.). An hour is no constraint: the
+deadline for \tx{assert} is absolute, $T_A$, close to the contract's end
+(Section~\ref{sec:graph}). Almost half the cycles are spent on the
+verifying key's constants, checking its G2 points are in the subgroup and
+pairing $\alpha$ with $\beta$, which the guest could skip or precompute,
+to about 31M (est.). The branch needs no secret of Alice's, so anyone can
+prove it for her. The guest with the exit is 892~kB.
 
 \paragraph{The hub's side.} The counter guest proves either ground
 from the hub's ledger: a spend in a later anchored state whose history
@@ -938,7 +954,12 @@ The second matters because \tx{respond} precedes \tx{assert}: two
 requests in one block would otherwise both be paid, since no record of
 either exit exists yet. Proving a spend's counter needs the contract's
 work on \tx{request}'s block first, then the proof and its wrap, so
-$w_H$ becomes 240 blocks on Mutinynet (two hours) and 36 on signet. With
+$w_H$ becomes 240 blocks on Mutinynet (two hours) and 36 on signet. The
+counter guest runs in 594k user cycles on a spend's ground and 309k on
+Alice's claim, one segment either way. The second proves in 306~s and
+wraps in 252~s on the 4-vCPU server, or proves in 30~s on the laptop
+(lichen), so the proof is a small part of $w_H$. Given a true counter, the
+statement refuses Alice, both natively and in the guest (lichen). With
 no counter, the hub records the exit on the L2, with the owners'
 signatures, and the chain guest retires its notes.
 
@@ -976,8 +997,8 @@ paper discusses~\cite{lichen}.
   their floor.
 \item A tower for the exit: Alice's proof depends on the hub's
   response, so she can't sign it ahead.
-\item The exit played with real proofs: a counter proved and wrapped
-  within $w_H$, and the failed-counter branch proved.
+\item The exit played on chain with real proofs, and the failed-counter
+  branch proved whole, not only estimated from other inputs' segments.
 \item Whether BABE's authors, or GOAT's, see a problem with moving the
   amount into the witness this way.
 \end{itemize}
