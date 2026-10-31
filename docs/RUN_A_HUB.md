@@ -209,9 +209,11 @@ its contracts and the node's wallets. For `NETWORK=mutinynet`:
 
 ```sh
 # 1. stop the two projects (their compose files are gone; by name), and
-#    a chain prover run by hand
+#    a chain prover run by hand (r0/chain-prover.sh). The hub's down warns
+#    its network is still in use: the anchoring sequencer had joined it
 docker compose -p lichen-hub-mutinynet down
 docker compose -p lichen-sequencer-mutinynet down
+docker network rm lichen-hub-mutinynet_default
 # 2. back up the secrets, with the node stopped
 mkdir -p ~/lichen-backup
 cp -a deploy/hub/data/mutinynet/hub ~/lichen-backup/hub
