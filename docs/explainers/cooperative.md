@@ -261,19 +261,9 @@ tokens are then in the same position as her 5,000 now.
 
 ## Reproducing it
 
-With a deployment as in [deploy/README.md](../../deploy/README.md) and
-the wallet built natively. The real statement now needs the sequencer
-anchoring and its chain prover running
-([RUN_A_SEQUENCER.md](../RUN_A_SEQUENCER.md)):
-
-```sh
-# the sequencer, anchoring through the hub's node (fund its wallet first)
-docker compose -f deploy/sequencer/docker-compose.yml -f deploy/sequencer/anchor.yml up -d
-# the chain prover, in the prover image (docker build -f r0/Dockerfile -t lichen-r0 .)
-r0/chain-prover.sh deploy/sequencer/data/mutinynet/ledger.json.blocks
-```
-
-Then Alice:
+With a deployment as in [RUN_A_HUB.md](../RUN_A_HUB.md), which anchors
+the L2's history and runs its chain prover, and the wallet built
+natively ([USE_A_WALLET.md](../USE_A_WALLET.md)). Then Alice:
 
 ```sh
 L="./target/release/lichen --network mutinynet --statement bitvmx"

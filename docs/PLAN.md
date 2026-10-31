@@ -251,7 +251,7 @@ couldn't.
   tail and resume tests run under the regtest windows, and `dispute.rs`'s
   second hub under its own (`--windows`-style config: 16/8/20).
 - A hub sets its own (`lichen-hub --windows <user>,<hub>,<path>`, `WINDOWS`
-  in `deploy/hub/.env`), sized by its contract count; it refuses at start
+  in `deploy/.env`), sized by its contract count; it refuses at start
   windows that fail `check` or give the user less than the network's.
 - The paper names them `w_A`, `w_H`, `w_P` (the dispute chain's
   "Windows by obligation", the Costs section's durations, the watchtower

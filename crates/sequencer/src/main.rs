@@ -38,7 +38,7 @@ struct Args {
     /// private input in the clear: tests and demos only.
     #[arg(long)]
     native_proofs: bool,
-    /// Anchor the history on Bitcoin (docs/ANCHOR_PLAN.md) through this
+    /// Anchor the history on Bitcoin (docs/RUN_A_HUB.md) through this
     /// bitcoind (its RPC URL), whose wallet pays the anchors' fees. A new
     /// ledger gets its genesis seal from it; a ledger made without one
     /// can't be anchored.

@@ -118,7 +118,8 @@ the same Mac, about 1 to 2.5 minutes a height for small blocks (one or
 two transactions), roughly half a minute more per transaction. A
 machine proving continuously keeps up with on the order of a hundred
 transactions an hour: plenty for a demonstration, far short of a busy
-payment system. Running it: [RUN_A_SEQUENCER.md](RUN_A_SEQUENCER.md).
+payment system. Running it: [RUN_A_HUB.md](RUN_A_HUB.md), its
+`chain-prover` service.
 
 **What the lag means.** A payment is final when it is sealed, as on
 transparent lichen, if you trust the sequencer: a proof shows a history
@@ -148,7 +149,7 @@ after would allow it.
 **Anchoring on Bitcoin.** A sequencer could sign two histories that
 split at some height, each valid: pay someone in one and return the same
 money to the hub in the other. So the sequencer anchors its history on
-Bitcoin ([RUN_A_SEQUENCER.md](RUN_A_SEQUENCER.md) runs it): it keeps
+Bitcoin ([RUN_A_HUB.md](RUN_A_HUB.md) runs it): it keeps
 one output, the seal, and each anchor transaction spends it, makes the
 next, and commits a hash of the whole history up to a sealed height. An
 output can be spent only once, so only one history is ever anchored;

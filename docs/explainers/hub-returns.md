@@ -206,7 +206,7 @@ needs the sequencer's chain receipt at the return's height:
 
 ```sh
 L="./target/release/lichen --network mutinynet --statement bitvmx"
-docker compose -f deploy/hub/docker-compose.yml stop hub
+docker compose -f deploy/docker-compose.yml stop hub
 $L --wallet alice.json withdraw 1002 30000             # the return; the fold fails
 $L --wallet alice.json withdraw-input 1002 > withdraw-input.json
 $L --wallet alice.json chain-receipt 1002 chain.receipt
@@ -214,7 +214,7 @@ $L --wallet alice.json chain-receipt 1002 chain.receipt
 lichen-r0 claim withdraw-input.json chain.receipt claim-1002.hex
 $L --wallet alice.json dispute 1002 30000 --input claim-1002.hex
 #   once it prints "escalated, confirmed at …":
-docker compose -f deploy/hub/docker-compose.yml start hub
+docker compose -f deploy/docker-compose.yml start hub
 ```
 
 The diagrams are drawn by `img/hub_returns.py` from the numbers above.

@@ -204,9 +204,9 @@ not yet).
 ### A trial against your own hub
 
 On a test network, start your hub (rebuild its image first,
-`deploy/hub/build.sh`) with one of:
+`deploy/build.sh`) with one of:
 
-- `REFUSE_FOLDS=1` in `deploy/hub/.env`: it refuses every withdrawal,
+- `REFUSE_FOLDS=1` in `deploy/.env`: it refuses every withdrawal,
   but disputes only false claims, so a true claim ends unchallenged;
 - `HOSTILE=1`: it refuses every withdrawal and disputes every claim,
   true ones too, so the tower plays the longest honest dispute (under

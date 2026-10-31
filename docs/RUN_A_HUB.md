@@ -2,187 +2,243 @@
 
 The hub issues the L2's tokens, opens a contract on Bitcoin with each
 user, pays withdrawals cooperatively (the fold), and answers disputes.
-It runs its own Bitcoin node and wallet. The L2's sequencer is a
-separate party, normally on another machine
-([RUN_A_SEQUENCER.md](RUN_A_SEQUENCER.md)). The hub reaches it by URL,
-as a wallet does.
+In lichen the hub also runs the L2 itself: one operator, one deployment
+(`deploy/`), in one Docker Compose project per network:
 
-With a real statement (`babe` or `bitvmx`), the hub folds only what the user could win by dispute. It checks the withdrawal
-statement natively, with the sequencer's chain receipt at the return's
-height ([SHIELDED.md](SHIELDED.md)), so the sequencer must run its chain
-prover.
+| service | what it does |
+|---|---|
+| `bitcoind` | the node, with the hub's wallet (`hub`) and the one that pays the anchors (`sequencer`) |
+| `sequencer` | orders the L2's transactions, and every few seconds seals a height: it signs the state root. Wallets and the hub talk to it over HTTP. It anchors its history on Bitcoin through the node |
+| `chain-prover` | proves each sealed height valid from genesis, in order (a RISC Zero receipt per height) |
+| `hub` | the contracts, folds and disputes; it checks a withdrawal against the chain prover's receipt before it folds |
+| `miner` | regtest only: a block every few seconds |
 
-Setting the two up together takes four steps, alternating:
-
-1. **The hub's operator** builds, and makes the hub's key (steps 1–2 here).
-2. **The sequencer's operator** starts the sequencer with that key as its
-   issuer, then sends back its URL and key ([RUN_A_SEQUENCER.md](RUN_A_SEQUENCER.md)).
-3. **The hub's operator** sets the URL, starts the hub, and funds it
-   (steps 3–5 here).
-4. **Testers** get both URLs (the end of this guide).
+Users run only the `lichen` wallet, with no node:
+[USE_A_WALLET.md](USE_A_WALLET.md).
 
 ## A machine
 
-Linux, x86-64 or arm64, with Docker (Compose v2):
+Linux or macOS, x86-64 or arm64, with Docker (Compose v2):
 
-- **Memory:** 16 GB is comfortable. Building the image compiles the
-  whole Rust tree, and a Groth16 wrap service, later, needs about 10 GB.
+- **Memory:** 16 GB. Building the image compiles the whole Rust tree;
+  the chain prover proves each height on the CPU, and the hub's proof of
+  a counter to an exit claim, with its Groth16 wrap, takes about 10 GB
+  at peak.
 - **Disk:** a few GB for Mutinynet, more for signet or testnet4 (the
   node keeps a `txindex`).
-- **Ports:** open the hub's port, 18310 by default, to testers. The
-  node's RPC stays inside the compose network.
-
-The hub must reach the sequencer's URL. The sequencer doesn't connect
-to the hub.
+- **Ports:** open the sequencer's (18300) and the hub's (18310) to
+  users. The node's RPC stays inside the compose network.
 
 ## 1. Build
 
 ```sh
 git clone https://github.com/AdamISZ/lichen && git clone https://github.com/AdamISZ/ln-gap
-cd lichen && cp deploy/hub/.env.example deploy/hub/.env    # set NETWORK
-deploy/hub/build.sh
+cd lichen && cp deploy/.env.example deploy/.env    # set NETWORK
+deploy/build.sh
 ```
 
 `build.sh` builds two images, from committed sources only: lichen's HEAD,
 and ln-gap at the commit in `LNGAP_REV`.
 
-- **`lichen-hub`:** the hub, BitVMX's Groth16 verifier ELF, and the
-  `lichen` wallet, for the smoke test.
+- **`lichen`:** the hub, the sequencer, the chain prover (`lichen-r0`,
+  which also proves the hub's counters), BitVMX's Groth16 verifier ELF,
+  and the `lichen` wallet, for the smoke test.
 - **`lichen-bitcoind:<network>`:** the node.
   - For regtest, signet and testnet4: stock Bitcoin Core 31.1.
   - For Mutinynet: benthecarman's patched build, the one Mutinynet's
-    own node runs: Core 29.2 (Inquisition) with 30-second signet blocks.
-    It relays TRUC, which BABE's `wrongly_challenged` is. The earlier
-    build, 25.99, refuses TRUC. To move a node off it, rebuild the image
-    and recreate the `bitcoind` container. The datadir upgrades in place.
+    own node runs, with 30-second signet blocks. It relays TRUC, which
+    BABE's `wrongly_challenged` is.
   - Each release tarball is pinned by SHA-256.
 
-## 2. The hub's key
+## 2. Configure
 
-```sh
-deploy/hub/hub.sh key
-```
-
-This makes the hub's keys on first use and prints its L2 key, 64 hex
-characters: the key that mints, and that returns are paid to. Send it
-to the sequencer's operator, who sets it as their `ISSUER`. They send
-back the sequencer's URL and its key.
-
-The keys are in `deploy/hub/data/<network>/hub/`: `l2.key` and `seed`,
-the seed every contract's keys come from. **They are secrets: back them
-up.**
-
-## 3. Configure
-
-In `deploy/hub/.env`:
+In `deploy/.env`:
 
 | setting | what |
 |---|---|
 | `NETWORK` | `regtest`, `mutinynet`, `signet` or `testnet4` |
-| `SEQUENCER_URL` | the sequencer, as the hub's container reaches it. If the sequencer is on this same machine: `http://host.docker.internal:<its port>` |
+| `COMPOSE_PROFILES` | `regtest` on regtest, for the miner (a block every `MINE_EVERY` seconds); empty otherwise |
 | `STATEMENT` | what disputes run: `babe` (the real statement, on BABE) or `babe-mock`; `bitvmx` (the real statement, on BitVMX) or `bitvmx-mock` |
+| `R0WORK` | where the Groth16 wrap of a counter keeps its files: an absolute path, mounted at the same path in the hub's container (the wrap runs RISC Zero's prover image on the host's Docker). Empty: `deploy/state/<network>/r0work` |
 | `RESERVE_PPM`, `MAX_BITS`, `DURATION` | the hub's terms: its reserve (ppm of the cap), the largest cap (2^bits − 1 sats), a contract's life in blocks (empty: the network's default) |
-| `WINDOWS` | the dispute's windows in blocks, `<user>,<hub>,<path>`: the user's for each of her moves, the hub's for its choices, the hub's for its heavy moves (empty: the network's default; wallets refuse a user window under it). The heavy ones bound how many contracts the hub can hold safely when blocks are full (the paper's congestion table) |
-| `HOSTILE` | trials on test networks only (the hub refuses it on any other): any value makes the hub refuse every cooperative withdrawal and dispute every claim, true ones too, so that each withdrawal is played on chain to its end; a valid last step whose proof doesn't come in the user's window is taken by the hub's timeout (a tower's test: [RUN_A_TOWER.md](RUN_A_TOWER.md)). Empty by default |
-| `HUB_PORT` | the published port (default 18310) |
-| `MINE_EVERY` | regtest only: seconds between the miner's blocks |
+| `WINDOWS` | the dispute's windows in blocks, `<user>,<hub>,<path>` (empty: the network's default; wallets refuse a user window under it). The heavy ones bound how many contracts the hub can hold safely when blocks are full |
+| `SEAL_EVERY` | seconds between sealed heights (default 5) |
+| `ANCHOR`, `ANCHOR_WALLET`, `ANCHOR_FEERATE` | anchoring (below): `on` by default, paid from the node's wallet `sequencer`, at 2 sat/vB. `off` runs the L2 unanchored, and a ledger started so can never be anchored |
+| `HOSTILE` | trials on test networks only: the hub refuses every cooperative withdrawal and disputes every claim, true ones too, so each is played on chain to its end |
+| `REFUSE_FOLDS` | trials on test networks only: the hub refuses every cooperative withdrawal but disputes only false claims |
+| `HUB_PORT`, `SEQUENCER_PORT` | the published ports (18310, 18300) |
 
-## 4. Run
+## 3. Start
 
 ```sh
-docker compose -f deploy/hub/docker-compose.yml up -d     # regtest: add --profile regtest
-deploy/hub/hub.sh info
+deploy/lichen.sh up
+deploy/lichen.sh logs sequencer
 ```
 
-The hub starts once two things are true:
+On first start the sequencer makes the hub's keys and its own. It then
+waits for its wallet to be funded, because a new ledger's first act is
+to pay its **genesis seal** (below), and logs an address to pay:
 
-- its node answers;
-- the sequencer answers at `SEQUENCER_URL`. Until then its log says
-  `waiting for the sequencer`.
+```
+waiting for the sequencer's wallet (sequencer) to be funded, for its genesis seal and anchors: pay tb1q...
+```
 
-On first start the hub checks that the sequencer's issuer is its own
-key. It then pins the sequencer's key in `data/<network>/hub/deployment.json`,
-and refuses any other sequencer key after that. `info` shows the pin.
-Check it against the key the sequencer's operator sent.
+Pay it a few thousand sats from the network's faucet
+(`deploy/lichen.sh fund 1 sequencer` on regtest). The sequencer then
+starts, and the hub, which waits for it, starts too. On its first start
+the hub pins the deployment, the sequencer's key and its own, in
+`state/<network>/hub/deployment.json`, and refuses any other sequencer
+after that.
 
-Let the node sync before opening contracts: watch `deploy/hub/hub.sh info`
-until `initialblockdownload` is false.
+```sh
+deploy/lichen.sh info
+```
 
-## 5. Fund it
+shows the keys, the deployment, the heights sealed and proved, the
+anchoring wallet's balance, and the node. Let the node sync before
+opening contracts: wait until `initialblockdownload` is false.
+
+## 4. Fund the hub
 
 The hub puts up its share of every cap (`V_max − D` plus its reserve),
 so it needs coins:
 
 ```sh
-deploy/hub/hub.sh address        # pay this from the network's faucet
-deploy/hub/hub.sh balance
-deploy/hub/hub.sh fund 10        # regtest: from the miner's coins
+deploy/lichen.sh address        # pay this from the network's faucet
+deploy/lichen.sh balance
+deploy/lichen.sh fund 10        # regtest: from the miner's coins
 ```
 
-## Exits
+Then give users the two URLs, `http://<this host>:18300` (the
+sequencer) and `http://<this host>:18310` (the hub), and the sequencer's
+key from `info`, so they can check the deployment their wallet pins.
 
-A user whose withdrawal the hub won't fold can exit instead: claim her
-notes from a state already anchored on Bitcoin (`lichen exit`; [the
+## What runs
+
+**The sequencer** is trusted for the L2's inclusion and availability,
+and nothing else: every client checks each signed root, the chain
+prover proves every height valid, and anchoring makes a second history
+impossible to use. Shielded transactions carry a RISC Zero receipt of
+the spend guest, which it checks against the committed guest's image
+id; it never proves anything itself.
+
+**Anchoring.** So that it can't sign two histories unseen, the
+sequencer commits its history to Bitcoin:
+
+- on a new ledger, before its first height, it pays 1,000 sats to the
+  genesis seal (a P2TR output of its own key), which the deployment
+  names from then on;
+- whenever something has changed since the last anchor and none is in
+  flight, it sends an anchor: a transaction spending the seal, making
+  the next, and committing the history to the last sealed height (about
+  270 vB);
+- once the anchor confirms, it records it on the L2, in the next
+  height's block, for the chain prover.
+
+A withdrawal needs its return anchored, with ten blocks' work on the
+anchor, so keep the `sequencer` wallet funded: a few thousand sats a day
+at most on a test network. The anchor in flight is kept beside the
+ledger, so a restart carries on.
+
+**The chain prover** proves each height the sequencer records
+(`ledger.json.blocks/<h>.input`), each from the last, to
+`<h>.chain`, which the sequencer serves at `GET /chain/<h>`. Every
+withdrawal needs the receipt at its return's height: a disputed one's
+proof checks its root ends a valid history, and the hub checks the same
+before it folds. A small height takes under a minute on a laptop; the
+prover runs behind the seals, so a withdrawal waits for it.
+
+**Exits.** A user whose withdrawal the hub won't fold can exit instead:
+claim her notes from a state already anchored (`lichen exit`; [the
 explainer](explainers/exit.md)). The hub answers each claim in its
 `respond`: plainly, holding the claimed notes and recording the exit on
-the L2, or with a counter when one of the notes was spent at an anchored
-state before the claim, or claimed through another contract. On the real
-statement a counter is a RISC Zero proof, wrapped in Groth16, which the
-hub makes with a prover: `lichen-hub --prover <lichen-r0>` (x86 Linux
-with Docker, for the wrap). The Docker deployment here passes none yet,
-so it answers every claim plainly: a claim from an old state is then
-paid, at the hub's cost. The response window `w_H` is long enough for a
-counter's proof: two hours on Mutinynet.
-
-## Testers
-
-Testers run only the `lichen` wallet, on their own machines, with no
-node. It reads Bitcoin from a public Esplora server (mutinynet.com,
-mempool.space). Users are paid into, and pay out to, addresses of any
-wallet they like. They need both URLs:
-
-```sh
-lichen --network mutinynet --wallet alice.json --sequencer http://<sequencer host>:18300 init
-lichen --network mutinynet --wallet alice.json --sequencer http://<sequencer host>:18300 --hub http://<hub host>:18310 \
-  --statement babe open 400000 --payout <an address of hers>
-```
-
-`init` pins the deployment the sequencer announces. `open` prints a
-deposit address and an amount, which she pays from any wallet or
-faucet.
+the L2, or with a counter, when one of the notes was spent at an
+anchored state before the claim, or claimed through another contract.
+On the real statement a counter is a RISC Zero proof, wrapped in
+Groth16, which the hub makes itself with `lichen-r0`. The response
+window `w_H` is long enough for it: two hours on Mutinynet.
 
 ## Keeping it
 
-Everything is in `deploy/hub/data/<network>/`:
+Everything is in `deploy/state/<network>/`:
 
 | directory | what |
 |---|---|
-| `hub/` | the keys (`l2.key`, `seed`); `deployment.json`; a record per contract and per deposit asked for; the disputes' working state |
-| `bitcoind/` | the node, and the hub's wallet (`hub`) |
+| `hub/` | the hub's keys (`l2.key`, `seed`, the seed every contract's keys come from); `deployment.json`; a record per contract and per deposit; the disputes' working state |
+| `sequencer/` | `sequencer.key`, the sequencer's key, which also spends the seal; `ledger.json`, the L2's state; `ledger.json.blocks/`, the heights' blocks and the chain prover's receipts |
+| `bitcoind/` | the node, and its wallets `hub` and `sequencer` |
 
-Back up `hub/`, and the node's `hub` wallet. Both hold secrets. Losing
-the contract records would leave the hub unable to answer disputes.
+Back up `hub/`, `sequencer/sequencer.key`, `sequencer/ledger.json` and
+the node's two wallets. **All hold secrets.** Losing the contract
+records leaves the hub unable to answer disputes. Losing the sequencer's
+key ends the deployment: a new key is a new deployment, which every
+wallet and the hub refuse, and the seal can no longer be spent. Losing
+the ledger loses the L2's state: it has a single copy, and anchoring
+commits to its history but doesn't keep its data.
 
-To update: pull, `deploy/hub/build.sh`, then `docker compose -f deploy/hub/docker-compose.yml up -d`.
+To update: pull, `deploy/build.sh`, then `deploy/lichen.sh up`. Keys,
+ledger and contracts carry over.
 
 ## A smoke test (regtest)
 
-With a regtest hub and its sequencer running, this runs a wallet in a
-one-off container. It deposits, waits for the mint, withdraws
-cooperatively, and checks the payout:
+With a regtest deployment running, this runs a wallet in a one-off
+container. It funds the hub and the anchors from the miner, deposits,
+waits for the mint, withdraws cooperatively, and checks the payout:
 
 ```sh
-deploy/hub/smoke.sh
+deploy/smoke.sh
 ```
 
-## Both on one machine
+## Several networks on one machine
 
-For tests, the sequencer can run beside the hub. The sequencer runs as
-in its guide. Here, set `SEQUENCER_URL=http://host.docker.internal:18300`.
-The two stay separate compose projects, talking through the published
-port, as they would between machines. Other `NETWORK`s, with their own
-ports, can run beside them: pass `--env-file` to compose, and `ENV_FILE`
-to the scripts.
+Each network has its own data directory and compose project
+(`lichen-<network>`). Give each its own env file, with another
+`NETWORK` and other ports, and pass it as `ENV_FILE`:
 
-Not here yet: TLS (test coins only); a proving service, for users
-without an x86 machine of their own.
+```sh
+ENV_FILE=deploy/regtest.env deploy/lichen.sh up
+```
+
+## Moving from the two-project layout
+
+Until 2026-10-31 the hub (`deploy/hub/`) and the sequencer
+(`deploy/sequencer/`) were two compose projects, with their data in
+`deploy/hub/data/<network>/` and `deploy/sequencer/data/<network>/`.
+The data moves unchanged, so the deployment keeps its keys, its ledger,
+its contracts and the node's wallets. For `NETWORK=mutinynet`:
+
+```sh
+# 1. stop the two projects (their compose files are gone; by name), and
+#    a chain prover run by hand
+docker compose -p lichen-hub-mutinynet down
+docker compose -p lichen-sequencer-mutinynet down
+# 2. back up the secrets, with the node stopped
+mkdir -p ~/lichen-backup
+cp -a deploy/hub/data/mutinynet/hub ~/lichen-backup/hub
+cp -a deploy/hub/data/mutinynet/bitcoind/signet/wallets ~/lichen-backup/wallets
+cp -a deploy/sequencer/data/mutinynet/sequencer.key deploy/sequencer/data/mutinynet/ledger.json ~/lichen-backup/
+# 3. move the data
+mkdir -p deploy/state/mutinynet
+mv deploy/hub/data/mutinynet/bitcoind deploy/hub/data/mutinynet/hub deploy/state/mutinynet/
+mv deploy/sequencer/data/mutinynet deploy/state/mutinynet/sequencer
+# 4. one settings file
+cp deploy/.env.example deploy/.env
+```
+
+In `deploy/.env`, set `NETWORK` and copy the hub's settings from
+`deploy/hub/.env` (`STATEMENT`, `RESERVE_PPM`, `MAX_BITS`, `DURATION`,
+`WINDOWS`, `HUB_PORT`) and the sequencer's from `deploy/sequencer/.env`
+(`SEAL_EVERY`, `SEQUENCER_PORT`). Leave `R0WORK` empty. Anchoring is on,
+through the same node and its wallet `sequencer`, as `anchor.yml` had
+it. Then:
+
+```sh
+deploy/build.sh && deploy/lichen.sh up && deploy/lichen.sh info
+```
+
+The ports are as they were, so wallets need no change. The chain prover
+carries on from the last height it proved. Anything else in the old
+data directories (a trial wallet's files, the old `r0work`) stays where
+it was.
+
+Not here yet: TLS (test coins only); more than one hub per L2.

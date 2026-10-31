@@ -1,0 +1,88 @@
+# A lichen deployment for NETWORK (deploy/.env): the node, the L2's
+# sequencer (anchoring its history through the node), its chain prover,
+# and the hub; on regtest a miner too (COMPOSE_PROFILES=regtest).
+#   deploy/build.sh && deploy/lichen.sh up
+# Data: deploy/state/<network>/.
+name: lichen-${NETWORK:?set NETWORK in deploy/.env}
+
+services:
+  bitcoind:
+    image: lichen-bitcoind:${NETWORK}
+    command: ["bitcoind"]
+    volumes:
+      - ./state/${NETWORK}/bitcoind:/data
+    restart: unless-stopped
+    stop_grace_period: 1m
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-datadir=/data", "getblockchaininfo"]
+      interval: 5s
+      retries: 60
+
+  miner:
+    image: lichen-bitcoind:${NETWORK}
+    profiles: ["regtest"]
+    command: ["miner", "${MINE_EVERY:-5}"]
+    environment:
+      RPC_HOST: bitcoind
+    volumes:
+      - ./state/${NETWORK}/bitcoind:/data
+    depends_on:
+      bitcoind: { condition: service_healthy }
+    restart: unless-stopped
+
+  sequencer:
+    image: lichen:latest
+    command: ["sequencer"]
+    environment:
+      NETWORK: ${NETWORK}
+      SEAL_EVERY: ${SEAL_EVERY:-5}
+      ANCHOR: ${ANCHOR:-on}
+      ANCHOR_WALLET: ${ANCHOR_WALLET:-sequencer}
+      ANCHOR_CONFIRMATIONS: ${ANCHOR_CONFIRMATIONS:-1}
+      ANCHOR_FEERATE: ${ANCHOR_FEERATE:-2}
+    volumes:
+      - ./state/${NETWORK}/sequencer:/seq
+      # the hub's keys: its L2 key is the sequencer's issuer (made here on
+      # first start, before the hub, which waits for the sequencer)
+      - ./state/${NETWORK}/hub:/hub
+      - ./state/${NETWORK}/bitcoind:/bitcoind:ro
+    ports:
+      - "${SEQUENCER_PORT:-18300}:18300"
+    depends_on:
+      bitcoind: { condition: service_healthy }
+    restart: unless-stopped
+
+  chain-prover:
+    image: lichen:latest
+    command: ["chain-prover"]
+    environment:
+      NETWORK: ${NETWORK}
+    volumes:
+      - ./state/${NETWORK}/sequencer:/seq
+    restart: unless-stopped
+
+  hub:
+    image: lichen:latest
+    command: ["hub"]
+    environment:
+      NETWORK: ${NETWORK}
+      STATEMENT: ${STATEMENT:-babe}
+      RESERVE_PPM: ${RESERVE_PPM:-20000}
+      MAX_BITS: ${MAX_BITS:-24}
+      DURATION: ${DURATION:-}
+      WINDOWS: ${WINDOWS:-}
+      HOSTILE: ${HOSTILE:-}
+      REFUSE_FOLDS: ${REFUSE_FOLDS:-}
+      # a counter's wrap: its working files, at the same path on the host
+      # and here, for RISC Zero's prover image on the host's Docker
+      RISC0_WORK_DIR: ${R0WORK:?set R0WORK, an absolute host path (deploy/lichen.sh sets deploy/state/<network>/r0work)}
+    volumes:
+      - ./state/${NETWORK}/hub:/hub
+      - ./state/${NETWORK}/bitcoind:/bitcoind:ro
+      - ${R0WORK}:${R0WORK}
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "${HUB_PORT:-18310}:18310"
+    depends_on:
+      bitcoind: { condition: service_healthy }
+    restart: unless-stopped

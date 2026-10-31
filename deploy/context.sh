@@ -1,8 +1,8 @@
-# Sourced by deploy/hub/build.sh and deploy/sequencer/build.sh: a Docker
-# build context of committed sources only, lichen's HEAD and ln-gap at the
+# Sourced by deploy/build.sh and deploy/tower/build.sh: a Docker build
+# context of committed sources only, lichen's HEAD and ln-gap at the
 # commit in LNGAP_REV, both exported with `git archive` (no working-tree
 # changes, no target/). lichen depends on ln-gap by path, and cargo reads
-# the whole workspace, so both images need both trees to build.
+# the whole workspace, so the images need both trees to build.
 #   make_context      sets $ctx: a directory holding lichen/ and ln-gap/
 #                     (removed on exit)
 # LNGAP_DIR overrides where ln-gap is (default: ../ln-gap).
