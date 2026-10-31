@@ -1,7 +1,7 @@
 //! Opt-in (release; about half an hour): a read lie on the REAL
 //! statement, BitVMX's Groth16 verifier, as a rehearsal for a trial on a
 //! test network. The claim is groth16.rs's (the toy deployment's return of
-//! 60, memo 42) with `b` changed to 61 (false, as G3 there). Alice props it up with a lie in a read
+//! 60 units, memo 42) with `b` changed to 61 (false, as G3 there). Alice props it up with a lie in a read
 //! near the end of the execution, of a value written long before: the
 //! honest hub's search lands on her step, and the hub posts the jump-list
 //! path to the step that last wrote that address; its `read` verdict
@@ -125,6 +125,7 @@ fn a_read_lie_on_the_groth16_verifier() {
     let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
     let held = w.open_contract(&hub.url, &ch, &statement, &dir.join("alice"), ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
     assert_eq!(held.record.cid(), 42);
+    assert_eq!(held.record.terms.unit.to_sat(), lichen_proto::canned_unit(), "the canned claim's unit");
     w.lie = Some(lie);
     w.progress = Some(Arc::new(|m: String| println!("alice: {m}")));
     let t = Instant::now();

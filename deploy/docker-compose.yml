@@ -31,7 +31,7 @@ services:
     restart: unless-stopped
 
   sequencer:
-    image: lichen:latest
+    image: ${LICHEN_IMAGE:-lichen:latest}
     command: ["sequencer"]
     environment:
       NETWORK: ${NETWORK}
@@ -53,7 +53,7 @@ services:
     restart: unless-stopped
 
   chain-prover:
-    image: lichen:latest
+    image: ${LICHEN_IMAGE:-lichen:latest}
     command: ["chain-prover"]
     environment:
       NETWORK: ${NETWORK}
@@ -62,7 +62,7 @@ services:
     restart: unless-stopped
 
   hub:
-    image: lichen:latest
+    image: ${LICHEN_IMAGE:-lichen:latest}
     command: ["hub"]
     environment:
       NETWORK: ${NETWORK}

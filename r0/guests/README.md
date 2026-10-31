@@ -66,10 +66,13 @@ cycles with the paging, perhaps: the time grows more than the cycles.)
 Again with a regtest hub's signature, as its `respond` carried it (the
 claim `crates/proto/tests/data/babe-claim-60-42.hex`): 662 s and 257 s.
 
-The fixtures proved again with the units' guests (2026-10-31), on the
-Mac natively (`lichen-r0` built with Xcode's Metal toolchain, the wrap
-in Docker): the withdrawal guest 393k user cycles in 35 s, the BABE
-guest 489k in 63 s, each wrap about 110 s; eight minutes for all three.
+With units (2026-10-31), on the Mac natively (`lichen-r0` built with
+Xcode's Metal toolchain, the wrap in Docker): the canned return made
+again as 60 units of 684 sats (41,040; `lichen_proto::canned_unit`, the
+real-statement tests' contracts'), by the receipts test (shielded_r0,
+LICHEN_KEEP, every prover `lichen-r0` itself): three spends in 15 s, six
+chain heights in 266 s; then the withdrawal guest 396k user cycles in
+35 s, the BABE guest 492k in 65 s, each wrap about 112 s.
 
 Measured with the spend guest (Mac, Docker, 8 cores; composite
 receipts): shielding 10,163 user cycles, 6.4 s; a payment (1 in, 2 out)

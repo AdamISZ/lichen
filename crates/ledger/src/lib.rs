@@ -1218,8 +1218,9 @@ mod tests {
 
     /// The hub's check before a fold, on a real chain receipt (the
     /// real-receipt test's, kept with LICHEN_KEEP=1; remade when the chain
-    /// guest is): the statement's journal for the return of 60 with memo
-    /// 42 under its anchor, ten blocks on it; refusals for another height,
+    /// guest is): the statement's journal for the return of 60 units (of
+    /// the input's, 684 sats) with memo 42 under its anchor, ten blocks on
+    /// it; refusals for another height,
     /// another note, too few blocks.
     #[cfg(feature = "risc0")]
     #[test]
@@ -1228,19 +1229,19 @@ mod tests {
         let p: ProverInput = serde_json::from_str(include_str!("../tests/data/withdraw-60-42.json")).unwrap();
         let headers: Vec<[u8; 80]> = p.headers.iter().map(|h| hex::decode(h).unwrap().try_into().unwrap()).collect();
         let work: u128 = p.work.parse().unwrap();
-        let input = p.input;
-        let j = check_withdrawal(&input, receipt, headers.clone(), work, 1).unwrap();
+        let (input, unit) = (p.input, p.unit);
+        let j = check_withdrawal(&input, receipt, headers.clone(), work, unit).unwrap();
         assert_eq!(j[..8], [60, 0, 0, 0, 42, 0, 0, 0]);
         let mut other = input.clone();
         other.height -= 1;
-        assert!(format!("{:#}", check_withdrawal(&other, receipt, headers.clone(), work, 1).unwrap_err()).contains("of height"));
+        assert!(format!("{:#}", check_withdrawal(&other, receipt, headers.clone(), work, unit).unwrap_err()).contains("of height"));
         let mut other = input.clone();
         other.note.value = 61;
-        assert!(format!("{:#}", check_withdrawal(&other, receipt, headers.clone(), work, 1).unwrap_err()).contains("rejects"));
-        assert!(format!("{:#}", check_withdrawal(&input, receipt, headers[..1].to_vec(), work, 1).unwrap_err()).contains("Depth"));
+        assert!(format!("{:#}", check_withdrawal(&other, receipt, headers.clone(), work, unit).unwrap_err()).contains("rejects"));
+        assert!(format!("{:#}", check_withdrawal(&input, receipt, headers[..1].to_vec(), work, unit).unwrap_err()).contains("Depth"));
         let mut bad = receipt.to_vec();
         bad[1000] ^= 1;
-        assert!(check_withdrawal(&input, &bad, headers, work, 1).is_err(), "a damaged receipt");
+        assert!(check_withdrawal(&input, &bad, headers, work, unit).is_err(), "a damaged receipt");
     }
 
     /// An anchor of height `at`'s history, spending `seal`: the

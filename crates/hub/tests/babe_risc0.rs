@@ -1,22 +1,26 @@
-//! Opt-in (release; a few minutes): BABE on the REAL statement, a RISC
-//! Zero Groth16 receipt of the BABE guest (r0/guests/babe.bin), through the
-//! hub and the wallet; blocks every 150 ms.
+//! Opt-in (release; LICHEN_R0 naming `lichen-r0`, which proves two claims,
+//! with RISC0_WORK_DIR for its wrap; ten minutes on a Mac): BABE on the
+//! REAL statement, a RISC Zero Groth16 receipt of the BABE guest
+//! (r0/guests/babe.bin), through the hub and the wallet; blocks every
+//! 150 ms.
 //!
-//! The toy deployment's return of 60 sats with memo 42 (the real-receipt
-//! tests'), each hub's first contract number 42 and every hub of the same
-//! seed: the hub's key for `b`, and so the journal `c ‖ D ‖ H(pk_H)`, is
-//! the same for each. The canned claim
-//! (crates/proto/tests/data/babe-claim-60-42.hex) was proved on lichen-vps
-//! with `lichen-r0 babe`, `wrap`, `bitvmx-input` from the hub's signature
-//! on 60 as `respond` carries it (babe-auth-60-42.json, which the wallet
-//! writes). Without the claim the test stops there, the signature written,
-//! for proving.
+//!     LICHEN_R0=r0/target/release/lichen-r0 RISC0_WORK_DIR=~/r0work \
+//!       cargo test --release -p lichen-hub --test babe_risc0 -- --ignored --nocapture
+//!
+//! The toy deployment's return of 60 units with memo 42 (the real-receipt
+//! tests' withdrawal input and chain receipt; the contracts' unit,
+//! `lichen_proto::canned_unit`, 684 sats), each hub's first contract number
+//! 42 and every hub of the same seed: the hub's key for `b` is the same for
+//! each (babe-auth-60-42.json). Each contract has the exit, so its journal
+//! `c ‖ D ‖ H(pk_H ‖ O_D)` commits to its deposit coin too, and her claim
+//! is proved for it: `lichen-r0 babe-claim` of the hub's signature as the
+//! wallet writes it (with the exit's keys and coin), the statement with the
+//! exit, a return.
 //!
 //! - T: an honest hub. Alice disputes before proving: she requests, the
 //!   hub responds, and her wallet stops with the proof due, the hub's
-//!   signature on 60 written; it is the canned one. With the claim she
-//!   asserts; the proof is valid, the hub doesn't challenge, `success`
-//!   pays her.
+//!   signature on 60 written (the canned key's). Proved, she asserts; the
+//!   proof is valid, the hub doesn't challenge, `success` pays her.
 //! - W: a hub that challenges true claims: she opens a kept instance with
 //!   the challenge's secrets and the real proof, and answers.
 //! - F: a real proof under another hub key (step 1's,
@@ -67,7 +71,8 @@ fn babe_disputes_on_a_risc0_proof() {
             }
         })
     };
-    let claim = std::fs::read_to_string(data("babe-claim-60-42.hex")).ok().map(|h| hex::decode(h.trim()).unwrap());
+    let prover = std::env::var("LICHEN_R0").expect("LICHEN_R0: lichen-r0, to prove her claims");
+    let ledger = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ledger/tests/data");
     // step 1's proof: valid, but for another hub's key
     let other = {
         let d = hex::decode(include_str!("../../babe/tests/data/babe-60-42.hex").trim()).unwrap();
@@ -108,6 +113,7 @@ fn babe_disputes_on_a_risc0_proof() {
         let t = Instant::now();
         let held = w.open_contract(&hub.url, &ch, &statement, &wdir, ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
         assert_eq!(held.record.cid(), 42);
+        assert_eq!(held.record.terms.unit.to_sat(), lichen_proto::canned_unit(), "the canned claim's unit");
         println!("LICHEN {label}: contract 42 on RISC Zero's statement opened in {:.1?}", t.elapsed());
         let input = match label {
             "F" => other.clone(),
@@ -116,16 +122,18 @@ fn babe_disputes_on_a_risc0_proof() {
                 // signature on b written for the prover
                 let (o, _) = w.dispute(&ch, &statement, &wdir, 42, B, &[]).unwrap();
                 assert!(matches!(o, Outcome::ProofDue(_)), "{label}: {o:?}");
-                let auth = std::fs::read_to_string(lichen_wallet::engine::babe::data_dir(&wdir, 42).join("hub-auth.json")).unwrap();
-                let canned = data("babe-auth-60-42.json");
-                let Some(claim) = &claim else {
-                    std::fs::write(&canned, &auth).unwrap();
-                    panic!("no canned claim: prove the hub's signature on 60, written to {}, on x86 Linux (lichen-r0 babe-claim) into {}", canned.display(), data("babe-claim-60-42.hex").display());
-                };
-                let a: serde_json::Value = serde_json::from_str(&auth).unwrap();
-                let c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&canned).unwrap()).unwrap();
-                assert_eq!(a, c, "{label}: the hub's signature on 60 is the canned claim's");
-                w.babe_claim_input(42, claim).unwrap()
+                let auth = lichen_wallet::engine::babe::data_dir(&wdir, 42).join("hub-auth.json");
+                let a: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&auth).unwrap()).unwrap();
+                let c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(data("babe-auth-60-42.json")).unwrap()).unwrap();
+                assert_eq!((&a["key"], &a["sig"]), (&c["key"], &c["sig"]), "{label}: the hub's signature on 60 is the canned key's");
+                assert!(a["exit"].is_object(), "{label}: with the exit's keys and coin");
+                // her claim, proved for this contract's journal
+                let out = dir.join(format!("claim-{label}.hex"));
+                let t = Instant::now();
+                let ok = std::process::Command::new(&prover).arg("babe-claim").arg(ledger.join("withdraw-60-42.json")).arg(&auth).arg(ledger.join("chain.receipt")).arg(&out).status().unwrap();
+                assert!(ok.success(), "{label}: lichen-r0 babe-claim");
+                println!("LICHEN {label}: her claim proved in {:.1?}", t.elapsed());
+                w.babe_claim_input(42, &hex::decode(std::fs::read_to_string(&out).unwrap().trim()).unwrap()).unwrap()
             }
         };
         let t = Instant::now();

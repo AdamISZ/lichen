@@ -385,14 +385,23 @@ impl Disputed {
     }
     /// The hub's key and its signature on `b` from `respond`, as the BABE
     /// prover takes them (`lichen-r0 babe`'s hub auth: JSON, `key` and
-    /// `sig`, ten 32-byte hashes each, hex), checked.
+    /// `sig`, ten 32-byte hashes each, hex), checked. With the exit, its
+    /// journal commits to the hub's other keys and the deposit coin too
+    /// (`exit`: `e_plain`, `e_counter`, `k`, hex, and `deposit`), and the
+    /// prover proves the statement with the exit, a return.
     pub fn hub_auth(&self, respond: &bitcoin::Transaction) -> Result<serde_json::Value> {
         let sig = Self::hub_b(respond)?;
-        let key = &self.record.babe()?.hub_b;
+        let keys = self.record.babe()?;
+        let key = &keys.hub_b;
         ensure!(sig.hashes.len() == key.digits.len(), "the hub's signature and key differ in length");
         key.verify(&sig).context("respond's signature on b, under the hub's key")?;
         let h = |v: &[[u8; 32]]| v.iter().map(hex::encode).collect::<Vec<_>>();
-        Ok(serde_json::json!({ "key": h(&key.digits), "sig": h(&sig.hashes) }))
+        let mut auth = serde_json::json!({ "key": h(&key.digits), "sig": h(&sig.hashes) });
+        if let Some(x) = &keys.exit {
+            let k = exit_keys(key, &x.hub);
+            auth["exit"] = serde_json::json!({ "e_plain": h(&k.e_plain), "e_counter": h(&k.e_counter), "k": h(&k.k), "deposit": lichen_ledger::outpoint::to_string(&statement_outpoint(&x.hub.deposit)) });
+        }
+        Ok(auth)
     }
     /// What `assert` put on chain: π1's digits (read under Alice's Lamport
     /// key), their preimages, and the proof, if its points are points.

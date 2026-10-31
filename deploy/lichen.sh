@@ -28,7 +28,7 @@ case "${1:-}" in
         ;;
     down) dc down ;;
     info)
-        echo "hub L2 key:    $(docker run --rm -e NETWORK="$NETWORK" -v "$data/hub:/hub" lichen:latest key)"
+        echo "hub L2 key:    $(docker run --rm -e NETWORK="$NETWORK" -v "$data/hub:/hub" "${LICHEN_IMAGE:-lichen:latest}" key)"
         echo "pinned:        $(tr -d ' \n' < "$data/hub/deployment.json" 2>/dev/null || echo "nothing yet (the hub pins the deployment on its first start)")"
         echo "sequencer:     $(curl -fsS "$seq_url/info" 2>/dev/null || echo '(no answer yet: deploy/lichen.sh logs sequencer)')"
         blocks="$data/sequencer/ledger.json.blocks"

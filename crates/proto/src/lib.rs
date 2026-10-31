@@ -803,11 +803,19 @@ pub fn terminal_fee(tx: &Transaction, net: Net) -> Amount {
 
 /// The canned claim's `D` (`tests/data/claim-60-42.*`, the real-receipt
 /// test's): the toy deployment with the genesis seal of the regtest run
-/// that made it, a contract checkpointed at regtest's difficulty.
+/// that made it, a contract checkpointed at regtest's difficulty, in
+/// [`canned_unit`].
 pub fn canned_d() -> Hash {
     let d = Deployment { seal: Some(canned_seal()), ..Deployment::toy() };
     let regtest = Checkpoint { height: 0, hash: <bitcoin::BlockHash as bitcoin::hashes::Hash>::all_zeros(), bits: 0x207fffff };
-    contract_word(&d, Some(&regtest), Amount::from_sat(1)).unwrap()
+    contract_word(&d, Some(&regtest), Amount::from_sat(canned_unit())).unwrap()
+}
+
+/// The canned claim's unit: that of the contracts the real-statement
+/// tests open (400,000 sats deposited, 1,000,000 of liquidity, no fee), 684
+/// sats. Its return is 60 of them (41,040 sats), with memo 42.
+pub fn canned_unit() -> u64 {
+    scale(400_000 + 1_000_000).expect("a cap over the least").1
 }
 
 /// The canned claim's genesis seal.
@@ -826,6 +834,7 @@ mod tests {
     #[test]
     fn the_cap_scaled() {
         assert_eq!(scale(1_000_000).unwrap(), (10, 978));
+        assert_eq!(canned_unit(), 684);
         assert_eq!(scale(MIN_UNIT).unwrap(), (1, MIN_UNIT));
         assert!(scale(MIN_UNIT - 1).is_err());
         for cap in [512, 1_000, 1_535, 1_536, 99_999, 1_000_000, 16_777_215, 2_100_000_000_000] {
@@ -951,9 +960,9 @@ mod tests {
         assert!(failing(&claim(&ours)).is_empty());
         assert_eq!(failing(&claim(&theirs)), (1..=8).map(|j| format!("deployment_{j}")).collect::<Vec<_>>());
         // the real claim (the committed guest's proof of the toy
-        // deployment's return of 60, memo 42, anchored on regtest: D the
-        // contract's, of the run's genesis seal and regtest's W) passes
-        // every check
+        // deployment's return of 60 units, memo 42, anchored on regtest: D
+        // the contract's, of the run's genesis seal, regtest's W and the
+        // unit) passes every check
         let real = hex::decode(include_str!("../tests/data/claim-60-42.hex").trim()).unwrap();
         let words = lngap_zk::final_d60::input_words(&real);
         assert_eq!(words.len(), 51);

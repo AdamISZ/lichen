@@ -56,8 +56,17 @@ needs: at the default, about 2M sats a contract, whatever she asked.
    `MAX_BITS`); RUN_A_HUB.md, USE_A_WALLET.md.
 7. The guests: withdraw, counter, babe, rebuilt (ELFs on x86, packed
    with Docker), their ids committed; the real-proof fixtures proved
-   again (`claim-60-42`, `babe-claim-60-42`, `babe-60-42`).
-8. Regtest: the smoke test, a dispute on the real statement.
+   again (`claim-60-42`, `babe-claim-60-42`, `babe-60-42`). Done
+   (2026-10-31): the canned return is now 60 units of the real-statement
+   tests' unit (684 sats, `lichen_proto::canned_unit`), since every new
+   contract's unit is at least 512 sats.
+8. Regtest: the smoke test, a dispute on the real statement. The
+   dispute is done (babe_risc0, its claims proved live): it found that a
+   plain dispute on a contract with the exit had no proof the wallet
+   could make (`babe-claim` proved the statement without the exit, whose
+   journal no contract has now). The hub auth the wallet writes carries
+   the exit's keys and coin, and `babe-claim` proves the statement with
+   the exit, a return (`Mode::Return`). The smoke test remains.
 
 Existing contracts keep their terms; contracts opened after this use the
 new guests.

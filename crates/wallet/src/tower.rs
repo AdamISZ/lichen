@@ -321,7 +321,7 @@ pub fn run(chain: &Chain, statement: &Statement, package: &Path, dir: &Path, pro
     }
     if store.state.claim.is_none() && p.claim.is_none() && statement.mock_input(p.b, p.cid()).is_none() {
         if let Some(f) = &opts.progress {
-            f(format!("proving the withdrawal of {} sats (note {}) with {}", p.b, p.note, prover.display()));
+            f(format!("proving the withdrawal of {} units ({} sats; note {}) with {}", p.b, u64::from(p.b) * p.record.terms.unit.to_sat(), p.note, prover.display()));
         }
     }
     let input = claim_input(&p, chain, statement, store.state.claim.as_ref(), &dir.join("proof"), prover)?;

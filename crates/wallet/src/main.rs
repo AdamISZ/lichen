@@ -499,9 +499,9 @@ fn main() -> Result<()> {
                 // under BABE: her signatures, no key; the instances beside it
                 let n = w.export_instances(&dir, contract, out)?;
                 let to = lichen_wallet::tower::work_dir(out);
-                println!("wrote {}: contract {contract}'s dispute (a claim of {} sats) for a tower; it holds her signatures, none of her keys. The kept instances, {} MiB, are in {}: copy it with the package", out.display(), p.b, n >> 20, to.display());
+                println!("wrote {}: contract {contract}'s dispute (a claim of {} sats) for a tower; it holds her signatures, none of her keys. The kept instances, {} MiB, are in {}: copy it with the package", out.display(), u64::from(p.b) * p.record.terms.unit.to_sat(), n >> 20, to.display());
             } else {
-                println!("wrote {}: contract {contract}'s dispute (a claim of {} sats) for a tower; it holds this contract's one-time secrets", out.display(), p.b);
+                println!("wrote {}: contract {contract}'s dispute (a claim of {} sats) for a tower; it holds this contract's one-time secrets", out.display(), u64::from(p.b) * p.record.terms.unit.to_sat());
             }
         }
         Cmd::SweepDispute { contract, ref tower_state } => {

@@ -163,7 +163,7 @@ impl Engine<'_> {
         // escalate: move 1 with the claim's words; then the rest of the input
         let mut wire = word_wire(&d.contract.claim_words())?;
         wire.extend(sign_move(&d.program, 1, &self.signer.bitvmx()?.move_secrets(&d.program, 1), prover.last())?);
-        self.step(format!("escalating: the claim of {b} sats and move 1 of {m}, {}", d.txid("escalate")));
+        self.step(format!("escalating: the claim of {b} units ({} sats) and move 1 of {m}, {}", u64::from(b) * d.record.terms.unit.to_sat(), d.txid("escalate")));
         let mut last = self.post_bx(chain, &d, "escalate", wire)?;
         self.step(format!("escalated, confirmed at {last}"));
         let mut last_id = d.txid("escalate");

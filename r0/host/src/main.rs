@@ -26,7 +26,10 @@
 //!   fixed statement (`lichen_withdraw::fixed`, BABE's), as `withdraw`
 //!   with the hub's signature on `b` (JSON: its `key` and `sig`, ten
 //!   32-byte hashes each, hex); prints the claim digest, the same for
-//!   every amount; `exec-babe` runs it without proving;
+//!   every amount; `exec-babe` runs it without proving. For a contract
+//!   with the exit, the JSON's `exit` (the hub's other keys and the
+//!   deposit coin, as the wallet writes them): the statement with the
+//!   exit, a return (`fixed::Mode::Return`);
 //! - `babe-exit <statement> <out> [<chain receipt>]`: prove the fixed
 //!   statement with the exit (`fixed::check_exit`; its input's bytes,
 //!   `ExitStatement::to_bytes`), the chain receipt for a return or a
@@ -237,20 +240,42 @@ fn withdraw_input(json: &str, chain: &Receipt) -> Result<(lichen_withdraw::Withd
     Ok((input, chain_id))
 }
 
-/// The hub's signature on `b` (`babe`'s), as JSON.
+/// The hub's signature on `b` (`babe`'s), as JSON; with the exit, its
+/// other keys in `respond` and the deposit coin.
 #[derive(serde::Deserialize)]
 struct HubAuthJson {
     key: Vec<String>,
     sig: Vec<String>,
+    #[serde(default)]
+    exit: Option<ExitJson>,
 }
 
-fn hub_auth(path: &str) -> Result<lichen_withdraw::fixed::HubAuth> {
+#[derive(serde::Deserialize)]
+struct ExitJson {
+    e_plain: Vec<String>,
+    e_counter: Vec<String>,
+    k: Vec<String>,
+    /// `<txid>:<vout>`, the txid as Bitcoin displays it
+    deposit: String,
+}
+
+fn hub_auth(path: &str) -> Result<(lichen_withdraw::fixed::HubAuth, Option<(lichen_withdraw::fixed::ExitKeys, lichen_validity::OutPoint)>)> {
     let a: HubAuthJson = serde_json::from_slice(&read(path)?).with_context(|| format!("{path}: the hub's signature"))?;
-    let hashes = |v: &[String]| -> Result<[lichen_withdraw::Hash; lichen_withdraw::fixed::DIGITS]> {
-        let v = v.iter().map(|h| hex::decode(h).ok().and_then(|b| b.try_into().ok()).context("a hash: 32 bytes, hex")).collect::<Result<Vec<_>>>()?;
-        v.try_into().map_err(|v: Vec<_>| anyhow::anyhow!("{} hashes, not {}", v.len(), lichen_withdraw::fixed::DIGITS))
+    let list = |v: &[String]| -> Result<Vec<lichen_withdraw::Hash>> { v.iter().map(|h| hex::decode(h).ok().and_then(|b| b.try_into().ok()).context("a hash: 32 bytes, hex")).collect() };
+    let fixed = |v: &[String]| -> Result<[lichen_withdraw::Hash; lichen_withdraw::fixed::DIGITS]> { list(v)?.try_into().map_err(|v: Vec<_>| anyhow::anyhow!("{} hashes, not {}", v.len(), lichen_withdraw::fixed::DIGITS)) };
+    let e = |v: &[String]| -> Result<[lichen_withdraw::Hash; lichen_withdraw::fixed::E_DIGITS]> { list(v)?.try_into().map_err(|v: Vec<_>| anyhow::anyhow!("{} hashes, not {}", v.len(), lichen_withdraw::fixed::E_DIGITS)) };
+    let auth = lichen_withdraw::fixed::HubAuth { key: fixed(&a.key)?, sig: fixed(&a.sig)? };
+    let exit = match &a.exit {
+        None => None,
+        Some(x) => {
+            let (t, v) = x.deposit.split_once(':').context("the deposit: <txid>:<vout>")?;
+            let mut txid: [u8; 32] = hex::decode(t).ok().and_then(|b| b.try_into().ok()).context("the deposit's txid: 32 bytes, hex")?;
+            txid.reverse();
+            let keys = lichen_withdraw::fixed::ExitKeys { b: auth.key, e_plain: e(&x.e_plain)?, e_counter: e(&x.e_counter)?, k: list(&x.k)? };
+            Some((keys, lichen_validity::OutPoint { txid, vout: v.parse().context("the deposit's vout")? }))
+        }
     };
-    Ok(lichen_withdraw::fixed::HubAuth { key: hashes(&a.key)?, sig: hashes(&a.sig)? })
+    Ok((auth, exit))
 }
 
 /// Prove the withdrawal statement (or, `execute_only`, run it): the
@@ -265,7 +290,13 @@ fn prove_withdraw(json: &str, chain: Receipt, execute_only: bool) -> Result<Opti
 /// succinct receipt, checked.
 fn prove_babe(json: &str, auth: &str, chain: Receipt, execute_only: bool) -> Result<Option<Receipt>> {
     let (withdraw, chain_id) = withdraw_input(json, &chain)?;
-    let input = lichen_withdraw::fixed::FixedInput { withdraw, auth: hub_auth(auth)? };
+    let (auth, exit) = hub_auth(auth)?;
+    if let Some((keys, deposit)) = exit {
+        // the contract has the exit: its statement, a return
+        let s = lichen_withdraw::fixed::ExitStatement { keys, deposit, mode: lichen_withdraw::fixed::Mode::Return { withdraw, b_sig: auth.sig } };
+        return prove_babe_exit(&s.to_bytes(), Some(chain), Run::of(execute_only));
+    }
+    let input = lichen_withdraw::fixed::FixedInput { withdraw, auth };
     let journal = lichen_withdraw::fixed::check(&input, &chain_id, &mut |j| j == chain.journal.bytes.as_slice()).map_err(|r| anyhow::anyhow!("the fixed statement rejects the input: {r:?}"))?;
     let claim = risc0_zkvm::ReceiptClaim::ok(image_id(&committed("babe")?)?, journal.to_vec());
     eprintln!("lichen-r0: the claim digest, the Groth16 public input's: {}", risc0_zkvm::sha::Digestible::digest(&claim));

@@ -301,7 +301,7 @@ impl Inner {
             },
         };
         if first {
-            self.note(format!("contract {cid}: the user requests {b} sats: responding ({name})"));
+            self.note(format!("contract {cid}: the user requests {b} units ({} sats): responding ({name})", u64::from(b) * record.terms.unit.to_sat()));
         }
         self.post(cid, &d.finish(name, wire)?)?;
         Ok(bb(State::Responded(Box::new(d))))
