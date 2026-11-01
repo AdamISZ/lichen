@@ -191,7 +191,10 @@ commits to its history but doesn't keep its data.
 
 To update: pull, `deploy/build.sh`, then `deploy/lichen.sh up`. Keys,
 ledger and contracts carry over. Deploy tagged versions, so that `info`
-names one.
+names one. Each build leaves several GB of Docker's build cache behind;
+`docker builder prune -f` frees it (the next build is slower). The
+services' logs are rotated (10 MB a file, three kept), so `deploy/lichen.sh
+logs` shows recent history only.
 
 An update that changes a guest (`r0/guests/`) is different. A contract's
 dispute statement pins the guests it opened with, and the chain guest

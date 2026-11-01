@@ -5,8 +5,17 @@
 # Data: deploy/state/<network>/.
 name: lichen-${NETWORK:?set NETWORK in deploy/.env}
 
+# Each service's log rotated, 10 MB a file and three kept: the node logs
+# every block, and Docker keeps a container's output whole otherwise
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
 services:
   bitcoind:
+    logging: *logging
     image: lichen-bitcoind:${NETWORK}
     command: ["bitcoind"]
     volumes:
@@ -19,6 +28,7 @@ services:
       retries: 60
 
   miner:
+    logging: *logging
     image: lichen-bitcoind:${NETWORK}
     profiles: ["regtest"]
     command: ["miner", "${MINE_EVERY:-5}"]
@@ -31,6 +41,7 @@ services:
     restart: unless-stopped
 
   sequencer:
+    logging: *logging
     image: ${LICHEN_IMAGE:-lichen:latest}
     command: ["sequencer"]
     environment:
@@ -53,6 +64,7 @@ services:
     restart: unless-stopped
 
   chain-prover:
+    logging: *logging
     image: ${LICHEN_IMAGE:-lichen:latest}
     command: ["chain-prover"]
     environment:
@@ -62,6 +74,7 @@ services:
     restart: unless-stopped
 
   hub:
+    logging: *logging
     image: ${LICHEN_IMAGE:-lichen:latest}
     command: ["hub"]
     environment:
