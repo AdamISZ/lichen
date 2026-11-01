@@ -1,11 +1,15 @@
 //! Milestone 3: the cooperative withdrawal and the default.
 //!
-//! Alice, Bob and Carol each open a contract with the hub. Bob pays Alice
-//! 50,000 sats on the L2; Alice returns 450,000 (more than her deposit,
-//! within her cap) and the hub folds her contract: she has 450,000 sats
-//! and her reserve on chain. Bob and Carol do nothing; after T_close the
-//! hub broadcasts their defaults, which return their reserves (Bob's
-//! remaining 50,000 sats on the L2 are now exposed to the hub).
+//! Alice, Bob, Carol and Dave each open a contract with the hub. Bob pays
+//! Alice 50,000 sats on the L2; Alice returns 450,000 (more than her
+//! deposit, within her cap) and the hub folds her contract: she has
+//! 450,000 sats and her reserve on chain. Bob closes his early with
+//! nothing withdrawn (`b` 0): no return, his reserve back at once, his
+//! remaining 50,000 sats left on the L2. Carol does nothing; after
+//! T_close the hub broadcasts her default, which returns her reserve.
+//! Dave's payout is his wallet's own payout address; the hub posts no
+//! default for him (as if gone), and he posts it himself, then spends
+//! his reserve from that address.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -75,11 +79,15 @@ fn fold_and_default() {
     .unwrap();
     let ask = |deposit| Ask { deposit, liquidity: 1_000_000, reserve: 20_000 };
     let mut users = vec![];
-    for (name, deposit) in [("alice", 400_000u64), ("bob", 100_000), ("carol", 100_000)] {
+    for (name, deposit) in [("alice", 400_000u64), ("bob", 100_000), ("carol", 100_000), ("dave", 100_000)] {
         let ch = chain(name);
         rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
         let mut w = Wallet::create(&dir.join(format!("{name}.json")), &seq.url).unwrap();
-        let held = w.open_contract(&hub.url, &ch, &mock(), &dir.join(name), ask(deposit), ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
+        // Dave's payouts to his wallet's own address, watched (the node's
+        // index sees only what's paid after)
+        let payout = if name == "dave" { w.payout().spk() } else { ch.new_spk().unwrap() };
+        ch.watch(&payout).unwrap();
+        let held = w.open_contract(&hub.url, &ch, &mock(), &dir.join(name), ask(deposit), payout, &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
         println!("LICHEN {name} opened contract {} with a deposit of {deposit} sats", held.record.cid());
         users.push((w, ch, held));
     }
@@ -108,18 +116,63 @@ fn fold_and_default() {
         println!("LICHEN Alice returned 450,000 sats on the L2 and the hub folded her contract ({} vB, {:.1?}): she gained {gained} on chain", fold.vsize(), t.elapsed());
     }
 
-    // ===== Bob and Carol do nothing; after T_close, the defaults =====
-    let t_close = users[1].1.height().unwrap().max(users.iter().map(|u| u.2.record.terms.t_close).max().unwrap());
-    let before: Vec<Amount> = users.iter().map(|u| u.1.balance().unwrap()).collect();
-    rt.mine_to_height(t_close).unwrap();
-    wait("the defaults", || hub.contracts().iter().filter(|c| c.1.is_some()).count() == 3);
-    rt.mine(1).unwrap();
-    for (k, name) in [(1usize, "Bob"), (2, "Carol")] {
-        let gained = users[k].1.balance().unwrap() - before[k];
-        assert_eq!(gained, users[k].2.record.terms.reserve_alice, "{name}'s reserve");
-        println!("LICHEN after T_close the hub broadcast {name}'s default: {name}'s reserve ({gained}) is back on chain");
+    // ===== Bob closes early, withdrawing nothing =====
+    {
+        let (w, ch, h) = &mut users[1];
+        let before = ch.balance().unwrap();
+        let t = Instant::now();
+        let txid = w.withdraw(&hub.url, &mock(), &dir.join("bob"), h.record.cid(), 0).unwrap();
+        rt.mine(1).unwrap();
+        let gained = ch.balance().unwrap() - before;
+        assert_eq!(gained, h.record.terms.reserve_alice, "Bob's reserve alone");
+        assert_eq!(w.balance().unwrap(), 50_000, "no return: Bob's tokens stay on the L2");
+        assert!(hub.contracts().iter().any(|c| c.0.cid() == h.record.cid() && c.1 == Some(txid)));
+        println!("LICHEN Bob closed his contract with nothing withdrawn ({:.1?}, no return): his reserve ({gained}) back before T_close, his 50,000 sats still on the L2", t.elapsed());
     }
-    assert_eq!(users[1].0.balance().unwrap(), 50_000, "Bob's tokens remain on the L2, exposed to the hub now");
+
+    // ===== after T_close: Dave posts his default, the hub held; then the
+    // hub posts Carol's =====
+    hub.set_hold_defaults(true);
+    let (carol_cid, dave_cid) = (users[2].2.record.cid(), users[3].2.record.cid());
+    {
+        let (w, ch, _) = &mut users[3];
+        let early = w.post_default(ch, &mock(), &dir.join("dave"), dave_cid).unwrap_err();
+        assert!(format!("{early:#}").contains("valid from block"), "{early:#}");
+    }
+    let t_close = users[2].1.height().unwrap().max(users.iter().map(|u| u.2.record.terms.t_close).max().unwrap());
+    let carol_before = users[2].1.balance().unwrap();
+    rt.mine_to_height(t_close).unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(hub.contracts().iter().all(|c| c.0.cid() != carol_cid || c.1.is_none()), "no defaults while held");
+    let (w, ch, h) = &mut users[3];
+    let posted = w.post_default(ch, &mock(), &dir.join("dave"), dave_cid).unwrap();
+    rt.mine(1).unwrap();
+    assert!(rt.get_tx(&posted).is_ok());
+    let payout = w.payout();
+    let at_payout = payout.balance(ch).unwrap();
+    assert_eq!(at_payout, h.record.terms.reserve_alice, "Dave's reserve at his payout address");
+    assert!(w.post_default(ch, &mock(), &dir.join("dave"), dave_cid).is_err(), "closed now");
+    println!("LICHEN Dave posted his own default after T_close (the hub held its): his reserve ({at_payout}) at his wallet's payout address {}", w.payout_address(lichen_proto::Net::Regtest));
+    // and spends it from there: 10,000 sats, then the rest
+    let to = ch.new_spk().unwrap();
+    let before = ch.balance().unwrap();
+    w.send_payout(ch, &to, Some(Amount::from_sat(10_000))).unwrap();
+    rt.mine(1).unwrap();
+    assert_eq!(ch.balance().unwrap() - before, Amount::from_sat(10_000));
+    let left = payout.balance(ch).unwrap();
+    assert!(left < at_payout - Amount::from_sat(10_000) && left > at_payout - Amount::from_sat(11_000), "the change, less the fee: {left}");
+    w.send_payout(ch, &to, None).unwrap();
+    rt.mine(1).unwrap();
+    assert_eq!(payout.balance(ch).unwrap(), Amount::ZERO);
+    let got = ch.balance().unwrap() - before;
+    assert!(got > at_payout - Amount::from_sat(1_000), "all of it, less two fees: {got}");
+    println!("LICHEN Dave sent 10,000 sats from his payout address, then the rest: {got} of {at_payout} arrived");
+    hub.set_hold_defaults(false);
+    wait("Carol's default", || hub.contracts().iter().any(|c| c.0.cid() == carol_cid && c.1.is_some()));
+    rt.mine(1).unwrap();
+    let gained = users[2].1.balance().unwrap() - carol_before;
+    assert_eq!(gained, users[2].2.record.terms.reserve_alice, "Carol's reserve");
+    println!("LICHEN after T_close the hub broadcast Carol's default: her reserve ({gained}) is back on chain");
     stop.store(true, Ordering::Relaxed);
     sealer.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);

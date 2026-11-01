@@ -65,7 +65,7 @@ impl Wallet {
     /// Contract `k` is still open: no closing transaction, or one named
     /// (the hub's answer to a fold) that never reached the chain, which
     /// is then forgotten.
-    fn ensure_open(&mut self, chain: &Chain, k: usize) -> Result<()> {
+    pub(crate) fn ensure_open(&mut self, chain: &Chain, k: usize) -> Result<()> {
         if let Some(t) = self.contracts[k].closed {
             ensure!(chain.get_tx(&t).is_none(), "contract {} is closed ({t})", self.contracts[k].record.cid());
             self.contracts[k].closed = None;

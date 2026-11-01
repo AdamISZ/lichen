@@ -36,7 +36,7 @@ file holds secrets: keep it, and the directory beside it (`alice.d/`), private.
 
 ```sh
 lw init                                  # a fresh key; pins the deployment the sequencer announces
-lw open 100000 --liquidity 200000 --payout <an address of yours>
+lw open 100000 --liquidity 200000
 ```
 
 `init` pins the deployment: check the sequencer's key it prints against
@@ -58,6 +58,11 @@ The deposit address is the hub's key and yours together, or yours alone
 after about a day: if the contract never opens, `lw refund <contract>`
 takes it back. Once the hub funds the contract, your deposit, less the
 fee, is minted to you on the L2.
+
+Withdrawals, refunds, your reserve and the fee budget's rest are paid to
+the contract's payout address: by default the wallet's own (`lw payout`
+prints it and what's there, and `lw send-payout <address> [<amount>]`
+pays from it), or any address of yours with `--payout`.
 
 `lw contracts` lists your contracts: each one's cap, its end `T_close`,
 and its payout address.
@@ -90,11 +95,20 @@ asks the hub to fold: it checks the return, with its anchor and the
 chain's validity proof, and pays you `amount` plus your reserve in one
 transaction, closing the contract. The return has to be anchored on
 Bitcoin first, with ten blocks on top: several minutes on Mutinynet, about
-two hours on mainnet. `lw sweep-fees <contract>` then sends what is left
-of the contract's fee budget to the payout address.
+two hours on mainnet. While it waits, the wallet says how far the
+sequencer's prover has got. `lw sweep-fees <contract>` then sends what
+is left of the contract's fee budget to the payout address.
+
+`lw withdraw <contract> 0` closes a contract early with nothing
+withdrawn: no return and no wait, just your reserve back, as the default
+would pay it at the end. It's for a contract you've emptied (say, your
+whole balance withdrawn from another), and frees the hub's liquidity
+too.
 
 Withdraw before `T_close`: at the end, an unwithdrawn contract is the
-hub's.
+hub's. Its default then pays you your reserve; the hub posts it, and if
+it doesn't, `lw post-default <contract>` does, with a fee coin from the
+contract's fee budget.
 
 ## If the hub won't pay
 

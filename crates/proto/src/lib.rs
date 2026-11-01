@@ -423,6 +423,9 @@ pub fn broadcast_deadline(confirmed: u32, timeout: u16) -> u32 {
 
 /// The cooperative close's fee, from the hub's share.
 pub const FOLD_FEE: Amount = Amount::from_sat(1_000);
+/// The least a fold pays Alice when she withdraws nothing (`b` 0: her
+/// reserve alone), the dust floor of her output.
+pub const CLOSE_DUST: Amount = Amount::from_sat(330);
 /// The default's fee coin, the hub's.
 pub const DEFAULT_FEE: Amount = Amount::from_sat(2_000);
 

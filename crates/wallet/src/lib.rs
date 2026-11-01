@@ -21,7 +21,7 @@ use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{fresh_rho, mint_secret, note, sign, xonly, Deployment, Hash, Note, Spend, Transfer, Tx, WithdrawInput};
 use lichen_chain::{Chain, KeyFees};
 use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
-use lichen_proto::{check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, mint_owner, Presig, fee_budget_of, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Gadget, Info, OfferKeys, OpenOffer, OpenRequest, Opened, Record, RequestKeys, Statement, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, mint_owner, Presig, fee_budget_of, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Gadget, Info, OfferKeys, OpenOffer, OpenRequest, Opened, Record, RequestKeys, Statement, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
 use lichen_l2::{Client, Equivocation, Seen, State};
 use lngap_btc::adaptor::{adaptor_extract, adaptor_sign, AdaptorSig};
 use lngap_channel::PartyKeys;
@@ -159,6 +159,9 @@ pub struct Held {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<exit::ExitPlan>,
 }
+
+/// sat/vB for payments from the wallet's payout key ([`Wallet::send_payout`]).
+pub const PAYOUT_FEERATE: u64 = 2;
 
 pub struct Wallet {
     /// For tests: stop a dispute after posting this move (it resumes
@@ -798,6 +801,118 @@ impl Wallet {
         chain.broadcast(&tx).context("the sweep of the fee budget")
     }
 
+    /// A withdrawal's return of `b` with memo `cid`, made (or the one made
+    /// already), sealed and, on the real statement, anchored and proved:
+    /// what the hub needs before it folds. Its note's index.
+    fn ready_return(&mut self, statement: &Statement, cid: u32, b: u64) -> Result<u32> {
+        let index = match self.returned(cid) {
+            Some(index) => {
+                let v = self.state()?.note(index).with_context(|| format!("no note {index}"))?.value;
+                ensure!(v == b, "contract {cid} has a return of {v} sats already, not folded: withdraw {v}, or dispute it");
+                index
+            }
+            None => self.return_to_hub(b, cid)?,
+        };
+        let start = std::time::Instant::now();
+        while self.state()?.withdraw_input(index, &self.sequencer.deployment).is_err() {
+            ensure!(start.elapsed() < std::time::Duration::from_secs(120), "the return was never sealed");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        // keep the input now, unless it waits on an anchor (below)
+        if self.sequencer.deployment.seal.is_none() {
+            self.withdraw_input(cid)?;
+        }
+        // on the real statement the hub folds only a return anchored on
+        // Bitcoin under a root the sequencer has proved, the anchor deep
+        // enough (what a dispute would need)
+        if statement.is_real() {
+            let progress = self.progress.clone();
+            let say = |m: String| {
+                if let Some(p) = &progress {
+                    p(m)
+                }
+            };
+            let start = std::time::Instant::now();
+            let patience = std::time::Duration::from_secs(1200);
+            if self.sequencer.deployment.seal.is_some() {
+                let mut told = false;
+                while self.state()?.anchored_input(index, &self.sequencer.deployment).is_err() {
+                    if !std::mem::replace(&mut told, true) {
+                        say("waiting for the sequencer to anchor the return's L2 height on Bitcoin".into());
+                    }
+                    ensure!(start.elapsed() < patience, "the sequencer hasn't anchored the return in 20 minutes: is it anchoring? Withdraw again later");
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+            self.withdraw_input(cid)?;
+            let h = self.kept(index).and_then(|k| k.anchor).map_or_else(|| self.kept(index).and_then(|k| k.input.as_ref()).map_or(0, |i| i.height), |a| a.from);
+            if self.sequencer.chain_receipt(h)?.is_none() {
+                say(format!("waiting for the sequencer to prove L2 height {h}, the return's: its prover goes in order, a few minutes a height"));
+                // how far it has got, said as it moves (a sequencer too old
+                // to say, nothing)
+                let mut told = None;
+                while self.sequencer.chain_receipt(h)?.is_none() {
+                    ensure!(start.elapsed() < patience, "the sequencer hasn't proved L2 height {h} in 20 minutes: is its chain prover running? Withdraw again later");
+                    if let Ok(Some(p)) = self.sequencer.proved_height() {
+                        if p < h && told != Some(p) {
+                            say(format!("the sequencer has proved L2 height {p}; the return's is {h}"));
+                            told = Some(p);
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                }
+                say(format!("L2 height {h} proved"));
+            }
+            self.chain_receipt(cid)?;
+        }
+        Ok(index)
+    }
+
+    /// The wallet's own Bitcoin key for payouts: an address of its own
+    /// for withdrawals, refunds, reserves and swept fee budgets, so a user
+    /// needs no other wallet. One key, its coins found by script.
+    pub fn payout(&self) -> KeyFees {
+        KeyFees { keypair: crate::engine::payout_keypair(&self.key.to_bytes()[..]), feerate: PAYOUT_FEERATE }
+    }
+    /// The payout key's address on `net`.
+    pub fn payout_address(&self, net: lichen_chain::Net) -> bitcoin::Address {
+        bitcoin::Address::from_script(&self.payout().spk(), net.bitcoin()).expect("a P2TR script has an address")
+    }
+    /// Send from the payout key's coins: [`send_from`].
+    pub fn send_payout(&self, chain: &Chain, to: &bitcoin::Script, amount: Option<bitcoin::Amount>) -> Result<bitcoin::Txid> {
+        send_from(&self.payout(), chain, to, amount)
+    }
+
+    /// Post contract `cid`'s default after `T_close`, as the hub would:
+    /// the pre-signed transaction, both signatures in hand, with a fee
+    /// coin from the contract's fee budget. It pays Alice her reserve.
+    /// For when the hub doesn't (gone, say); refused once anything spent
+    /// the contract output (the hub's default, a fold, a dispute).
+    pub fn post_default(&mut self, chain: &Chain, statement: &Statement, dir: &Path, cid: u32) -> Result<bitcoin::Txid> {
+        use lichen_chain::Fees;
+        let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
+        self.ensure_open(chain, k)?;
+        let held = self.contracts[k].clone();
+        let (t_close, height) = (held.record.terms.t_close, chain.height()?);
+        ensure!(height >= t_close, "contract {cid}'s default is valid from block {t_close} (now {height})");
+        ensure!(chain.unspent(&held.record.funding)?, "contract {cid} is closed already: its output is spent (the hub's default, a fold or a dispute)");
+        let program = statement.program_if(dir)?;
+        let c = held.record.build(statement, program.as_ref())?;
+        let set = held.record.presigned(&c)?;
+        let p = set.iter().find(|p| p.name == "default").context("no default")?;
+        let sig = |sigs: &std::collections::HashMap<String, Vec<u8>>, whose: &str| sigs.get("default").cloned().with_context(|| format!("no signature of the {whose}'s on the default"));
+        let mut tx = p.finish(vec![], &sig(&held.record.hub_sigs, "hub")?, &sig(&held.record.alice_sigs, "user")?);
+        // pre-signed ALL|ANYONECANPAY, its outputs fixed: an exact coin
+        let fees = self.fees(&held.nonce, held.record.network);
+        let (op, coin) = fees.exact_coin(chain, DEFAULT_FEE)?;
+        tx.input.push(bitcoin::TxIn { previous_output: op, sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME, ..Default::default() });
+        let tx = fees.sign(chain, &tx, &[(held.record.funding, p.prevout.clone()), (op, coin)])?;
+        let txid = chain.broadcast(&tx).context("broadcasting the default")?;
+        self.contracts[k].closed = Some(txid);
+        self.save()?;
+        Ok(txid)
+    }
+
     /// Wait for a confirmed coin of at least `amount` to `spk` (a deposit).
     fn wait_deposit(&self, chain: &Chain, spk: &bitcoin::Script, amount: bitcoin::Amount) -> Result<(bitcoin::OutPoint, bitcoin::TxOut)> {
         let mut stall = lichen_chain::Stall::new(chain.height()?, chain.network);
@@ -841,62 +956,25 @@ impl Wallet {
     /// height includes it, then sign the fold (Alice `b + r_A`, the hub the
     /// rest) and ask the hub to close. Returns the fold's txid. Run again
     /// after a failed fold, it asks again with the same return (never a
-    /// second one).
+    /// second one). At `b` 0 it closes the contract early: no return and
+    /// nothing to wait for, the fold paying Alice her reserve, as the
+    /// default would at `T_close`.
     pub fn withdraw(&mut self, hub: &str, statement: &Statement, dir: &Path, cid: u32, b: u64) -> Result<bitcoin::Txid> {
         let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
         let held = self.contracts[k].clone();
         ensure!(held.closed.is_none(), "contract {cid} is closed");
         ensure!(bitcoin::Amount::from_sat(b) <= held.record.terms.v_max(), "{b} sats is above the cap");
-        let index = match self.returned(cid) {
-            Some(index) => {
-                let v = self.state()?.note(index).with_context(|| format!("no note {index}"))?.value;
-                ensure!(v == b, "contract {cid} has a return of {v} sats already, not folded: withdraw {v}, or dispute it");
-                index
+        let index = if b == 0 {
+            if let Some(i) = self.returned(cid) {
+                let v = self.state()?.note(i).map_or(0, |n| n.value);
+                bail!("contract {cid} has a return of {v} sats already, not folded: withdraw {v}, or dispute it");
             }
-            None => self.return_to_hub(b, cid)?,
+            ensure!(held.record.terms.reserve_alice >= CLOSE_DUST, "contract {cid}: nothing to withdraw and no reserve, so a fold would pay you nothing: the default closes it at block {}", held.record.terms.t_close);
+            // the hub reads no note at b 0
+            0
+        } else {
+            self.ready_return(statement, cid, b)?
         };
-        let start = std::time::Instant::now();
-        while self.state()?.withdraw_input(index, &self.sequencer.deployment).is_err() {
-            ensure!(start.elapsed() < std::time::Duration::from_secs(120), "the return was never sealed");
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-        // keep the input now, unless it waits on an anchor (below)
-        if self.sequencer.deployment.seal.is_none() {
-            self.withdraw_input(cid)?;
-        }
-        // on the real statement the hub folds only a return anchored on
-        // Bitcoin under a root the sequencer has proved, the anchor deep
-        // enough (what a dispute would need)
-        if statement.is_real() {
-            let progress = self.progress.clone();
-            let say = |m: String| {
-                if let Some(p) = &progress {
-                    p(m)
-                }
-            };
-            let start = std::time::Instant::now();
-            let patience = std::time::Duration::from_secs(1200);
-            if self.sequencer.deployment.seal.is_some() {
-                let mut told = false;
-                while self.state()?.anchored_input(index, &self.sequencer.deployment).is_err() {
-                    if !std::mem::replace(&mut told, true) {
-                        say("waiting for the sequencer to anchor the return's height on Bitcoin".into());
-                    }
-                    ensure!(start.elapsed() < patience, "the sequencer hasn't anchored the return in 20 minutes: is it anchoring? Withdraw again later");
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-            }
-            self.withdraw_input(cid)?;
-            let h = self.kept(index).and_then(|k| k.anchor).map_or_else(|| self.kept(index).and_then(|k| k.input.as_ref()).map_or(0, |i| i.height), |a| a.from);
-            if self.sequencer.chain_receipt(h)?.is_none() {
-                say(format!("waiting for the sequencer to prove height {h}, the return's (a few minutes)"));
-                while self.sequencer.chain_receipt(h)?.is_none() {
-                    ensure!(start.elapsed() < patience, "the sequencer hasn't proved height {h} in 20 minutes: is its chain prover running? Withdraw again later");
-                    std::thread::sleep(std::time::Duration::from_secs(10));
-                }
-            }
-            self.chain_receipt(cid)?;
-        }
         let program = statement.program_if(dir)?;
         let c = held.record.build(statement, program.as_ref())?;
         let fold = c.fold(held.record.funding, bitcoin::Amount::from_sat(b), FOLD_FEE)?;
@@ -932,4 +1010,40 @@ impl Wallet {
         self.save()?;
         Ok(done.txid)
     }
+}
+
+/// Send from one key's coins, a wallet's payout key's (all of them,
+/// confirmed or not), to `to`: `amount`, the change back to the key; or,
+/// `amount` None, everything less the fee. At the key's feerate (sat/vB).
+/// Apart from the wallet, so it can run while the wallet is busy (paying
+/// a deposit the opening waits for).
+pub fn send_from(payout: &KeyFees, chain: &Chain, to: &bitcoin::Script, amount: Option<bitcoin::Amount>) -> Result<bitcoin::Txid> {
+    use lichen_chain::Fees;
+    use bitcoin::{Amount, TxOut};
+    chain.watch(&payout.spk())?;
+    let coins = chain.coins_of(&payout.spk())?;
+    ensure!(!coins.is_empty(), "nothing at the payout address");
+    let total: Amount = coins.iter().map(|c| c.1.value).sum();
+    // key-path inputs 57.5 vB each, P2TR outputs 43, 10.5 besides
+    let fee = |outs: u64| Amount::from_sat((105 + 575 * coins.len() as u64 + 430 * outs).div_ceil(10) * payout.feerate);
+    let outs = match amount {
+        None => vec![TxOut { value: total.checked_sub(fee(1)).filter(|v| *v >= CLOSE_DUST).with_context(|| format!("the payout address has {} sats: too little to pay the fee", total.to_sat()))?, script_pubkey: to.to_owned() }],
+        Some(a) => {
+            ensure!(a >= CLOSE_DUST, "{} sats is below the dust floor", a.to_sat());
+            let short = || format!("the payout address has {} sats: short of {} and the fee", total.to_sat(), a.to_sat());
+            match total.checked_sub(a + fee(2)) {
+                Some(change) if change >= CLOSE_DUST => vec![TxOut { value: a, script_pubkey: to.to_owned() }, TxOut { value: change, script_pubkey: payout.spk() }],
+                // change below dust goes to the fee
+                _ => {
+                    ensure!(total >= a + fee(1), "{}", short());
+                    vec![TxOut { value: a, script_pubkey: to.to_owned() }]
+                }
+            }
+        }
+    };
+    let ins: Vec<(bitcoin::OutPoint, bitcoin::Sequence)> = coins.iter().map(|c| (c.0, bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME)).collect();
+    let tx = lngap_btc::tx::build_tx(&ins, outs, bitcoin::absolute::LockTime::ZERO);
+    let prevouts: Vec<_> = coins.into_iter().map(|c| (c.0, c.1)).collect();
+    let tx = payout.sign(chain, &tx, &prevouts)?;
+    chain.broadcast(&tx).context("the payment from the payout address")
 }

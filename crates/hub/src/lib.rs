@@ -26,7 +26,7 @@ use lichen_chain::Chain;
 use lichen_ledger::{files, note, xonly, Mint, Tx};
 use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_proto::bitvmx::Windows;
-use lichen_proto::{broadcast_deadline, check_funding, contributions, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Gadget, Info, Net, OpenOffer, OpenRequest, Opened, Record, RequestKeys, Statement, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{broadcast_deadline, check_funding, contributions, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Gadget, Info, Net, OpenOffer, OpenRequest, Opened, Record, RequestKeys, Statement, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
 use lichen_l2::Client;
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
@@ -171,6 +171,8 @@ pub(crate) struct Inner {
     leave_bits: AtomicBool,
     /// For tests: counter every exit claim, with a `K` that isn't one.
     forge_counters: AtomicBool,
+    /// For tests: post no defaults (as a hub gone would not).
+    hold_defaults: AtomicBool,
     /// The prover of counters on the real statement (`lichen-r0`), if any.
     prover: Mutex<Option<PathBuf>>,
     /// For tests: a fault in each opening.
@@ -235,7 +237,7 @@ impl Hub {
         ensure!(!(cfg_refuse || cfg_dispute) || cfg.network.is_test(), "a hub refuses withdrawals or disputes true claims on test networks only, not {}", cfg.network);
         let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), forge_counters: AtomicBool::new(false), prover: Mutex::new(None), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), forge_counters: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), prover: Mutex::new(None), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             for mut req in srv.incoming_requests() {
@@ -341,6 +343,12 @@ impl Hub {
     pub fn set_forge_counters(&self, on: bool) {
         self.misbehave();
         self.inner.forge_counters.store(on, Ordering::Relaxed);
+    }
+    /// For tests: post no defaults after `T_close`, as a hub gone would
+    /// not (the user posts hers).
+    pub fn set_hold_defaults(&self, on: bool) {
+        self.misbehave();
+        self.inner.hold_defaults.store(on, Ordering::Relaxed);
     }
     pub fn set_dispute_true_claims(&self, on: bool) {
         self.misbehave();
@@ -657,6 +665,28 @@ impl Inner {
         ensure!(!self.refuse_folds.load(Ordering::Relaxed), "this hub refuses cooperative withdrawals");
         let o = self.open.lock().unwrap().get(&f.cid).cloned().context("no such contract")?;
         ensure!(o.closed.is_none(), "contract {} is closed", f.cid);
+        if f.b == 0 {
+            // an early close: Alice takes her reserve alone, as the default
+            // would pay her at T_close, so there's no return to check
+            ensure!(o.record.terms.reserve_alice >= CLOSE_DUST, "contract {}: a fold of nothing pays the user nothing (no reserve): the default closes it", f.cid);
+        } else {
+            self.check_return(&o, &f)?;
+        }
+        let c = self.built(&o.record)?;
+        let p = c.fold(o.record.funding, Amount::from_sat(f.b), FOLD_FEE)?;
+        p.verify(&o.record.pubs[0].payment, &f.alice_sig).context("Alice's signature on the fold")?;
+        let mine = p.sign(&contract_keys(&self.cfg.seed, f.cid).payment)?;
+        let txid = self.chain.broadcast(&p.finish(vec![], &mine, &f.alice_sig)).context("broadcasting the fold")?;
+        self.close(f.cid, txid)?;
+        self.note(format!("contract {}: folded: {} sats back to the user, with the user's reserve", f.cid, f.b));
+        Ok(Folded { txid })
+    }
+
+    /// A withdrawal's return, note `f.index`: `f.b` to the hub with memo
+    /// `f.cid`, sealed; on the real statement anchored deep enough under a
+    /// height the sequencer has proved, and the withdrawal statement's
+    /// journal this withdrawal's.
+    fn check_return(&self, o: &Open, f: &FoldRequest) -> Result<()> {
         let state = self.state()?;
         let input = state.withdraw_input(f.index, &self.seq.deployment)?;
         ensure!(input.note.memo == f.cid && input.note.value == f.b, "note {} is not a return of {} with memo {}", f.index, f.b, f.cid);
@@ -674,14 +704,7 @@ impl Inner {
             want.extend(o.record.deployment);
             ensure!(j[..] == want[..], "note {}: the statement's journal is not this withdrawal's", f.index);
         }
-        let c = self.built(&o.record)?;
-        let p = c.fold(o.record.funding, Amount::from_sat(f.b), FOLD_FEE)?;
-        p.verify(&o.record.pubs[0].payment, &f.alice_sig).context("Alice's signature on the fold")?;
-        let mine = p.sign(&contract_keys(&self.cfg.seed, f.cid).payment)?;
-        let txid = self.chain.broadcast(&p.finish(vec![], &mine, &f.alice_sig)).context("broadcasting the fold")?;
-        self.close(f.cid, txid)?;
-        self.note(format!("contract {}: folded: {} sats back to the user, with the user's reserve", f.cid, f.b));
-        Ok(Folded { txid })
+        Ok(())
     }
 
     /// Close a contract: nothing of it is left to collect (a dispute the
@@ -751,6 +774,9 @@ impl Inner {
     /// pre-signed transaction, both signatures in hand, plus a fee coin of
     /// the hub's.
     fn default_expired(&self) -> Result<()> {
+        if self.hold_defaults.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         let height = self.chain.height()?;
         let due: Vec<Open> = self.open.lock().unwrap().values().filter(|o| o.closed.is_none() && height >= o.record.terms.t_close).cloned().collect();
         for o in due {

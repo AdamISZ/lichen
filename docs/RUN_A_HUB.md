@@ -155,7 +155,8 @@ ledger, so a restart carries on.
 
 **The chain prover** proves each height the sequencer records
 (`ledger.json.blocks/<h>.input`), each from the last, to
-`<h>.chain`, which the sequencer serves at `GET /chain/<h>`. Every
+`<h>.chain`, which the sequencer serves at `GET /chain/<h>` (and the
+last height proved, at `GET /chain`: wallets show it while they wait). Every
 withdrawal needs the receipt at its return's height: a disputed one's
 proof checks its root ends a valid history, and the hub checks the same
 before it folds. A small height takes under a minute on a laptop; the

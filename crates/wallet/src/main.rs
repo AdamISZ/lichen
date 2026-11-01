@@ -102,8 +102,9 @@ enum Cmd {
         #[arg(long, default_value_t = 20_000)]
         reserve: u64,
         /// Where withdrawals, refunds and the fee budget's rest are paid
-        /// (an address of any wallet of yours).
-        #[arg(long, required_unless_present = "resume")]
+        /// (an address of any wallet of yours; by default this wallet's
+        /// own payout address, `lichen payout`).
+        #[arg(long)]
         payout: Option<String>,
         /// Finish the opening of this contract with its deposit, already
         /// paid (an opening that failed after the deposit); the payout
@@ -135,8 +136,18 @@ enum Cmd {
     ClaimMint { contract: u32 },
     /// The contracts this wallet holds.
     Contracts,
-    /// Withdraw `amount` sats from a contract cooperatively.
+    /// Withdraw `amount` sats from a contract cooperatively. 0 closes it
+    /// early with nothing withdrawn: your reserve back, as the default
+    /// would pay it at T_close.
     Withdraw { contract: u32, amount: u64 },
+    /// Post a contract's default after T_close, when the hub hasn't (it
+    /// pays you your reserve), with a fee coin from its fee budget.
+    PostDefault { contract: u32 },
+    /// This wallet's own Bitcoin payout address, and what's there.
+    Payout,
+    /// Pay from this wallet's payout address: `amount` sats, or everything
+    /// (less the fee) without it.
+    SendPayout { to: String, amount: Option<u64> },
     /// Enforce a withdrawal (already returned on the L2) on Bitcoin, when
     /// the hub won't fold it: escalate and play the dispute to its end.
     /// Run again to resume (the claim is kept with the contract).
@@ -359,7 +370,15 @@ fn main() -> Result<()> {
             let h = match resume {
                 Some(cid) => w.resume_open(&a.hub, &chain, &a.statement, &dir, ask, cid)?,
                 None => {
-                    let payout = payout.as_deref().context("--payout")?.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()?.require_network(a.network.bitcoin()).context("--payout")?.script_pubkey();
+                    let payout = match payout.as_deref() {
+                        Some(p) => p.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()?.require_network(a.network.bitcoin()).context("--payout")?.script_pubkey(),
+                        None => {
+                            let spk = w.payout().spk();
+                            chain.watch(&spk)?;
+                            println!("payouts to this wallet's own address: {}", w.payout_address(a.network));
+                            spk
+                        }
+                    };
                     let pay = |addr: &bitcoin::Address, amount: bitcoin::Amount| -> Result<()> {
                         println!("pay {} sats to {addr}\n(waiting for it to confirm)", amount.to_sat());
                         Ok(())
@@ -512,9 +531,26 @@ fn main() -> Result<()> {
             let (outcome, swept) = w.sweep_dispute(&chain(&a)?, &a.statement, &a.wallet.with_extension("d"), contract, b, outcome)?;
             println!("{outcome:?}; swept {swept:?}");
         }
+        Cmd::PostDefault { contract } => {
+            let txid = w.post_default(&chain(&a)?, &a.statement, &a.wallet.with_extension("d"), contract)?;
+            println!("posted contract {contract}'s default: {txid}");
+        }
+        Cmd::Payout => {
+            let chain = chain(&a)?;
+            let p = w.payout();
+            chain.watch(&p.spk())?;
+            println!("{}
+{} sats", w.payout_address(a.network), p.balance(&chain)?.to_sat());
+        }
+        Cmd::SendPayout { ref to, amount } => {
+            let to = to.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()?.require_network(a.network.bitcoin()).context("the address")?;
+            let txid = w.send_payout(&chain(&a)?, &to.script_pubkey(), amount.map(bitcoin::Amount::from_sat))?;
+            println!("paid {} to {to}: {txid}", amount.map_or("everything".into(), |v| format!("{v} sats")));
+        }
         Cmd::Withdraw { contract, amount } => {
             w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
             match w.withdraw(&a.hub, &a.statement, &a.wallet.with_extension("d"), contract, amount) {
+                Ok(txid) if amount == 0 => println!("closed contract {contract} with nothing withdrawn, your reserve back: the fold is {txid}"),
                 Ok(txid) => println!("withdrew {amount} sats from contract {contract}: the fold is {txid}"),
                 Err(e) => {
                     let open = w.contracts.iter().find(|h| h.record.cid() == contract && h.closed.is_none());

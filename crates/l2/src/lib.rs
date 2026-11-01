@@ -258,6 +258,13 @@ pub struct ChainReceipt {
     pub receipt: String,
 }
 
+/// The last height the chain prover has proved from genesis (`GET
+/// /chain`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Proved {
+    pub proved: u64,
+}
+
 /// An exit claim's nullifiers for the sequencer to hold (`POST /hold`),
 /// hex, and the hub's signature over `lichen_ledger::hold_digest`, hex.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -324,6 +331,15 @@ impl Client {
             Ok(r) => Ok(Some(hex::decode(r.into_json::<ChainReceipt>()?.receipt).context("a chain receipt's hex")?)),
             Err(ureq::Error::Status(404, _)) => Ok(None),
             Err(e) => Err(anyhow!("/chain/{h}: {e}")),
+        }
+    }
+    /// The last height the sequencer has proved from genesis; `None` from
+    /// a sequencer too old to say (before lichen v0.4.3).
+    pub fn proved_height(&self) -> Result<Option<u64>> {
+        match ureq::get(&format!("{}/chain", self.url)).call() {
+            Ok(r) => Ok(Some(r.into_json::<Proved>()?.proved)),
+            Err(ureq::Error::Status(404, _)) => Ok(None),
+            Err(e) => Err(anyhow!("/chain: {e}")),
         }
     }
     /// Have the sequencer refuse spends of an exit claim's nullifiers

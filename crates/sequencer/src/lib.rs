@@ -10,11 +10,11 @@ pub mod anchor;
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
-use lichen_l2::{Applied, ChainReceipt, Event, Hold, Refused, Spent, State};
+use lichen_l2::{Applied, ChainReceipt, Event, Hold, Proved, Refused, Spent, State};
 use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{files, xonly, Deployment, Hash, Ledger, OutPoint, Proof, Tx};
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -45,6 +45,9 @@ pub(crate) struct Shared {
     /// so the sequencer serves nothing more (a restart from the file would
     /// sign another root at a height already signed).
     pub poisoned: AtomicBool,
+    /// The last height the chain prover proved, as last found (`GET
+    /// /chain` looks on from it).
+    pub proved: AtomicU64,
 }
 
 impl Shared {
@@ -98,7 +101,7 @@ impl Sequencer {
         }
         let server = Arc::new(Server::http(addr).map_err(|e| anyhow!("listen on {addr}: {e}"))?);
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
-        let shared = Arc::new(Shared { ledger: Mutex::new(ledger), events: Mutex::new(vec![]), path, key, poisoned: AtomicBool::new(false) });
+        let shared = Arc::new(Shared { ledger: Mutex::new(ledger), events: Mutex::new(vec![]), path, key, poisoned: AtomicBool::new(false), proved: AtomicU64::new(0) });
         let (srv, sh) = (server.clone(), shared.clone());
         let thread = std::thread::spawn(move || {
             let busy = Arc::new(AtomicUsize::new(0));
@@ -218,6 +221,18 @@ fn handle(sh: &Shared, method: &Method, url: &str, body: &str) -> (u16, String) 
         let ev = sh.events.lock().unwrap();
         let tail: Vec<(usize, Event)> = ev.iter().cloned().enumerate().skip(since).collect();
         return (200, serde_json::to_string(&tail).unwrap());
+    }
+    if (method, url) == (&Method::Get, "/chain") {
+        // the last height proved from genesis: the chain prover goes in
+        // order, each `<h>.chain` covering 1..h
+        let mut h = sh.proved.load(Ordering::Relaxed);
+        if let Some(d) = &blocks {
+            while d.join(format!("{}.chain", h + 1)).exists() {
+                h += 1;
+            }
+        }
+        sh.proved.store(h, Ordering::Relaxed);
+        return (200, serde_json::to_string(&Proved { proved: h }).unwrap());
     }
     if let (Method::Get, Some(h)) = (method, url.strip_prefix("/chain/")) {
         // the chain prover's receipt that heights 1..h are valid, if made
@@ -353,10 +368,17 @@ mod tests {
         let s = Sequencer::start("127.0.0.1:0", Some(ledger.clone()), lichen_ledger::regtest_sequencer(), lichen_ledger::HUB_KEY).unwrap();
         let c = lichen_l2::Client::new(&s.url).unwrap();
         assert_eq!(c.chain_receipt(1).unwrap(), None, "not proved yet");
+        assert_eq!(c.proved_height().unwrap(), Some(0));
         std::fs::create_dir_all(blocks_dir(&ledger)).unwrap();
         std::fs::write(blocks_dir(&ledger).join("1.chain"), [1, 2, 3]).unwrap();
         assert_eq!(c.chain_receipt(1).unwrap(), Some(vec![1, 2, 3]));
         assert_eq!(c.chain_receipt(2).unwrap(), None);
+        assert_eq!(c.proved_height().unwrap(), Some(1));
+        // the last height proved from genesis: 3's receipt waits on 2's
+        std::fs::write(blocks_dir(&ledger).join("3.chain"), [3]).unwrap();
+        assert_eq!(c.proved_height().unwrap(), Some(1));
+        std::fs::write(blocks_dir(&ledger).join("2.chain"), [2]).unwrap();
+        assert_eq!(c.proved_height().unwrap(), Some(3));
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
     }

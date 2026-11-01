@@ -93,6 +93,12 @@ pub trait Store {
     }
 }
 
+/// The wallet's own Bitcoin key for payouts, derived from its key apart
+/// from every contract's.
+pub(crate) fn payout_keypair(master: &[u8]) -> Keypair {
+    Seed::from_label(&format!("{}/payout", hex::encode(master))).keypair("payout")
+}
+
 /// The secrets of Alice's contract with `nonce`, derived from her wallet's
 /// key: each a hash of a label under the contract's seed, so that any one
 /// of them can be handed out alone.
