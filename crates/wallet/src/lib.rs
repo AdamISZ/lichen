@@ -265,6 +265,12 @@ impl Wallet {
         std::fs::write(&path, serde_json::to_vec_pretty(e)?)?;
         Ok(path)
     }
+    /// A line for whoever follows a long operation ([`Wallet::progress`]).
+    pub(crate) fn say(&self, m: String) {
+        if let Some(p) = &self.progress {
+            p(m)
+        }
+    }
     /// The wallet's L2 address: its x-only public key.
     pub fn address(&self) -> Hash {
         xonly(&self.key)
@@ -896,13 +902,23 @@ impl Wallet {
         let fold = c.fold(held.record.funding, bitcoin::Amount::from_sat(b), FOLD_FEE)?;
         let alice_sig = fold.sign(&self.contract_keys(&held.nonce).payment)?;
         let req = FoldRequest { cid, index, b, alice_sig };
-        // the anchor not yet deep enough: ask again as blocks come
+        // the anchor not yet deep enough: ask again as blocks come, said
+        // once a block (the hub's answer counts them: "N blocks on it")
         let start = std::time::Instant::now();
+        let (mut said, mut said_at): (Option<u128>, Option<std::time::Instant>) = (None, None);
         let done: Folded = loop {
             match hub_call(&format!("{hub}/fold"), Some(serde_json::to_string(&req)?)) {
                 Err(e) if format!("{e:#}").contains("isn't deep enough yet") && start.elapsed() < std::time::Duration::from_secs(7200) => {
-                    if let Some(p) = &self.progress {
-                        p(format!("{e:#}; waiting"));
+                    let m = format!("{e:#}");
+                    let on = m.split("yet: ").nth(1).and_then(|r| r.split(' ').next()).and_then(|n| n.parse::<u128>().ok());
+                    // a new count; or, the answer not read, once a minute
+                    let minute = said_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60));
+                    if on.is_some() && on != said || on.is_none() && minute {
+                        self.say(match on {
+                            Some(k) => format!("waiting for the return's anchor to be {} blocks deep before the hub pays: {k} so far", lichen_proto::ANCHOR_DEPTH),
+                            None => format!("waiting before the hub pays: {m}"),
+                        });
+                        (said, said_at) = (on, Some(std::time::Instant::now()));
                     }
                     std::thread::sleep(std::time::Duration::from_secs(5));
                 }

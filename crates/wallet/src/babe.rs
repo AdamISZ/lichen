@@ -28,6 +28,7 @@ impl Wallet {
     /// deposit coin `deposit`, check its parameters, and choose the
     /// instances to keep: her opening request's keys.
     pub(crate) fn babe_request(&self, hub: &str, cid: u32, deposit: bitcoin::OutPoint, unit: u64, s: &ContractSecrets, net: Net) -> Result<(BabeRequest, Setup)> {
+        self.say("asking the hub for BABE's setup: it garbles its instances (about half a minute)".into());
         let setup: Setup = hub_call(&format!("{hub}/babe/setup"), Some(serde_json::to_string(&SetupRequest { cid, deposit: Some(deposit), unit })?))?;
         ensure!(setup.cid == cid, "the setup is for contract {}, not {cid}", setup.cid);
         ensure!(setup.unit == unit, "the setup is for a unit of {} sats, not {unit}", setup.unit);
@@ -90,7 +91,18 @@ impl Wallet {
         let (vk, public) = (kind.verifying_key(), kind.public_inputs(&journal));
         let seeds: Vec<[u8; 32]> = offer.opened.iter().map(|o| hex::decode(&o.seed)?.try_into().map_err(|_| anyhow::anyhow!("a seed of other than 32 bytes"))).collect::<Result<_>>()?;
         let commits: Vec<[u8; 32]> = offer.opened.iter().map(|o| commitment(o.i)).collect::<Result<_>>()?;
-        let ok = par(seeds.len(), |k| check_opened(&commits[k], &seeds[k], &shares[k].1, &vk, &public));
+        let total = seeds.len();
+        self.say(format!("checking the {total} instances the hub opened, each rebuilt to its commitment"));
+        let done = std::sync::atomic::AtomicUsize::new(0);
+        let ok = par(total, |k| {
+            let ok = check_opened(&commits[k], &seeds[k], &shares[k].1, &vk, &public);
+            let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if d.is_multiple_of(10) && d < total {
+                self.say(format!("checked {d} of {total} opened instances"));
+            }
+            ok
+        });
+        self.say(format!("checked all {total} opened instances"));
         if let Some(k) = ok.iter().position(|o| !o) {
             anyhow::bail!("opened instance {} is not the one the hub committed to: it cheats", offer.opened[k].i);
         }
@@ -98,6 +110,7 @@ impl Wallet {
         let data = data_dir(dir, cid);
         std::fs::create_dir_all(&data)?;
         for (k, i) in keys.kept.iter().enumerate() {
+            self.say(format!("downloading the instance kept for a dispute, {} of {}", k + 1, keys.kept.len()));
             let mut bytes = Vec::new();
             ureq::get(&format!("{hub}/babe/instance/{cid}/{i}")).call().with_context(|| format!("downloading kept instance {i}"))?.into_reader().read_to_end(&mut bytes)?;
             let inst = Instance::from_bytes(&bytes).with_context(|| format!("kept instance {i} is no instance"))?;
