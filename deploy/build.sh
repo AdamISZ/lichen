@@ -15,6 +15,6 @@ env_file="${ENV_FILE:-$here/.env}"
 # shellcheck disable=SC1090
 . "$env_file"
 make_context
-docker build -t "${LICHEN_IMAGE:-lichen:latest}" -f "$here/Dockerfile" "$ctx"
+docker build -t "${LICHEN_IMAGE:-lichen:latest}" --build-arg "LICHEN_COMMIT=$lichen_commit" -f "$here/Dockerfile" "$ctx"
 docker build -t "lichen-bitcoind:$NETWORK" --build-arg "NETWORK=$NETWORK" "$here/bitcoind"
 echo "== built ${LICHEN_IMAGE:-lichen:latest} and lichen-bitcoind:$NETWORK"

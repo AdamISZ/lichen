@@ -447,6 +447,17 @@ pub fn hub_info(hub: &str) -> Result<Info> {
     hub_call(&format!("{hub}/info"), None)
 }
 
+/// The hub proves with this wallet's guests ([`lichen_proto::Guests`]): a
+/// contract's statement pins them, and the wallet can only prove with its
+/// own.
+pub fn check_guests(info: &Info) -> Result<()> {
+    let ours = lichen_proto::Guests::ours();
+    let hub = info.guests.as_ref().with_context(|| format!("the hub doesn't name its guests: it runs a lichen older than this wallet's {}", lichen_proto::VERSION))?;
+    let commit = info.commit.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
+    ensure!(*hub == ours, "the hub proves with other guests than this wallet's: it runs lichen {}{commit}, this wallet {}; use a wallet of the hub's version", if info.version.is_empty() { "?" } else { &info.version }, lichen_proto::VERSION);
+    Ok(())
+}
+
 /// A request to the hub, its error passed through.
 fn hub_call<T: for<'de> Deserialize<'de>>(url: &str, body: Option<String>) -> Result<T> {
     let r = match body {
@@ -521,6 +532,7 @@ impl Wallet {
         let d = self.sequencer.deployment;
         ensure!(info.deployment == d, "the hub is in another deployment (sequencer {}, hub {}) than this wallet's (sequencer {}, hub {})", hex::encode(info.deployment.sequencer), hex::encode(info.deployment.hub), hex::encode(d.sequencer), hex::encode(d.hub));
         ensure!(info.statement == statement.id(), "the hub runs {}, this wallet {}", info.statement, statement.id());
+        check_guests(&info)?;
         let program = statement.program_if(dir)?;
         if let Some(p) = &program {
             ensure!(info.depths == p.depths(), "the hub's statement has {} depths, ours {}", info.depths, p.depths());
@@ -531,7 +543,7 @@ impl Wallet {
         // the deposit: an address of the hub's and ours, paid, confirmed
         let nonce = hex::encode(fresh_rho());
         let dep_kp = self.deposit_key(&nonce);
-        let offer: DepositOffer = hub_call(&format!("{hub}/deposit"), Some(serde_json::to_string(&DepositRequest { alice: dep_kp.x_only_public_key().0 })?))?;
+        let offer: DepositOffer = hub_call(&format!("{hub}/deposit"), Some(serde_json::to_string(&DepositRequest { alice: dep_kp.x_only_public_key().0, deposit: ask.deposit, liquidity: ask.liquidity })?))?;
         // the refund's timeout is the network's: a hub naming a longer one
         // could lock the deposit up for as long
         ensure!(offer.timeout == lichen_proto::deposit_timeout(net), "the hub's deposit refund waits {} blocks, not the network's {}", offer.timeout, lichen_proto::deposit_timeout(net));
@@ -559,6 +571,7 @@ impl Wallet {
         }
         let info: Info = hub_call(&format!("{hub}/info"), None)?;
         ensure!(info.network == chain.network, "the hub is on {}, this wallet's coins on {}", info.network, chain.network);
+        check_guests(&info)?;
         let quote = ask.quote(&info)?;
         let program = statement.program_if(dir)?;
         let dep_spk = deposit_tree(&self.deposit_key(&dep.nonce).x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();

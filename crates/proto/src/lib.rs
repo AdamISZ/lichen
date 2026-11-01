@@ -56,6 +56,35 @@ pub const MIN_UNIT: u64 = 512;
 /// The withdrawal guest's image id, hex (the build committed in
 /// `r0/guests/withdraw.bin`; with the file's newline).
 pub const IMAGE_ID: &str = include_str!("../../../r0/guests/withdraw.id");
+/// lichen's version (the workspace's): what a hub and a wallet report.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The guests a build proves and checks receipts with: each one's image
+/// id, hex (`r0/guests/<g>.id`). A wallet proves with its own, and a
+/// contract's statement pins them when it opens, so a hub's must be the
+/// same as the wallet's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Guests {
+    pub spend: String,
+    pub chain: String,
+    pub withdraw: String,
+    pub babe: String,
+    pub counter: String,
+}
+
+impl Guests {
+    /// This build's.
+    pub fn ours() -> Guests {
+        let id = |s: &str| s.trim().to_string();
+        Guests {
+            spend: id(lichen_ledger::SPEND_IMAGE_ID),
+            chain: id(lichen_ledger::CHAIN_IMAGE_ID),
+            withdraw: id(IMAGE_ID),
+            babe: id(lichen_babe::statement::IMAGE_ID),
+            counter: id(lichen_babe::statement::COUNTER_ID),
+        }
+    }
+}
 
 pub use lichen_chain::{Net, Patience, Stall};
 
@@ -232,6 +261,16 @@ pub struct Info {
     pub max_liquidity: u64,
     /// Blocks from opening to `T_close`.
     pub duration: u32,
+    /// lichen's version the hub runs ([`VERSION`]), and the commit it was
+    /// built from, when the build was told (`deploy/build.sh` does).
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub commit: Option<String>,
+    /// The guests it proves and checks with ([`Guests::ours`]); none from
+    /// a hub older than the field.
+    #[serde(default)]
+    pub guests: Option<Guests>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -266,6 +305,13 @@ pub struct OpenRequest {
 pub struct DepositRequest {
     /// Her key in the deposit's tree.
     pub alice: bitcoin::XOnlyPublicKey,
+    /// What she'll ask at the opening, `D` and `L`, so that the hub can
+    /// refuse now a contract it couldn't fund then, before she pays (0:
+    /// not said, by a wallet older than the fields).
+    #[serde(default)]
+    pub deposit: u64,
+    #[serde(default)]
+    pub liquidity: u64,
 }
 
 /// The hub's answer: the contract's number, its key in the deposit's

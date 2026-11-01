@@ -114,6 +114,18 @@ Then give users the two URLs, `http://<this host>:18300` (the
 sequencer) and `http://<this host>:18310` (the hub), and the sequencer's
 key from `info`, so they can check the deployment their wallet pins.
 
+Wallets read the hub's offer, `GET /info`: its network and deployment,
+its statement, its terms (`FEE_PPM`, `MAX_LIQUIDITY`, `RESERVE_PPM`,
+`DURATION`), the lichen version it runs with the commit its image was
+built from (`git describe`: the tag, if it is one), and the image ids of
+its guests. A wallet refuses a hub whose guests aren't its own: a
+contract's statement pins them, and a wallet proves with its own.
+
+A wallet tells the hub what it will ask when it asks for a deposit
+address, and the hub refuses one its coins couldn't fund, before the user
+pays anything. The check counts all the hub wallet's coins, unconfirmed
+and those held for offers pending, so keep a margin.
+
 ## What runs
 
 **The sequencer** is trusted for the L2's inclusion and availability,
@@ -178,7 +190,24 @@ the ledger loses the L2's state: it has a single copy, and anchoring
 commits to its history but doesn't keep its data.
 
 To update: pull, `deploy/build.sh`, then `deploy/lichen.sh up`. Keys,
-ledger and contracts carry over.
+ledger and contracts carry over. Deploy tagged versions, so that `info`
+names one.
+
+An update that changes a guest (`r0/guests/`) is different. A contract's
+dispute statement pins the guests it opened with, and the chain guest
+proves the whole history under its own image id, so a contract open
+across the change could no longer prove its withdrawal, nor the hub its
+counters. Users' wallets must also change version to open new contracts.
+So, with contracts open:
+
+- stop opening contracts (lichen has no switch for it yet) and tell
+  users the switch's date;
+- let them withdraw, or let their contracts reach `T_close`;
+- then update, and tell users the version their wallets need.
+
+A change that only tightens the ledger's rules can be made without the
+wait, by keeping the old chain guest proving alongside the new: every
+new block is still valid to it. lichen doesn't do this yet.
 
 ## A smoke test (regtest)
 

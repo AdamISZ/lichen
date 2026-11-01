@@ -12,6 +12,8 @@ WORKDIR /src
 COPY ln-gap ln-gap
 COPY lichen lichen
 WORKDIR /src/lichen
+# the commit the hub reports in its offer (`GET /info`)
+ARG LICHEN_COMMIT=
 RUN cargo build --release -p lichen-hub -p lichen-wallet -p lichen-sequencer
 # BitVMX's Groth16 verifier (GPL; shipped as the separate file it is), from
 # the BitVMX-CPU checkout cargo just made; its SHA-256 is checked at start

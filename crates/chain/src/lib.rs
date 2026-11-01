@@ -737,6 +737,15 @@ impl Chain {
     pub fn balance(&self) -> Result<Amount> {
         Ok(self.rpc()?.get_balance(Some(1), None)?)
     }
+    /// Everything the wallet holds: unconfirmed coins too (a funding's
+    /// change isn't the wallet's own transaction, so it is untrusted until
+    /// it confirms), and coins [`Chain::select`] locked for an offer
+    /// pending, which it frees if the offer goes. Not all of it can be
+    /// selected now.
+    pub fn balance_pending(&self) -> Result<Amount> {
+        let b = self.rpc()?.get_balances()?.mine;
+        Ok(b.trusted + b.untrusted_pending)
+    }
     /// Confirmed coins covering `amount`, largest first, locked in the
     /// wallet (not on disk) so that another selection can't take them
     /// before they are spent: two contracts' fundings, offered at once.

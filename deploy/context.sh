@@ -4,7 +4,8 @@
 # changes, no target/). lichen depends on ln-gap by path, and cargo reads
 # the whole workspace, so the images need both trees to build.
 #   make_context      sets $ctx: a directory holding lichen/ and ln-gap/
-#                     (removed on exit)
+#                     (removed on exit), and $lichen_commit: lichen's HEAD
+#                     as `git describe` names it (its tag, if any)
 # LNGAP_DIR overrides where ln-gap is (default: ../ln-gap).
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -25,5 +26,6 @@ make_context() {
     mkdir -p "$ctx/lichen" "$ctx/ln-gap"
     git -C "$lichen" archive HEAD | tar -x -C "$ctx/lichen"
     git -C "$lngap" archive "$rev" | tar -x -C "$ctx/ln-gap"
-    echo "== lichen $(git -C "$lichen" rev-parse --short HEAD), ln-gap ${rev:0:7}"
+    lichen_commit="$(git -C "$lichen" describe --tags --always)"
+    echo "== lichen $lichen_commit, ln-gap ${rev:0:7}"
 }

@@ -9,6 +9,8 @@
 //!   played through Esplora (blocks every second), fees from the budget;
 //!   Alice proves the last step and is paid; her sweep takes the budget's
 //!   rest to her payout address too.
+//! - P: a hub short of coins refuses the ask at the deposit request,
+//!   before any address is given or paid.
 //! - R: a hub that never funds (the opening fails after the deposit):
 //!   the deposit refunds by its timeout, not before.
 //! - S: an opening that fails after the deposit, resumed with it at a
@@ -113,6 +115,22 @@ fn a_user_with_no_wallet() {
     rt.mine(1).unwrap();
     assert_eq!(rt.get_tx(&fold).unwrap().output.iter().filter(|o| o.script_pubkey == to_alice).map(|o| o.value).sum::<Amount>(), Amount::from_sat(u64::from(B) + ask.reserve));
     println!("LICHEN E1: folded {fold}: {} sats to the payout address", u64::from(B) + ask.reserve);
+
+    // P: a hub with too few coins for the ask refuses it at the deposit
+    // request: no address, nothing paid, no deposit kept
+    rt.fund(&node("hub-p").new_spk().unwrap(), Amount::from_sat(100_000)).unwrap();
+    let hub_p = Hub::start(hub_config("hub-p", false)).unwrap();
+    let mut erin = Wallet::create(&dir.join("erin.json"), &seq.url).unwrap();
+    let paid = std::cell::Cell::new(false);
+    let err = erin
+        .open_contract(&hub_p.url, &esplora, &statement(), &dir.join("erin"), ask, payee.new_spk().unwrap(), &|_, _| {
+            paid.set(true);
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("can't fund a contract"), "{err:#}");
+    assert!(!paid.get() && erin.deposits.is_empty(), "refused before a deposit address: {err:#}");
+    println!("LICHEN P: {err:#}");
 
     // R: the hub never funds (here: it refuses the opening): refund by the
     // timeout

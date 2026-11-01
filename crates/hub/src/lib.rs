@@ -121,6 +121,9 @@ const MAX_BODY: usize = 8 << 20;
 /// A pending offer is replaced by a new request for its contract only
 /// this long after it was made.
 const OFFER_REPLACED_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+/// What the hub's coins for a funding carry beyond its share and fee: room
+/// for the change.
+const FUNDING_MARGIN: Amount = Amount::from_sat(10_000);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Open {
@@ -390,12 +393,29 @@ impl Inner {
     }
 
     fn info(&self) -> Info {
-        Info { network: self.cfg.network, deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.as_ref().map_or(0, |p| p.depths()), reserve_ppm: self.cfg.reserve_ppm, fee_ppm: self.cfg.fee_ppm, max_liquidity: self.cfg.max_liquidity, duration: self.cfg.duration }
+        Info { network: self.cfg.network, deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.as_ref().map_or(0, |p| p.depths()), reserve_ppm: self.cfg.reserve_ppm, fee_ppm: self.cfg.fee_ppm, max_liquidity: self.cfg.max_liquidity, duration: self.cfg.duration, version: lichen_proto::VERSION.to_string(), commit: option_env!("LICHEN_COMMIT").filter(|c| !c.is_empty()).map(str::to_string), guests: Some(lichen_proto::Guests::ours()) }
     }
 
     /// A deposit address for a contract to come: its number, and the hub's
     /// key in the deposit's tree.
     fn deposit(&self, req: DepositRequest) -> Result<DepositOffer> {
+        // the ask told: what the opening would refuse for want of coins,
+        // refused before she pays rather than after (a deposit then waits
+        // for its refund). Against everything the wallet holds, as some
+        // may be unconfirmed change or locked for an offer that goes: the
+        // opening's selection is the exact check, and deposits not yet
+        // opened hold nothing back, so two at once may both pass here
+        if req.deposit > 0 {
+            ensure!(req.liquidity <= self.cfg.max_liquidity, "liquidity of {} sats, above the hub's most, {}", req.liquidity, self.cfg.max_liquidity);
+            let fee = lichen_proto::liquidity_fee(req.liquidity, self.cfg.fee_ppm);
+            ensure!(fee < req.deposit, "a deposit of {} sats doesn't cover the hub's fee of {fee}", req.deposit);
+            let (bits, unit) = lichen_proto::scale(req.deposit - fee + req.liquidity)?;
+            let v_max = unit * ((1u64 << bits) - 1);
+            let floors = self.floors.lock().unwrap().values().copied().max().unwrap_or(0);
+            let reserve_hub = (v_max * self.cfg.reserve_ppm / 1_000_000).max(floors);
+            let need = Amount::from_sat(v_max.saturating_sub(req.deposit) + reserve_hub) + FEE_SHARE + FUNDING_MARGIN;
+            ensure!(self.chain.balance_pending()? >= need, "the hub can't fund a contract with {} sats of liquidity now: ask for less, or try later", req.liquidity);
+        }
         let cid = {
             let mut n = self.next_cid.lock().unwrap();
             *n += 1;
@@ -513,8 +533,7 @@ impl Inner {
         let fee_budget = lichen_proto::fee_budget_of(dep_out.value, &t)?;
         ensure!(fee_budget >= Amount::from_sat(330), "the deposit leaves no fee budget");
         let fee_out = TxOut { value: fee_budget, script_pubkey: req.fee_spk.clone() };
-        let margin = Amount::from_sat(10_000);
-        let hub_coins = self.chain.select(hub_in + FEE_SHARE + margin)?;
+        let hub_coins = self.chain.select(hub_in + FEE_SHARE + FUNDING_MARGIN)?;
         let hub_spent: Amount = hub_coins.iter().map(|c| c.1.value).sum();
         let hub_change = TxOut { value: hub_spent - hub_in - FEE_SHARE, script_pubkey: self.chain.new_spk()? };
         let c = self.built(&record)?;
