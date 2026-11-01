@@ -113,7 +113,7 @@ consensus is required}. A withdrawal is a claim that a program, the withdrawal s
 \begin{tabularx}{\linewidth}{p{16mm}L}
 \toprule
 $D$ & Alice's deposit: she puts $D$ bitcoin in and receives $D$ of the hub's tokens on the L2 \\
-$\vmax$ & the most she can withdraw: her $D$ plus the hub's liquidity $\vmax - D$ (which can be zero)\\
+$\vmax$ & the most she can withdraw: her $D$ plus the hub's liquidity $\vmax - D$ (which can be zero)\footnotemark\\
 $r_A, r_H$ & the \emph{contract reserves}, for fees. Forfeited by losing side of a dispute, otherwise returned to owner. (Section~\ref{sec:outcomes}); the contract holds $\vmax + r_A + r_H$ \\
 $b$ & the amount she withdraws, by returning $b$ tokens to the hub on the L2 with the memo $c$ \\
 $c$ & the contract's identifier, its memo \\
@@ -121,6 +121,7 @@ $\Tc$ & the contract's end: with no withdrawal by then, the hub takes it \\
 \bottomrule
 \end{tabularx}
 \end{center}
+\footnotetext{A hub can charge for its liquidity: for a fee $f$ it mints Alice $D - f$ tokens, and the cap is $D - f$ plus the liquidity. Nothing below depends on this, so we leave the fee out.}
 Every token is a liability of the hub, collateralised by the contract of whoever holds it, within that holder's cap; within $\vmax$ and before $\Tc$, Alice trusts the hub for nothing, not even to be online: a withdrawal it does not answer is paid by timeout.
 
 \paragraph{Opening is atomic.} Alice's $D$ goes into the contract and this entitles her
@@ -174,7 +175,7 @@ The details of the statement proved will of course depend on the L2's architectu
 
 \[\mathcal{R}_L(\mathcal{D}, c, \ldots ; w=(b, \ldots))\]
 
-where $\mathcal{D}$ is the deployment context (the settings of the L2), $c$ is the contract in Lichen between hub and user, $b$ is the amount in satoshis of withdrawal claimed, and $w$ is the secret witness used by the user to satisfy the predicate.
+where $\mathcal{D}$ is the deployment context (the settings of the L2), $c$ is the contract in Lichen between hub and user, $b$ is the amount of the withdrawal claimed (counted, in the statement, in the contract's units: the $\bar b$ of Section~\ref{sec:outcomes}), and $w$ is the secret witness used by the user to satisfy the predicate.
 
 \paragraph{A note on secret inputs and public inputs.} Some parts of $w$ may not actually be secrets. Here we specifically include the withdrawal amount $b$; a peculiarity of our chosen verification gadget BABE is that practical usage of it requires a cut-and-choose setup that fixes the public input at contract setup; thus including any later-defined data must necessarily be in $w$. The mechanism to make this work is described in~\cite[\S 5]{lichenbuilt}.
 
@@ -368,43 +369,66 @@ outcome & Alice & the hub \\
 \midrule
 fold & $b + r_A$ & $\vmax - b + r_H$ \\
 \tx{default}, no withdrawal by $\Tc$ & $r_A$ & $\vmax + r_H$ \\
-Alice wins a dispute & $b + r_A + r_H - F$ & $\vmax - b$ \\
+Alice wins a dispute\footnotemark & $b + r_A + r_H - F$ & $\vmax - b$ \\
 Alice loses a dispute & $0$ & $\vmax + r_A + r_H - F$ \\
 \bottomrule
 \end{tabular}
 \end{center}
+\footnotetext{Strictly, a dispute pays $b$ rounded down to a multiple of the contract's unit $u$, the remainder going to the hub; see the bit outputs below.}
 
 \paragraph{Paying $b$: the bit outputs.} When Alice wins, the payout
 must send her $b$, a value she chose when she claimed; but the
 payout is pre-signed, so its amounts are fixed, and Script cannot
 compute an amount. One pre-signed transaction per possible $b$ would be
-too many. Instead, as for numeric DLCs~\cite{dlcnumeric}, the payout decomposes
-$b$ in binary. Amounts are counts of one satoshi, and a contract of $K$
-bits has the cap $\vmax = 2^K - 1$~sats; the payout has one output of
-$2^i$~sats for each bit $i$ from 9 to $K - 1$, each with three leaves:
+too many. Instead, as for numeric DLCs~\cite{dlcnumeric}, the payout
+decomposes the amount in binary. A contract has $K$ bits and a
+\emph{unit} of $u$~sats, and the payout has one output of $2^i u$~sats
+for each bit $i$ from $0$ to $K - 1$. The value decomposed is not $b$
+itself but $b$ counted in units, $\bar b = \lfloor b/u \rfloor$: this
+is the word Alice signs with a one-time key and her proof commits to,
+and the unit is among the contract's terms that the statement binds, so
+a proof is always read in its own contract's unit. Each bit output has
+three leaves:
 \begin{center}
 \small
 \begin{tabular}{lll}
 \toprule
 leaf & spent by & condition \\
 \midrule
-Alice's & Alice, after a delay $\delta$ & her one-time signature on $b$ has bit $i$ set \\
+Alice's & Alice, after a delay $\delta$ & her one-time signature on $\bar b$ has bit $i$ set \\
 the hub's & the hub & the same signature has bit $i$ clear \\
-\tx{equiv\_b} & the hub & two signatures on different values of $b$ \\
+\tx{equiv\_b} & the hub & two signatures on different values of $\bar b$ \\
 \bottomrule
 \end{tabular}
 \end{center}
-Since $b$ is under a one-time key, the bits Alice can claim are those of
-the single value she signed, and their outputs sum to $b$; the hub takes
-the rest. Bits below 9 have no output, so a withdrawal settled by
-dispute is paid in multiples of 512~sats, the remainder going to the
-hub. For $b = 5{,}120$~sats she takes the outputs for bits 10 and 12.
-Her leaves wait $\delta$ so that the hub can show an equivocation first.
-A contract of $K = 24$ bits has a cap of about 0.168~BTC and 15 bit
-outputs; each output's spend is about 330~vB, and each party can sweep
-its outputs in one transaction. The reserves sit in one more output,
-paid to the winner, with an \tx{equiv\_b} leaf of its own. In the
-cooperative fold none of this appears: the fold simply pays $b$.
+Since $\bar b$ is under a one-time key, the bits Alice can claim are
+those of the single value she signed, and their outputs sum to
+$\bar b u$, which is $b$ rounded down to a multiple of $u$; the hub takes
+the rest, including the remainder of fewer than $u$~sats. Her leaves
+wait $\delta$ so that the hub can show an equivocation first.
+
+\emph{The unit and the cap.} $K$ and $u$ are fixed at opening, from the
+cap the two sides agree. An output under 512~sats would be dust, so
+$u \ge 512$. $K$ is the largest number of bits, at most 32 (the width of
+$\bar b$), for which $512\,(2^K - 1)$ is within the cap, and $u$ is the
+cap divided by $2^K - 1$, rounded up. Then
+\[
+\vmax = u\,(2^K - 1),
+\]
+which is the cap, or exceeds it by fewer than $2^K$~sats (under 0.2\%),
+with $u$ between 512 and about 1{,}024~sats. A fixed unit of 512~sats
+would allow only caps of the form $512\,(2^K - 1)$, and a contract would
+lock up to twice the cap it was opened for. As an example, a cap of
+0.1~BTC gives $K = 14$ and $u = 611$~sats, so $\vmax =
+10{,}010{,}013$~sats in 14 bit outputs. If Alice returns $b =
+250{,}000$~sats, then $\bar b = 409 = 2^8 + 2^7 + 2^4 + 2^3 + 2^0$; she
+takes the outputs for bits 0, 3, 4, 7 and 8, 249{,}899~sats in all, and
+the hub keeps 101~sats of rounding along with the rest.
+
+Each output's spend is about 330~vB, and each party can sweep its
+outputs in one transaction. The reserves sit in one more output, paid
+to the winner, with an \tx{equiv\_b} leaf of its own. In the cooperative
+fold none of this appears: the fold pays $b$ exactly, in sats.
 
 \paragraph{The contract reserve.} Without reserves, a false claim costs
 Alice nothing once she has spent her tokens, so it is a free option on
@@ -521,7 +545,7 @@ follows (Table~\ref{tab:bitvm2}).
 \toprule
 & a BitVM2 bridge & Union & lichen \\
 \midrule
-custody & one pool for all users & one pool, in fixed-size outputs, one per peg-in & a contract for each user, with the hub \\
+custody & \multicolumn{2}{>{\hsize=\dimexpr2\hsize+2\tabcolsep\relax}L}{one pool: fixed-size outputs, one per peg-in, owned by no user; an operator is reimbursed from any of them} & a contract for each user, with the hub \\
 pre-signed by & a committee, for every operator's graph on every deposit & the $N$ functionaries, a two-party game for every pair of them on every peg-in & the user and the hub \\
 setup trust & one honest committee member & one honest functionary & none \\
 the claimant & an operator, who paid the user from its own funds and claims reimbursement & a functionary, likewise & the user, for her own withdrawal \\
@@ -598,7 +622,7 @@ The implementation uses the BABE gadget~\cite{lichenbuilt} by default, with the 
 
 \bibitem{lichenbitvmx} waxwing. Lichen over BitVMX: the dispute, as built and measured. Version 0.1 (not maintained), October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-bitvmx-v0.1.2.pdf}
 
-\bibitem{lichenbuilt} waxwing. Lichen as built: the BABE gadget, the hub's ledger and the exit. Version 0.1 (draft), October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-built-v0.1.0.pdf}
+\bibitem{lichenbuilt} waxwing. Lichen as built: the BABE gadget, the hub's ledger and the exit. Version 0.1 (draft), October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-built-v0.1.1.pdf}
 
 \bibitem{babe} S.~Garg, D.~Kolonelos, M.~Sergeevitch, S.~Sridhar and D.~Tse. BABE: verifying proofs on Bitcoin made 1000x cheaper. ePrint 2026/065, revised October 2026. \url{https://eprint.iacr.org/2026/065}
 
