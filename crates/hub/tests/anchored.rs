@@ -73,7 +73,8 @@ fn a_withdrawal_under_an_anchor() {
         seed: "test-hub".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 21,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 2_000,
         refuse_folds: true,
         dispute_true_claims: false,
@@ -86,13 +87,13 @@ fn a_withdrawal_under_an_anchor() {
     let ch = chain("alice");
     let mut w = Wallet::create(&dir.join("alice.json"), &seq.url).unwrap();
     assert_eq!(w.sequencer.deployment.seal, Some(seal));
-    let ask = Ask { deposit: 100_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 100_000, liquidity: 1_000_000, reserve: 20_000 };
     let held = w.open_contract(&hub.url, &ch, &mock(), &dir.join("alice"), ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
     let cp = held.record.checkpoint.expect("a checkpoint");
     assert_eq!(cp.bits, 0x207fffff);
     assert_eq!(cp.work(), 20, "ten blocks of regtest's work");
     let d = w.sequencer.deployment;
-    assert_eq!(held.record.deployment, lichen_withdraw::contract_id(&d.id(), &seal, 20), "D is the contract's");
+    assert_eq!(held.record.deployment, lichen_withdraw::contract_id(&d.id(), &seal, 20, held.record.terms.unit.to_sat()), "D is the contract's");
     let cid = held.record.cid();
     rt.mine(1).unwrap();
     wait("the deposit", || w.balance().unwrap() == ask.deposit);
@@ -132,13 +133,15 @@ fn a_withdrawal_under_an_anchor() {
     let cj = prev.unwrap();
     assert_eq!(cj.anchor, a.anchor);
     let headers: Vec<[u8; 80]> = full.headers.iter().map(|h| hex::decode(h).unwrap().try_into().unwrap()).collect();
-    let wi = lichen_ledger::with_chain(&full.input, &cj, headers.clone(), 20).unwrap();
+    let unit = held.record.terms.unit.to_sat();
+    let wi = lichen_ledger::with_chain(&full.input, &cj, headers.clone(), 20, unit).unwrap();
     let ends = cj.to_bytes();
     let j = lichen_withdraw::check(&wi, &id, &mut |jb| jb == ends).unwrap();
-    assert_eq!(j[..4], (ask.deposit as u32).to_le_bytes());
+    // b: the return's sats in the contract's units, rounded down
+    assert_eq!(j[..4], ((ask.deposit / unit) as u32).to_le_bytes());
     assert_eq!(j[4..8], cid.to_le_bytes());
     assert_eq!(j[8..], held.record.deployment, "the claim's D: what the contract pins");
-    let short = lichen_ledger::with_chain(&full.input, &cj, headers[..9].to_vec(), 20).unwrap();
+    let short = lichen_ledger::with_chain(&full.input, &cj, headers[..9].to_vec(), 20, unit).unwrap();
     assert_eq!(lichen_withdraw::check(&short, &id, &mut |jb| jb == ends), Err(lichen_withdraw::Reject::Depth));
     println!("LICHEN contract {cid}: the return at height {} anchored ({}), ten blocks on it: the statement accepts", a.anchor.height, a.from);
 

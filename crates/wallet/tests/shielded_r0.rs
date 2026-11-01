@@ -12,9 +12,10 @@
 //! (which the sequencer serves) and ten blocks on the anchor (a succinct
 //! receipt: the Groth16 wrap is x86 Linux's, LICHEN_WRAP=1 there).
 //! LICHEN_KEEP=1 keeps the files: the canned claim of crates/proto/tests/data
-//! is `withdraw-prover.sh claim` on x86 Linux of the withdrawal's input and
-//! chain receipt kept so, and `claim-60-42.seal` the deployment's genesis
-//! seal (the claim's D commits to it).
+//! is `lichen-r0 claim` of the withdrawal's input and chain receipt kept
+//! so, and `claim-60-42.seal` the deployment's genesis seal (the claim's D
+//! commits to it). Bob returns 60 of the canned unit (41,040 sats), the
+//! real-statement tests' `b` in their contracts.
 
 use std::time::{Duration, Instant};
 
@@ -45,18 +46,19 @@ fn shield_pay_and_return_with_receipts() {
     let mut bob = Wallet::create(&dir.join("bob.json"), &seq.url).unwrap();
     alice.spend_prover = SpendProver::Command(prover.clone());
     bob.spend_prover = SpendProver::Command(prover);
-    alice.sequencer.submit(&Tx::Mint(Mint::new(&regtest_hub(), &alice.sequencer.deployment, vec![lichen_ledger::note(alice.address(), 100, 0)]))).unwrap();
+    alice.sequencer.submit(&Tx::Mint(Mint::new(&regtest_hub(), &alice.sequencer.deployment, vec![lichen_ledger::note(alice.address(), 100_000, 0)]))).unwrap();
     alice.sequencer.seal().unwrap();
     let t = std::time::Instant::now();
-    alice.shield(100).unwrap();
-    println!("LICHEN shielded 100 in {:.1?}", t.elapsed());
+    alice.shield(100_000).unwrap();
+    println!("LICHEN shielded 100,000 in {:.1?}", t.elapsed());
     let t = std::time::Instant::now();
-    alice.send_shielded(&bob.shielded_address(), 60).unwrap();
-    println!("LICHEN paid Bob 60 in {:.1?}", t.elapsed());
-    assert_eq!((alice.balances().unwrap(), bob.balances().unwrap()), ((0, 40), (0, 60)));
+    let (unit, ret) = (lichen_proto::canned_unit(), 60 * lichen_proto::canned_unit());
+    alice.send_shielded(&bob.shielded_address(), ret).unwrap();
+    println!("LICHEN paid Bob {ret} in {:.1?}", t.elapsed());
+    assert_eq!((alice.balances().unwrap(), bob.balances().unwrap()), ((0, 100_000 - ret), (0, ret)));
     let t = std::time::Instant::now();
-    bob.return_to_hub(60, 42).unwrap();
-    println!("LICHEN Bob returned 60 to the hub in {:.1?}", t.elapsed());
+    bob.return_to_hub(ret, 42).unwrap();
+    println!("LICHEN Bob returned {ret} to the hub in {:.1?}", t.elapsed());
     bob.sequencer.seal().unwrap();
     // anchored: blocks until the anchor's record, then its height sealed
     let index = bob.returned(42).unwrap();
@@ -67,7 +69,8 @@ fn shield_pay_and_return_with_receipts() {
         std::thread::sleep(Duration::from_millis(500));
         bob.sequencer.seal().unwrap();
     }
-    assert_eq!(check(&bob.withdraw_input(42).unwrap()).unwrap()[..8], [60, 0, 0, 0, 42, 0, 0, 0]);
+    let journal = check(&bob.withdraw_input(42).unwrap()).unwrap();
+    assert_eq!((u32::from_le_bytes(journal[..4].try_into().unwrap()), &journal[4..8]), (ret as u32, &[42, 0, 0, 0][..]), "b in sats, a unit of 1");
 
     // the chain: every recorded height proved, each from the last
     let blocks = lichen_sequencer::blocks_dir(&dir.join("ledger.json"));
@@ -100,7 +103,7 @@ fn shield_pay_and_return_with_receipts() {
     let input = bob.withdraw_input(42).unwrap();
     let anchor = bob.kept(index).and_then(|k| k.anchor).expect("the anchor kept");
     let checkpoint = lichen_proto::Checkpoint::tip(&chain()).unwrap();
-    let full = lichen_wallet::prover_input(input.clone(), Some(&anchor), Some(&checkpoint), &chain()).unwrap();
+    let full = lichen_wallet::prover_input(input.clone(), Some(&anchor), Some(&checkpoint), unit, &chain()).unwrap();
     let (json, chain_file, receipt) = (dir.join("withdraw-input.json"), dir.join("chain.receipt"), dir.join("withdraw.receipt"));
     std::fs::write(&json, serde_json::to_vec_pretty(&full).unwrap()).unwrap();
     std::fs::write(&chain_file, bob.chain_receipt(42).unwrap()).unwrap();

@@ -60,7 +60,8 @@ In `deploy/.env`:
 | `COMPOSE_PROFILES` | `regtest` on regtest, for the miner (a block every `MINE_EVERY` seconds); empty otherwise |
 | `STATEMENT` | what disputes run: `babe` (the real statement, on BABE) or `babe-mock`; `bitvmx` (the real statement, on BitVMX) or `bitvmx-mock` |
 | `R0WORK` | where the Groth16 wrap of a counter keeps its files: an absolute path, mounted at the same path in the hub's container (the wrap runs RISC Zero's prover image on the host's Docker). Empty: `deploy/state/<network>/r0work` |
-| `RESERVE_PPM`, `MAX_BITS`, `DURATION` | the hub's terms: its reserve (ppm of the cap), the largest cap (2^bits − 1 sats), a contract's life in blocks (empty: the network's default) |
+| `RESERVE_PPM`, `DURATION` | the hub's reserve (ppm of the cap), and a contract's life in blocks (empty: the network's default) |
+| `FEE_PPM`, `MAX_LIQUIDITY` | what the hub charges for the liquidity a user asks (inbound: what she can receive beyond her deposit), in ppm of it, 1% by default; and the most a contract may ask, in sats. The fee is kept out of the deposit the hub mints her, so it is paid whatever happens later; the hub puts in the liquidity less the fee |
 | `WINDOWS` | the dispute's windows in blocks, `<user>,<hub>,<path>` (empty: the network's default; wallets refuse a user window under it). The heavy ones bound how many contracts the hub can hold safely when blocks are full |
 | `SEAL_EVERY` | seconds between sealed heights (default 5) |
 | `ANCHOR`, `ANCHOR_WALLET`, `ANCHOR_FEERATE` | anchoring (below): `on` by default, paid from the node's wallet `sequencer`, at 2 sat/vB. `off` runs the L2 unanchored, and a ledger started so can never be anchored |
@@ -228,7 +229,7 @@ cp deploy/.env.example deploy/.env
 ```
 
 In `deploy/.env`, set `NETWORK` and copy the hub's settings from
-`deploy/hub/.env` (`STATEMENT`, `RESERVE_PPM`, `MAX_BITS`, `DURATION`,
+`deploy/hub/.env` (`STATEMENT`, `RESERVE_PPM`, `DURATION`,
 `WINDOWS`, `HUB_PORT`) and the sequencer's from `deploy/sequencer/.env`
 (`SEAL_EVERY`, `SEQUENCER_PORT`). Leave `R0WORK` empty. Anchoring is on,
 through the same node and its wallet `sequencer`, as `anchor.yml` had

@@ -169,7 +169,7 @@ pub fn check(input: &ExitInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[
         }
         total = total.checked_add(n.owned.value()).ok_or(Reject::TooLarge)?;
     }
-    if total < u64::from(input.b) {
+    if input.state.unit == 0 || total / input.state.unit < u64::from(input.b) {
         return Err(Reject::Short);
     }
     let d = input.state.check(&input.tree, chain_id, verify_chain)?;
@@ -245,6 +245,7 @@ impl Anchored {
         w.put(&self.anchor.to_bytes());
         w.list(&self.headers);
         w.put(&self.work.to_be_bytes());
+        w.put(&self.unit.to_be_bytes());
     }
     pub(crate) fn read(r: &mut R) -> Result<Anchored, Reject> {
         Ok(Anchored {
@@ -260,6 +261,7 @@ impl Anchored {
             anchor: lichen_validity::AnchorState::from_bytes(&r.take::<176>()?).map_err(|_| Reject::Encoding)?,
             headers: r.list()?,
             work: u128::from_be_bytes(r.take()?),
+            unit: u64::from_be_bytes(r.take()?),
         })
     }
 }
@@ -367,6 +369,7 @@ pub(crate) mod tests {
             anchor,
             headers: Vec::new(),
             work: 10 * lichen_validity::btc::work(0x207fffff),
+            unit: 1,
         };
         let claimed = |owned: Owned, index: u32, sib: Hash| {
             let nf = owned.nullifier();
@@ -450,7 +453,7 @@ pub(crate) mod tests {
         let (i, id) = input();
         let claim = check(&i, &id, &mut ok(&i, &id)).unwrap();
         assert_eq!((claim.c, claim.b), (42, 12));
-        assert_eq!(claim.d, crate::contract_id(&crate::deployment_id(&i.state.sequencer, &i.state.hub), &i.state.anchor.genesis, i.state.work));
+        assert_eq!(claim.d, crate::contract_id(&crate::deployment_id(&i.state.sequencer, &i.state.hub), &i.state.anchor.genesis, i.state.work, i.state.unit));
         assert_eq!(claim.e, fingerprint(42, &i.deposit, 12, 3, &i.state.anchor.root, &nullifiers(&i)));
         // E is the claim's: another contract, outpoint, amount or note set,
         // another E
@@ -487,6 +490,11 @@ pub(crate) mod tests {
         // notes worth less than b
         let mut short = i.clone();
         short.b = 13;
+        sign(&mut short);
+        assert_eq!(check(&short, &id, &mut |_| true), Err(Reject::Short));
+        // or b units worth more than them: 7 of 2 sats against 12
+        let mut short = i.clone();
+        (short.state.unit, short.b) = (2, 7);
         sign(&mut short);
         assert_eq!(check(&short, &id, &mut |_| true), Err(Reject::Short));
         // no notes, too many, a note twice, out of order

@@ -53,7 +53,10 @@ pub struct Config {
     /// sequencer must name it as the issuer.
     pub l2_key: SigningKey,
     pub reserve_ppm: u64,
-    pub max_bits: u32,
+    /// Its fee for a contract's liquidity, parts per million of it.
+    pub fee_ppm: u64,
+    /// The most liquidity a contract may ask, in sats.
+    pub max_liquidity: u64,
     pub duration: u32,
     /// The dispute's windows it offers (none: the network's,
     /// `lichen_proto::windows`): longer heavy windows for a hub with many
@@ -97,6 +100,9 @@ pub enum OpeningFault {
     NeverFund,
     /// Mint a sat less than the deposit (Alice refuses the offer).
     ShortMint,
+    /// Refuse the opening once the deposit is paid (as for terms the
+    /// hub won't take): Alice keeps the deposit, to refund or to resume.
+    Refuse,
 }
 
 struct Pending {
@@ -384,7 +390,7 @@ impl Inner {
     }
 
     fn info(&self) -> Info {
-        Info { network: self.cfg.network, deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.as_ref().map_or(0, |p| p.depths()), reserve_ppm: self.cfg.reserve_ppm, max_bits: self.cfg.max_bits, duration: self.cfg.duration }
+        Info { network: self.cfg.network, deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.as_ref().map_or(0, |p| p.depths()), reserve_ppm: self.cfg.reserve_ppm, fee_ppm: self.cfg.fee_ppm, max_liquidity: self.cfg.max_liquidity, duration: self.cfg.duration }
     }
 
     /// A deposit address for a contract to come: its number, and the hub's
@@ -419,7 +425,10 @@ impl Inner {
     }
 
     fn open(&self, req: OpenRequest) -> Result<OpenOffer> {
-        ensure!(req.bits <= self.cfg.max_bits, "a cap above 2^{} sats", self.cfg.max_bits);
+        ensure!(req.liquidity <= self.cfg.max_liquidity, "liquidity of {} sats, above the hub's most, {}", req.liquidity, self.cfg.max_liquidity);
+        let fee = lichen_proto::liquidity_fee(req.liquidity, self.cfg.fee_ppm);
+        ensure!(req.fee >= fee, "a fee of {} sats for {} sats of liquidity: the hub asks {fee}", req.fee, req.liquidity);
+        ensure!(*self.opening_fault.lock().unwrap() != OpeningFault::Refuse, "refusing contract {}'s opening (a test's fault)", req.cid);
         let cid = req.cid;
         ensure!(!self.open.lock().unwrap().contains_key(&cid), "contract {cid} is open already");
         // one offer pending a contract: a new one replaces it (its answer
@@ -435,8 +444,10 @@ impl Inner {
         let keys = contract_keys(&self.cfg.seed, cid);
         let mut hub = keys.public();
         hub.payout_spk = self.chain.new_spk()?;
-        let v_max = (1u64 << req.bits) - 1;
         let t_close = self.chain.height()? + self.cfg.duration;
+        // the cap and its unit, as the request makes them
+        let scaled = terms(cid, &req, t_close, 0)?;
+        let v_max = scaled.v_max().to_sat();
         // the dispute's keys: Alice's, checked, and the hub's, by gadget
         let gadget = match &req.dispute {
             RequestKeys::BitVmx(_) => Gadget::BitVmx,
@@ -451,7 +462,7 @@ impl Inner {
             }
             // the statement fixed at the setup, its checkpoint with it
             RequestKeys::Babe(k) => {
-                let (d, o, c) = self.babe_open_keys(cid, k, &req.deposit_coin.0, t_close)?;
+                let (d, o, c) = self.babe_open_keys(cid, k, &req.deposit_coin.0, t_close, scaled.unit)?;
                 (d, o, Some(c))
             }
         };
@@ -464,7 +475,7 @@ impl Inner {
         let mut record = Record {
             statement: self.cfg.statement.id().to_string(),
             network: self.cfg.network,
-            deployment: lichen_proto::contract_word(&self.seq.deployment, checkpoint.as_ref())?,
+            deployment: lichen_proto::contract_word(&self.seq.deployment, checkpoint.as_ref(), scaled.unit)?,
             checkpoint,
             // a reserve to measure the floors under (any amount above them:
             // they depend on the links' sizes, not on the amounts; the cap
@@ -475,6 +486,7 @@ impl Inner {
             funding: OutPoint::null(),
             hub_sigs: HashMap::new(),
             alice_sigs: HashMap::new(),
+            fee: req.fee,
             dispute,
         };
         // the hub's reserve: its share of the cap, and at least what the
@@ -517,10 +529,10 @@ impl Inner {
         let t = mint_adaptor(&self.cfg.seed, cid, &req.l2_address, &record.funding.txid);
         let mint_point = PublicKey::from_secret_key(SECP256K1, &t);
         let fault = *self.opening_fault.lock().unwrap();
-        let d = u64::from(record.terms.deposit) - u64::from(fault == OpeningFault::ShortMint);
+        let d = record.minted() - u64::from(fault == OpeningFault::ShortMint);
         let owner = mint_owner(&req.l2_address, &mint_point)?;
         let mint_index = self.seq.submit(&Tx::Mint(Mint::new(&self.cfg.l2_key, &self.seq.deployment, vec![note(owner, d, 0)])))?[0];
-        self.note(format!("contract {cid}: offered; minted {d} sats to the user, locked to the funding"));
+        self.note(format!("contract {cid}: offered; minted {d} sats to the user (a fee of {} for {} sats of liquidity), locked to the funding", req.fee, req.liquidity));
         let offer = OpenOffer { cid, t_close, reserve_hub, hub, dispute: offer_keys, funding, hub_coins, hub_sigs: record.hub_sigs.clone(), mint_point, mint_index, checkpoint: record.checkpoint };
         let replaced = self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t, made: std::time::Instant::now() });
         if let Some(old) = replaced {
@@ -635,9 +647,10 @@ impl Inner {
             let h = a.from;
             let chain = self.seq.chain_receipt(h)?.with_context(|| format!("the sequencer hasn't proved height {h} yet, the first to carry the return's anchor (its chain prover proves each height after it seals): try again in a few minutes"))?;
             let headers = lichen_proto::headers_for(&self.chain, &a.anchor.block, checkpoint.work())?;
-            let j = lichen_ledger::check_withdrawal(&input, &chain, headers, checkpoint.work()).with_context(|| format!("note {}: the withdrawal statement", f.index))?;
-            // b ‖ c ‖ D (b fits a u32: the statement checked it)
-            let mut want = (f.b as u32).to_le_bytes().to_vec();
+            let j = lichen_ledger::check_withdrawal(&input, &chain, headers, checkpoint.work(), o.record.terms.unit.to_sat()).with_context(|| format!("note {}: the withdrawal statement", f.index))?;
+            // b ‖ c ‖ D, b in the contract's units (it fits a u32: the
+            // statement checked it); the fold pays the return's sats
+            let mut want = ((f.b / o.record.terms.unit.to_sat()) as u32).to_le_bytes().to_vec();
             want.extend(f.cid.to_le_bytes());
             want.extend(o.record.deployment);
             ensure!(j[..] == want[..], "note {}: the statement's journal is not this withdrawal's", f.index);

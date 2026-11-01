@@ -1049,8 +1049,8 @@ impl Kit {
 
 /// What a prover of the withdrawal statement is given beside the chain
 /// receipt (`lichen-r0 claim`'s JSON): ln-gap's input (at the anchored
-/// height), the headers on the anchor's block (hex) and the contract's
-/// `W` (decimal).
+/// height), the headers on the anchor's block (hex), the contract's `W`
+/// (decimal) and its unit (sats; 1 if not given).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProverInput {
     #[serde(flatten)]
@@ -1059,13 +1059,19 @@ pub struct ProverInput {
     pub headers: Vec<String>,
     #[serde(default)]
     pub work: String,
+    #[serde(default = "one")]
+    pub unit: u64,
+}
+
+fn one() -> u64 {
+    1
 }
 
 /// The withdrawal statement's input (`lichen-withdraw`): ln-gap's at the
 /// anchored height, the chain receipt's journal (its anchoring state's
 /// last anchor that height's root), the headers on top of the anchor's
-/// block, and the contract's `W`.
-pub fn with_chain(input: &WithdrawInput, chain: &lichen_validity::ChainJournal, headers: Vec<[u8; 80]>, work: u128) -> Result<lichen_withdraw::WithdrawInput> {
+/// block, and the contract's `W` and unit.
+pub fn with_chain(input: &WithdrawInput, chain: &lichen_validity::ChainJournal, headers: Vec<[u8; 80]>, work: u128, unit: u64) -> Result<lichen_withdraw::WithdrawInput> {
     let n = &input.note;
     Ok(lichen_withdraw::WithdrawInput {
         height: input.height,
@@ -1083,6 +1089,7 @@ pub fn with_chain(input: &WithdrawInput, chain: &lichen_validity::ChainJournal, 
         anchor: chain.anchor,
         headers,
         work,
+        unit,
     })
 }
 
@@ -1183,14 +1190,15 @@ pub fn chain_journal(chain_receipt: &[u8]) -> Result<lichen_validity::ChainJourn
 /// The withdrawal statement natively, as its guest checks it: the chain
 /// receipt (bincode) verified against the chain guest, then
 /// `lichen_withdraw::check` with the headers on top of its last anchor and
-/// the contract's `W`. Its journal `b ‖ c ‖ D`: what a proof of this
-/// withdrawal would commit, so what a dispute would accept.
+/// the contract's `W` and unit. Its journal `b ‖ c ‖ D` (`b` in units):
+/// what a proof of this withdrawal would commit, so what a dispute would
+/// accept.
 #[cfg(feature = "risc0")]
-pub fn check_withdrawal(input: &WithdrawInput, chain_receipt: &[u8], headers: Vec<[u8; 80]>, work: u128) -> Result<[u8; lichen_withdraw::JOURNAL_LEN]> {
+pub fn check_withdrawal(input: &WithdrawInput, chain_receipt: &[u8], headers: Vec<[u8; 80]>, work: u128, unit: u64) -> Result<[u8; lichen_withdraw::JOURNAL_LEN]> {
     let c = chain_journal(chain_receipt)?;
     ensure!(c.anchor.height == input.height, "the chain receipt's last anchor is of height {}, the withdrawal's root of {}", c.anchor.height, input.height);
     let journal = c.to_bytes();
-    lichen_withdraw::check(&with_chain(input, &c, headers, work)?, &c.chain_id, &mut |j| j == journal.as_slice()).map_err(|e| anyhow::anyhow!("the withdrawal statement rejects it: {e:?}"))
+    lichen_withdraw::check(&with_chain(input, &c, headers, work, unit)?, &c.chain_id, &mut |j| j == journal.as_slice()).map_err(|e| anyhow::anyhow!("the withdrawal statement rejects it: {e:?}"))
 }
 
 /// A note for `owner`.
@@ -1210,8 +1218,9 @@ mod tests {
 
     /// The hub's check before a fold, on a real chain receipt (the
     /// real-receipt test's, kept with LICHEN_KEEP=1; remade when the chain
-    /// guest is): the statement's journal for the return of 60 with memo
-    /// 42 under its anchor, ten blocks on it; refusals for another height,
+    /// guest is): the statement's journal for the return of 60 units (of
+    /// the input's, 684 sats) with memo 42 under its anchor, ten blocks on
+    /// it; refusals for another height,
     /// another note, too few blocks.
     #[cfg(feature = "risc0")]
     #[test]
@@ -1220,19 +1229,19 @@ mod tests {
         let p: ProverInput = serde_json::from_str(include_str!("../tests/data/withdraw-60-42.json")).unwrap();
         let headers: Vec<[u8; 80]> = p.headers.iter().map(|h| hex::decode(h).unwrap().try_into().unwrap()).collect();
         let work: u128 = p.work.parse().unwrap();
-        let input = p.input;
-        let j = check_withdrawal(&input, receipt, headers.clone(), work).unwrap();
+        let (input, unit) = (p.input, p.unit);
+        let j = check_withdrawal(&input, receipt, headers.clone(), work, unit).unwrap();
         assert_eq!(j[..8], [60, 0, 0, 0, 42, 0, 0, 0]);
         let mut other = input.clone();
         other.height -= 1;
-        assert!(format!("{:#}", check_withdrawal(&other, receipt, headers.clone(), work).unwrap_err()).contains("of height"));
+        assert!(format!("{:#}", check_withdrawal(&other, receipt, headers.clone(), work, unit).unwrap_err()).contains("of height"));
         let mut other = input.clone();
         other.note.value = 61;
-        assert!(format!("{:#}", check_withdrawal(&other, receipt, headers.clone(), work).unwrap_err()).contains("rejects"));
-        assert!(format!("{:#}", check_withdrawal(&input, receipt, headers[..1].to_vec(), work).unwrap_err()).contains("Depth"));
+        assert!(format!("{:#}", check_withdrawal(&other, receipt, headers.clone(), work, unit).unwrap_err()).contains("rejects"));
+        assert!(format!("{:#}", check_withdrawal(&input, receipt, headers[..1].to_vec(), work, unit).unwrap_err()).contains("Depth"));
         let mut bad = receipt.to_vec();
         bad[1000] ^= 1;
-        assert!(check_withdrawal(&input, &bad, headers, work).is_err(), "a damaged receipt");
+        assert!(check_withdrawal(&input, &bad, headers, work, unit).is_err(), "a damaged receipt");
     }
 
     /// An anchor of height `at`'s history, spending `seal`: the
@@ -1611,18 +1620,18 @@ mod tests {
             let prev = headers.last().map_or(j5.anchor_to.block, |h| v::btc::sha256d(h));
             headers.push(anchor_tx(&l, &genesis_seal, 4, &prev).1);
         }
-        let w = with_chain(&ln, &c5, headers.clone(), 20).unwrap();
+        let w = with_chain(&ln, &c5, headers.clone(), 20, 1).unwrap();
         let ends = c5.to_bytes();
         assert_eq!(lichen_withdraw::chain_journal(&w, &id).to_bytes(), ends);
         let journal = lichen_withdraw::check(&w, &id, &mut |jb| jb == ends).unwrap();
         assert_eq!(journal[..8], check(&ln).unwrap()[..8], "ln-gap's b ‖ c");
-        assert_eq!(journal[8..], lichen_withdraw::contract_id(&l.deployment.id(), &genesis_seal, 20), "D, the contract's");
+        assert_eq!(journal[8..], lichen_withdraw::contract_id(&l.deployment.id(), &genesis_seal, 20, 1), "D, the contract's");
         // asking more work than the headers carry: refused
-        let w = with_chain(&ln, &c5, headers, 22).unwrap();
+        let w = with_chain(&ln, &c5, headers, 22, 1).unwrap();
         assert_eq!(lichen_withdraw::check(&w, &id, &mut |jb| jb == ends), Err(lichen_withdraw::Reject::Depth));
         // under height 4's chain receipt, before the anchor: refused
         let c4 = v::ChainJournal { hub: j4.hub, height: 4, root: j4.to, recent: j4.recent_to, chain_id: id, hist: j4.hist_to, anchor: j4.anchor_to };
-        let w = with_chain(&ln, &c4, vec![], 0).unwrap();
+        let w = with_chain(&ln, &c4, vec![], 0, 1).unwrap();
         assert_eq!(lichen_withdraw::check(&w, &id, &mut |_| true), Err(lichen_withdraw::Reject::NotAnchored));
     }
 

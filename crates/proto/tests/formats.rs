@@ -3,7 +3,9 @@
 //! fixtures in `tests/data/formats` were written by the code of
 //! 2026-10-27 (`write_fixtures`); every later version must read them back
 //! unchanged, and rebuild the same contract from the record: its address,
-//! its pre-signed set, the signatures on it.
+//! its pre-signed set, the signatures on it. The request changed on
+//! 2026-10-31, liquidity and a fee for the cap's bits: its fixture with it
+//! (a record from before reads, its fee 0).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -48,7 +50,8 @@ fn build(program: &Program) -> (Record, OpenRequest, OpenOffer) {
         alice: alice.public(),
         l2_address: [7; 32],
         deposit: 30_000,
-        bits: 16,
+        liquidity: 35_535,
+        fee: 355,
         reserve: 250_000,
         dispute: RequestKeys::BitVmx(BitVmxRequest { moves: a_moves.clone(), inputs: inputs.clone(), hops: hops.clone() }),
         cid: 1000,
@@ -68,6 +71,7 @@ fn build(program: &Program) -> (Record, OpenRequest, OpenOffer) {
         funding: OutPoint { txid: Txid::from_byte_array([8; 32]), vout: 0 },
         hub_sigs: HashMap::new(),
         alice_sigs: HashMap::new(),
+        fee: 0,
         dispute: DisputeKeys::BitVmx(BitVmxKeys { moves: all_moves(&a_moves, &h_moves), inputs, tail: tail_keys(program, &path, &hops).unwrap(), windows: Some(windows(Net::Regtest)) }),
     };
     let c = record.build(&statement(), Some(program)).unwrap();

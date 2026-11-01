@@ -72,7 +72,7 @@ case "${1:-}" in
         [ "${STATEMENT:-babe}" = babe ] && prover=/usr/local/bin/lichen-r0
         exec lichen-hub --network "$NETWORK" --listen 0.0.0.0:18310 --sequencer "$seq" \
             --rpc-url "$node" --cookie "$cookie" --chain-wallet hub --dir /hub \
-            --statement "${STATEMENT:-babe}" --reserve-ppm "${RESERVE_PPM:-20000}" --max-bits "${MAX_BITS:-24}" \
+            --statement "${STATEMENT:-babe}" --reserve-ppm "${RESERVE_PPM:-20000}" --fee-ppm "${FEE_PPM:-10000}" --max-liquidity "${MAX_LIQUIDITY:-10000000}" \
             ${DURATION:+--duration "$DURATION"} ${WINDOWS:+--windows "$WINDOWS"} ${HOSTILE:+--hostile} ${REFUSE_FOLDS:+--refuse-folds} ${prover:+--prover "$prover"}
         ;;
     *)

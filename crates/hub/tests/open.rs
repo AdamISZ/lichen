@@ -44,7 +44,8 @@ fn open_a_contract_and_receive_the_deposit() {
         seed: "test-hub".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 500,
         refuse_folds: false,
         dispute_true_claims: false,
@@ -54,9 +55,9 @@ fn open_a_contract_and_receive_the_deposit() {
     .unwrap();
 
     let mut alice = Wallet::create(&dir.join("alice.json"), &seq.url).unwrap();
-    let (deposit, bits, reserve) = (400_000u64, 21u32, 20_000u64);
+    let (deposit, liquidity, reserve) = (400_000u64, 1_000_000u64, 20_000u64);
     let t = Instant::now();
-    let held = alice.open_contract(&hub.url, &alice_chain, &mock(), &dir.join("alice"), Ask { deposit, bits, reserve }, alice_chain.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { alice_chain.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
+    let held = alice.open_contract(&hub.url, &alice_chain, &mock(), &dir.join("alice"), Ask { deposit, liquidity, reserve }, alice_chain.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { alice_chain.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
     let r = &held.record;
     println!("LICHEN opened contract {} in {:.1?}: cap {} sats, Alice's reserve {}, the hub's {}, T_close {}", r.cid(), t.elapsed(), r.terms.v_max().to_sat(), r.terms.reserve_alice, r.terms.reserve_hub, r.terms.t_close);
 

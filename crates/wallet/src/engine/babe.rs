@@ -157,7 +157,7 @@ impl Engine<'_> {
             ensure!(!stall.stalled(chain.height()?), "the chain stalled before the contract's funding was deep enough to request");
             std::thread::sleep(Duration::from_millis(200));
         }
-        self.step(format!("requesting {b} sats, {}", d.txid("request")));
+        self.step(format!("requesting {b} units ({} sats), {}", u64::from(b) * d.record.terms.unit.to_sat(), d.txid("request")));
         let exit = self.store.exit();
         let wire = match &exit {
             Some(p) => secrets.exit_wire(b, &p.e()?, &p.posted()?)?,

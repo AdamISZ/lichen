@@ -77,7 +77,8 @@ fn a_babe_dispute_resumes_and_alice_gone_loses_at_t_a() {
         seed: "test-babe-resume".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 2_000,
         refuse_folds: true,
         dispute_true_claims: true,
@@ -97,7 +98,7 @@ fn a_babe_dispute_resumes_and_alice_gone_loses_at_t_a() {
             }
         })
     };
-    let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
     // a contract opened and its withdrawal refused: the wallet, its file
     // and directory, the contract, her proof
     let open = |user: &str, hub_url: &str| {

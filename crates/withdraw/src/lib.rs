@@ -55,13 +55,18 @@ pub fn deployment_id(sequencer: &Hash, hub: &Hash) -> Hash {
 }
 
 /// The journal's `D` for a contract: the deployment, the genesis seal its
-/// anchors descend from, and the work `W` it asks on top of an anchor.
-pub fn contract_id(deployment: &Hash, genesis: &OutPoint, work: u128) -> Hash {
+/// anchors descend from, the work `W` it asks on top of an anchor, and its
+/// unit `u` (sats), what one of `b` is worth. A unit of 1 sat, every
+/// contract's before units, adds nothing, so those keep their `D`.
+pub fn contract_id(deployment: &Hash, genesis: &OutPoint, work: u128, unit: u64) -> Hash {
     let mut h = Sha256::new();
     h.update(b"lichen/contract");
     h.update(deployment);
     h.update(genesis.to_bytes());
     h.update(work.to_be_bytes());
+    if unit != 1 {
+        h.update(unit.to_be_bytes());
+    }
     h.finalize().into()
 }
 
@@ -93,13 +98,16 @@ pub struct WithdrawInput {
     pub headers: Vec<[u8; 80]>,
     /// The work the contract asks on top of the anchor.
     pub work: u128,
+    /// The contract's unit: `b` is the return's value in units, rounded
+    /// down.
+    pub unit: u64,
 }
 
 /// An anchored state, as a statement proves it: the state root's height
 /// and nullifier tree (the commitment tree's root is the statement's own),
 /// the sequencer's signature on the root, the chain receipt's journal but
 /// for what's rebuilt, the headers on top of the anchor's block, and the
-/// work the contract asks.
+/// work and unit of the contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Anchored {
     pub height: u64,
@@ -114,6 +122,7 @@ pub struct Anchored {
     pub anchor: AnchorState,
     pub headers: Vec<[u8; 80]>,
     pub work: u128,
+    pub unit: u64,
 }
 
 impl Anchored {
@@ -146,7 +155,7 @@ impl Anchored {
         if self.headers.is_empty() || work_on(&a.block, &self.headers).is_none_or(|w| w < self.work) {
             return Err(Reject::Depth);
         }
-        Ok(contract_id(&deployment_id(&self.sequencer, &self.hub), &a.genesis, self.work))
+        Ok(contract_id(&deployment_id(&self.sequencer, &self.hub), &a.genesis, self.work, self.unit))
     }
 
     /// Whether `header` is the anchor's block, or one of the headers on
@@ -321,8 +330,8 @@ pub fn check(input: &WithdrawInput, chain_id: &Hash, verify_chain: &mut dyn FnMu
     Ok(journal)
 }
 
-/// The withdrawal `input` proves, checked as [`check`] does: its `b`, `c`
-/// and `D`.
+/// The withdrawal `input` proves, checked as [`check`] does: its `b` (the
+/// return's value in the contract's units, rounded down), `c` and `D`.
 pub fn withdrawal(input: &WithdrawInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<(u32, u32, Hash), Reject> {
     if input.note.owner != input.hub {
         return Err(Reject::NotTheHubs);
@@ -330,7 +339,10 @@ pub fn withdrawal(input: &WithdrawInput, chain_id: &Hash, verify_chain: &mut dyn
     if input.path.len() != TREE_DEPTH {
         return Err(Reject::PathLength);
     }
-    let b = u32::try_from(input.note.value).map_err(|_| Reject::TooLarge)?;
+    if input.unit == 0 {
+        return Err(Reject::Encoding);
+    }
+    let b = u32::try_from(input.note.value / input.unit).map_err(|_| Reject::TooLarge)?;
     let d = input.anchored().check(&input.tree(), chain_id, verify_chain)?;
     Ok((b, input.note.memo, d))
 }
@@ -358,6 +370,7 @@ impl WithdrawInput {
             anchor: self.anchor,
             headers: self.headers.clone(),
             work: self.work,
+            unit: self.unit,
         }
     }
 
@@ -387,6 +400,7 @@ impl WithdrawInput {
             w.extend_from_slice(h);
         }
         w.extend_from_slice(&self.work.to_be_bytes());
+        w.extend_from_slice(&self.unit.to_be_bytes());
         w
     }
 
@@ -419,10 +433,11 @@ impl WithdrawInput {
         let anchor = AnchorState::from_bytes(&take::<176>(&mut r)?).map_err(|_| Reject::Encoding)?;
         let headers = list::<80>(&mut r)?;
         let work = u128::from_be_bytes(take(&mut r)?);
+        let unit = u64::from_be_bytes(take(&mut r)?);
         if !r.is_empty() {
             return Err(Reject::Encoding);
         }
-        Ok(WithdrawInput { height, nullifiers, signature, note, index, path, sequencer, hub, chain_height, chain_root, recent, hist, anchor, headers, work })
+        Ok(WithdrawInput { height, nullifiers, signature, note, index, path, sequencer, hub, chain_height, chain_root, recent, hist, anchor, headers, work, unit })
     }
 }
 
@@ -565,7 +580,7 @@ pub(crate) mod tests {
         let genesis = OutPoint { txid: [3; 32], vout: 1 };
         let anchor = AnchorState { genesis, sequencer: xonly(&seq), seal: OutPoint { txid: [4; 32], vout: 0 }, height: 3, root, block: [9; 32] };
         let headers = headers_on(&anchor.block, 10);
-        WithdrawInput { height: 3, nullifiers, signature, note, index: 0, path, sequencer: xonly(&seq), hub: xonly(&hub), chain_height: 5, chain_root: [8; 32], recent: [6; 32], hist: [10; 32], anchor, headers, work: 10 * work(0x207fffff) }
+        WithdrawInput { height: 3, nullifiers, signature, note, index: 0, path, sequencer: xonly(&seq), hub: xonly(&hub), chain_height: 5, chain_root: [8; 32], recent: [6; 32], hist: [10; 32], anchor, headers, work: 10 * work(0x207fffff), unit: 1 }
     }
 
     #[test]
@@ -575,7 +590,7 @@ pub(crate) mod tests {
         let j = check(&i, &id, &mut |c| c == expected).unwrap();
         assert_eq!(&j[..4], &9u32.to_le_bytes());
         assert_eq!(&j[4..8], &42u32.to_le_bytes());
-        assert_eq!(&j[8..], &contract_id(&deployment_id(&i.sequencer, &i.hub), &i.anchor.genesis, i.work));
+        assert_eq!(&j[8..], &contract_id(&deployment_id(&i.sequencer, &i.hub), &i.anchor.genesis, i.work, i.unit));
         // the chain journal is the chain guest's, its anchor the input's
         let c = chain_journal(&i, &id);
         assert_eq!((c.hub, c.height, c.recent, c.chain_id, c.anchor), (i.hub, 5, [6; 32], id, i.anchor));
@@ -589,6 +604,15 @@ pub(crate) mod tests {
         let mut w = i.clone();
         w.work -= 1;
         assert_ne!(check(&w, &id, &mut |_| true).unwrap()[8..], j[8..]);
+        // b is in the contract's units, rounded down, and another unit is
+        // another D
+        let mut u = i.clone();
+        u.unit = 4;
+        let k = check(&u, &id, &mut |_| true).unwrap();
+        assert_eq!(&k[..4], &2u32.to_le_bytes());
+        assert_ne!(k[8..], j[8..]);
+        u.unit = 0;
+        assert_eq!(check(&u, &id, &mut |_| true), Err(Reject::Encoding));
     }
 
     #[test]

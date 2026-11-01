@@ -22,7 +22,7 @@ fn a_risc0_proof_decrypts_msg() {
     assert_eq!(journal.len(), 68, "c ‖ D ‖ H(pk_H)");
     assert_eq!(
         hex::encode(claim_digest(&id, journal)),
-        "d9701ad7a2588b5f1495319644377419227734238438683a1077da318cefc7cd",
+        "384ffbbce972dddb9378dabe17bc2ebaad7e7b9a7ee93349e4ba2436167ce91a",
         "the claim digest the host printed"
     );
     let vk = verifying_key();

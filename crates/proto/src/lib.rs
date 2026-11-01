@@ -49,8 +49,10 @@ use serde::{Deserialize, Serialize};
 
 /// Each party's share of the funding transaction's fee.
 pub const FEE_SHARE: Amount = Amount::from_sat(1_000);
-/// On the dispute path, bits below this pay nothing (dust): `2^9` sats.
-pub const LOW_BITS: u32 = 9;
+/// The least a bit of the dispute's payout is worth (sats): a smaller
+/// output would be dust. A contract's unit is from this to about twice it
+/// ([`scale`]).
+pub const MIN_UNIT: u64 = 512;
 /// The withdrawal guest's image id, hex (the build committed in
 /// `r0/guests/withdraw.bin`; with the file's newline).
 pub const IMAGE_ID: &str = include_str!("../../../r0/guests/withdraw.id");
@@ -223,8 +225,11 @@ pub struct Info {
     /// The hub's reserve for a contract of cap `V_max`: `V_max` times this,
     /// in parts per million.
     pub reserve_ppm: u64,
-    /// The largest cap, as bits (`V_max = 2^bits - 1` sats).
-    pub max_bits: u32,
+    /// The hub's fee for the liquidity a contract asks: the liquidity
+    /// times this, in parts per million ([`liquidity_fee`]).
+    pub fee_ppm: u64,
+    /// The most liquidity a contract may ask, in sats.
+    pub max_liquidity: u64,
     /// Blocks from opening to `T_close`.
     pub duration: u32,
 }
@@ -234,9 +239,14 @@ pub struct OpenRequest {
     pub alice: PartyPubKeys,
     /// Where the hub mints `D` on the L2.
     pub l2_address: [u8; 32],
+    /// What Alice pays in, `D`: she is minted `D - fee`.
     pub deposit: u64,
-    /// `V_max = 2^bits - 1` sats.
-    pub bits: u32,
+    /// The liquidity she asks, `L`: what she can receive beyond her
+    /// balance. The cap is `D - fee + L` ([`terms`]).
+    pub liquidity: u64,
+    /// The hub's fee for it, as its rate in [`Info`] makes it, kept out of
+    /// her minted balance.
+    pub fee: u64,
     /// Alice's reserve `r_A`.
     pub reserve: u64,
     /// Alice's keys for the dispute, its gadget's.
@@ -459,11 +469,11 @@ pub fn headers_for(chain: &lichen_chain::Chain, from: &Hash, work: u128) -> Resu
 
 /// The journal's `D` a contract pins: the deployment's id, or in an
 /// anchored deployment (a genesis seal) the contract's, of the genesis
-/// seal and the checkpoint's `W` too.
-pub fn contract_word(d: &Deployment, checkpoint: Option<&Checkpoint>) -> Result<Hash> {
+/// seal, the checkpoint's `W` and the contract's unit too.
+pub fn contract_word(d: &Deployment, checkpoint: Option<&Checkpoint>, unit: Amount) -> Result<Hash> {
     match (d.seal, checkpoint) {
         (None, None) => Ok(d.id()),
-        (Some(seal), Some(c)) => Ok(lichen_ledger::lichen_withdraw_contract_id(&d.id(), &seal, c.work())),
+        (Some(seal), Some(c)) => Ok(lichen_ledger::lichen_withdraw_contract_id(&d.id(), &seal, c.work(), unit.to_sat())),
         (Some(_), None) => bail!("an anchored deployment's contract needs a checkpoint"),
         (None, Some(_)) => bail!("a checkpoint in a deployment that doesn't anchor"),
     }
@@ -490,9 +500,24 @@ pub struct Record {
     pub funding: OutPoint,
     pub hub_sigs: HashMap<String, Vec<u8>>,
     pub alice_sigs: HashMap<String, Vec<u8>>,
+    /// The hub's fee for the contract's liquidity: Alice was minted
+    /// `terms.deposit - fee` ([`Record::minted`]).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fee: u64,
     /// The dispute's keys, its gadget's.
     #[serde(flatten)]
     pub dispute: DisputeKeys,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+impl Record {
+    /// What the hub minted Alice for her deposit: `D` less its fee.
+    pub fn minted(&self) -> u64 {
+        u64::from(self.terms.deposit).saturating_sub(self.fee)
+    }
 }
 
 /// The verification gadget a contract's dispute runs on.
@@ -669,19 +694,42 @@ impl Built {
     }
 }
 
-/// The terms of a contract opened from `req` with the hub's choices.
+/// The hub's fee for `liquidity` sats at `fee_ppm` parts per million.
+pub fn liquidity_fee(liquidity: u64, fee_ppm: u64) -> u64 {
+    (u128::from(liquidity) * u128::from(fee_ppm) / 1_000_000) as u64
+}
+
+/// A cap's scale: the largest `K` with `MIN_UNIT (2^K - 1)` at most `cap`
+/// (at most 32: `b` is a 32-bit word), and the unit `u = ceil(cap / (2^K -
+/// 1))`. So `V_max = u (2^K - 1)` is the cap, or more by under `2^K` sats
+/// (about 0.2%), and every bit of the payout is an output of at least
+/// `MIN_UNIT`.
+pub fn scale(cap: u64) -> Result<(u32, u64)> {
+    ensure!(cap >= MIN_UNIT, "a cap of {cap} sats, under {MIN_UNIT}");
+    let mut k = 1u32;
+    while k < 32 && MIN_UNIT.saturating_mul((1u64 << (k + 1)) - 1) <= cap {
+        k += 1;
+    }
+    Ok((k, cap.div_ceil((1u64 << k) - 1)))
+}
+
+/// The terms of a contract opened from `req` with the hub's choices: Alice
+/// pays `D` in and is minted `D - fee`; the cap is `D - fee + L`, scaled
+/// ([`scale`]).
 pub fn terms(cid: u32, req: &OpenRequest, t_close: u32, reserve_hub: u64) -> Result<Terms> {
-    ensure!((10..=32).contains(&req.bits), "a cap of 2^{} sats", req.bits);
     // amounts that add up without overflow
     let most = Amount::MAX_MONEY.to_sat();
     ensure!(req.reserve <= most && reserve_hub <= most, "a reserve above 21 million bitcoin");
-    let v_max = (1u64 << req.bits) - 1;
-    ensure!(req.deposit > 0 && req.deposit <= v_max, "a deposit of {} with a cap of {v_max}", req.deposit);
+    ensure!(req.deposit <= most && req.liquidity <= most, "a deposit or liquidity above 21 million bitcoin");
+    ensure!(req.fee < req.deposit, "a deposit of {} doesn't cover the fee of {}", req.deposit, req.fee);
+    let (bits, unit) = scale(req.deposit - req.fee + req.liquidity)?;
+    let v_max = unit * ((1u64 << bits) - 1);
+    ensure!(req.deposit <= v_max, "a deposit of {} with a cap of {v_max}", req.deposit);
     Ok(Terms {
         id: cid,
-        unit: Amount::from_sat(1),
-        bits: req.bits,
-        low_bits: LOW_BITS,
+        unit: Amount::from_sat(unit),
+        bits,
+        low_bits: 0,
         deposit: u32::try_from(req.deposit).context("the deposit")?,
         t_close,
         reserve_alice: Amount::from_sat(req.reserve),
@@ -755,11 +803,19 @@ pub fn terminal_fee(tx: &Transaction, net: Net) -> Amount {
 
 /// The canned claim's `D` (`tests/data/claim-60-42.*`, the real-receipt
 /// test's): the toy deployment with the genesis seal of the regtest run
-/// that made it, a contract checkpointed at regtest's difficulty.
+/// that made it, a contract checkpointed at regtest's difficulty, in
+/// [`canned_unit`].
 pub fn canned_d() -> Hash {
     let d = Deployment { seal: Some(canned_seal()), ..Deployment::toy() };
     let regtest = Checkpoint { height: 0, hash: <bitcoin::BlockHash as bitcoin::hashes::Hash>::all_zeros(), bits: 0x207fffff };
-    contract_word(&d, Some(&regtest)).unwrap()
+    contract_word(&d, Some(&regtest), Amount::from_sat(canned_unit())).unwrap()
+}
+
+/// The canned claim's unit: that of the contracts the real-statement
+/// tests open (400,000 sats deposited, 1,000,000 of liquidity, no fee), 684
+/// sats. Its return is 60 of them (41,040 sats), with memo 42.
+pub fn canned_unit() -> u64 {
+    scale(400_000 + 1_000_000).expect("a cap over the least").1
 }
 
 /// The canned claim's genesis seal.
@@ -771,6 +827,40 @@ pub fn canned_seal() -> lichen_ledger::OutPoint {
 mod tests {
     use super::bitvmx::*;
     use super::*;
+
+    /// A cap's scale: `V_max` the cap or a little more, every bit's output
+    /// at least `MIN_UNIT`; the terms of a request, its fee out of the
+    /// minted deposit and in the cap.
+    #[test]
+    fn the_cap_scaled() {
+        assert_eq!(scale(1_000_000).unwrap(), (10, 978));
+        assert_eq!(canned_unit(), 684);
+        assert_eq!(scale(MIN_UNIT).unwrap(), (1, MIN_UNIT));
+        assert!(scale(MIN_UNIT - 1).is_err());
+        for cap in [512, 1_000, 1_535, 1_536, 99_999, 1_000_000, 16_777_215, 2_100_000_000_000] {
+            let (k, u) = scale(cap).unwrap();
+            let v_max = u * ((1u64 << k) - 1);
+            assert!(v_max >= cap && v_max - cap < 1 << k && u >= MIN_UNIT && k <= 32, "{cap}: K {k}, u {u}");
+        }
+        let req = |deposit, liquidity, fee| OpenRequest {
+            alice: lngap_channel::PartyKeys::from_seed(lngap_channel::Role::User, lngap_btc::keys::Seed::from_label("test/alice")).public(),
+            l2_address: [7; 32],
+            deposit,
+            liquidity,
+            fee,
+            reserve: 20_000,
+            dispute: RequestKeys::BitVmx(bitvmx::BitVmxRequest { moves: vec![], inputs: vec![], hops: vec![] }),
+            cid: 1000,
+            deposit_coin: (OutPoint::null(), TxOut { value: Amount::ZERO, script_pubkey: bitcoin::ScriptBuf::new() }),
+            fee_spk: bitcoin::ScriptBuf::new(),
+        };
+        let t = terms(1000, &req(100_000, 1_000_000, liquidity_fee(1_000_000, 10_000)), 500, 30_000).unwrap();
+        assert_eq!((t.bits, t.unit, t.low_bits, t.deposit), (11, Amount::from_sat(533), 0, 100_000));
+        assert_eq!(t.v_max(), Amount::from_sat(1_091_051), "the cap 1,090,000, scaled");
+        // the hub puts in the liquidity, less the fee, and the overshoot
+        assert_eq!(contributions(&t).1, Amount::from_sat(1_091_051 - 100_000 + 30_000));
+        assert!(terms(1000, &req(10_000, 1_000_000, 10_000), 500, 30_000).is_err(), "a fee the deposit doesn't cover");
+    }
 
     /// An opening request's keys of other parameters, or a reserve whose
     /// sum would overflow, are refused before anything is built on them.
@@ -786,7 +876,8 @@ mod tests {
             alice,
             l2_address: [7; 32],
             deposit: 100_000,
-            bits: 21,
+            liquidity: 1_000_000,
+            fee: 10_000,
             reserve: 20_000,
             dispute: RequestKeys::BitVmx(BitVmxRequest { moves: vec![], inputs: (0..program.info.input_words).map(|j| input(j, good)).collect(), hops: vec![] }),
             cid: 1000,
@@ -869,9 +960,9 @@ mod tests {
         assert!(failing(&claim(&ours)).is_empty());
         assert_eq!(failing(&claim(&theirs)), (1..=8).map(|j| format!("deployment_{j}")).collect::<Vec<_>>());
         // the real claim (the committed guest's proof of the toy
-        // deployment's return of 60, memo 42, anchored on regtest: D the
-        // contract's, of the run's genesis seal and regtest's W) passes
-        // every check
+        // deployment's return of 60 units, memo 42, anchored on regtest: D
+        // the contract's, of the run's genesis seal, regtest's W and the
+        // unit) passes every check
         let real = hex::decode(include_str!("../tests/data/claim-60-42.hex").trim()).unwrap();
         let words = lngap_zk::final_d60::input_words(&real);
         assert_eq!(words.len(), 51);

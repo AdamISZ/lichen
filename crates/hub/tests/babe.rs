@@ -70,7 +70,8 @@ fn babe_disputes_on_the_mock_statement() {
         seed: format!("test-{name}"),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 2_000,
         refuse_folds: true,
         dispute_true_claims,
@@ -90,7 +91,7 @@ fn babe_disputes_on_the_mock_statement() {
             let _ = rpc.generate_to_address(1, &addr);
         })
     };
-    let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
 
     for (label, user) in [("T", "tess"), ("W", "will"), ("F", "fay"), ("G", "gil")] {
         let hub_url = match label {
@@ -105,6 +106,8 @@ fn babe_disputes_on_the_mock_statement() {
         w.progress = Some(Arc::new(move |m: String| println!("LICHEN {label}: {m}")));
         let t = Instant::now();
         let held = w.open_contract(&hub_url, &ch, &statement(), &wdir, ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
+        // b in the contract's units: what a dispute signs and pays
+        let b = (u64::from(B) / held.record.terms.unit.to_sat()) as u32;
         let cid = held.record.cid();
         let keys = held.record.babe().unwrap();
         println!("LICHEN {label}: contract {cid} opened in {:.1?}: {} kept of {}", t.elapsed(), keys.kept.len(), keys.n);
@@ -125,7 +128,7 @@ fn babe_disputes_on_the_mock_statement() {
             w.babe_mock_input(cid).unwrap()
         };
         let t = Instant::now();
-        let (outcome, swept) = w.dispute(&ch, &statement(), &wdir, cid, B, &input).unwrap();
+        let (outcome, swept) = w.dispute(&ch, &statement(), &wdir, cid, b, &input).unwrap();
         println!("LICHEN {label}: {outcome:?} in {:.1?}; swept {swept:?}", t.elapsed());
         match label {
             "T" => assert!(matches!(outcome, Outcome::Unchallenged(_)), "T: the honest hub lets her proof stand"),
@@ -143,7 +146,7 @@ fn babe_disputes_on_the_mock_statement() {
                 std::thread::sleep(Duration::from_millis(200));
             }
             let t = held.record.terms;
-            let paid = Amount::from_sat(u64::from(B / 512 * 512)) + t.reserves();
+            let paid = t.unit * u64::from(b) + t.reserves();
             assert!(swept > paid - Amount::from_sat(60_000) && swept < paid + lichen_proto::fee_budget(lichen_proto::Net::Regtest), "{label}: swept {swept} for {paid}");
             if label != "G" {
                 // the hub collects its bit outputs, those of the bits clear in b

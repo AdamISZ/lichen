@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # A smoke test of a running regtest deployment (COMPOSE_PROFILES=regtest):
 # a user's wallet, as a one-off container on the deployment's compose
-# network, opens a contract (its deposit paid from the miner's coins),
-# waits for the deposit to be minted on the L2, withdraws cooperatively,
-# and checks the payout address received it.
+# network, opens a contract with inbound liquidity (its deposit paid from
+# the miner's coins), waits for the deposit less the hub's fee to be
+# minted on the L2, withdraws cooperatively, and checks the payout address
+# received it.
 #   deploy/smoke.sh              (deploy/.env, or ENV_FILE)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -45,9 +46,9 @@ echo "== a wallet, pinned to the deployment"
 wallet init
 payout="$(cli -rpcwallet=miner getnewaddress)"
 
-echo "== open: pay the deposit when it is asked for"
+echo "== open, with 200000 of liquidity: pay the deposit when it is asked for"
 log="$(mktemp)"
-wallet open 400000 --payout "$payout" > "$log" 2>&1 &
+wallet open 400000 --liquidity 200000 --payout "$payout" > "$log" 2>&1 &
 opener=$!
 until grep -q "^pay " "$log"; do
     kill -0 "$opener" 2>/dev/null || { cat "$log"; exit 1; }
@@ -59,13 +60,15 @@ cli -rpcwallet=miner sendtoaddress "$addr" "$(printf '%d.%08d' $((amount / 10000
 wait "$opener" || { cat "$log"; exit 1; }
 cat "$log"
 cid="$(grep -o '^contract [0-9]*' "$log" | cut -d' ' -f2)"
+minted="$(grep -o "you'll be minted [0-9]*" "$log" | grep -o '[0-9]*$')"
 
-echo "== minted on the L2"
+echo "== minted on the L2: the deposit less the hub's fee, $minted sats"
 for _ in $(seq 60); do
-    [ "$(wallet balance | head -1 | cut -d" " -f1)" -ge 400000 ] && break
+    [ "$(wallet balance | awk 'NR == 1 {print $1}')" -ge "$minted" ] && break
     sleep 2
 done
 wallet balance
+[ "$(wallet balance | awk 'NR == 1 {print $1}')" = "$minted" ] || { echo "FAIL: not $minted minted" >&2; exit 1; }
 
 echo "== withdraw 300000 cooperatively"
 wallet withdraw "$cid" 300000

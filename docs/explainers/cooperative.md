@@ -268,7 +268,7 @@ natively ([USE_A_WALLET.md](../USE_A_WALLET.md)). Then Alice:
 ```sh
 L="./target/release/lichen --network mutinynet --statement bitvmx"
 $L --wallet alice.json init
-$L --wallet alice.json open 30000 --bits 16 --reserve 20000 --payout <an address of yours>
+$L --wallet alice.json open 30000 --liquidity 35535 --reserve 20000 --payout <an address of yours>
 #   it prints "pay 81000 sats to tb1p…": pay that from any wallet
 #   (71,000 in this run; the fee budget on Mutinynet is now 30,000)
 $L --wallet alice.json balance                    # 30000, once the funding confirms

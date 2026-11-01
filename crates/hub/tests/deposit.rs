@@ -24,7 +24,7 @@ use bitcoin::Amount;
 use bitcoincore_rpc::{Auth, RpcApi};
 use lichen_chain::electrs::Electrs;
 use lichen_chain::{Chain, Net};
-use lichen_hub::{Config, Hub};
+use lichen_hub::{Config, Hub, OpeningFault};
 use lichen_ledger::{regtest_sequencer, HUB_KEY};
 use lichen_proto::Statement;
 use lichen_l2::Client;
@@ -74,7 +74,8 @@ fn a_user_with_no_wallet() {
         seed: format!("test-{name}"),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 0,
+        max_liquidity: 10_000_000,
         duration: 2_000,
         refuse_folds: refuse,
         dispute_true_claims: refuse,
@@ -90,7 +91,7 @@ fn a_user_with_no_wallet() {
     let payee = node("payee");
     // the deposit paid from elsewhere (here, the harness), confirmed
     let pay = |addr: &bitcoin::Address, v: Amount| rt.fund(&addr.script_pubkey(), v).map(|_| ());
-    let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
     let minted = |w: &Wallet| {
         let start = Instant::now();
         while w.balance().unwrap() < ask.deposit {
@@ -113,11 +114,13 @@ fn a_user_with_no_wallet() {
     assert_eq!(rt.get_tx(&fold).unwrap().output.iter().filter(|o| o.script_pubkey == to_alice).map(|o| o.value).sum::<Amount>(), Amount::from_sat(u64::from(B) + ask.reserve));
     println!("LICHEN E1: folded {fold}: {} sats to the payout address", u64::from(B) + ask.reserve);
 
-    // R: the hub never funds (here: it refuses the cap): refund by the timeout
+    // R: the hub never funds (here: it refuses the opening): refund by the
+    // timeout
     let mut carol = Wallet::create(&dir.join("carol.json"), &seq.url).unwrap();
     let to_carol = payee.new_spk().unwrap();
-    let too_big = Ask { bits: 25, ..ask };
-    let err = carol.open_contract(&hub_e.url, &esplora, &statement(), &dir.join("carol"), too_big, to_carol.clone(), &pay).unwrap_err();
+    hub_e.set_opening_fault(OpeningFault::Refuse);
+    let err = carol.open_contract(&hub_e.url, &esplora, &statement(), &dir.join("carol"), ask, to_carol.clone(), &pay).unwrap_err();
+    hub_e.set_opening_fault(OpeningFault::None);
     assert_eq!(carol.deposits.len(), 1, "the deposit is kept ({err:#})");
     let cid = carol.deposits[0].cid;
     let early = carol.refund(&esplora, cid, Amount::from_sat(500)).unwrap_err();
@@ -136,7 +139,7 @@ fn a_user_with_no_wallet() {
     }
     let refund = refunded.expect("the refund");
     rt.mine(1).unwrap();
-    assert_eq!(rt.get_tx(&refund).unwrap().output[0], bitcoin::TxOut { value: Wallet::deposit_amount(&too_big, Net::Regtest) - Amount::from_sat(500), script_pubkey: to_carol });
+    assert_eq!(rt.get_tx(&refund).unwrap().output[0], bitcoin::TxOut { value: Wallet::deposit_amount(&ask, Net::Regtest) - Amount::from_sat(500), script_pubkey: to_carol });
     assert!(carol.deposits.is_empty());
     println!("LICHEN R: the opening failed ({err:#}); refunded {refund} after {} blocks", lichen_proto::deposit_timeout(Net::Regtest));
 
@@ -144,12 +147,15 @@ fn a_user_with_no_wallet() {
     // deposit on terms the hub takes (a small cap: 2^16, below the floors
     // a dispute's links take, which the hub's first measure once tripped on)
     let mut dave = Wallet::create(&dir.join("dave.json"), &seq.url).unwrap();
-    let small = Ask { deposit: 30_000, bits: 16, reserve: 20_000 };
+    let small = Ask { deposit: 30_000, liquidity: 35_535, reserve: 20_000 };
     // (hub-s's first opening: its floors are measured at this small cap)
-    dave.open_contract(&hub_s.url, &esplora, &statement(), &dir.join("dave"), Ask { bits: 25, ..small }, payee.new_spk().unwrap(), &pay).unwrap_err();
+    hub_s.set_opening_fault(OpeningFault::Refuse);
+    dave.open_contract(&hub_s.url, &esplora, &statement(), &dir.join("dave"), small, payee.new_spk().unwrap(), &pay).unwrap_err();
+    hub_s.set_opening_fault(OpeningFault::None);
     let cid = dave.deposits[0].cid;
     let held = dave.resume_open(&hub_s.url, &esplora, &statement(), &dir.join("dave"), small, cid).unwrap();
-    assert_eq!((held.record.cid(), held.record.terms.v_max().to_sat()), (cid, 65_535));
+    // the cap 65,535 scaled: 127 units of 517 sats
+    assert_eq!((held.record.cid(), held.record.terms.v_max().to_sat()), (cid, 65_659));
     assert!(dave.deposits.is_empty());
     println!("LICHEN S: contract {cid} refused at a cap of 2^25, resumed with its deposit at 2^16 (the hub's reserve {} sats)", held.record.terms.reserve_hub.to_sat());
 

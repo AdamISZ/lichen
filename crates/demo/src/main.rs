@@ -42,9 +42,9 @@ use tiny_http::{Header, Method, Response, Server};
 
 const FIRST_CID: u32 = 1000;
 /// Millions of sats, so that fees at a realistic feerate stay small beside
-/// them: a cap of 2^24 sats (16.8M), and a reserve above a BABE
-/// dispute's floors (31k sats).
-const ASK: Ask = Ask { deposit: 2_000_000, bits: 24, reserve: 250_000 };
+/// them: 14M sats of liquidity (a cap of about 15.9M, after the hub's
+/// fee), and a reserve above a BABE dispute's floors (31k sats).
+const ASK: Ask = Ask { deposit: 2_000_000, liquidity: 14_000_000, reserve: 250_000 };
 
 #[derive(Parser)]
 #[command(about = "lichen's web demo (local, regtest)")]
@@ -238,7 +238,8 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
         seed: "lichen-demo-hub".into(),
         l2_key: lichen_ledger::regtest_hub(),
         reserve_ppm: 20_000,
-        max_bits: 24,
+        fee_ppm: 10_000,
+        max_liquidity: 20_000_000,
         duration: 5_000,
         refuse_folds: false,
         dispute_true_claims: false,

@@ -92,10 +92,22 @@ pub struct SetupRequest {
     pub cid: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deposit: Option<bitcoin::OutPoint>,
+    /// The contract's unit, which its `D` holds ([`crate::scale`] of the
+    /// cap she will ask): 1 sat if not given.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub unit: u64,
+}
+
+fn one() -> u64 {
+    1
+}
+
+fn is_one(n: &u64) -> bool {
+    *n == 1
 }
 
 /// The hub's setup: what the contract's statement is (its journal's
-/// checkpoint and `pk_H`), and its commitments to `n` instances, of which
+/// checkpoint, unit and `pk_H`), and its commitments to `n` instances, of which
 /// Alice keeps `m`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Setup {
@@ -103,6 +115,9 @@ pub struct Setup {
     pub n: u32,
     pub m: u32,
     pub checkpoint: Option<Checkpoint>,
+    /// The contract's unit, in its journal's `D`.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub unit: u64,
     pub hub_b: Wots256Public,
     /// With the exit, the hub's keys for it and the deposit coin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -370,14 +385,23 @@ impl Disputed {
     }
     /// The hub's key and its signature on `b` from `respond`, as the BABE
     /// prover takes them (`lichen-r0 babe`'s hub auth: JSON, `key` and
-    /// `sig`, ten 32-byte hashes each, hex), checked.
+    /// `sig`, ten 32-byte hashes each, hex), checked. With the exit, its
+    /// journal commits to the hub's other keys and the deposit coin too
+    /// (`exit`: `e_plain`, `e_counter`, `k`, hex, and `deposit`), and the
+    /// prover proves the statement with the exit, a return.
     pub fn hub_auth(&self, respond: &bitcoin::Transaction) -> Result<serde_json::Value> {
         let sig = Self::hub_b(respond)?;
-        let key = &self.record.babe()?.hub_b;
+        let keys = self.record.babe()?;
+        let key = &keys.hub_b;
         ensure!(sig.hashes.len() == key.digits.len(), "the hub's signature and key differ in length");
         key.verify(&sig).context("respond's signature on b, under the hub's key")?;
         let h = |v: &[[u8; 32]]| v.iter().map(hex::encode).collect::<Vec<_>>();
-        Ok(serde_json::json!({ "key": h(&key.digits), "sig": h(&sig.hashes) }))
+        let mut auth = serde_json::json!({ "key": h(&key.digits), "sig": h(&sig.hashes) });
+        if let Some(x) = &keys.exit {
+            let k = exit_keys(key, &x.hub);
+            auth["exit"] = serde_json::json!({ "e_plain": h(&k.e_plain), "e_counter": h(&k.e_counter), "k": h(&k.k), "deposit": lichen_ledger::outpoint::to_string(&statement_outpoint(&x.hub.deposit)) });
+        }
+        Ok(auth)
     }
     /// What `assert` put on chain: π1's digits (read under Alice's Lamport
     /// key), their preimages, and the proof, if its points are points.

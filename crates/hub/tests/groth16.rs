@@ -2,13 +2,13 @@
 //! BitVMX's Groth16 verifier (8-ary, its trace hashed as a jump list: 21
 //! depths), with a real proof of the
 //! withdrawal guest (r0/guests/withdraw.bin): the toy deployment's return
-//! of 60 sats with memo 42 (crates/proto/tests/data/claim-60-42.hex, from
-//! the real-receipt test, wrapped on x86 Linux). Each hub's first contract
-//! is number 42.
+//! of 60 units with memo 42 (crates/proto/tests/data/claim-60-42.hex, from
+//! the real-receipt test; the contracts' unit, `lichen_proto::canned_unit`,
+//! 684 sats). Each hub's first contract is number 42.
 //!
 //! - G1: an honest hub checks the claim's proof natively (milliseconds):
-//!   valid, so it concedes; Alice's timeout pays her (60 sats round down to no
-//!   bit output; the reserves);
+//!   valid, so it concedes; Alice's timeout pays her (the bit outputs of 60
+//!   units, and the reserves);
 //! - G2: a hub disputing true claims: the whole search, each side its own
 //!   emulator over the 478M-step verifier; Alice proves the last step;
 //! - G3: the same proof with b changed to 61: the honest hub disputes and
@@ -43,9 +43,9 @@ fn disputes_on_the_groth16_verifier() {
     // BitVMX's verifier, as BitVMX-CPU ships it (GPL, not vendored), from
     // the cargo checkout
     let statement = Statement::bitvmx().unwrap();
-    // the canned claim: the toy deployment's return of 60 with memo 42,
-    // proved under the committed guest (the real-receipt test's withdrawal,
-    // `lichen-r0 claim` on x86 Linux)
+    // the canned claim: the toy deployment's return of 60 units with memo
+    // 42, proved under the committed guest (the real-receipt test's
+    // withdrawal, `lichen-r0 claim`)
     let valid = hex::decode(include_str!("../../proto/tests/data/claim-60-42.hex").trim()).unwrap();
     let mut tampered = valid.clone();
     tampered[164] = 61; // b, word 41's low byte
@@ -70,7 +70,7 @@ fn disputes_on_the_groth16_verifier() {
             }
         })
     };
-    let ask = Ask { deposit: 400_000, bits: 21, reserve: 20_000 };
+    let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
     for (label, dispute_true_claims, input, want) in [("G1", false, &valid, "HubTimedOut"), ("G2", true, &valid, "Proved"), ("G3", false, &tampered, "Lost")] {
         let hub_name = format!("hub-{label}");
         rt.fund(&chain(&hub_name).new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
@@ -86,7 +86,8 @@ fn disputes_on_the_groth16_verifier() {
             seed: format!("test-{hub_name}"),
             l2_key: lichen_ledger::regtest_hub(),
             reserve_ppm: 20_000,
-            max_bits: 24,
+            fee_ppm: 0,
+        max_liquidity: 10_000_000,
             duration: 5_000,
             refuse_folds: true,
             dispute_true_claims,
@@ -101,6 +102,7 @@ fn disputes_on_the_groth16_verifier() {
         let t = Instant::now();
         let held = w.open_contract(&hub.url, &ch, &statement, &dir.join(&user), ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
         assert_eq!(held.record.cid(), 42);
+        assert_eq!(held.record.terms.unit.to_sat(), lichen_proto::canned_unit(), "the canned claim's unit");
         println!("LICHEN {label}: contract 42 on the Groth16 verifier opened in {:.1?}", t.elapsed());
         if label == "G1" {
             // the test networks' budgets pay for the heaviest of her

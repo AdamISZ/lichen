@@ -130,12 +130,12 @@ fn withdrawal(p: &Package) -> Result<(lichen_ledger::WithdrawInput, Option<liche
     };
     let d = lichen_ledger::deployment_id(&input.sequencer, &input.hub);
     let ours = match (p.record.checkpoint, anchor) {
-        (Some(c), Some(a)) => lichen_ledger::lichen_withdraw_contract_id(&d, &a.anchor.genesis, c.work()),
+        (Some(c), Some(a)) => lichen_ledger::lichen_withdraw_contract_id(&d, &a.anchor.genesis, c.work(), p.record.terms.unit.to_sat()),
         (None, None) => d,
         _ => anyhow::bail!("an anchored contract's input needs its anchor"),
     };
     ensure!(ours == p.record.deployment, "the input is in another deployment than the contract's");
-    ensure!(input.index == p.note && input.note.memo == p.cid() && input.note.value == u64::from(p.b), "note {} is not a return of {} with memo {}", p.note, p.b, p.cid());
+    ensure!(input.index == p.note && input.note.memo == p.cid() && input.note.value / p.record.terms.unit.to_sat() == u64::from(p.b), "note {} is not a return of {} units with memo {}", p.note, p.b, p.cid());
     Ok((input, anchor))
 }
 
@@ -153,7 +153,7 @@ pub fn prove(p: &Package, chain: &Chain, work: &Path, prover: &Path) -> Result<V
         Some(r) => hex::decode(r)?,
         None => crate::chain_receipt(&lichen_l2::Client::new(&p.sequencer)?, anchor.map_or(input.height, |a| a.from))?,
     };
-    let full = crate::prover_input(input, anchor.as_ref(), p.record.checkpoint.as_ref(), chain)?;
+    let full = crate::prover_input(input, anchor.as_ref(), p.record.checkpoint.as_ref(), p.record.terms.unit.to_sat(), chain)?;
     std::fs::write(&json, serde_json::to_vec_pretty(&full)?)?;
     std::fs::write(&receipt_file, receipt)?;
     let status = std::process::Command::new(prover).arg("claim").arg(&json).arg(&receipt_file).arg(&out).status().with_context(|| format!("running the prover {}", prover.display()))?;
@@ -321,7 +321,7 @@ pub fn run(chain: &Chain, statement: &Statement, package: &Path, dir: &Path, pro
     }
     if store.state.claim.is_none() && p.claim.is_none() && statement.mock_input(p.b, p.cid()).is_none() {
         if let Some(f) = &opts.progress {
-            f(format!("proving the withdrawal of {} sats (note {}) with {}", p.b, p.note, prover.display()));
+            f(format!("proving the withdrawal of {} units ({} sats; note {}) with {}", p.b, u64::from(p.b) * p.record.terms.unit.to_sat(), p.note, prover.display()));
         }
     }
     let input = claim_input(&p, chain, statement, store.state.claim.as_ref(), &dir.join("proof"), prover)?;
@@ -359,7 +359,7 @@ impl Wallet {
             Some(i) => i.note.value,
             None => self.state()?.note(note).with_context(|| format!("no note {note}"))?.value,
         };
-        let b = u32::try_from(b).context("b fits in a u32")?;
+        let b = u32::try_from(b / h.record.terms.unit.to_sat()).context("b fits in a u32")?;
         let s = self.secrets(&h.nonce);
         let spec = h.record.spec(statement)?;
         let b_wire = wots_wire(&s.input_secret(spec.b_word).sign(&input_message(b))?).iter().map(hex::encode).collect();
@@ -376,7 +376,9 @@ impl Wallet {
     /// on the claim's π1, the claim checked first (a proof the hub would
     /// challenge and win against is refused).
     fn export_babe(&mut self, statement: &Statement, cid: u32, note: u32, claim: &[u8]) -> Result<Package> {
-        let b = u32::try_from(self.state()?.note(note).with_context(|| format!("no note {note}"))?.value).context("b fits in a u32")?;
+        let unit = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?.record.terms.unit.to_sat();
+        // b in the contract's units: the return's sats, rounded down
+        let b = u32::try_from(self.state()?.note(note).with_context(|| format!("no note {note}"))?.value / unit).context("b fits in a u32")?;
         let h = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
         let proof = lichen_babe::statement::proof_from_bytes(claim).context("the claim is not a Groth16 proof")?;
         let kind = statement.babe_kind().context("not a BABE statement")?;
