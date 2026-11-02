@@ -28,7 +28,8 @@ const MAX_CONCURRENT: usize = 64;
 /// A running sequencer.
 pub struct Sequencer {
     pub url: String,
-    server: Arc<Server>,
+    /// The listener: replaced if tiny_http's stops ([`listen`]).
+    server: Arc<Mutex<Arc<Server>>>,
     thread: Option<std::thread::JoinHandle<()>>,
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
@@ -99,16 +100,18 @@ impl Sequencer {
             let last = ledger.sealed.last().map_or(0, |s| s.height);
             clear_from(&blocks_dir(p), last + 1).context("clearing stale block files")?;
         }
-        let server = Arc::new(Server::http(addr).map_err(|e| anyhow!("listen on {addr}: {e}"))?);
+        let server = Server::http(addr).map_err(|e| anyhow!("listen on {addr}: {e}"))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
+        let server = Arc::new(Mutex::new(Arc::new(server)));
         let shared = Arc::new(Shared { ledger: Mutex::new(ledger), events: Mutex::new(vec![]), path, key, poisoned: AtomicBool::new(false), proved: AtomicU64::new(0) });
-        let (srv, sh) = (server.clone(), shared.clone());
+        let stop = Arc::new(AtomicBool::new(false));
+        let (srv, sh, st) = (server.clone(), shared.clone(), stop.clone());
         let thread = std::thread::spawn(move || {
             let busy = Arc::new(AtomicUsize::new(0));
-            for req in srv.incoming_requests() {
+            listen(&srv, &st, |req| {
                 if busy.load(Ordering::SeqCst) >= MAX_CONCURRENT {
                     let _ = req.respond(json_response(503, refused("too many requests at once".into())));
-                    continue;
+                    return;
                 }
                 busy.fetch_add(1, Ordering::SeqCst);
                 let (sh, busy) = (sh.clone(), busy.clone());
@@ -117,9 +120,9 @@ impl Sequencer {
                     serve(req, &sh);
                     busy.fetch_sub(1, Ordering::SeqCst);
                 });
-            }
+            });
         });
-        Ok(Sequencer { url: format!("http://127.0.0.1:{port}"), server, thread: Some(thread), shared, stop: Arc::new(AtomicBool::new(false)), anchorer: None })
+        Ok(Sequencer { url: format!("http://127.0.0.1:{port}"), server, thread: Some(thread), shared, stop, anchorer: None })
     }
 
     /// Anchor the history on Bitcoin from now on, through `chain` (a
@@ -141,9 +144,52 @@ impl Drop for Sequencer {
         if let Some(t) = self.anchorer.take() {
             let _ = t.join();
         }
-        self.server.unblock();
+        // after `stop`: a listener made since is unblocked here, and one
+        // being made sees `stop` ([`listen`])
+        self.server.lock().unwrap().unblock();
         if let Some(t) = self.thread.take() {
             let _ = t.join();
+        }
+    }
+}
+
+/// Serve each request on `server` with `handle` until `stop`. tiny_http's
+/// listener ends for good at an error accepting a connection (a client
+/// that resets before it is accepted, too many open files), and its
+/// requests end with it, so the sequencer would serve nothing more while
+/// running: say so, and listen again on the same address.
+fn listen(server: &Mutex<Arc<Server>>, stop: &AtomicBool, mut handle: impl FnMut(Request)) {
+    loop {
+        let srv = server.lock().unwrap().clone();
+        let e = loop {
+            match srv.recv() {
+                Ok(req) => handle(req),
+                Err(e) => break e,
+            }
+        };
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let addr = srv.server_addr().to_ip().expect("an IP listener");
+        eprintln!("sequencer: the listener stopped ({e}): listening again on {addr}");
+        let mut said = false;
+        let fresh = loop {
+            match Server::http(addr) {
+                Ok(s) => break s,
+                Err(_) if stop.load(Ordering::Relaxed) => return,
+                Err(e) => {
+                    if !said {
+                        eprintln!("sequencer: listening on {addr}: {e} (trying each second)");
+                        said = true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+        };
+        *server.lock().unwrap() = Arc::new(fresh);
+        eprintln!("sequencer: listening again on {addr}");
+        if stop.load(Ordering::Relaxed) {
+            return;
         }
     }
 }

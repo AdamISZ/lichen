@@ -192,10 +192,20 @@ commits to its history but doesn't keep its data.
 
 To update: pull, `deploy/build.sh`, then `deploy/lichen.sh up`. Keys,
 ledger and contracts carry over. Deploy tagged versions, so that `info`
-names one. Each build leaves several GB of Docker's build cache behind;
-`docker builder prune -f` frees it (the next build is slower). The
-services' logs are rotated (10 MB a file, three kept), so `deploy/lichen.sh
-logs` shows recent history only.
+names one. Keep Docker's build cache between updates (about 13 GB): the
+next build then compiles only what changed. Prune it (`docker builder
+prune -f`) only when the disk runs short; the build after a prune
+compiles everything again, RISC Zero's libraries included, which takes
+a long while. The services' logs are rotated (10 MB a file, three kept),
+so `deploy/lichen.sh logs` shows recent history only.
+
+If the sequencer or the hub fails to accept a connection (a client
+gone before it was accepted, or too many open files), it logs "the
+listener stopped", listens again on the same port, and logs "listening
+again". Before v0.4.4 the listener stayed closed after such an error while
+the service went on running: the sequencer then sealed nothing new, and
+its log repeated `seal: … Connection refused`. Restarting the service
+recovers it.
 
 An update that changes a guest (`r0/guests/`) is different. A contract's
 dispute statement pins the guests it opened with, and the chain guest

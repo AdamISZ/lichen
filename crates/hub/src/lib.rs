@@ -32,7 +32,7 @@ use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
 use lngap_sessions::contract::{sign_all, Program};
 use serde::{Deserialize, Serialize};
-use tiny_http::{Header, Method, Response, Server};
+use tiny_http::{Header, Method, Request, Response, Server};
 
 pub struct Config {
     /// The Bitcoin network (the contracts' timing with it).
@@ -190,7 +190,8 @@ pub(crate) struct Inner {
 pub struct Hub {
     pub url: String,
     inner: Arc<Inner>,
-    server: Arc<Server>,
+    /// The listener: replaced if tiny_http's stops ([`listen`]).
+    server: Arc<Mutex<Arc<Server>>>,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -235,12 +236,13 @@ impl Hub {
         let next = open.keys().chain(deposits.keys()).max().map_or(cfg.first_cid, |m| m + 1);
         let (cfg_refuse, cfg_dispute) = (cfg.refuse_folds, cfg.dispute_true_claims);
         ensure!(!(cfg_refuse || cfg_dispute) || cfg.network.is_test(), "a hub refuses withdrawals or disputes true claims on test networks only, not {}", cfg.network);
-        let server = Arc::new(Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?);
+        let server = Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
+        let server = Arc::new(Mutex::new(Arc::new(server)));
         let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), forge_counters: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), prover: Mutex::new(None), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
-            for mut req in srv.incoming_requests() {
+            listen(&srv, &i1.stop, |mut req| {
                 // an instance: bytes, not JSON
                 if *req.method() == Method::Get && req.url().starts_with("/babe/instance/") {
                     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| i1.babe_instance_at(req.url())));
@@ -250,7 +252,7 @@ impl Hub {
                         Err(_) => Response::from_data(b"the request failed".to_vec()).with_status_code(500),
                     };
                     let _ = req.respond(resp);
-                    continue;
+                    return;
                 }
                 let mut body = String::new();
                 let read = req.as_reader().take(MAX_BODY as u64 + 1).read_to_string(&mut body);
@@ -268,7 +270,7 @@ impl Hub {
                 };
                 let ct = Header::from_bytes("Content-Type", "application/json").unwrap();
                 let _ = req.respond(Response::from_string(json).with_status_code(code).with_header(ct));
-            }
+            });
         });
         let i2 = inner.clone();
         let watcher = std::thread::spawn(move || {
@@ -366,9 +368,52 @@ impl Hub {
 impl Drop for Hub {
     fn drop(&mut self) {
         self.inner.stop.store(true, Ordering::Relaxed);
-        self.server.unblock();
+        // after `stop`: a listener made since is unblocked here, and one
+        // being made sees `stop` ([`listen`])
+        self.server.lock().unwrap().unblock();
         for t in self.threads.drain(..) {
             let _ = t.join();
+        }
+    }
+}
+
+/// Serve each request on `server` with `handle` until `stop`. tiny_http's
+/// listener ends for good at an error accepting a connection (a client
+/// that resets before it is accepted, too many open files), and its
+/// requests end with it, so the hub would answer nothing more while
+/// running: say so, and listen again on the same address.
+fn listen(server: &Mutex<Arc<Server>>, stop: &AtomicBool, mut handle: impl FnMut(Request)) {
+    loop {
+        let srv = server.lock().unwrap().clone();
+        let e = loop {
+            match srv.recv() {
+                Ok(req) => handle(req),
+                Err(e) => break e,
+            }
+        };
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let addr = srv.server_addr().to_ip().expect("an IP listener");
+        eprintln!("hub: the listener stopped ({e}): listening again on {addr}");
+        let mut said = false;
+        let fresh = loop {
+            match Server::http(addr) {
+                Ok(s) => break s,
+                Err(_) if stop.load(Ordering::Relaxed) => return,
+                Err(e) => {
+                    if !said {
+                        eprintln!("hub: listening on {addr}: {e} (trying each second)");
+                        said = true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+        };
+        *server.lock().unwrap() = Arc::new(fresh);
+        eprintln!("hub: listening again on {addr}");
+        if stop.load(Ordering::Relaxed) {
+            return;
         }
     }
 }

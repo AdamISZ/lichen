@@ -19,6 +19,7 @@ serde.workspace = true
 
 [dev-dependencies]
 ureq.workspace = true
+libc = "0.2"
 lngap-btc.workspace = true
 lichen-validity.workspace = true
 lichen-withdraw.workspace = true
