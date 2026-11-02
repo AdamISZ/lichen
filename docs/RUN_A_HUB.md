@@ -192,12 +192,12 @@ commits to its history but doesn't keep its data.
 
 To update: pull, `deploy/build.sh`, then `deploy/lichen.sh up`. Keys,
 ledger and contracts carry over. Deploy tagged versions, so that `info`
-names one. Keep Docker's build cache between updates (about 13 GB): the
-next build then compiles only what changed. Prune it (`docker builder
-prune -f`) only when the disk runs short; the build after a prune
-compiles everything again, RISC Zero's libraries included, which takes
-a long while. The services' logs are rotated (10 MB a file, three kept),
-so `deploy/lichen.sh logs` shows recent history only.
+names one. A build compiles everything again whenever lichen's source
+has changed, RISC Zero's libraries included, which takes a long while:
+the image copies the source in before building, so Docker's cache keeps
+only the steps before that. Each build leaves several GB of cache behind;
+`docker builder prune -f` frees it. The services' logs are rotated (10 MB
+a file, three kept), so `deploy/lichen.sh logs` shows recent history only.
 
 If the sequencer or the hub fails to accept a connection (a client
 gone before it was accepted, or too many open files), it logs "the
