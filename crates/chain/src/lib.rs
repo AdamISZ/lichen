@@ -443,6 +443,9 @@ fn index_caught_up(node: &Client) {
     }
 }
 
+/// The longest an Esplora call may take.
+const ESPLORA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl Chain {
     /// Connect to a regtest node at `url` with its cookie, using (creating
     /// if needed) the wallet `wallet`.
@@ -466,7 +469,9 @@ impl Chain {
         ensure!(!urls.is_empty(), "no Esplora server");
         let mut clients = vec![];
         for url in urls {
-            let client = esplora_client::Builder::new(url.trim_end_matches('/')).build_blocking();
+            // every Esplora call is small: a timeout for each whole call
+            // (minreq's), so a server gone silent fails it, not hangs it
+            let client = esplora_client::Builder::new(url.trim_end_matches('/')).timeout(ESPLORA_TIMEOUT).build_blocking();
             client.get_height().with_context(|| format!("no Esplora answering at {url}"))?;
             clients.push((url.to_string(), client));
         }

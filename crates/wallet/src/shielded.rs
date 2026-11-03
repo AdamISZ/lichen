@@ -129,8 +129,11 @@ impl Wallet {
     }
     /// What we hold, transparent and shielded.
     pub fn balances(&self) -> Result<(u64, u64)> {
-        let state = self.state()?;
-        Ok((self.notes(&state).iter().map(|o| o.note.value).sum(), self.shielded_notes(&state).iter().map(|o| o.value).sum()))
+        Ok(self.balances_in(&self.state()?))
+    }
+    /// The same, in a state already fetched.
+    pub fn balances_in(&self, state: &State) -> (u64, u64) {
+        (self.notes(state).iter().map(|o| o.note.value).sum(), self.shielded_notes(state).iter().map(|o| o.value).sum())
     }
 
     /// A sealed root holding every leaf below `size`: the last, sealing

@@ -29,7 +29,7 @@ impl Wallet {
     /// instances to keep: her opening request's keys.
     pub(crate) fn babe_request(&self, hub: &str, cid: u32, deposit: bitcoin::OutPoint, unit: u64, s: &ContractSecrets, net: Net) -> Result<(BabeRequest, Setup)> {
         self.say("asking the hub for BABE's setup: it garbles its instances (about half a minute)".into());
-        let setup: Setup = hub_call(&format!("{hub}/babe/setup"), Some(serde_json::to_string(&SetupRequest { cid, deposit: Some(deposit), unit })?))?;
+        let setup: Setup = hub_call(&format!("{hub}/babe/setup"), Some(serde_json::to_string(&SetupRequest { cid, deposit: Some(deposit), unit })?), false)?;
         ensure!(setup.cid == cid, "the setup is for contract {}, not {cid}", setup.cid);
         ensure!(setup.unit == unit, "the setup is for a unit of {} sats, not {unit}", setup.unit);
         let x = setup.exit.as_ref().context("the hub's setup has no exit")?;
@@ -112,7 +112,7 @@ impl Wallet {
         for (k, i) in keys.kept.iter().enumerate() {
             self.say(format!("downloading the instance kept for a dispute, {} of {}", k + 1, keys.kept.len()));
             let mut bytes = Vec::new();
-            ureq::get(&format!("{hub}/babe/instance/{cid}/{i}")).call().with_context(|| format!("downloading kept instance {i}"))?.into_reader().read_to_end(&mut bytes)?;
+            lichen_l2::http::slow().get(&format!("{hub}/babe/instance/{cid}/{i}")).call().with_context(|| format!("downloading kept instance {i}"))?.into_reader().read_to_end(&mut bytes)?;
             let inst = Instance::from_bytes(&bytes).with_context(|| format!("kept instance {i} is no instance"))?;
             ensure!(inst.commitment() == commitment(*i)?, "kept instance {i} is not the one committed");
             ensure!(inst.hmsg == keys.hmsg[k], "kept instance {i}'s hashlock is not the graph's");

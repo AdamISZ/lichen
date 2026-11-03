@@ -27,6 +27,35 @@ use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{Deployment, Hash, Leaf, Ledger, Note, SignedRoot, Tree, Tx, WithdrawInput};
 use serde::{Deserialize, Serialize};
 
+/// The HTTP agents lichen's clients use. Without timeouts, a call whose
+/// server end has gone waits for ever: on 2026-11-03 a GUI's refresh hung
+/// in `GET /state` holding its wallet, and a payment queued behind it did
+/// nothing. A read timeout is per read, so a long response that keeps
+/// arriving (a BABE instance) is never cut off.
+pub mod http {
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    const CONNECT: Duration = Duration::from_secs(10);
+    /// The longest silence in a quick call's request or response.
+    pub const QUICK: Duration = Duration::from_secs(30);
+
+    /// For a call the server answers at once: the sequencer's, a hub's
+    /// `/info`, the reads a wallet repeats.
+    pub fn quick() -> &'static ureq::Agent {
+        static A: OnceLock<ureq::Agent> = OnceLock::new();
+        A.get_or_init(|| ureq::AgentBuilder::new().timeout_connect(CONNECT).timeout_read(QUICK).timeout_write(QUICK).build())
+    }
+    /// For a call the server works on before it answers (a hub's BABE
+    /// setup, an instance it builds again, an opening, a fold): a timeout
+    /// to connect, then as long as it takes. These run inside an
+    /// operation, its progress shown.
+    pub fn slow() -> &'static ureq::Agent {
+        static A: OnceLock<ureq::Agent> = OnceLock::new();
+        A.get_or_init(|| ureq::AgentBuilder::new().timeout_connect(CONNECT).build())
+    }
+}
+
 /// What `GET /state` returns.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
@@ -293,7 +322,7 @@ impl Client {
     /// first use: keep it, and use [`Client::pinned`] after).
     pub fn new(url: &str) -> Result<Client> {
         let url = url.trim_end_matches('/').to_string();
-        let deployment: Deployment = ureq::get(&format!("{url}/info")).call().map_err(|e| anyhow!("{url}/info: {e}"))?.into_json()?;
+        let deployment: Deployment = http::quick().get(&format!("{url}/info")).call().map_err(|e| anyhow!("{url}/info: {e}"))?.into_json()?;
         Ok(Client { url, deployment })
     }
     /// A client of a deployment already known.
@@ -301,7 +330,7 @@ impl Client {
         Client { url: url.trim_end_matches('/').to_string(), deployment }
     }
     fn post<T: for<'de> Deserialize<'de>>(&self, path: &str, body: &str) -> Result<T> {
-        match ureq::post(&format!("{}{path}", self.url)).set("Content-Type", "application/json").send_string(body) {
+        match http::quick().post(&format!("{}{path}", self.url)).set("Content-Type", "application/json").send_string(body) {
             Ok(r) => Ok(r.into_json()?),
             Err(ureq::Error::Status(_, r)) => {
                 let e: Refused = r.into_json().unwrap_or(Refused { error: "refused".into() });
@@ -321,13 +350,13 @@ impl Client {
     }
     /// The events from number `since` on, with their numbers.
     pub fn events(&self, since: usize) -> Result<Vec<(usize, Event)>> {
-        Ok(ureq::get(&format!("{}/events?since={since}", self.url)).call().map_err(|e| anyhow!("/events: {e}"))?.into_json()?)
+        Ok(http::quick().get(&format!("{}/events?since={since}", self.url)).call().map_err(|e| anyhow!("/events: {e}"))?.into_json()?)
     }
     /// The chain receipt at height `h` (bincode), if the sequencer has
     /// proved it. Not checked here: whoever proves a withdrawal with it
     /// does.
     pub fn chain_receipt(&self, h: u64) -> Result<Option<Vec<u8>>> {
-        match ureq::get(&format!("{}/chain/{h}", self.url)).call() {
+        match http::quick().get(&format!("{}/chain/{h}", self.url)).call() {
             Ok(r) => Ok(Some(hex::decode(r.into_json::<ChainReceipt>()?.receipt).context("a chain receipt's hex")?)),
             Err(ureq::Error::Status(404, _)) => Ok(None),
             Err(e) => Err(anyhow!("/chain/{h}: {e}")),
@@ -336,7 +365,7 @@ impl Client {
     /// The last height the sequencer has proved from genesis; `None` from
     /// a sequencer too old to say (before lichen v0.4.3).
     pub fn proved_height(&self) -> Result<Option<u64>> {
-        match ureq::get(&format!("{}/chain", self.url)).call() {
+        match http::quick().get(&format!("{}/chain", self.url)).call() {
             Ok(r) => Ok(Some(r.into_json::<Proved>()?.proved)),
             Err(ureq::Error::Status(404, _)) => Ok(None),
             Err(e) => Err(anyhow!("/chain: {e}")),
@@ -354,7 +383,7 @@ impl Client {
     /// signed root).
     pub fn kit(&self, index: u32, nf: &Hash, h: u64) -> Result<lichen_ledger::Kit> {
         let path = format!("/kit/{h}/{index}/{}", hex::encode(nf));
-        match ureq::get(&format!("{}{path}", self.url)).call() {
+        match http::quick().get(&format!("{}{path}", self.url)).call() {
             Ok(r) => Ok(r.into_json()?),
             Err(ureq::Error::Status(_, r)) => Err(anyhow!("the sequencer refused: {}", r.into_json::<Refused>().map_or("refused".into(), |e| e.error))),
             Err(e) => Err(anyhow!("{path}: {e}")),
@@ -363,7 +392,7 @@ impl Client {
     /// How nullifier `nf` was spent, if it was: its leaf and the height
     /// whose block spent it.
     pub fn spent(&self, nf: &Hash) -> Result<Option<(Hash, u64)>> {
-        match ureq::get(&format!("{}/spent/{}", self.url, hex::encode(nf))).call() {
+        match http::quick().get(&format!("{}/spent/{}", self.url, hex::encode(nf))).call() {
             Ok(r) => {
                 let s: Spent = r.into_json()?;
                 let leaf = hex::decode(&s.leaf).ok().and_then(|v| v.try_into().ok()).context("a leaf of 32 bytes, hex")?;
@@ -378,7 +407,7 @@ impl Client {
     /// whoever uses it.
     pub fn nullifier_proof(&self, nf: &Hash, h: u64) -> Result<lichen_ledger::lichen_validity::smt::Proof> {
         let path = format!("/nullifier/{h}/{}", hex::encode(nf));
-        let v: serde_json::Value = match ureq::get(&format!("{}{path}", self.url)).call() {
+        let v: serde_json::Value = match http::quick().get(&format!("{}{path}", self.url)).call() {
             Ok(r) => r.into_json()?,
             Err(ureq::Error::Status(_, r)) => anyhow::bail!("the sequencer refused: {}", r.into_json::<Refused>().map_or("refused".into(), |e| e.error)),
             Err(e) => anyhow::bail!("{path}: {e}"),
@@ -388,7 +417,7 @@ impl Client {
     }
     /// The ledger, its sealed roots checked.
     pub fn state(&self) -> Result<State> {
-        let s: State = ureq::get(&format!("{}/state", self.url)).call().map_err(|e| anyhow!("/state: {e}"))?.into_json()?;
+        let s: State = http::quick().get(&format!("{}/state", self.url)).call().map_err(|e| anyhow!("/state: {e}"))?.into_json()?;
         s.verify(&self.deployment.sequencer)?;
         Ok(s)
     }

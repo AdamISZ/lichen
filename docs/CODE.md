@@ -32,7 +32,7 @@ wallet's `exit`.
 | `groth16` | | the BABE guest, the hub: a RISC Zero Groth16 receipt's check over substrate-bn, for the counter `K` (`no_std`) |
 | `babe` | | hub and wallet: BABE's cryptography (the garbled circuit, the witness encryption, the cut-and-choose setup over VSSS, the reveal by adaptor signatures), its graph and scripts, its statement (RISC Zero's or the mock) |
 | `sequencer` | `lichen-sequencer` | the L2's sequencer: orders transactions, seals and signs heights, records blocks for the chain prover, anchors its history on Bitcoin (`anchor`); serves exit kits, how a nullifier was spent, and holds on claimed notes |
-| `l2` | | wallet and hub: the sequencer's API and its client |
+| `l2` | | wallet and hub: the sequencer's API and its client; the HTTP agents every client uses (`http`: `quick`, timeouts on connect and each read; `slow`, for a call the server works on before answering) |
 | `wallet` | `lichen` | the user; also `lichen tower`, a dispute played from a package, and `lichen exit`, a claim from anchored state (`exit`) |
 | `chain` | | each party: its own bitcoind wallet over RPC, or Esplora |
 | `proto` | | wallet and hub: the opening messages, the contract record, the contract built by its verification gadget (`Built`); BitVMX's keys, statement layout and dispute plumbing (`bitvmx`); BABE's setup exchange (with the exit's keys and deposit coin) and dispute plumbing (`babe`); `request` read from the chain for the exit's statements (`exit`) |

@@ -234,7 +234,13 @@ impl Wallet {
     /// it shows a root at a height seen before other than the one seen
     /// (the evidence written beside the wallet, `<wallet>.equivocation.json`).
     pub fn state(&self) -> Result<State> {
-        let state = self.sequencer.state()?;
+        self.observe(self.sequencer.state()?)
+    }
+    /// A state of the sequencer fetched apart from the wallet (with a
+    /// client pinned to its deployment, which checks its roots), recorded
+    /// as [`Wallet::state`] records it: a caller holding the wallet in a
+    /// lock fetches it first.
+    pub fn observe(&self, state: State) -> Result<State> {
         let new = self.seen.lock().unwrap().record(&state.sealed);
         match new {
             Ok(true) => self.save()?,
@@ -453,7 +459,7 @@ impl Ask {
 
 /// The hub's offer (`GET /info`): its deployment, statement and terms.
 pub fn hub_info(hub: &str) -> Result<Info> {
-    hub_call(&format!("{hub}/info"), None)
+    hub_call(&format!("{hub}/info"), None, true)
 }
 
 /// The hub proves with this wallet's guests ([`lichen_proto::Guests`]): a
@@ -467,11 +473,14 @@ pub fn check_guests(info: &Info) -> Result<()> {
     Ok(())
 }
 
-/// A request to the hub, its error passed through.
-fn hub_call<T: for<'de> Deserialize<'de>>(url: &str, body: Option<String>) -> Result<T> {
+/// A request to the hub, its error passed through: `quick` for one it
+/// answers at once (`/info`), else the agent with no read timeout (it works
+/// before answering: [`lichen_l2::http`]).
+fn hub_call<T: for<'de> Deserialize<'de>>(url: &str, body: Option<String>, quick: bool) -> Result<T> {
+    let agent = if quick { lichen_l2::http::quick() } else { lichen_l2::http::slow() };
     let r = match body {
-        Some(b) => ureq::post(url).set("Content-Type", "application/json").send_string(&b),
-        None => ureq::get(url).call(),
+        Some(b) => agent.post(url).set("Content-Type", "application/json").send_string(&b),
+        None => agent.get(url).call(),
     };
     match r {
         Ok(r) => Ok(r.into_json()?),
@@ -535,7 +544,7 @@ impl Wallet {
     /// broadcast and the deposit is ours on the L2.
     /// The deposit is kept from before it is paid ([`Wallet::refund`]).
     pub fn open_contract(&mut self, hub: &str, chain: &Chain, statement: &Statement, dir: &Path, ask: Ask, payout: bitcoin::ScriptBuf, pay: &dyn Fn(&bitcoin::Address, bitcoin::Amount) -> Result<()>) -> Result<Held> {
-        let info: Info = hub_call(&format!("{hub}/info"), None)?;
+        let info: Info = hub_call(&format!("{hub}/info"), None, true)?;
         let net = chain.network;
         ensure!(info.network == net, "the hub is on {}, this wallet's coins on {net}", info.network);
         let d = self.sequencer.deployment;
@@ -552,7 +561,7 @@ impl Wallet {
         // the deposit: an address of the hub's and ours, paid, confirmed
         let nonce = hex::encode(fresh_rho());
         let dep_kp = self.deposit_key(&nonce);
-        let offer: DepositOffer = hub_call(&format!("{hub}/deposit"), Some(serde_json::to_string(&DepositRequest { alice: dep_kp.x_only_public_key().0, deposit: ask.deposit, liquidity: ask.liquidity })?))?;
+        let offer: DepositOffer = hub_call(&format!("{hub}/deposit"), Some(serde_json::to_string(&DepositRequest { alice: dep_kp.x_only_public_key().0, deposit: ask.deposit, liquidity: ask.liquidity })?), false)?;
         // the refund's timeout is the network's: a hub naming a longer one
         // could lock the deposit up for as long
         ensure!(offer.timeout == lichen_proto::deposit_timeout(net), "the hub's deposit refund waits {} blocks, not the network's {}", offer.timeout, lichen_proto::deposit_timeout(net));
@@ -578,7 +587,7 @@ impl Wallet {
             self.claim_mint(chain, cid)?;
             return self.contracts.iter().find(|h| h.record.cid() == cid).cloned().context("the contract");
         }
-        let info: Info = hub_call(&format!("{hub}/info"), None)?;
+        let info: Info = hub_call(&format!("{hub}/info"), None, true)?;
         ensure!(info.network == chain.network, "the hub is on {}, this wallet's coins on {}", info.network, chain.network);
         check_guests(&info)?;
         let quote = ask.quote(&info)?;
@@ -615,7 +624,7 @@ impl Wallet {
         };
         let fees = self.fees(&nonce, net);
         let req = OpenRequest { alice, l2_address: self.address(), deposit, liquidity, fee: quote.fee, reserve, dispute, cid: dep.cid, deposit_coin: coin.clone(), fee_spk: fees.spk() };
-        let offer: OpenOffer = hub_call(&format!("{hub}/open"), Some(serde_json::to_string(&req)?))?;
+        let offer: OpenOffer = hub_call(&format!("{hub}/open"), Some(serde_json::to_string(&req)?), false)?;
         // the contract as the offer makes it, checked before signing
         ensure!(offer.cid == dep.cid, "the offer is for contract {}, the deposit for {}", offer.cid, dep.cid);
         let t = terms(offer.cid, &req, offer.t_close, offer.reserve_hub)?;
@@ -692,7 +701,7 @@ impl Wallet {
         // wrongly_challenged's signature: for her towers)
         let shown = record.alice_sigs.iter().filter(|(n, _)| !c.withheld(n)).map(|(n, s)| (n.clone(), s.clone())).collect();
         let accept = Accept { cid: offer.cid, alice_sigs: shown, deposit_presig: locked.presig.clone(), adaptor };
-        let opened: Opened = hub_call(&format!("{hub}/accept"), Some(serde_json::to_string(&accept)?))?;
+        let opened: Opened = hub_call(&format!("{hub}/accept"), Some(serde_json::to_string(&accept)?), false)?;
         // the hub broadcast it before answering; an Esplora indexes it soon
         let start = std::time::Instant::now();
         let funded = loop {
@@ -985,7 +994,7 @@ impl Wallet {
         let start = std::time::Instant::now();
         let (mut said, mut said_at): (Option<u128>, Option<std::time::Instant>) = (None, None);
         let done: Folded = loop {
-            match hub_call(&format!("{hub}/fold"), Some(serde_json::to_string(&req)?)) {
+            match hub_call(&format!("{hub}/fold"), Some(serde_json::to_string(&req)?), false) {
                 Err(e) if format!("{e:#}").contains("isn't deep enough yet") && start.elapsed() < std::time::Duration::from_secs(7200) => {
                     let m = format!("{e:#}");
                     let on = m.split("yet: ").nth(1).and_then(|r| r.split(' ').next()).and_then(|n| n.parse::<u128>().ok());
