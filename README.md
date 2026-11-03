@@ -6,13 +6,7 @@
 
 CAVEAT: Do not use with real money. Most importantly, the code is unaudited either by humans or LLMs, all written by one LLM with only peripheral oversight by me.
 
-To follow an evolving tradition: the Introduction section here, is written by me. Most of the lower level documentation and instructions are LLM generated.
-
-Just want the idea, no maths, no complex diagrams, no code or demo or blah blah? [Here you go](docs/1000-ft-view.md).
-
-Choose your adventure:
-
-*Want the full design* - read this short intro, then go to the main [design paper](./papers/lichen-v0.4.1.pdf)
+To follow an evolving tradition: the Introduction section here, is written by me, as is the [main design paper](./papers/lichen-v0.4.1.pdf) and also a no-frills, no maths or compex diagrams or algorithms description in a md file [here](docs/1000-ft-view.md). Most of the lower level documentation and instructions are LLM generated.
 
 *Want to run the web demo* - that is, running the stack on regtest locally and playing with it in the browser to see how it operates: go [here](#the-demo).
 
@@ -24,11 +18,9 @@ A layer 2 ledger whose tokens a hub issues, each user's holdings up to a cap col
 
 The contracts and the dispute machinery are in [ln-gap](https://github.com/AdamISZ/ln-gap) (`crates/apps/sessions`); think of that as the backend including both all the bitcoin side and also all the ZKP dispute management side. This repository is the software the parties run.
 
-### A few operational details that are mostly PoC limitations
-
-Worth mentioning these as idiosyncracies: first, this was built without a user-side bitcoin wallet as that's probably the right choice anyway: you fund an intermediate joint-control address and then from there the contract is funded. Explained in the procedures below. Second: in case you actually want to test *disputes*, and not normal usage, you'll have to create proofs to do withdrawals. The instructions are [here](#disputes-on-the-real-statement), and note that this involves running a proving step that might take about 5 minutes. Notably, this step is delegatable, and that is addressed with the idea of [watchtowers](docs/RUN_A_TOWER.md).
-
 ### High level plan of work to do:
+
+All the first stage proof of concept goals are now complete:
 
 * Completing documentation of all the internal steps for normal operation and dispute, in the Bitcoin contracts. (Ongoing as the design is not yet 100% bedded down)
 
@@ -43,8 +35,6 @@ Worth mentioning these as idiosyncracies: first, this was built without a user-s
 * As per the above, but further strengthening against malicious or disruptive sequencer behavior. :white_check_mark: (see the [exit explainer](docs/explainers/exit.md))
 
 * Replacement of BitVMX with a BABE-style construction. Done; vastly improves the onchain dispute case scalability. :white_check_mark:
-
-Note that what is still to do is related to L2 security guarantees/claims; the Lichen part is already complete.
 
 -------
 
