@@ -391,6 +391,50 @@ different request with W of work behind it. The hub signs nothing.
 - **Reorgs.** What happens if a natural reorg removes the request after
   Alice has proved.
 
+**What it would do for the hub's liveness (2026-11-04).** Not pursued
+yet. See also PLAN.md, "Hardening a hub for production".
+- **It removes the cheapest theft from a silenced hub.** A takedown of
+  the hub for `w_H` lets a Sybil's `request_timeout` pay its `b`
+  unverified, for ~0.4 kvB and no proof. `w_H` is short: 6 blocks in
+  the tests, ≥ 36 for 60,000 contracts (§5). Without `respond`, every
+  claim needs an `assert` and a proof, and the hub's silence must last
+  Δ2.
+- **The hub's only time-critical move would be the challenge,** and the
+  WOTS key would leave the hot path. That key couldn't be handed to
+  anyone outside the hub: a holder could sign a second `b′` for a
+  colluding user's proof.
+- **That makes the challenge the one duty that could be spread 1-of-n.**
+  Any one of n challengers, live and honest, would stop a false claim.
+  This is also the shape of a hub run by several operators: users'
+  trust doesn't change, and the members trust each other with nothing
+  but the cooperative key path, a threshold whose silence costs only
+  liveness.
+
+**The challengers would need independent setups, not shared
+secrets.**
+- **Why not shared.** A holder of the dealing secrets has both labels
+  of every digit. Given to a cheating Alice, they let her evaluate the
+  circuit at `α` and at `X`, compute `r·Y = e(r·α, β) + e(r·X, γ)`, and
+  decrypt `msg`. She would then answer an honest challenger's
+  `challenge_assert` with `wrongly_challenged`. So one colluding holder
+  breaks 1-of-n.
+- **Independent setups.** Each challenger garbles its own instances,
+  with its own `r` and `msg`, behind its own challenge leaf. A colluder
+  can then leak only its own instance.
+- **The cost:** n times the setup (§8: VSSS, about 40 s and megabytes a
+  contract per challenger) and n leaves.
+- **Challengers need no L2 data.** Alice can hand her full proof to each
+  one off chain. A challenger checks the Groth16 natively under the
+  fixed statement, as the hub does, and challenges only when the proof
+  is missing or invalid.
+
+**To check, besides the above:**
+- **Fee races:** n challengers on one `assert` contest the same output,
+  so only one challenge confirms.
+- **Payouts:** whom each challenger's `failure` pays.
+- **Alice's answer:** whether she needs a `wrongly_challenged` signed at
+  setup for each challenger's leaf.
+
 **Why it came up: PIPEs v2.** The same authenticator question decides
 how far PIPEs v2 can go with variable amounts:
 - **BitVM-PIPE (its §6).** The decryptor is the challenger and the

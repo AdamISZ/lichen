@@ -292,3 +292,39 @@ plan.
 
 Watchtowers: a turnkey tower, planned in [TOWER_PLAN.md](TOWER_PLAN.md) (papers/lichen-bitvmx-v0.1.2.pdf, the tower section); several hubs
 (colours, clearing lines); a GUI.
+
+### Hardening a hub for production (noted 2026-11-04)
+
+A long-term plan, not started. The problem it addresses:
+- **The risk.** A hub's silence pays a claimant, at `request_timeout`
+  after `w_H` (with `b` unverified) and at `success` after Δ2.
+- **The attack.** Sybil contracts, then the hub's dispute engine taken
+  off the chain for that long: eclipsed, DoSed, seized, or down with a
+  bug.
+- **Who loses.** The loss is the hub's, from its own contracts' outputs.
+  Honest users' contracts are untouched.
+- **What must survive.** The attacker has to stop the hub from seeing a
+  transaction and getting one mined. Its HTTP API doesn't matter.
+  v0.4.4's outage, the sequencer silent for hours, is the kind of event
+  that matters only if it reaches the dispute engine.
+
+The plan:
+- **Run the dispute engine apart from the API.** It should be its own
+  process, and not share a listener's fate.
+- **Replicate the engine on several machines the hub controls.** They
+  hold the same secrets, all in the hub's own trust domain. Each has its
+  own bitcoind, in different places and on different networks.
+- **Broadcast over more than one route,** such as Tor and relays besides
+  the machine's own node. Each replica watches for every contract's
+  `request` and `assert` independently, and posts the hub's move if no
+  other replica has.
+- **Make posting the same move twice harmless.** The moves are
+  deterministic given the secrets, so duplicates conflict only on fees.
+- **Alert on silence:** no new blocks seen, or a window half gone with
+  no move posted.
+- **Size the windows for the deployment:** w_H and Δ2 against N, as in
+  [BABE_DISPUTE_PLAN.md](BABE_DISPUTE_PLAN.md) §5. Choose them long
+  enough to outlast a realistic outage, as well as congestion.
+
+Third-party challengers can't share these secrets; see
+BABE_DISPUTE_PLAN §11.
