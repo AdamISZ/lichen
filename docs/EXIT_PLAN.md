@@ -18,6 +18,16 @@ acknowledgment (step 10). "Decided while building steps 2–9" records
 where the build departs from the sections above; where they disagree, it
 holds.
 
+**2026-11-08.** Next, while lichen is a proof of concept, to firm up
+the exit for anchored, proved notes against an operator that won't
+cooperate: (1) the exit from a kept set, with the sequencer and the hub
+gone, and (2) always requesting in exit mode, with the switch from a
+refused return (step 7, branch `exit-set`); (3) the rest of step 9's
+mock tests; (4) the real-proof test on regtest (the failed counter on
+the Mac: about 10 h on lichen-vps); (5) Mutinynet, with a hostile second
+hub; (6) one guest change for a new deployment: the commitment tree at
+depth 32 and sender acknowledgment (step 10).
+
 ## The assumption
 
 The hub and the sequencer cooperate: one operator, or two that trust
@@ -752,6 +762,58 @@ the largest claim, `respond` 4,480 vB plain and 12,255 vB countering
 (substrate-bn); a return's proof under it is 489k cycles, one segment,
 640 s on lichen-vps and a 257 s wrap.
 
+**The exit set (2026-11-08).** What the wallet keeps so that an exit
+needs neither the sequencer nor the hub, only Bitcoin. A height `h_S` is
+usable once all four hold:
+
+1. the sequencer signed the root at `h_S` (sealed);
+2. an anchor committing `h_S` and its root confirmed on Bitcoin;
+3. the sequencer recorded that anchor on the L2 (`Tx::Anchor`) at a
+   later height `from`: it is in the state's `anchors`;
+4. the chain prover proved through `from` (`GET /chain`), so the chain
+   receipt at `from` exists.
+
+The set at `h_S`: for every transparent note the wallet holds unspent
+and in `T_S`, its kit at `h_S`, each checked against the signed root;
+the signed root; the anchor with `from`; the chain fields at `from`
+(root, recent roots' hash, history hash); and the receipt at `from`
+(about 220–245 kB, nearly all of the set). Kits are about 0.7 kB a note.
+The wallet refreshes it, best effort and at most every 30 s, whenever it
+reads the sequencer's state and a newer anchored height covers a
+different set of its notes. It keeps the newest set, and the newest with
+a receipt if that is older (a receipt can lag the kits; a deployment
+proving natively has none). The `W` headers on the anchor's block aren't
+kept: any Bitcoin node has them, at proving time.
+
+An exit claims from the stored set: the newest with a receipt, else the
+newest. It drops notes spent since, by the sequencer's state if it
+answers, else by the wallet's own record of the spends it signed (kept
+from now on: a spend anchored before `request` would counter the claim,
+and a true counter loses the whole contract). It claims the largest
+notes first, only as many as cover the cap, so that notes beyond it
+aren't retired for nothing.
+
+**An exit after a return (2026-11-08).** If the wallet returned tokens
+to the contract before the switch, the exit claims the notes that
+return spent, first, and `b` at most the return's value in units: the
+counter excludes contract `c`'s own return of at least `b`
+(`counter.rs`, `Reject::Own`), so a return sealed and anchored before
+`request` can't counter it. A `b` above the return's value would let it.
+If the set doesn't hold the return's notes (spent before their height
+was usable), the exit claims others, up to the same `b`.
+
+**Always request in exit mode (2026-11-08).** A plain request on a
+contract with the exit is safe only with a provable return kept (its
+input and chain receipt): if the hub comes back within `w_H` and
+responds, Alice must prove the return branch, and without one she loses
+the contract at `T_A`. So on the real statement `lichen dispute` refuses
+without that material and points to `lichen exit`. `lichen withdraw`,
+when the cooperative path fails (the return not sealed, anchored or
+proved in time, or the hub not folding), names the fallback the wallet
+chose: `lichen dispute` for a provable return, else `lichen exit`; with
+`--escalate` it runs it. Not by default: a request commits its notes and
+goes on chain, and a slow sequencer isn't a hostile one.
+
 **Not yet decided: towers.** A tower plays a return's dispute keyless
 because Alice signs π1 before the hub responds. An exit's proof depends
 on which leaf the hub responds with, so she can't sign it ahead. Either
@@ -828,7 +890,11 @@ For some anchored state after her last spend:
 
 The sequencer serves these per note. A kit never goes stale: the tree is
 append-only, so a path to `T_S` stays valid, and non-membership in
-`N_S` stays true of `S`. A new kit is needed only when her notes change,
+`N_S` stays true of `S`. But a claim names one `h_S`, so every note it
+claims must have its kit at that same height: the wallet keeps a **set**,
+every note it holds at one anchored height, with that height's chain
+receipt (2026-11-08; "The exit set", under "Decided while building
+steps 2–9"). A new set is needed only when her notes change,
 so the wallet fetches one after events, not on a schedule:
 
 - **After a spend:** a kit at a state after the spend, 10 deep, covering
@@ -1286,9 +1352,12 @@ timeout.
    - refuse spends of claimed nullifiers;
    - fold an exit it has checked natively, if it chooses.
 7. **The wallet** (`engine/babe.rs`, `exit.rs`, `main.rs`). The exit
-   mode is done (`lichen exit`); not yet the kit kept after each spend or
-   receipt, "final" requiring it, the switch from a refused return, the
-   rule against claiming a note through two contracts, and the tower:
+   mode is done (`lichen exit`); in progress on branch `exit-set`
+   (2026-11-08): the exit set kept (under "Decided while building steps
+   2–9"), the exit from it with the sequencer and the hub gone, the exit
+   after a return, and the switch from a refused return. Not yet: "final"
+   requiring the set, the rule against claiming a note through two
+   contracts, and the tower:
    - the exit kit, fetched after each spend or receipt; "final" requires
      it;
    - exit mode: claim, `E`, the notes' openings and signatures, and the
