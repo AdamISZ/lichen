@@ -54,6 +54,24 @@ struct Stored {
     /// Every signed root checked, by height.
     #[serde(default)]
     seen: Seen,
+    /// What an exit needs, kept at anchored heights ([`exit::ExitSet`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    exit_sets: Vec<exit::ExitSet>,
+    /// The spends this wallet signed ([`Signed`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    signed: Vec<Signed>,
+}
+
+/// A spend this wallet signed: the nullifiers of the notes it spends, and
+/// for a return to the hub, the contract's memo and the value returned.
+/// So that an exit with the sequencer gone knows which kept notes it may
+/// have spent since, and which notes a contract's own return spent
+/// (docs/EXIT_PLAN.md, "The exit set" and "An exit after a return").
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Signed {
+    pub nullifiers: Vec<Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ret: Option<(u32, u64)>,
 }
 
 /// An anchor checked on Bitcoin, and the height of its block.
@@ -184,6 +202,10 @@ pub struct Wallet {
     seen: std::sync::Mutex<Seen>,
     /// The anchors checked on Bitcoin so far ([`Wallet::checked_anchors`]).
     anchors_checked: std::sync::Mutex<Vec<AnchorChecked>>,
+    exit_sets: std::sync::Mutex<Vec<exit::ExitSet>>,
+    /// When [`Wallet::state`] last looked to keep the exit set.
+    exit_looked: std::sync::Mutex<Option<std::time::Instant>>,
+    signed: Vec<Signed>,
     pub contracts: Vec<Held>,
     pub deposits: Vec<Deposit>,
     pub sequencer: Client,
@@ -204,7 +226,7 @@ impl Wallet {
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
         // the deployment the sequencer announces, kept from now on
-        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: vec![], kept: vec![], seen: Default::default(), anchors_checked: Default::default(), contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: vec![], kept: vec![], seen: Default::default(), anchors_checked: Default::default(), exit_sets: Default::default(), exit_looked: Default::default(), signed: vec![], contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
         w.save()?;
         Ok(w)
     }
@@ -215,14 +237,24 @@ impl Wallet {
             Some(d) => Client::pinned(sequencer, d),
             None => Client::new(sequencer)?,
         };
-        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: s.returns, kept: s.kept, seen: std::sync::Mutex::new(s.seen), anchors_checked: Default::default(), contracts: s.contracts, deposits: s.deposits, sequencer: client };
+        let w = Wallet { pause_after: None, unchecked_claims: false, lie: None, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), returns: s.returns, kept: s.kept, seen: std::sync::Mutex::new(s.seen), anchors_checked: Default::default(), exit_sets: std::sync::Mutex::new(s.exit_sets), exit_looked: Default::default(), signed: s.signed, contracts: s.contracts, deposits: s.deposits, sequencer: client };
         if s.deployment.is_none() {
             w.save()?;
         }
         Ok(w)
     }
     pub(crate) fn save(&self) -> Result<()> {
-        let s = Stored { secret: hex::encode(self.key.to_bytes()), deployment: Some(self.sequencer.deployment), returns: self.returns.clone(), contracts: self.contracts.clone(), deposits: self.deposits.clone(), kept: self.kept.clone(), seen: self.seen.lock().unwrap().clone() };
+        let s = Stored {
+            secret: hex::encode(self.key.to_bytes()),
+            deployment: Some(self.sequencer.deployment),
+            returns: self.returns.clone(),
+            contracts: self.contracts.clone(),
+            deposits: self.deposits.clone(),
+            kept: self.kept.clone(),
+            seen: self.seen.lock().unwrap().clone(),
+            exit_sets: self.exit_sets.lock().unwrap().clone(),
+            signed: self.signed.clone(),
+        };
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -233,8 +265,12 @@ impl Wallet {
     /// The sequencer's state, its roots checked and recorded: an error if
     /// it shows a root at a height seen before other than the one seen
     /// (the evidence written beside the wallet, `<wallet>.equivocation.json`).
+    /// Its exit set kept up to it as well, at most every
+    /// [`exit::EXIT_SET_EVERY`] ([`Wallet::keep_exit_set`]).
     pub fn state(&self) -> Result<State> {
-        self.observe(self.sequencer.state()?)
+        let s = self.observe(self.sequencer.state()?)?;
+        self.keep_exit_set_soon(&s);
+        Ok(s)
     }
     /// A state of the sequencer fetched apart from the wallet (with a
     /// client pinned to its deployment, which checks its roots), recorded
@@ -318,6 +354,9 @@ impl Wallet {
         }
         let digest = Transfer::digest(&spends, &outputs);
         let sigs = spends.iter().map(|_| sign(&self.key, &digest)).collect();
+        // kept before it goes: an exit without the sequencer must know
+        let ret = (to == self.sequencer.deployment.hub && memo != 0).then_some((memo, amount));
+        self.record_signed(Signed { nullifiers: spends.iter().map(|s| lichen_ledger::nullifier(&s.note)).collect(), ret })?;
         self.sequencer.submit(&Tx::Transfer(Transfer { spends, outputs, sigs }))
     }
     /// Return `b` to the hub with the contract's memo `c`: a withdrawal's

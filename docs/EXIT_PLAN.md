@@ -1352,12 +1352,15 @@ timeout.
    - refuse spends of claimed nullifiers;
    - fold an exit it has checked natively, if it chooses.
 7. **The wallet** (`engine/babe.rs`, `exit.rs`, `main.rs`). The exit
-   mode is done (`lichen exit`); in progress on branch `exit-set`
-   (2026-11-08): the exit set kept (under "Decided while building steps
-   2–9"), the exit from it with the sequencer and the hub gone, the exit
-   after a return, and the switch from a refused return. Not yet: "final"
-   requiring the set, the rule against claiming a note through two
-   contracts, and the tower:
+   mode is done (`lichen exit`); on branch `exit-set` (2026-11-08,
+   played on the mock as `babe_exit.rs`'s R and G): the exit set kept
+   (under "Decided while building steps 2–9"), the exit from it with the
+   sequencer and the hub gone, the exit after a return, and the switch
+   from a refused return. The exit from the set needed the HTTP agents
+   to keep no connection for reuse: ureq 2 clears a pooled connection's
+   read timeout, so a call to a server gone silent waited for ever. Not
+   yet: "final" requiring the set, the rule against claiming a note
+   through two contracts, and the tower:
    - the exit kit, fetched after each spend or receipt; "final" requires
      it;
    - exit mode: claim, `E`, the notes' openings and signatures, and the
@@ -1368,9 +1371,10 @@ timeout.
      time, so `lichen withdraw` still does the right thing;
    - the tower's package carries the kit.
 8. **Windows:** `w_H` long enough for a counter. Done.
-9. **Tests.** On the mock, the first four cases below are
-   `babe_exit.rs`'s (an honest exit; a stale claim countered; one note
-   through two contracts; a forged counter); the rest are unit tests of
+9. **Tests.** On the mock, `babe_exit.rs` plays six cases (an honest
+   exit; a stale claim countered; one note through two contracts; a
+   forged counter; an exit after a refused return, R; the operator gone,
+   the exit from the kept set and `request_timeout`, G); the rest are unit tests of
    the statements, or still to write. The real-proof test is to do:
    - Regtest, on the mock:
      - an exit while the operator censors;

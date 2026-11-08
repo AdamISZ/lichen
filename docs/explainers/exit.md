@@ -53,6 +53,14 @@ recursive proof that every L2 block up to `S` was valid), that's all she
 needs. A kit never goes stale: the tree only grows, and a nullifier
 absent from `N_S` stays absent from `N_S`.
 
+**Kept ahead.** A claim names one state, so her notes' kits must all be
+at the same height. Her wallet keeps that set as it reads the sequencer:
+at the last height anchored on Bitcoin, recorded on the L2 and proved,
+every note it holds with its kit (about 0.7 kB each), and the chain
+receipt there (about 230 kB). It fetches a new set only when her notes
+change. So when she exits, the operator may be gone: the claim comes
+from what she holds, and only Bitcoin is needed.
+
 **The claim.** Her wallet claims her notes in the latest anchored state,
 the largest first, up to the contract's cap `V_max`. It computes the
 claim's fingerprint
@@ -175,7 +183,7 @@ With no counter, the hub responds plainly, then:
 
 ## A run on regtest
 
-Four exits on BABE's mock statement (a proof anyone can make; the hub
+Six exits on BABE's mock statement (a proof anyone can make; the hub
 and the wallet decide each claim's truth natively, as the guests would),
 in a deployment anchoring its history on regtest, blocks every 150 ms.
 The hub refuses every cooperative withdrawal.
@@ -186,6 +194,8 @@ The hub refuses every cooperative withdrawal.
 | S | prepares her claim, pays Bob, and once the payment is anchored claims the old note anyway | the hub counters with the spend, anchored before her request: she has no branch |
 | Q | claims the same note through two contracts, one request after the other | the second is countered by the first's signed claim; the first is paid |
 | K | claims honestly; the hub, misbehaving, counters with a `K` that isn't one | she proves it false, and is paid |
+| R | withdraws, and the hub refuses the fold; once her return is anchored, her wallet names the dispute, and she exits instead, claiming the note the return spent, `b` its value | the return isn't a counter to this contract: the hub responds plainly, and she is paid |
+| G | holds an exit set; the hub and the sequencer both stop | her wallet can't reach the sequencer, claims from the set it kept, and the hub's timeout pays her |
 
 Both counters were also built as the counter guest's real input and
 checked natively before the hub posted them. On regtest under standard
@@ -201,7 +211,7 @@ policy `request` is 2,373 vB with the largest claim, and `respond`
 | withholds data, with no spend of hers since her kit | her last kit still works |
 | holds a transaction she signed, and seals it after her claim | past the cutoff: not a counter |
 | seals a spend of hers, then withholds its new notes' data | she loses: the data-availability gap, see Limits |
-| vanishes | no response: `request_timeout` pays her |
+| vanishes, the sequencer with it | she claims from the exit set she kept; no response: `request_timeout` pays her |
 | responds, then waits | she proves and asserts; the gadget pays her |
 | counters with something false | she proves it false, and is paid |
 | forges an insertion | it can't: a spend needs her keys, an exit record her signature |

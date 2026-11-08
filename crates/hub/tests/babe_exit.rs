@@ -16,6 +16,14 @@
 //!   first's signed claim, or its exit record), the first paid.
 //! - K: a forged counter. The hub counters Kim's honest claim with a `K`
 //!   that isn't one; she proves it false, and `success` pays her.
+//! - R: an exit after a return. Rita returns part of her note to the
+//!   contract, and the hub won't fold it. Her exit claims the note the
+//!   return spent, from the set kept before it, with `b` at most the
+//!   return's value: the return, anchored before her request, can't
+//!   counter it (the contract's own), and she is paid.
+//! - G: the operator gone. Gail's wallet has kept its exit set; the hub
+//!   and the sequencer stop. She exits from the set alone, and
+//!   `request_timeout` pays her.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -76,7 +84,9 @@ fn exits_on_the_mock_statement() {
     seq.anchor(chain("sequencer"), Anchoring { every: Duration::from_millis(100), ..Default::default() }).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let url = seq.url.clone();
-    let sealer = background(&stop, Duration::from_millis(200), move || {
+    // the sealer stops apart from the miner, with the sequencer (G)
+    let seal_stop = Arc::new(AtomicBool::new(false));
+    let sealer = background(&seal_stop, Duration::from_millis(200), move || {
         let _ = Client::new(&url).and_then(|c| c.seal());
     });
     let hub = Hub::start(Config {
@@ -108,6 +118,7 @@ fn exits_on_the_mock_statement() {
         })
     };
     let c = Client::new(&seq.url).unwrap();
+    let hub_url = hub.url.clone();
     let ask = Ask { deposit: 200_000, liquidity: 1_000_000, reserve: 20_000 };
     // a wallet with `n` contracts opened, its deposits ours and anchored
     let open = |user: &str, n: usize| -> (Wallet, Chain, Vec<u32>) {
@@ -117,12 +128,18 @@ fn exits_on_the_mock_statement() {
         let label = user.to_string();
         w.progress = Some(Arc::new(move |m: String| println!("LICHEN {label}: {m}")));
         let cids = (0..n)
-            .map(|_| w.open_contract(&hub.url, &ch, &statement(), &dir.join(user), ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v).map(|_| ()) }).unwrap().record.cid())
+            .map(|_| w.open_contract(&hub_url, &ch, &statement(), &dir.join(user), ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v).map(|_| ()) }).unwrap().record.cid())
             .collect();
         wait("the deposits", || w.balance().unwrap() == ask.deposit * n as u64);
         let state = c.state().unwrap();
         let last = state.sealed.last().unwrap().height;
         wait("our notes anchored", || c.state().unwrap().anchors.last().is_some_and(|a| a.anchor.height >= last));
+        // the exit set kept there (as the wallet does as it reads the
+        // state, at most every 30 s)
+        let kept = w.keep_exit_set(&w.state().unwrap()).unwrap();
+        println!("LICHEN {user}: {kept:?}");
+        let sets = w.exit_sets();
+        assert!(sets.last().is_some_and(|s| s.height() >= last && s.notes.len() == n), "{user}: the exit set kept, its notes ours");
         (w, ch, cids)
     };
     let exit = |w: &mut Wallet, ch: &Chain, user: &str, cid: u32| {
@@ -140,11 +157,10 @@ fn exits_on_the_mock_statement() {
     {
         // the claim's chain fields: the chain journal's, at the height first
         // carrying its anchor, as the blocks recorded end there
-        let a = *c.state().unwrap().anchors.last().unwrap();
-        wait("the height carrying the anchor sealed", || c.state().unwrap().sealed.last().is_some_and(|s| s.height >= a.from));
+        let from = claim.state.chain_height;
         let id = [0xc4; 32];
         let mut prev: Option<v::ChainJournal> = None;
-        for h in 1..=a.from {
+        for h in 1..=from {
             let input = v::BlockInput::from_bytes(&std::fs::read(blocks_dir(&ledger).join(format!("{h}.input"))).unwrap()).unwrap();
             let p = prev.as_ref().map(|j| j.to_bytes());
             prev = Some(v::chain(&id, &input, &mut |_| true, &mut |jb| p.as_deref() == Some(jb)).unwrap());
@@ -198,9 +214,35 @@ fn exits_on_the_mock_statement() {
     hub.set_forge_counters(false);
     assert!(matches!(o, Outcome::Unchallenged(_)), "K: the forged counter proved false, she is paid");
 
-    stop.store(true, Ordering::Relaxed);
-    miner.join().unwrap();
+    // R: an exit after a return the hub won't fold
+    let (mut w, ch, cids) = open("rita", 1);
+    let note = w.notes(&w.state().unwrap())[0];
+    let back = 50_000;
+    let refused = w.withdraw(&hub_url, &statement(), &dir.join("rita"), cids[0], back);
+    assert!(refused.is_err(), "R: the hub refuses the fold");
+    let idx = w.returned(cids[0]).unwrap();
+    let sealed = || c.state().unwrap().sealed.iter().find(|s| s.size > idx).map(|s| s.height);
+    wait("the return anchored", || sealed().is_some_and(|h| c.state().unwrap().anchors.last().is_some_and(|a| a.anchor.height >= h)));
+    assert_eq!(w.fallback(&statement(), cids[0]).unwrap(), lichen_wallet::exit::Fallback::Dispute { b: back }, "R: a provable return is disputed");
+    let plan = w.exit_plan(cids[0]).unwrap();
+    let claim = plan.input(lichen_withdraw::Request { funding: vec![], tx: vec![], header: [0; 80], index: 0, path: vec![], coinbase: vec![], coinbase_path: vec![], reserved: [0; 32] }, vec![]).unwrap();
+    let unit = w.contracts[0].record.terms.unit.to_sat();
+    assert!(u64::from(plan.b) * unit <= back && u64::from(plan.b) == back / unit, "R: b is the return's value, in units");
+    assert_eq!(claim.notes.iter().map(|n| n.index).collect::<Vec<_>>(), vec![note.index], "R: the claim is of the note the return spent");
+    assert!(matches!(exit(&mut w, &ch, "rita", cids[0]), Outcome::Unchallenged(_)), "R: the exit after a return is paid");
+
+    // G: the operator gone, the exit from the set kept
+    let (mut w, ch, cids) = open("gail", 1);
+    assert!(w.exit_sets().last().is_some_and(|s| s.notes.len() == 1));
+    let log = hub.stop();
+    seal_stop.store(true, Ordering::Relaxed);
     sealer.join().unwrap();
     drop(seq);
+    assert!(w.sequencer.state().is_err(), "G: the sequencer is gone");
+    assert!(matches!(exit(&mut w, &ch, "gail", cids[0]), Outcome::HubTimedOut(_)), "G: request_timeout pays her");
+    assert!(!log.iter().any(|l| l.contains(&format!("contract {}", cids[0])) && l.contains("requests")), "G: the hub saw no request");
+
+    stop.store(true, Ordering::Relaxed);
+    miner.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
