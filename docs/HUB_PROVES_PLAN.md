@@ -426,8 +426,7 @@ Where these differ from the sections above, they hold.
 - **The claim posts each note's opening,** with its position (80 bytes):
   see "The claim". So at most 8 notes, an exit record's most, until a
   chain-guest change.
-- **Planned, with the next chain-guest change: commit each leaf's
-  kind.** The kind is public already (a transaction shows which
+- **Next: commit each leaf's kind.** The kind is public already (a transaction shows which
   outputs are transparent), so it costs no privacy, and a claim goes
   back to positions alone, 4 bytes a note. Lean: a bit of the leaf
   itself, today's commitment with its top bit set to the kind (0
@@ -437,8 +436,7 @@ Where these differ from the sections above, they hold.
   instead of 256. Alternatives: `leaf = H(kind ‖ inner)` (one more
   compression per leaf hashed, and the hub reveals `inner` to show a
   leaf shielded), or two trees (a second root in the state, every spend
-  naming its tree). Bundled with raising the exit record's 8 notes and
-  the shielded trapdoor `r`: one new deployment.
+  naming its tree). With it, raise the exit record's 8 notes.
 - **`E` is today's fingerprint** with `h_S` 0 and the positions' digest
   for `SR_S`: the hub's exit record retires the notes under today's
   chain statement, no guest change.
