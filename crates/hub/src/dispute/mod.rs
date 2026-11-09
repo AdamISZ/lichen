@@ -24,12 +24,14 @@ use crate::{contract_keys, Inner};
 
 pub(crate) mod babe;
 pub(crate) mod bitvmx;
+pub(crate) mod hp;
 
 /// A dispute's state at the hub.
 pub(crate) enum State {
     /// In play, the gadget's.
     BitVmx(bitvmx::State),
     Babe(babe::State),
+    Hp(hp::State),
     /// The user won and the payout is posted, spending the output of
     /// `link` (first seen spent at `since`): the hub collects its bit
     /// outputs, those of the bits clear in `b`, then closes.
@@ -77,9 +79,11 @@ impl Inner {
                 None => match record.gadget() {
                     Gadget::BitVmx => self.bitvmx_start(&record),
                     Gadget::Babe => self.babe_start(&record),
+                    Gadget::HubProves => self.hp_start(&record),
                 },
                 Some(State::BitVmx(s)) => self.bitvmx_tick(&record, s),
                 Some(State::Babe(s)) => self.babe_tick(&record, s),
+                Some(State::Hp(s)) => self.hp_tick(&record, s),
                 Some(State::Collect { link, since }) => self.collect(&record, link, since),
                 Some(State::Done) => Ok(Some(State::Done)),
             };
@@ -130,6 +134,7 @@ impl Inner {
         let disputed = match record.gadget() {
             Gadget::BitVmx => self.bitvmx_escalated(record)?,
             Gadget::Babe => self.babe_requested(record)?,
+            Gadget::HubProves => self.hp_requested(record)?,
         };
         if disputed {
             if let Bits::Swept(txid, n, value) = self.sweep_bits(record)? {
@@ -145,6 +150,7 @@ impl Inner {
         match record.gadget() {
             Gadget::BitVmx => self.bitvmx_claimed_b(record),
             Gadget::Babe => self.babe_claimed_b(record),
+            Gadget::HubProves => self.hp_claimed_b(record),
         }
     }
 
@@ -250,6 +256,7 @@ impl State {
         match self {
             State::BitVmx(s) => s.describe(),
             State::Babe(s) => s.describe(),
+            State::Hp(s) => s.describe(),
             State::Collect { .. } => "the user won: collecting the hub's bit outputs".into(),
             State::Done => "settled".into(),
         }

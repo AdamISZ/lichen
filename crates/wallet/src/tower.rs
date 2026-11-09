@@ -198,6 +198,9 @@ impl PackageSigner {
                 ensure!(p.claim.is_some() && p.pi1.is_some(), "a BABE package carries the claim and her signature on it");
                 None
             }
+            // her challenge reveals her dealing's secrets: no tower plays it
+            // keyless (docs/HUB_PROVES_PLAN.md, "What it costs")
+            Gadget::HubProves => anyhow::bail!("a hub-proves contract's dispute can't be handed to a tower"),
         };
         Ok(PackageSigner { p, b_word })
     }

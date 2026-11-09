@@ -522,6 +522,11 @@ fn main() -> Result<()> {
                         println!("  windows     {} blocks for the hub's response, assert by block {}, {} for its challenge, {} for the answer", w.w_h, w.t_a, w.delta2, w.delta1);
                         println!("  BABE        {} instances kept of {}", k.kept.len(), k.n);
                     }
+                    lichen_proto::DisputeKeys::HubProves(k) => {
+                        let w = k.hp_windows;
+                        println!("  windows     {} blocks for the hub's assertion, {} for the user's challenge, {} for its answer", w.w_h, w.delta2, w.delta1);
+                        println!("  hub proves  {} instances of the user's kept of {}, margin {} blocks", k.kept.len(), k.n, k.margin);
+                    }
                 }
             }
             for d in &w.deposits {

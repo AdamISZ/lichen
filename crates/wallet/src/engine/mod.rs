@@ -20,6 +20,7 @@ use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
 
 pub mod babe;
+pub mod hp;
 pub mod bitvmx;
 
 /// How a dispute ended for Alice.
@@ -39,6 +40,9 @@ pub enum Outcome {
     /// Under BABE: she answered the hub's challenge with a kept
     /// instance's `msg`; `wrongly_challenged` paid her.
     Answered(Txid),
+    /// With the hub proving: its assertion was false, it couldn't answer
+    /// her challenge, and `failure` paid her.
+    Refuted(Txid),
     /// Under BABE, on the real statement: the hub responded, so her proof
     /// is due, by `T_A` (this block). Its signature on `b`, which the
     /// proof takes, is written beside the instances (`hub-auth.json`).
@@ -56,7 +60,7 @@ impl Outcome {
     /// The payout's txid, for a win.
     pub fn payout(&self) -> Option<Txid> {
         match self {
-            Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) => Some(*t),
+            Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) | Outcome::Refuted(t) => Some(*t),
             Outcome::Lost | Outcome::Paused | Outcome::ProofDue(_) | Outcome::Countered => None,
         }
     }
@@ -75,6 +79,11 @@ pub trait Signer {
     fn bitvmx(&self) -> Result<&dyn bitvmx::Secrets>;
     /// Her BABE secrets, for a BABE contract.
     fn babe(&self) -> Result<&dyn babe::Secrets>;
+    /// Her contract's secrets themselves (a hub-proves dispute's challenge
+    /// reveals her dealing's): the wallet's only.
+    fn contract(&self) -> Result<&ContractSecrets> {
+        anyhow::bail!("a hub-proves challenge needs the contract's secrets, which only the wallet holds")
+    }
 }
 
 /// Where a dispute keeps what must survive a restart.
@@ -148,6 +157,9 @@ impl Signer for WalletSigner {
     }
     fn babe(&self) -> Result<&dyn babe::Secrets> {
         Ok(self)
+    }
+    fn contract(&self) -> Result<&ContractSecrets> {
+        Ok(&self.secrets)
     }
 }
 
@@ -305,6 +317,7 @@ impl Engine<'_> {
         match record.gadget() {
             Gadget::BitVmx => self.run_bitvmx(chain, record, statement, dir, b, input),
             Gadget::Babe => self.run_babe(chain, record, statement, dir, b, input),
+            Gadget::HubProves => self.run_hp(chain, record, statement, dir, b),
         }
     }
 }

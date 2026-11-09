@@ -61,3 +61,25 @@ pub fn request_proof(chain: &Chain, funding: &Transaction, request_id: &Txid) ->
         reserved,
     })
 }
+
+/// Transaction `txid` in its block, by the txid tree (its non-witness
+/// serialization): the hub's statement's spend of a seal
+/// (`lichen_withdraw::hp::SealSpend`), but for the header's place.
+pub struct InBlock {
+    pub tx: Vec<u8>,
+    pub block: bitcoin::BlockHash,
+    pub index: u32,
+    pub path: Vec<[u8; 32]>,
+    pub coinbase: Vec<u8>,
+    pub coinbase_path: Vec<[u8; 32]>,
+}
+
+pub fn in_block(chain: &Chain, txid: &Txid) -> Result<InBlock> {
+    let tx = chain.get_tx(txid).context("the transaction")?;
+    let block = chain.block_of(txid)?.context("the transaction is not in a block")?;
+    let txids = chain.block_txids(&block)?;
+    let index = txids.iter().position(|t| t == txid).context("the transaction is not among its block's")?;
+    let coinbase = chain.get_tx(&txids[0]).context("the block's coinbase")?;
+    let ids: Vec<[u8; 32]> = txids.iter().map(|t| t.to_byte_array()).collect();
+    Ok(InBlock { tx: bare(&tx), block, index: index as u32, path: merkle_path(&ids, index), coinbase: bare(&coinbase), coinbase_path: merkle_path(&ids, 0) })
+}

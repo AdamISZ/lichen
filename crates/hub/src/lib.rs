@@ -118,6 +118,8 @@ struct Pending {
 /// The largest request body (an opening request with all its keys is a
 /// few hundred kilobytes).
 const MAX_BODY: usize = 8 << 20;
+/// The largest instance uploaded (a garbled circuit is about 24 MB).
+const MAX_INSTANCE: usize = 64 << 20;
 /// A pending offer is replaced by a new request for its contract only
 /// this long after it was made.
 const OFFER_REPLACED_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
@@ -252,6 +254,25 @@ impl Hub {
                         Err(_) => Response::from_data(b"the request failed".to_vec()).with_status_code(500),
                     };
                     let _ = req.respond(resp);
+                    return;
+                }
+                // an instance uploaded: bytes, not JSON
+                if *req.method() == Method::Post && req.url().starts_with("/hp/instance/") {
+                    let mut bytes = vec![];
+                    let url = req.url().to_string();
+                    let read = req.as_reader().take(MAX_INSTANCE as u64 + 1).read_to_end(&mut bytes);
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match read {
+                        Err(e) => Err(anyhow!("the request's body: {e}")),
+                        Ok(n) if n > MAX_INSTANCE => Err(anyhow!("an instance over {MAX_INSTANCE} bytes")),
+                        Ok(_) => i1.hp_upload(&url, &bytes),
+                    }));
+                    let (code, json) = match r {
+                        Ok(Ok(j)) => (200, j),
+                        Ok(Err(e)) => (400, serde_json::json!({ "error": format!("{e:#}") }).to_string()),
+                        Err(_) => (500, serde_json::json!({ "error": "the request failed" }).to_string()),
+                    };
+                    let ct = Header::from_bytes("Content-Type", "application/json").unwrap();
+                    let _ = req.respond(Response::from_string(json).with_status_code(code).with_header(ct));
                     return;
                 }
                 let mut body = String::new();
@@ -423,6 +444,8 @@ fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String
         (Method::Get, "/info") => serde_json::to_string(&inner.info())?,
         (Method::Post, "/deposit") => serde_json::to_string(&inner.deposit(serde_json::from_str(body)?)?)?,
         (Method::Post, "/babe/setup") => serde_json::to_string(&inner.babe_setup(serde_json::from_str(body)?)?)?,
+        (Method::Post, "/hp/setup") => serde_json::to_string(&inner.hp_setup(serde_json::from_str(body)?)?)?,
+        (Method::Post, "/hp/commit") => serde_json::to_string(&inner.hp_commit(serde_json::from_str(body)?)?)?,
         (Method::Post, "/open") => serde_json::to_string(&inner.open(serde_json::from_str(body)?)?)?,
         (Method::Post, "/accept") => serde_json::to_string(&inner.accept(serde_json::from_str(body)?)?)?,
         (Method::Post, "/fold") => serde_json::to_string(&inner.fold(serde_json::from_str(body)?)?)?,
@@ -525,6 +548,7 @@ impl Inner {
         let gadget = match &req.dispute {
             RequestKeys::BitVmx(_) => Gadget::BitVmx,
             RequestKeys::Babe(_) => Gadget::Babe,
+            RequestKeys::HubProves(_) => Gadget::HubProves,
         };
         ensure!(gadget == self.cfg.statement.gadget(), "a request for a {gadget:?} contract to a hub running {}", self.cfg.statement.id());
         let (dispute, offer_keys, fixed) = match &req.dispute {
@@ -538,7 +562,12 @@ impl Inner {
                 let (d, o, c) = self.babe_open_keys(cid, k, &req.deposit_coin.0, t_close, scaled.unit)?;
                 (d, o, Some(c))
             }
+            RequestKeys::HubProves(k) => {
+                let (d, o, c) = self.hp_open_keys(cid, k, &req.deposit_coin.0, t_close, scaled.unit)?;
+                (d, o, Some(c))
+            }
         };
+        let mut offer_keys = offer_keys;
         // an anchored deployment's contract: its checkpoint, the tip now
         let checkpoint = match (fixed, self.seq.deployment.seal) {
             (Some(c), _) => c,
@@ -597,6 +626,12 @@ impl Inner {
         record.funding = OutPoint { txid: funding.compute_txid(), vout: 0 };
         let set = c.presign(record.funding)?;
         record.hub_sigs = sign_all(&set, &keys.payment)?;
+        // with the roles swapped: the hub's pre-signatures on her challenge
+        if record.gadget() == Gadget::HubProves {
+            self.hp_presign(&mut record, &mut offer_keys, &set)?;
+        }
+        // what the hub keeps from her stays its own
+        let shown: HashMap<String, Vec<u8>> = record.hub_sigs.iter().filter(|(n, _)| !c.hub_withholds(n)).map(|(n, s)| (n.clone(), s.clone())).collect();
         // D, minted now to a key Alice can spend once this funding is out
         let t = mint_adaptor(&self.cfg.seed, cid, &req.l2_address, &record.funding.txid);
         let mint_point = PublicKey::from_secret_key(SECP256K1, &t);
@@ -605,7 +640,7 @@ impl Inner {
         let owner = mint_owner(&req.l2_address, &mint_point)?;
         let mint_index = self.seq.submit(&Tx::Mint(Mint::new(&self.cfg.l2_key, &self.seq.deployment, vec![note(owner, d, 0)])))?[0];
         self.note(format!("contract {cid}: offered; minted {d} sats to the user (a fee of {} for {} sats of liquidity), locked to the funding", req.fee, req.liquidity));
-        let offer = OpenOffer { cid, t_close, reserve_hub, hub, dispute: offer_keys, funding, hub_coins, hub_sigs: record.hub_sigs.clone(), mint_point, mint_index, checkpoint: record.checkpoint };
+        let offer = OpenOffer { cid, t_close, reserve_hub, hub, dispute: offer_keys, funding, hub_coins, hub_sigs: shown, mint_point, mint_index, checkpoint: record.checkpoint };
         let replaced = self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t, made: std::time::Instant::now() });
         if let Some(old) = replaced {
             let _ = self.chain.unlock(&old.offer.hub_coins.iter().map(|c| c.0).collect::<Vec<_>>());
@@ -629,6 +664,9 @@ impl Inner {
         record.alice_sigs = a.alice_sigs;
         if record.gadget() == Gadget::Babe {
             self.babe_accept(&mut record, &a.adaptor)?;
+        }
+        if record.gadget() == Gadget::HubProves {
+            self.hp_accept(&record)?;
         }
         let c = self.built(&record)?;
         record.presigned(&c).context("Alice's signatures")?;

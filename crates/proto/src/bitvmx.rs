@@ -153,13 +153,13 @@ impl Statement {
         match self {
             Statement::BitVmx { pdf } => Program::load(&pdf.display().to_string()),
             Statement::BitVmxMock { session, returns } => Program::load(&lngap_sessions::statement::write_program_with(&dir.join(format!("mock-statement-{session}")), *session, returns, 8, true)?),
-            Statement::Babe { .. } => anyhow::bail!("the BABE statement has no program"),
+            Statement::Babe { .. } | Statement::HubProves { .. } => anyhow::bail!("the BABE statement has no program"),
         }
     }
     /// The program, for a BitVMX statement; none for BABE's.
     pub fn program_if(&self, dir: &Path) -> Result<Option<Program>> {
         match self {
-            Statement::Babe { .. } => Ok(None),
+            Statement::Babe { .. } | Statement::HubProves { .. } => Ok(None),
             _ => self.program(dir).map(Some),
         }
     }
@@ -182,7 +182,7 @@ impl Statement {
                 checks.extend((0..8).map(|j| late(&format!("deployment_{}", j + 1), 43 + j, dep[j])));
                 (41, checks)
             }
-            Statement::BitVmxMock { .. } | Statement::Babe { .. } => (0, vec![check("memo", 1, c)]),
+            Statement::BitVmxMock { .. } | Statement::Babe { .. } | Statement::HubProves { .. } => (0, vec![check("memo", 1, c)]),
         }
     }
     /// Whether the program accepts `input`, answered natively when that is
@@ -192,7 +192,7 @@ impl Statement {
     pub fn accepts(&self, input: &[u8]) -> Option<bool> {
         match self {
             Statement::BitVmx { .. } => Some(lngap_zk::groth16::verify_input(input).is_ok()),
-            Statement::BitVmxMock { .. } | Statement::Babe { .. } => None,
+            Statement::BitVmxMock { .. } | Statement::Babe { .. } | Statement::HubProves { .. } => None,
         }
     }
     /// The input a claim of `b` with memo `c` runs the program on: for the
@@ -201,7 +201,7 @@ impl Statement {
     pub fn mock_input(&self, b: u32, c: u32) -> Option<Vec<u8>> {
         match self {
             Statement::BitVmxMock { .. } => Some(lngap_sessions::statement::input(b, c)),
-            Statement::BitVmx { .. } | Statement::Babe { .. } => None,
+            Statement::BitVmx { .. } | Statement::Babe { .. } | Statement::HubProves { .. } => None,
         }
     }
 }

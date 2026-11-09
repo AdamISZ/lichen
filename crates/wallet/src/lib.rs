@@ -7,6 +7,7 @@
 //! withdrawal's input itself, checked against the statement.
 
 mod babe;
+mod hp;
 pub mod dispute;
 pub mod engine;
 pub mod exit;
@@ -654,11 +655,18 @@ impl Wallet {
         // her keys for the dispute, its gadget's (under BABE, with the
         // instances she keeps of the setup's)
         let secrets = self.secrets(&nonce);
+        let mut hp_open = None;
         let (dispute, setup) = match statement.gadget() {
             Gadget::BitVmx => (RequestKeys::BitVmx(engine::bitvmx::request_keys(&secrets, program.context("the statement's program")?)), None),
             Gadget::Babe => {
                 let (keys, setup) = self.babe_request(hub, dep.cid, coin.0, quote.unit, &secrets, net)?;
                 (RequestKeys::Babe(Box::new(keys)), Some(setup))
+            }
+            Gadget::HubProves => {
+                let o = self.hp_opening(hub, statement, dep.cid, coin.0, quote.unit, &secrets, net)?;
+                let r = RequestKeys::HubProves(Box::new(o.request.clone()));
+                hp_open = Some(o);
+                (r, None)
             }
         };
         let fees = self.fees(&nonce, net);
@@ -675,8 +683,16 @@ impl Wallet {
         let dispute = match (&req.dispute, &offer.dispute, &setup) {
             (RequestKeys::BitVmx(ours), OfferKeys::BitVmx(theirs), _) => engine::bitvmx::record_keys(program.context("the statement's program")?, net, ours, theirs)?,
             (RequestKeys::Babe(ours), OfferKeys::Babe(theirs), Some(setup)) => Wallet::babe_record_keys(net, offer.t_close, ours, setup, theirs)?,
+            // its pre-signatures checked once the set is built, below
+            (RequestKeys::HubProves(_), OfferKeys::HubProves(theirs), _) => {
+                let o = hp_open.as_ref().context("the hub-proves opening")?;
+                lichen_proto::DisputeKeys::HubProves(Box::new(Wallet::hp_keys(&secrets, o, theirs.hp_windows, theirs.hp_presigs.clone())))
+            }
             _ => bail!("the hub's offer is for another gadget than the request"),
         };
+        if let Some(o) = &hp_open {
+            ensure!(offer.checkpoint == o.setup.checkpoint, "the offer's checkpoint is not the setup's");
+        }
         // an anchored deployment's contract: a checkpoint on our own view of
         // the chain (a stale or forked one could ask work no withdrawal
         // shows)
@@ -701,7 +717,7 @@ impl Wallet {
         let fee_out = bitcoin::TxOut { value: fee_budget_of(coin.1.value, &t)?, script_pubkey: fees.spk() };
         check_deposit_funding(&offer.funding, &c, &coin.0, &fee_out)?;
         let set = c.presign(record.funding)?;
-        for p in &set {
+        for p in set.iter().filter(|p| !c.hub_withholds(&p.name)) {
             for i in 0..p.inputs() {
                 let n = lngap_sessions::contract::sig_name(&p.name, i);
                 let s = record.hub_sigs.get(&n).with_context(|| format!("the hub didn't sign {n}"))?;
@@ -716,6 +732,10 @@ impl Wallet {
         // under BABE: the cut-and-choose, and her adaptor pre-signatures
         let adaptor = match (&offer.dispute, &setup) {
             (OfferKeys::Babe(theirs), Some(setup)) => self.babe_check(hub, dir, statement, &mut record, &secrets, setup, theirs, &set)?,
+            (OfferKeys::HubProves(theirs), _) => {
+                Wallet::hp_record_keys(net, offer.t_close, &secrets, hp_open.as_ref().context("the hub-proves opening")?, theirs, &set)?;
+                vec![]
+            }
             _ => vec![],
         };
         record.alice_sigs = sign_all(&set, &keys.payment)?;
@@ -738,7 +758,7 @@ impl Wallet {
         chain.watch(&fees.spk())?;
         // what she keeps from the hub stays hers (under BABE,
         // wrongly_challenged's signature: for her towers)
-        let shown = record.alice_sigs.iter().filter(|(n, _)| !c.withheld(n)).map(|(n, s)| (n.clone(), s.clone())).collect();
+        let shown = record.alice_sigs.iter().filter(|(n, _)| !c.alice_withholds(n)).map(|(n, s)| (n.clone(), s.clone())).collect();
         let accept = Accept { cid: offer.cid, alice_sigs: shown, deposit_presig: locked.presig.clone(), adaptor };
         let opened: Opened = hub_call(&format!("{hub}/accept"), Some(serde_json::to_string(&accept)?), false)?;
         // the hub broadcast it before answering; an Esplora indexes it soon

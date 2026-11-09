@@ -21,6 +21,7 @@ pub mod field;
 pub mod gadget;
 pub mod garble;
 pub mod graph;
+pub mod hp;
 pub mod reveal;
 pub mod risc0;
 pub mod setup;

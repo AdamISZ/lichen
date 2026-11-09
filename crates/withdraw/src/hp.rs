@@ -100,12 +100,13 @@ impl Claim {
     }
 
     /// Whether it is well formed: one to [`MAX_NOTES`] notes, positions
-    /// increasing, nullifiers distinct, one to as many signatures as
+    /// increasing and in the tree's range, nullifiers distinct, one to as many signatures as
     /// notes.
     pub fn well_formed(&self) -> bool {
         let nfs = self.nullifiers();
         (1..=MAX_NOTES).contains(&self.notes.len())
             && self.notes.windows(2).all(|w| w[0].index < w[1].index)
+            && self.notes.iter().all(|n| n.index >> TREE_DEPTH == 0)
             && nfs.iter().enumerate().all(|(i, a)| !nfs[..i].contains(a))
             && (1..=self.notes.len()).contains(&self.sigs.len())
     }
@@ -259,6 +260,7 @@ pub enum How {
 
 /// Why the claim is false.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Ground {
     /// The claim's bytes don't parse, aren't well formed, or don't hash to
     /// the `E` she signed.

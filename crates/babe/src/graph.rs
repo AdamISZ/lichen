@@ -120,22 +120,22 @@ pub struct Babe {
     pub spec: Spec,
 }
 
-fn ok_leaf(name: &str, b: Builder, timelock: Timelock) -> Leaf {
+pub(crate) fn ok_leaf(name: &str, b: Builder, timelock: Timelock) -> Leaf {
     Leaf::new(name, b.push_int(1).into_script(), timelock)
 }
 
 /// `Builder` with a relative lock, and the lock.
-fn after(blocks: u16) -> (Builder, Timelock) {
+pub(crate) fn after(blocks: u16) -> (Builder, Timelock) {
     (Builder::new().csv(blocks), Timelock::csv(blocks))
 }
 
 /// Drop a word's 8 digits, which `wots_verify` leaves.
-fn drop_digits(b: Builder) -> Builder {
+pub(crate) fn drop_digits(b: Builder) -> Builder {
     drop_n(b, 8)
 }
 
 /// Drop `n` stack items (`n` even, or one `OP_DROP` more).
-fn drop_n(b: Builder, n: usize) -> Builder {
+pub(crate) fn drop_n(b: Builder, n: usize) -> Builder {
     let b = (0..n / 2).fold(b, |b, _| b.push_opcode(OP_2DROP));
     if n % 2 == 1 {
         b.push_opcode(OP_DROP)
@@ -145,7 +145,7 @@ fn drop_n(b: Builder, n: usize) -> Builder {
 }
 
 /// `E`'s 64 digits (32 bytes).
-const E_DIGITS: usize = 64;
+pub(crate) const E_DIGITS: usize = 64;
 
 impl Babe {
     pub fn new(spec: Spec) -> Result<Babe> {

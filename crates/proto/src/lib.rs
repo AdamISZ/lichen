@@ -91,6 +91,7 @@ pub use lichen_chain::{Net, Patience, Stall};
 pub mod babe;
 pub mod bitvmx;
 pub mod exit;
+pub mod hp;
 pub use babe::{BabeKeys, BabeOffer, BabeRequest};
 pub use bitvmx::{BitVmxKeys, BitVmxOffer, BitVmxRequest};
 
@@ -195,6 +196,9 @@ pub enum Statement {
     BitVmx { pdf: PathBuf },
     BitVmxMock { session: u32, returns: Vec<(u32, u32)> },
     Babe { mock: bool },
+    /// The exit where only the hub proves (docs/HUB_PROVES_PLAN.md): BABE
+    /// with the roles swapped, on the hub's statement.
+    HubProves { mock: bool },
 }
 
 impl std::str::FromStr for Statement {
@@ -208,8 +212,10 @@ impl std::str::FromStr for Statement {
             None if s == "bitvmx" => Statement::bitvmx(),
             None if s == "babe" => Ok(Statement::Babe { mock: false }),
             None if s == "babe-mock" => Ok(Statement::Babe { mock: true }),
+            None if s == "hub-proves" => Ok(Statement::HubProves { mock: false }),
+            None if s == "hub-proves-mock" => Ok(Statement::HubProves { mock: true }),
             Some(("bitvmx", pdf)) => Ok(Statement::BitVmx { pdf: PathBuf::from(pdf) }),
-            _ => bail!("a statement is `babe`, `babe-mock`, `bitvmx`, `bitvmx:<pdf>` or `bitvmx-mock`"),
+            _ => bail!("a statement is `babe`, `babe-mock`, `hub-proves`, `hub-proves-mock`, `bitvmx`, `bitvmx:<pdf>` or `bitvmx-mock`"),
         }
     }
 }
@@ -221,12 +227,15 @@ impl Statement {
             Statement::BitVmxMock { .. } => "bitvmx-mock",
             Statement::Babe { mock: false } => "babe",
             Statement::Babe { mock: true } => "babe-mock",
+            Statement::HubProves { mock: false } => "hub-proves",
+            Statement::HubProves { mock: true } => "hub-proves-mock",
         }
     }
     /// The gadget its disputes run on.
     pub fn gadget(&self) -> Gadget {
         match self {
             Statement::Babe { .. } => Gadget::Babe,
+            Statement::HubProves { .. } => Gadget::HubProves,
             _ => Gadget::BitVmx,
         }
     }
@@ -234,7 +243,7 @@ impl Statement {
     /// than the mock: the hub then checks a withdrawal natively before
     /// folding, and the wallet waits for the anchor and the chain receipt.
     pub fn is_real(&self) -> bool {
-        matches!(self, Statement::BitVmx { .. } | Statement::Babe { mock: false })
+        matches!(self, Statement::BitVmx { .. } | Statement::Babe { mock: false } | Statement::HubProves { mock: false })
     }
 }
 
@@ -576,6 +585,8 @@ pub enum Gadget {
     BitVmx,
     /// BABE's witness encryption and garbled circuit ([`babe`]).
     Babe,
+    /// BABE with the roles swapped: the hub proves ([`hp`]).
+    HubProves,
 }
 
 /// A contract's keys for its dispute, by gadget (in [`Record`], flattened:
@@ -586,6 +597,7 @@ pub enum Gadget {
 pub enum DisputeKeys {
     BitVmx(BitVmxKeys),
     Babe(Box<BabeKeys>),
+    HubProves(Box<hp::HpKeys>),
 }
 
 /// Alice's keys for the dispute in an opening request, by gadget.
@@ -594,6 +606,7 @@ pub enum DisputeKeys {
 pub enum RequestKeys {
     BitVmx(BitVmxRequest),
     Babe(Box<BabeRequest>),
+    HubProves(Box<hp::HpRequest>),
 }
 
 /// The hub's keys for the dispute in an offer, by gadget.
@@ -602,6 +615,7 @@ pub enum RequestKeys {
 pub enum OfferKeys {
     BitVmx(BitVmxOffer),
     Babe(Box<BabeOffer>),
+    HubProves(Box<hp::HpOffer>),
 }
 
 impl RequestKeys {
@@ -630,6 +644,7 @@ impl Record {
         match self.dispute {
             DisputeKeys::BitVmx(_) => Gadget::BitVmx,
             DisputeKeys::Babe(_) => Gadget::Babe,
+            DisputeKeys::HubProves(_) => Gadget::HubProves,
         }
     }
     /// The BitVMX keys, for a BitVMX contract.
@@ -646,6 +661,7 @@ impl Record {
         match self.gadget() {
             Gadget::BitVmx => Ok(Built::BitVmx(self.contract(statement, program.context("a BitVMX contract's program")?)?)),
             Gadget::Babe => Ok(Built::Babe(Box::new(self.babe_graph()?))),
+            Gadget::HubProves => Ok(Built::HubProves(Box::new(self.hp_graph()?))),
         }
     }
     pub fn signed(&self) -> Signed {
@@ -668,6 +684,7 @@ impl Record {
 pub enum Built {
     BitVmx(Contract),
     Babe(Box<lichen_babe::graph::Babe>),
+    HubProves(Box<lichen_babe::hp::HubProves>),
 }
 
 impl Built {
@@ -675,12 +692,14 @@ impl Built {
         match self {
             Built::BitVmx(_) => Gadget::BitVmx,
             Built::Babe(_) => Gadget::Babe,
+            Built::HubProves(_) => Gadget::HubProves,
         }
     }
     pub fn core(&self) -> Core<'_> {
         match self {
             Built::BitVmx(c) => c.core(),
             Built::Babe(c) => c.core(),
+            Built::HubProves(c) => c.core(),
         }
     }
     /// What the contract output holds: `V_max` and both reserves.
@@ -692,6 +711,7 @@ impl Built {
         match self {
             Built::BitVmx(c) => c.tree(),
             Built::Babe(c) => c.tree(),
+            Built::HubProves(c) => c.tree(),
         }
     }
     /// The cooperative close for a withdrawal of `b` sats.
@@ -704,12 +724,24 @@ impl Built {
         match self {
             Built::BitVmx(c) => c.presign(funding),
             Built::Babe(c) => c.presign(funding),
+            Built::HubProves(c) => c.presign(funding),
         }
+    }
+    /// Whether a party keeps its signature on `name` from the other, so
+    /// that only one side has both ([`Built::alice_withholds`],
+    /// [`Built::hub_withholds`]).
+    pub fn withheld(&self, name: &str) -> bool {
+        self.alice_withholds(name) || self.hub_withholds(name)
     }
     /// Whether Alice keeps her signature on `name` from the hub (under
     /// BABE, `wrongly_challenged`'s: for her towers only).
-    pub fn withheld(&self, name: &str) -> bool {
+    pub fn alice_withholds(&self, name: &str) -> bool {
         matches!(self, Built::Babe(_)) && lichen_babe::graph::Babe::withheld(name)
+    }
+    /// Whether the hub keeps its signature on `name` from Alice (with the
+    /// roles swapped, `wrongly_challenged`'s).
+    pub fn hub_withholds(&self, name: &str) -> bool {
+        matches!(self, Built::HubProves(_)) && lichen_babe::hp::HubProves::withheld(name)
     }
     /// The key Alice signs `b` with in a dispute; the payout's bit outputs
     /// read it.
@@ -717,6 +749,7 @@ impl Built {
         match self {
             Built::BitVmx(c) => c.b_key(),
             Built::Babe(c) => &c.spec.b_key,
+            Built::HubProves(c) => &c.spec.b_key,
         }
     }
     /// What the heaviest of Alice's terminal transactions (in the
@@ -725,20 +758,21 @@ impl Built {
         match self {
             Built::BitVmx(c) => bitvmx::terminal_need(c, set, net),
             Built::Babe(_) => babe::terminal_need(set, net),
+            Built::HubProves(_) => hp::terminal_need(set, net),
         }
     }
     /// The BitVMX contract, for a BitVMX contract.
     pub fn bitvmx(&self) -> Result<&Contract> {
         match self {
             Built::BitVmx(c) => Ok(c),
-            Built::Babe(_) => bail!("not a BitVMX contract"),
+            _ => bail!("not a BitVMX contract"),
         }
     }
     /// The BABE graph, for a BABE contract.
     pub fn babe(&self) -> Result<&lichen_babe::graph::Babe> {
         match self {
             Built::Babe(c) => Ok(c),
-            Built::BitVmx(_) => bail!("not a BABE contract"),
+            _ => bail!("not a BABE contract"),
         }
     }
 }

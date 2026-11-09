@@ -115,7 +115,7 @@ impl Wallet {
     /// Whether the wallet holds an open contract with the exit, so that an
     /// exit set is worth keeping.
     fn may_exit(&self) -> bool {
-        self.contracts.iter().any(|h| h.closed.is_none() && h.record.babe().is_ok_and(|b| b.exit.is_some()))
+        self.contracts.iter().any(|h| h.closed.is_none() && (h.record.babe().is_ok_and(|b| b.exit.is_some()) || h.record.hp().is_ok()))
     }
 
     /// The nullifiers of the notes that open contracts' returns spent.
@@ -371,7 +371,8 @@ impl Wallet {
         let plan = match self.contracts[k].exit.clone() {
             Some(p) => p,
             None => {
-                let p = self.exit_plan(cid)?;
+                // the hub proves: a claim by position, nothing to prove
+                let p = if self.contracts[k].record.hp().is_ok() { self.hp_exit_plan(chain, cid)? } else { self.exit_plan(cid)? };
                 self.contracts[k].exit = Some(p.clone());
                 self.save()?;
                 p

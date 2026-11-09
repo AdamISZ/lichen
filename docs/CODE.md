@@ -21,6 +21,13 @@ hostile operator, and the hub's counter) runs on BABE: its statements in
 in `validity::exit`, and its play in the hub's `dispute::babe` and the
 wallet's `exit`.
 
+The exit where only the hub proves (docs/HUB_PROVES_PLAN.md; statement
+`hub-proves-mock`, on the mock only for now) is a gadget of its own,
+BABE with the roles swapped: the hub's statement in `withdraw::hp`, its
+graph in `babe::hp`, its setup (Alice garbles and uploads) in
+`proto::hp`, and its play in the hub's `dispute::hp` and the wallet's
+`hp` and `engine::hp`.
+
 ## Crates
 
 | crate | binary | who runs it |

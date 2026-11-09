@@ -5,8 +5,13 @@ counter design of EXIT_PLAN.md ("Under BABE") and the withdrawal by
 return's dispute with one dispute: Alice claims, and only the hub
 proves, if it can, that her claim is false.
 
-**Status.** Being built on branch `hub-proves`, transparent notes first
-(build order, below). Being thought through with the user. "Open questions" is
+**Status, 2026-11-09.** Built on branch `hub-proves` on the mock
+statement, transparent notes only: the hub's statement natively
+(`lichen_withdraw::hp`), the swapped graph (`lichen_babe::hp`), the
+setup in which Alice garbles and uploads (`lichen_proto::hp`), both
+sides' play, and a regtest test of seven cases (`hp_exit.rs`). Not yet:
+the hub's statement as a guest, real proofs, shielded notes. Alongside
+today's statements, as `hub-proves-mock`. Being thought through with the user. "Open questions" is
 the live part; where a question is settled, it moves to "Decided".
 
 ## Why
@@ -35,21 +40,27 @@ which doubled the setup. Here it's the only instance.
 Alice claims a definite set of her notes, and `b`, their value (at most
 `V_max`), one fixed amount. `request` carries, in its witness:
 
-- **the notes, by their positions in the commitment tree:** 4 bytes
-  each (at depth 32), no openings. The hub holds every note's opening,
-  and its proof supplies them;
+- **the notes, by their positions in the commitment tree and their
+  openings:** 80 bytes each. The opening can't be left out (found while
+  building): shielded commitments share the tree, the hub doesn't know
+  their openings, and it couldn't show that a leaf isn't a transparent
+  note's. Without the opening, Alice could claim someone's shielded leaf
+  for any `b`;
 - **one signature on `E` per owner key** (usually one), not per note.
   Transparent notes are public, so without it anyone who knows hers, the
   operator included, could claim them through their own contract;
 - **`b`,** under her one-time Winternitz key, as today, with today's
   digit decomposition;
-- **`E`,** under a second one, as today:
-  `E = H(c ‖ O_D ‖ b ‖ positions)`. Script can't check the claim's
-  bytes, so without this a relayer could swap them. The hub's statement
-  checks that the posted claim hashes to the signed `E`.
+- **`E`,** under a second one, as today: today's fingerprint with no
+  state named (`h_S` 0) and the positions' digest in place of `SR_S`,
+  over the notes' nullifiers. Script can't check the claim's bytes, so
+  without this a relayer could swap them. The hub's statement checks
+  that the posted claim hashes to the signed `E`. Being today's
+  fingerprint, the hub's exit record retires the notes under today's
+  chain statement: no guest change.
 
-At 4 bytes a note, today's fifteen 80-byte items hold about 280 notes
-besides the signature: a whole wallet's notes in one claim.
+At most 8 notes for now, an exit record's most (a chain-guest change
+would raise it; today's fifteen 80-byte items hold about 14).
 
 Her claim: **"these notes are mine, live at `A*`, and worth at least
 `b`."** `A*` is the last anchor confirmed at or before `m` blocks before
@@ -73,10 +84,11 @@ tree and its nullifier isn't in the spent set.
 ## The hub's statement
 
 "The claim posted in `request` is false." Fixed at the contract's
-opening, journal `c ‖ D ‖ H(pk_A ‖ O_D)`, with `pk_A` Alice's keys for
-`b` and `E` (the mirror of today's `H(pk_H ‖ O_D)`). It reads `request`
-from Bitcoin, in a block with the contract's work on it, as Alice's
-statement does today.
+opening, journal `c ‖ D ‖ H(O_D ‖ margin)`. It reads `request` from
+Bitcoin, in a block with the contract's work on it, as Alice's
+statement does today, and reads `b` and `E` from her signatures'
+digits: Bitcoin checked the signatures, in `request`'s script, so her
+keys needn't be in the journal.
 
 It holds on any of these grounds:
 
@@ -85,7 +97,7 @@ It holds on any of these grounds:
 | malformed | the claim doesn't parse, doesn't hash to `E`, repeats a note, or `b` exceeds `V_max` |
 | not hers | a signature on `E` doesn't verify, or a note's owner isn't a signing key |
 | too much | `b` exceeds the notes' value |
-| not live | at `A*`, a position is past the tree's end, or a note's nullifier is spent |
+| not live | at `A*`, the leaf at a note's position isn't its commitment (an empty one past the tree's end, too), or its nullifier is spent |
 | a second claim | her signature on a claim of one of these notes through another contract |
 
 "Not live" is today's "later spend", plus "no such note", which Alice
@@ -407,17 +419,65 @@ not.
 - Build the transparent exit first, on a branch, on the mock statement
   (the user, 2026-11-09).
 
+## Decided while building (2026-11-09)
+
+Where these differ from the sections above, they hold.
+
+- **The claim posts each note's opening,** with its position (80 bytes):
+  see "The claim". So at most 8 notes, an exit record's most, until a
+  chain-guest change.
+- **`E` is today's fingerprint** with `h_S` 0 and the positions' digest
+  for `SR_S`: the hub's exit record retires the notes under today's
+  chain statement, no guest change.
+- **The journal is `c ‖ D ‖ H(O_D ‖ margin)`:** the statement reads `b`
+  and `E` from her signatures' digits, which Bitcoin checked.
+- **Her wallet waits** until her notes' anchor is the margin deep before
+  it claims: a note newer than `A*` isn't in its tree, and the hub
+  rightly asserts it isn't live (the first run of the test did exactly
+  that).
+- **No anchor after `A*` yet:** the hub mints a sat to itself, once a
+  contract, so that the sequencer seals and anchors, spending `A*`'s
+  seal.
+- **After finding a claim holds,** the hub records the exit and keeps
+  looking for a second claim of its notes until a quarter of `w_H` is
+  left.
+- **Two claims of one note, requested together, are both asserted
+  false:** each is the other's second claim. The double claimer loses
+  both contracts (EXIT_PLAN's "the first is paid" was an artefact of
+  responding before the second request).
+- **No tower:** a hub-proves contract's dispute can't be handed to one
+  (her challenge reveals her dealing's secrets).
+- **The hub keeps its signatures on `wrongly_challenged`;** she gives
+  hers.
+- **Windows** (`lichen_proto::hp::windows`): `w_H` 80 blocks on regtest,
+  240 on Mutinynet (2 h); `Δ2` (her challenge) 40 and 2,880 (a day);
+  `Δ1` (its answer) 40 and 240. The margin: 6 blocks on regtest, 20 on
+  Mutinynet.
+- **Measured on regtest** (`hp_exit.rs`, a laptop): she garbles 4
+  instances in 1.3 s and uploads 2 of 23 MB; the hub checks the 2
+  opened in 1.2 s. `request` is about 2.1 kvB with one or two notes,
+  `assert` 7,725 vB, her `challenge_assert` 20,717 vB.
+
 ## Build order
 
-No chain-guest change: positions, the tree and the spent set are as
-today.
+Done (2026-11-09), on the mock statement:
 
-1. **The hub's statement, natively:** today's counter guest
-   (`crates/withdraw/src/counter.rs`) grows the malformed, not-hers,
-   too-much and not-live grounds, and the last-anchor proof. Check it
-   on the regtest exits (`babe_exit.rs`'s cases) with the mock
-   statement.
-2. **The swapped graph:** `request`, `assert` by the hub, Alice's
-   challenge, with no `respond`. Played on the mock statement.
-3. **The swapped setup:** Alice garbles; the hub checks and keeps.
-4. **Real proofs on regtest, then Mutinynet.**
+1. The hub's statement, natively (`withdraw::hp`), with unit tests.
+2. The swapped graph (`babe::hp`).
+3. The swapped setup (`proto::hp`; the hub's `/hp/setup`, `/hp/commit`,
+   `/hp/instance/<cid>/<i>`).
+4. Both sides' play (the hub's `dispute::hp`, the wallet's `hp`,
+   `engine::hp`), and `hp_exit.rs`: an honest exit paid by timeout; a
+   stale claim asserted false and conceded; the same challenged and
+   answered; a note through two contracts, both asserted false; a lying
+   hub refuted; an exit after a return paid; the operator gone, paid by
+   timeout.
+
+Next:
+
+5. The hub's statement as a guest (its encoding, the chain receipt
+   composed, the Groth16 wrap), and the real statement.
+6. Real proofs on regtest, then Mutinynet.
+7. Shielded notes ("Shielded notes").
+8. Retiring the old exit and the return's dispute, once this replaces
+   them.
