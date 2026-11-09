@@ -10,7 +10,10 @@
 #                 to be funded, and logs an address to pay
 #   chain-prover  prove each height the sequencer seals, in order
 #                 (r0/chain-prover.sh), with lichen-r0
-#   hub           the hub, on NETWORK's node, once the sequencer answers
+#   hub           the hub, on NETWORK's node, once the sequencer answers;
+#                 on the real statement (STATEMENT=hub-proves) it proves
+#                 its statement with lichen-r0 (r0/hp-prover.sh), wrapping
+#                 in Groth16 through the host's Docker
 set -eu
 NETWORK="${NETWORK:?set NETWORK}"
 case "$NETWORK" in
@@ -70,6 +73,7 @@ case "${1:-}" in
         seq="${SEQUENCER_URL:-http://sequencer:18300}"
         wait_node
         until curl -fsS "$seq/info" >/dev/null 2>&1; do echo "waiting for the sequencer at $seq"; sleep 5; done
+        export LICHEN_R0=/usr/local/bin/lichen-r0 LICHEN_HP_PROVER=/usr/local/bin/lichen-hp-prover
         exec lichen-hub --network "$NETWORK" --listen 0.0.0.0:18310 --sequencer "$seq" \
             --rpc-url "$node" --cookie "$cookie" --chain-wallet hub --dir /hub \
             --statement "${STATEMENT:-hub-proves-mock}" --reserve-ppm "${RESERVE_PPM:-20000}" --fee-ppm "${FEE_PPM:-10000}" --max-liquidity "${MAX_LIQUIDITY:-10000000}" \

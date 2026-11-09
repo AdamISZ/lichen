@@ -63,6 +63,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct Guests {
     pub spend: String,
     pub chain: String,
+    /// The hub's statement's (none from a build before it).
+    #[serde(default)]
+    pub hp: String,
 }
 
 impl Guests {
@@ -72,6 +75,7 @@ impl Guests {
         Guests {
             spend: id(lichen_ledger::SPEND_IMAGE_ID),
             chain: id(lichen_ledger::CHAIN_IMAGE_ID),
+            hp: id(lichen_babe::statement::IMAGE_ID),
         }
     }
 }

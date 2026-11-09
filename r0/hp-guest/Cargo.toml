@@ -1,0 +1,27 @@
+# The hub's statement guest (docs/HUB_PROVES_PLAN.md): proves "the claim
+# posted in `request` is false" (crates/withdraw, `hp::check`), the chain
+# receipt at A* composed. BABE checks its Groth16 wrap, with the roles
+# swapped: the hub proves, Alice garbles. A workspace of its own, built as
+# the chain guest (r0/build-guest.sh hp).
+[package]
+name = "hp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+# the toolchain of risczero/risc0-guest-builder:r0.1.88.0
+rust-version = "1.88"
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+lichen-withdraw = { path = "../../crates/withdraw" }
+risc0-zkvm = { version = "=3.0.6", default-features = false, features = ["std"] }
+
+# RISC Zero's accelerated crypto: the paths and spent-set openings are
+# SHA-256, the claim's and acknowledgments' signatures and the sequencer's
+# on the root BIP340
+[patch.crates-io]
+sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.9-risczero.0" }
+k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256/v0.13.4-risczero.1" }
+crypto-bigint = { git = "https://github.com/risc0/RustCrypto-crypto-bigint", tag = "v0.5.5-risczero.0" }

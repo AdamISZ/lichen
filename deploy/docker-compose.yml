@@ -86,8 +86,9 @@ services:
       DURATION: ${DURATION:-}
       HOSTILE: ${HOSTILE:-}
       REFUSE_FOLDS: ${REFUSE_FOLDS:-}
-      # a counter's wrap: its working files, at the same path on the host
-      # and here, for RISC Zero's prover image on the host's Docker
+      # the wrap of the hub's statement in Groth16 (STATEMENT=hub-proves):
+      # its working files, at the same path on the host and here, for RISC
+      # Zero's prover image on the host's Docker
       RISC0_WORK_DIR: ${R0WORK:?set R0WORK, an absolute host path (deploy/lichen.sh sets deploy/state/<network>/r0work)}
     volumes:
       - ./state/${NETWORK}/hub:/hub

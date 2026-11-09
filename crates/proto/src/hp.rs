@@ -145,12 +145,11 @@ pub fn margin(net: Net) -> u32 {
 }
 
 impl Statement {
-    /// The hub's statement's kind, for a hub-proves statement: the mock
-    /// only, for now (no guest yet).
+    /// The hub's statement's kind: RISC Zero's, or the mock.
     pub fn hp_kind(&self) -> Result<Kind> {
         match self {
             Statement::HubProves { mock: true } => Ok(Kind::Mock),
-            Statement::HubProves { mock: false } => anyhow::bail!("the hub's statement has no guest yet: hub-proves runs on the mock only"),
+            Statement::HubProves { mock: false } => Ok(Kind::Risc0),
         }
     }
 }

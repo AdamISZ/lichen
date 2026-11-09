@@ -680,9 +680,19 @@ impl Inner {
                 Ok(_) => anyhow::bail!("the statement's journal isn't the contract's"),
                 Err(r) => anyhow::bail!("the ground ({why}) doesn't check natively: {r:?}"),
             }
-            self.note(format!("contract {cid}: the user's exit claim is false: {why}: asserting"));
             match kind {
-                lichen_babe::statement::Kind::Mock => lichen_babe::statement::mock_prove(&journal),
+                lichen_babe::statement::Kind::Mock => {
+                    self.note(format!("contract {cid}: the user's exit claim is false: {why}: asserting"));
+                    // for the guest's tests: the statement's inputs, as the prover takes them
+                    if let Ok(d) = std::env::var("LICHEN_DUMP_HP") {
+                        let _ = std::fs::write(std::path::Path::new(&d).join(format!("hp-{cid}.bin")), input.to_bytes());
+                    }
+                    lichen_babe::statement::mock_prove(&journal)
+                }
+                lichen_babe::statement::Kind::Risc0 => match self.hp_proof(cid, input, &journal, why)? {
+                    Some(p) => p,
+                    None => return Ok(()),
+                },
             }
         } else {
             self.note(format!("contract {cid}: asserting a forged proof against the claim"));
@@ -695,6 +705,60 @@ impl Inner {
         self.post(cid, &tx)?;
         self.note(format!("contract {cid}: asserted ({} vB)", tx.vsize()));
         Ok(())
+    }
+
+    /// The proof of the hub's statement on `input` (RISC Zero's, wrapped
+    /// in Groth16), once proved: the prover runs in the background
+    /// (`r0/hp-prover.sh hp-proof`; LICHEN_HP_PROVER names another), its
+    /// files in `hp/<cid>/` tagged by the input's hash. None while it
+    /// proves, or while the chain receipt it needs, at `A*`'s chain
+    /// height, isn't proved yet.
+    fn hp_proof(&self, cid: u32, input: &HubInput, journal: &[u8], why: &str) -> Result<Option<ark_groth16::Proof<ark_bn254::Bn254>>> {
+        use sha2::Digest as _;
+        let bytes = input.to_bytes();
+        let tag = hex::encode(&sha2::Sha256::digest(&bytes)[..8]);
+        let dir = self.hp_dir(cid);
+        let seal = dir.join(format!("proof-{tag}.seal"));
+        if seal.exists() {
+            let p = lichen_babe::risc0::proof_from_seal(&std::fs::read(&seal)?).context("the prover's seal")?;
+            ensure!(lichen_babe::statement::Kind::Risc0.verify(journal, &p), "the prover's proof doesn't verify for this contract");
+            self.note_once(format!("contract {cid}: the user's exit claim is false: {why}: proved; asserting"));
+            return Ok(Some(p));
+        }
+        if self.proving.lock().unwrap().contains(&tag) {
+            return Ok(None);
+        }
+        let chain = match &input.ground {
+            Ground::Malformed => "none".to_string(),
+            Ground::At { last, .. } => {
+                let h = last.state.chain_height;
+                let Some(r) = self.seq.chain_receipt(h)? else {
+                    self.note_once(format!("contract {cid}: the claim is false ({why}); waiting for the chain receipt at height {h} to prove it"));
+                    return Ok(None);
+                };
+                let p = dir.join(format!("chain-{h}.receipt"));
+                std::fs::write(&p, r)?;
+                p.display().to_string()
+            }
+        };
+        let in_path = dir.join(format!("input-{tag}.bin"));
+        std::fs::write(&in_path, &bytes)?;
+        let prover = std::env::var("LICHEN_HP_PROVER").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../r0/hp-prover.sh").to_string());
+        let log = std::fs::File::create(dir.join(format!("prover-{tag}.log")))?;
+        let tmp = dir.join(format!("proof-{tag}.seal.tmp"));
+        let mut cmd = std::process::Command::new(&prover);
+        cmd.arg("hp-proof").arg(&in_path).arg(&chain).arg(&tmp).stdout(log.try_clone()?).stderr(log);
+        self.proving.lock().unwrap().insert(tag.clone());
+        self.note(format!("contract {cid}: the user's exit claim is false: {why}: proving ({prover}, hp/{cid}/prover-{tag}.log)"));
+        let proving = self.proving.clone();
+        std::thread::spawn(move || {
+            let ok = cmd.status().is_ok_and(|s| s.success()) && std::fs::rename(&tmp, &seal).is_ok();
+            if !ok {
+                eprintln!("hub: contract {cid}: the prover failed (hp/{cid}/prover-{tag}.log); trying again");
+            }
+            proving.lock().unwrap().remove(&tag);
+        });
+        Ok(None)
     }
 
     /// The answer to her challenge: π1's secrets from it (her completions

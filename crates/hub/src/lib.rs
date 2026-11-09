@@ -171,6 +171,9 @@ pub(crate) struct Inner {
     /// The most the links' floors and anchors take from the hub's reserve
     /// on a dispute it loses (found at the first opening).
     floors: Mutex<Option<u64>>,
+    /// The proofs of the hub's statement being proved, by their files'
+    /// tag (`dispute::hp`).
+    proving: Arc<Mutex<std::collections::HashSet<String>>>,
     /// Set when the hub is dropped: a dispute waiting on the chain gives
     /// up, so that dropping a hub never waits for a block.
     stop: AtomicBool,
@@ -222,7 +225,7 @@ impl Hub {
         let server = Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let server = Arc::new(Mutex::new(Arc::new(server)));
-        let inner = Arc::new(Inner { cfg, chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), leave_bits: AtomicBool::new(false), forge_assertions: AtomicBool::new(cfg_forge), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), leave_bits: AtomicBool::new(false), forge_assertions: AtomicBool::new(cfg_forge), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), proving: Arc::new(Mutex::new(Default::default())), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             listen(&srv, &i1.stop, |mut req| {

@@ -32,5 +32,6 @@ COPY --from=build /out/lichen-hub /out/lichen /out/lichen-sequencer /out/lichen-
 COPY --from=build /src/lichen/r0/guests /src/lichen/r0/guests
 RUN mkdir -p /src/lichen/r0/host
 COPY lichen/r0/chain-prover.sh /usr/local/bin/lichen-chain-prover
+COPY lichen/r0/hp-prover.sh /usr/local/bin/lichen-hp-prover
 COPY lichen/deploy/entry.sh /usr/local/bin/lichen-entry
 ENTRYPOINT ["/usr/local/bin/lichen-entry"]

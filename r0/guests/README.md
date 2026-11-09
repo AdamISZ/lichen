@@ -11,14 +11,20 @@ is its image id (`lichen-r0 image-id <g>` recomputes it from the file;
 - `chain`: the chain statement of `crates/validity` (one sealed block,
   and the history before it). It holds `spend.id`, so it is rebuilt
   after the spend guest.
+- `hp`: the hub's statement of `crates/withdraw` (`hp::check`,
+  docs/HUB_PROVES_PLAN.md): "the claim posted in `request` is false", the
+  chain receipt at `A*` composed. It holds the chain guest's image id, so
+  it is rebuilt after the chain guest. BABE checks its Groth16 wrap
+  (`lichen_babe::statement::Kind::Risc0`, `IMAGE_ID` this `hp.id`); the
+  hub proves it (`r0/hp-prover.sh hp-proof`).
 - `withdraw` and `babe` (removed 2026-11-09, with the return and its
-  disputes, docs/HUB_PROVES_PLAN.md): the withdrawal statement of
-  `crates/withdraw` and BABE's fixed statement, a return's proof. The
-  hub's statement, which replaces them, has no guest yet. (`counter`,
-  the old exit's, went earlier the same day.)
+  disputes): the withdrawal statement of `crates/withdraw` and BABE's
+  fixed statement, a return's proof, which the hub's statement replaces.
+  (`counter`, the old exit's, went earlier the same day.)
 
 | guest | built by | image id |
 |---|---|---|
+| **hp**, the hub's statement, holding the chain guest below, 2026-11-10: **the current file** | x86 Linux (lichen-vps), `build-guest.sh elf hp`, then `pack hp` there. ELF SHA-256 `ce430f1ab251c128f013b4779fe6c34b99df23a12130ffda15ea87c8fe8ec545`; `hp.bin` 464,300 bytes, SHA-256 `06fb0ed879d15c9b29ca455496e9fa26fae86fdb182d616d7f3cc6bf045510c0`. Executed (`exec-hp`, the chain receipt's claim unresolved) on hp_exit's inputs (`LICHEN_DUMP_HP`): spent, 1,679k and 1,690k user cycles; a second claim, 999k and 998k; 2 segments each | **`a71fe1efc126b554612fe028fafcc27b3abf97a4dc5a0129d43e639b3d45143d`** |
 | **spend**, a leaf's kind (`s_leaf`: a spend's path is to the kinded leaf) and the sender's acknowledgment key `ak` in the input and the journal (docs/HUB_PROVES_PLAN.md, "Data availability"), 2026-11-10: **the current file** | x86 Linux (lichen-vps), `build-guest.sh elf spend`, then `pack spend` there (lichen `5408061`). ELF SHA-256 `c7adaee72df169e8de668bb31ad5f49b1f4b75eb98e00c0f6cc97b3378524f73`; `spend.bin` 324,180 bytes, SHA-256 `dfc10480078d51e2b80d237ef4fd9496682790d6da975105184772155d2316cd` | **`755aa218855b2740ae4b5cba800fcfa593d87aa39ecb0560070e8d6b48f5babd`** |
 | **chain**, the leaf's kind, the exit record by position, sender acknowledgment (pending, locks, acknowledgments, voids and anchors in the spent set, read through openings), holding the spend guest above, 2026-11-10: **the current file** | the same way (`elf chain`, `pack chain`). ELF SHA-256 `7ca47f46fa4d69b93b5b2ec0d5bda2e26e828fb5d9ff14e4efc0b5f1cb884c1b`; `chain.bin` 485,632 bytes, SHA-256 `9130bac2f72ec4799a31b46659be2ae33f212a31ca6d845f6ac15dce634767cc`. Executed on the ledger test's first block (three mints and a transfer, its pending and lock entries: `LICHEN_DUMP_BLOCKS`): 2,384k user cycles, 3 segments | **`0bcd188d6d982def230218431568eb0de53c3ecc358bd3f0788c78dd3f4120ba`** |
 | babe, return-only again (the old exit removed), holding the chain guest below, 2026-11-09 (removed the same day) | x86 Linux (lichen-vps), `build-guest.sh elf babe`, then `pack babe` there (lichen branch `hub-proves`). ELF SHA-256 `75c617778d7f64ce51aeb16bfc920f401376f30888045e0a26ce99f296d1ce77`; `babe.bin` 403,456 bytes, SHA-256 `5a1ee17c263e0124d4c9b3de4b2217a1811861a12899e8730b4a5507fa7f8a92` | **`62b8cb27318d6bfbbf07df104ac9bb40d0fc97644ba5ed6b40f36126d5eaa8c3`** |

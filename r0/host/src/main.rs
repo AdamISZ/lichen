@@ -14,24 +14,35 @@
 //! - `exec-chain`, as `chain`, runs the guest without proving: its cycles
 //!   (and, with RISC0_PPROF_OUT, a profile);
 //! - `verify-chain <receipt>`: check a chain receipt; print its journal;
+//! - `hp <hub input> <chain receipt|none> <out>`: prove the hub's statement
+//!   (`lichen_withdraw::hp`, docs/HUB_PROVES_PLAN.md) on its input (its
+//!   bytes, `HubInput::to_bytes`), the chain receipt at `A*`'s chain height
+//!   an assumption (`none` for a malformed claim, which needs none);
+//!   writes the succinct receipt, which resolves it; `exec-hp <hub input>
+//!   [<chain receipt>]` runs the guest without proving, the receipt's
+//!   claim an unresolved assumption if none is given (its cycles);
+//! - `wrap <receipt> <out>`: the Groth16 receipt of a succinct receipt of
+//!   the hub's statement (x86 Linux with Docker: RISC Zero's gnark step);
+//! - `hp-proof <hub input> <chain receipt|none> <out>`: `hp` then `wrap`,
+//!   writing the Groth16 seal (256 bytes: A, B, C uncompressed, big-endian,
+//!   RISC Zero's), what the hub asserts (`lichen_babe::risc0`);
 //! - `pack <guest ELF> <out>`: a guest's ELF with RISC Zero's kernel (the
 //!   program binary the image id is of), for r0/build-guest.sh;
-//! - `image-id [spend|chain]`: a committed guest's
-//!   image id;
+//! - `image-id [spend|chain|hp]`: a committed guest's image id;
 //!   `check-id`: that each is its committed `.id`; `pack-id <bin>`: a
 //!   packed binary's.
 //!
-//! The guests proved are the committed `r0/guests/spend.bin` and
-//! `chain.bin`.
+//! The guests proved are the committed `r0/guests/spend.bin`, `chain.bin`
+//! and `hp.bin`.
 
 use std::io::{Read, Write};
 
 use anyhow::{bail, ensure, Context, Result};
-use risc0_zkvm::{compute_image_id, default_executor, default_prover, Digest, ExecutorEnv, ProverOpts, Receipt};
+use risc0_zkvm::{compute_image_id, default_executor, default_prover, Digest, ExecutorEnv, InnerReceipt, ProverOpts, Receipt, ReceiptClaim};
 
 const GUESTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../guests");
 
-/// A committed guest (`spend`, `chain`).
+/// A committed guest (`spend`, `chain`, `hp`).
 fn committed(name: &str) -> Result<Vec<u8>> {
     let p = format!("{GUESTS}/{name}.bin");
     std::fs::read(&p).with_context(|| format!("the committed guest, {p}"))
@@ -130,6 +141,99 @@ fn load(p: &str) -> Result<Receipt> {
     bincode::deserialize(&read(p)?).with_context(|| format!("a receipt, {p}"))
 }
 
+/// The hub's statement's input, and the chain receipt at `A*`'s chain
+/// height (`none`: a malformed claim's, which needs none), checked
+/// natively. The input's bytes, its journal, the receipt and, without one,
+/// the claim of the receipt the statement reads (`exec`'s stand-in).
+struct Hp {
+    bytes: Vec<u8>,
+    journal: Vec<u8>,
+    chain: Option<Receipt>,
+    claim: Option<ReceiptClaim>,
+}
+
+fn hp_input(input: &str, chain: Option<&str>) -> Result<Hp> {
+    let bytes = read(input)?;
+    let hub = lichen_withdraw::hp::HubInput::from_bytes(&bytes).map_err(|r| anyhow::anyhow!("the hub's input: {r:?}"))?;
+    let id = image_id(&committed("chain")?)?;
+    let chain_id: [u8; 32] = id.as_bytes().try_into()?;
+    let chain = chain.filter(|c| *c != "none").map(load).transpose()?;
+    if let Some(r) = &chain {
+        r.verify(id).context("the chain receipt")?;
+    }
+    // the chain journal the statement asks for, if any
+    let mut asked = None;
+    let journal = lichen_withdraw::hp::check(&hub, &chain_id, &mut |j| {
+        asked = Some(j.to_vec());
+        chain.as_ref().is_none_or(|r| r.journal.bytes == j)
+    })
+    .map_err(|r| anyhow::anyhow!("the hub's statement rejects the input: {r:?}"))?;
+    let claim = match (&chain, asked) {
+        (None, Some(j)) => Some(ReceiptClaim::ok(id, j)),
+        _ => None,
+    };
+    let kind = match &hub.ground {
+        lichen_withdraw::hp::Ground::Malformed => "malformed".to_string(),
+        lichen_withdraw::hp::Ground::At { why, .. } => format!("{why:?}").split([' ', '{', '(']).next().unwrap_or("").to_string(),
+    };
+    eprintln!("lichen-r0: contract {}: the claim is false ({kind})", hub.c);
+    Ok(Hp { bytes, journal: journal.to_vec(), chain, claim })
+}
+
+/// Prove the hub's statement (or, `execute_only`, run it): the succinct
+/// receipt, checked.
+fn prove_hp(hp: Hp, execute_only: bool) -> Result<Option<Receipt>> {
+    let guest = committed("hp")?;
+    let id = image_id(&guest)?;
+    let mut env = ExecutorEnv::builder();
+    env.write(&(hp.bytes.len() as u32))?.write_slice(&words(&hp.bytes));
+    match (hp.chain, hp.claim) {
+        (Some(r), _) => {
+            env.add_assumption(r);
+        }
+        (None, Some(c)) if execute_only => {
+            env.add_assumption(c);
+        }
+        (None, Some(_)) => bail!("the statement reads a chain receipt: give one"),
+        (None, None) => {}
+    }
+    let env = env.build()?;
+    if execute_only {
+        let s = default_executor().execute(env, &guest)?;
+        ensure!(s.journal.bytes == hp.journal, "the execution's journal isn't the statement's");
+        let user: u64 = s.segments.iter().map(|g| g.cycles as u64).sum();
+        eprintln!("lichen-r0: executed hp ({} user cycles, {} segments)", user, s.segments.len());
+        return Ok(None);
+    }
+    let claim = ReceiptClaim::ok(id, hp.journal.clone());
+    eprintln!("lichen-r0: the claim digest, the Groth16 public input's: {}", risc0_zkvm::sha::Digestible::digest(&claim));
+    let t = std::time::Instant::now();
+    let info = default_prover().prove_with_opts(env, &guest, &ProverOpts::succinct())?;
+    eprintln!("lichen-r0: proved hp in {:.1}s ({} user cycles, {} segments)", t.elapsed().as_secs_f64(), info.stats.user_cycles, info.stats.segments);
+    info.receipt.verify(id)?;
+    ensure!(info.receipt.journal.bytes == hp.journal, "the receipt's journal isn't the statement's");
+    Ok(Some(info.receipt))
+}
+
+/// The Groth16 receipt of a succinct receipt of the hub's statement,
+/// checked.
+fn wrap(r: &Receipt) -> Result<Receipt> {
+    let id = image_id(&committed("hp")?)?;
+    r.verify(id).context("a receipt of the hub's statement")?;
+    let t = std::time::Instant::now();
+    let g = default_prover().compress(&ProverOpts::groth16(), r)?;
+    eprintln!("lichen-r0: wrapped in Groth16 in {:.1}s", t.elapsed().as_secs_f64());
+    g.verify(id)?;
+    Ok(g)
+}
+
+/// A Groth16 receipt's seal (256 bytes).
+fn seal(r: &Receipt) -> Result<Vec<u8>> {
+    let InnerReceipt::Groth16(g) = &r.inner else { bail!("not a Groth16 receipt") };
+    ensure!(g.seal.len() == 256, "a Groth16 seal is 256 bytes, not {}", g.seal.len());
+    Ok(g.seal.clone())
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -163,6 +267,18 @@ fn main() -> Result<()> {
                 None => Ok(()),
             }
         }
+        ["hp", input, chain, out] => {
+            let r = prove_hp(hp_input(input, Some(chain))?, false)?.context("a receipt")?;
+            write(out, &bincode::serialize(&r)?)
+        }
+        ["exec-hp", input, rest @ ..] if rest.len() <= 1 => prove_hp(hp_input(input, rest.first().copied())?, true).map(|_| ()),
+        ["wrap", receipt, out] => write(out, &bincode::serialize(&wrap(&load(receipt)?)?)?),
+        ["hp-proof", input, chain, out] => {
+            let r = prove_hp(hp_input(input, Some(chain))?, false)?.context("a receipt")?;
+            write(out, &seal(&wrap(&r)?)?)?;
+            eprintln!("lichen-r0: {out}: the Groth16 seal of the hub's statement");
+            Ok(())
+        }
         ["verify-chain", receipt] => {
             let r: Receipt = bincode::deserialize(&read(receipt)?).context("a receipt")?;
             let id = image_id(&committed("chain")?)?;
@@ -185,7 +301,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         ["check-id"] => {
-            for name in ["spend", "chain"] {
+            for name in ["spend", "chain", "hp"] {
                 // a guest not built yet has neither file
                 if !std::path::Path::new(&format!("{GUESTS}/{name}.bin")).exists() && !std::path::Path::new(&format!("{GUESTS}/{name}.id")).exists() {
                     continue;
@@ -196,6 +312,6 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        _ => bail!("usage: lichen-r0 spend <input> <receipt> | verify <receipt> <journal hex> | chain <block input> <out> [--prev <receipt>] [<spend receipt>...] | verify-chain <receipt> | pack <guest ELF> <out> | pack-id <bin> | image-id [spend|chain] | check-id"),
+        _ => bail!("usage: lichen-r0 spend <input> <receipt> | verify <receipt> <journal hex> | chain <block input> <out> [--prev <receipt>] [<spend receipt>...] | verify-chain <receipt> | hp <hub input> <chain receipt|none> <out> | exec-hp <hub input> [<chain receipt>] | wrap <receipt> <out> | hp-proof <hub input> <chain receipt|none> <out> | pack <guest ELF> <out> | pack-id <bin> | image-id [spend|chain|hp] | check-id"),
     }
 }

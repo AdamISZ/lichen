@@ -1831,6 +1831,8 @@ name = "lichen-hub"
 version = "0.4.5"
 dependencies = [
  "anyhow",
+ "ark-bn254",
+ "ark-groth16",
  "bitcoin",
  "bitcoincore-rpc",
  "clap",
@@ -1851,6 +1853,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "serde_json",
+ "sha2",
  "tiny_http",
 ]
 
