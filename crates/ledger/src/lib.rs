@@ -26,13 +26,35 @@ pub mod files;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 pub use k256;
 use k256::schnorr::{Signature, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub use lngap_r0_core::{check, deployment_id, node, root_from_path, state_root, Note, Reject, WithdrawInput, HUB_KEY, JOURNAL_LEN, SEQUENCER_KEY, TREE_DEPTH};
+pub use lngap_r0_core::{deployment_id, node, root_from_path, state_root, Note, Reject, WithdrawInput, HUB_KEY, JOURNAL_LEN, SEQUENCER_KEY, TREE_DEPTH};
+
+/// A return as the sequencer's signed root shows it (ln-gap's withdrawal
+/// check, with lichen's leaves: a note's leaf carries its kind,
+/// `lichen_shielded::t_leaf`): the note the hub's, under the signed state
+/// root at its height; the journal `b ‖ c ‖ deployment`, little-endian.
+pub fn check(input: &WithdrawInput) -> Result<[u8; JOURNAL_LEN], Reject> {
+    if input.note.owner != input.hub {
+        return Err(Reject::NotTheHubs);
+    }
+    if input.path.len() != TREE_DEPTH {
+        return Err(Reject::PathLength);
+    }
+    let b = u32::try_from(input.note.value).map_err(|_| Reject::TooLarge)?;
+    let tree = root_from_path(shielded::t_leaf(&input.note.commitment()), input.index, &input.path);
+    let root = state_root(input.height, &tree, &input.nullifiers);
+    verify(&input.sequencer, &root, &input.signature).map_err(|_| Reject::BadSignature)?;
+    let mut journal = [0u8; JOURNAL_LEN];
+    journal[..4].copy_from_slice(&b.to_le_bytes());
+    journal[4..8].copy_from_slice(&input.note.memo.to_le_bytes());
+    journal[8..].copy_from_slice(&deployment_id(&input.sequencer, &input.hub));
+    Ok(journal)
+}
 pub use lichen_shielded as shielded;
 pub use lichen_validity::{self, AnchorState, OutPoint};
 pub use lichen_withdraw::contract_id as lichen_withdraw_contract_id;
@@ -442,20 +464,19 @@ impl Mint {
     }
 }
 
-/// An exit record: contract `c`, of deposit coin `deposit`, was claimed for `b`
-/// with the notes its `request` posted (`lichen_validity::exit::Posted`'s
-/// encoding), and the hub records it. The claim's transparent notes are
-/// retired as `exited(c)`, each on its owner's signature on the claim; a
-/// shielded note's claim carries no authority to check, so the record
-/// leaves it (the sequencer refuses its spends instead).
+/// An exit record: contract `c`, of deposit coin `deposit`, was claimed for
+/// `b` with the notes at the positions its `request` posted, and the hub
+/// records it (`lichen_validity::exit`). The notes are retired as
+/// `exited(c)`, on their owners' signatures on the claim's `E`, one per
+/// owner in the order they first appear.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Exit {
     pub c: u32,
     #[serde(with = "outpoint")]
     pub deposit: OutPoint,
     pub b: u32,
-    #[serde(with = "hexvec")]
-    pub posted: Vec<u8>,
+    pub notes: Vec<Spend>,
+    pub sigs: Vec<Vec<u8>>,
     /// The hub's signature over [`Exit::digest`].
     pub sig: Vec<u8>,
 }
@@ -466,12 +487,20 @@ impl Exit {
     pub fn digest(d: &Deployment, e: &Hash) -> Hash {
         lichen_validity::exit::record_digest(&d.sequencer, &d.hub, &d.seal.unwrap_or_default(), e)
     }
-    pub fn new(hub: &SigningKey, d: &Deployment, c: u32, deposit: OutPoint, b: u32, posted: &lichen_validity::exit::Posted) -> Exit {
-        let sig = sign(hub, &Exit::digest(d, &posted.fingerprint(c, &deposit, b)));
-        Exit { c, deposit, b, posted: posted.to_bytes(), sig }
+    /// The record of a claim of `b` for contract `c` with `notes` (and
+    /// their positions), signed by their owners with `sigs`.
+    pub fn new(hub: &SigningKey, d: &Deployment, c: u32, deposit: OutPoint, b: u32, notes: Vec<Spend>, sigs: Vec<[u8; 64]>) -> Exit {
+        let e = lichen_validity::exit::fingerprint(c, &deposit, b, &notes.iter().map(|n| n.index).collect::<Vec<_>>());
+        let sig = sign(hub, &Exit::digest(d, &e));
+        Exit { c, deposit, b, notes, sigs: sigs.iter().map(|s| s.to_vec()).collect(), sig }
     }
-    pub fn claim(&self) -> Result<lichen_validity::exit::Posted> {
-        lichen_validity::exit::Posted::from_bytes(&self.posted).map_err(|e| anyhow::anyhow!("an exit claim: {e:?}"))
+    /// The claim's `E`.
+    pub fn fingerprint(&self) -> Hash {
+        lichen_validity::exit::fingerprint(self.c, &self.deposit, self.b, &self.notes.iter().map(|n| n.index).collect::<Vec<_>>())
+    }
+    /// Its notes as the statement reads them.
+    pub fn tnotes(&self) -> Vec<(lichen_validity::TNote, u32)> {
+        self.notes.iter().map(|n| (tnote(&n.note), n.index)).collect()
     }
 }
 
@@ -623,6 +652,14 @@ impl Leaf {
             Leaf::Shielded { cm, .. } => *cm,
         }
     }
+    /// Its leaf in the tree: the commitment with its kind in the top bit
+    /// (`lichen_shielded::t_leaf`).
+    pub fn leaf(&self) -> Hash {
+        match self {
+            Leaf::Note(n) => shielded::t_leaf(&n.commitment()),
+            Leaf::Shielded { cm, .. } => shielded::s_leaf(cm),
+        }
+    }
     /// The transparent note, if this is one.
     pub fn note(&self) -> Option<&Note> {
         match self {
@@ -745,7 +782,7 @@ impl Ledger {
         ensure!(self.tree.len() as usize + leaves.len() <= 1 << TREE_DEPTH, "the tree is full");
         let mut idx = vec![];
         for l in leaves {
-            idx.push(self.tree.append(l.commitment())?);
+            idx.push(self.tree.append(l.leaf())?);
             self.commitments.insert(l.commitment());
             self.notes.push(l.clone());
         }
@@ -795,17 +832,21 @@ impl Ledger {
                 self.append(&m.outputs)
             }
             Tx::Exit(x) => {
-                let posted = x.claim()?;
-                let e = posted.fingerprint(x.c, &x.deposit, x.b);
+                let notes = x.tnotes();
+                let owners = lichen_validity::exit::owners(&notes);
+                ensure!(lichen_validity::exit::well_formed(&notes), "an exit record of no notes, too many, or positions not increasing");
+                ensure!(owners.len() == x.sigs.len(), "an exit record without one signature per owner");
+                let e = x.fingerprint();
                 verify(&self.deployment.hub, &Exit::digest(&self.deployment, &e), &x.sig).context("an exit record not signed by the hub")?;
+                for (o, sig) in owners.iter().zip(&x.sigs) {
+                    verify(o, &lichen_validity::exit::signed_digest(&e), sig).context("an exit claim not signed by its note's owner")?;
+                }
                 let mut nfs = vec![];
-                for n in &posted.notes {
-                    if let lichen_validity::exit::PostedNote::Transparent { note, sig } = n {
-                        verify(&note.owner, &lichen_validity::exit::signed_digest(&e), sig).context("an exit claim not signed by its note's owner")?;
-                        let nf = note.nullifier();
-                        ensure!(!self.nullifiers.contains(&nf) && !nfs.contains(&nf), "a claimed note already spent");
-                        nfs.push(nf);
-                    }
+                for n in &x.notes {
+                    ensure!(self.note(n.index) == Some(&n.note), "claiming a note not at index {}", n.index);
+                    let nf = nullifier(&n.note);
+                    ensure!(!self.nullifiers.contains(&nf) && !nfs.contains(&nf), "a claimed note already spent");
+                    nfs.push(nf);
                 }
                 for nf in nfs {
                     self.nullifiers.insert_at(nf, lichen_validity::smt::exited(x.c), next);
@@ -897,12 +938,9 @@ impl Ledger {
         for t in &txs {
             match t {
                 v::Tx::Mint { .. } | v::Tx::Anchor(_) => {}
-                v::Tx::Exit { c, posted, .. } => {
-                    for n in &posted.notes {
-                        if let v::exit::PostedNote::Transparent { note, .. } = n {
-                            nfs.push((note.nullifier(), v::smt::exited(*c)));
-                        }
-                    }
+                v::Tx::Exit { c, notes, .. } => {
+                    nfs.extend(notes.iter().map(|n| (n.0.nullifier(), v::smt::exited(*c))));
+                    spent_before.extend(notes.iter().map(|n| n.1).filter(|&i| i < size0));
                 }
                 v::Tx::Transfer { spends, outputs, .. } => {
                     let leaf = v::spend_leaf(&self.deployment.hub, outputs);
@@ -981,9 +1019,7 @@ impl Ledger {
         let s = self.sealed_with(index).context("the return is not sealed yet")?;
         let d = self.deployment;
         let input = WithdrawInput { height: s.height, nullifiers: s.nullifiers, signature: s.signature.clone(), note, index, path: self.tree.path_at(index, s.size), sequencer: d.sequencer, hub: d.hub };
-        if let Err(r) = check(&input) {
-            bail!("the statement would reject this return: {r:?}");
-        }
+        check(&input).map_err(|r| anyhow::anyhow!("the statement would reject this return: {r:?}"))?;
         Ok(input)
     }
 
@@ -1075,7 +1111,7 @@ fn block_tx(tx: &Tx) -> Result<lichen_validity::Tx> {
             t_outputs: t.t_outputs.iter().map(tn).collect(),
         },
         Tx::Anchor(r) => V::Anchor(lichen_validity::AnchorRecord::from_bytes(r).map_err(|e| anyhow::anyhow!("an anchor record: {e:?}"))?),
-        Tx::Exit(x) => V::Exit { c: x.c, deposit: x.deposit, b: x.b, posted: x.claim()?, sig: sig(&x.sig)? },
+        Tx::Exit(x) => V::Exit { c: x.c, deposit: x.deposit, b: x.b, notes: x.tnotes(), sigs: x.sigs.iter().map(sig).collect::<Result<_>>()?, sig: sig(&x.sig)? },
     })
 }
 
@@ -1129,7 +1165,7 @@ fn verify_receipt(receipt: &[u8], journal: &[u8]) -> Result<()> {
 
 #[cfg(not(feature = "risc0"))]
 fn verify_receipt(_: &[u8], _: &[u8]) -> Result<()> {
-    bail!("this build can't verify RISC Zero receipts (lichen-ledger's feature risc0: the sequencer's)")
+    anyhow::bail!("this build can't verify RISC Zero receipts (lichen-ledger's feature risc0: the sequencer's)")
 }
 
 /// The chain guest's image id (`r0/guests/chain.id`).
@@ -1595,17 +1631,11 @@ mod tests {
         assert_eq!(lichen_withdraw::check(&w, &id, &mut |_| true), Err(lichen_withdraw::Reject::NotAnchored));
     }
 
-    /// Alice's claim through contract `c`, of deposit coin `deposit`, of `b`
-    /// from her transparent note `n` and a shielded note's nullifier, as
-    /// its `request` posts it: signed by `signer`.
-    fn claim(n: &Note, c: u32, deposit: &OutPoint, b: u32, signer: &SigningKey) -> lichen_validity::exit::Posted {
-        use lichen_validity::exit::{signed_digest, Posted, PostedNote};
-        let mut p = Posted { h_s: 1, sr_s: [0x33; 32], notes: vec![PostedNote::Transparent { note: tnote(n), sig: [0; 64] }, PostedNote::Shielded { nf: [0x44; 32] }] };
-        let e = p.fingerprint(c, deposit, b);
-        if let PostedNote::Transparent { sig, .. } = &mut p.notes[0] {
-            *sig = sign(signer, &signed_digest(&e)).try_into().unwrap();
-        }
-        p
+    /// The owners' signatures on a claim through contract `c`, of deposit
+    /// coin `deposit`, of `b` from `notes`, by `signers`.
+    fn claim_sigs(notes: &[Spend], c: u32, deposit: &OutPoint, b: u32, signers: &[&SigningKey]) -> Vec<[u8; 64]> {
+        let e = lichen_validity::exit::fingerprint(c, deposit, b, &notes.iter().map(|n| n.index).collect::<Vec<_>>());
+        signers.iter().map(|k| sign(k, &lichen_validity::exit::signed_digest(&e)).try_into().unwrap()).collect()
     }
 
     #[test]
@@ -1616,47 +1646,67 @@ mod tests {
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: Some(OutPoint { txid: [0x5e; 32], vout: 1 }) });
         let z = v::tree_empties();
         let genesis = (v::state_root(0, &z[TREE_DEPTH], &v::smt::EMPTIES[v::smt::DEPTH]), v::recent_hash(&[]));
-        let n0 = note(xonly(&alice), 10, 0);
-        let i0 = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![n0]))).unwrap()[0];
+        let (n0, n1, n2) = (note(xonly(&alice), 10, 0), note(xonly(&bob), 5, 0), note(xonly(&alice), 3, 0));
+        let idx = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![n0, n1, n2]))).unwrap();
         let j1 = seal_checked(&mut l, &seq, genesis);
+        let notes: Vec<Spend> = [n0, n1, n2].iter().zip(&idx).map(|(n, i)| Spend { note: *n, index: *i }).collect();
 
-        // the claim through 1000: only the hub records it, only with its
-        // owner's signature
+        // the claim through 1000 of three notes, two owners: only the hub
+        // records it, only with each owner's signature, in the order they
+        // first appear
         let deposit = OutPoint { txid: [12; 32], vout: 2 };
-        let posted = claim(&n0, 1000, &deposit, 10, &alice);
-        assert!(format!("{:#}", l.apply(&Tx::Exit(Exit::new(&alice, &l.deployment, 1000, deposit, 10, &posted))).unwrap_err()).contains("not signed by the hub"));
-        let forged = claim(&n0, 1000, &deposit, 10, &bob);
-        assert!(format!("{:#}", l.apply(&Tx::Exit(Exit::new(&hub, &l.deployment, 1000, deposit, 10, &forged))).unwrap_err()).contains("its note's owner"));
-        let other_b = claim(&n0, 1000, &deposit, 11, &alice);
-        assert!(l.apply(&Tx::Exit(Exit::new(&hub, &l.deployment, 1000, deposit, 10, &other_b))).is_err(), "signed for another b");
-        let x = Tx::Exit(Exit::new(&hub, &l.deployment, 1000, deposit, 10, &posted));
+        let dep = l.deployment;
+        let record = |k: &SigningKey, c: u32, ns: &[Spend], sigs: Vec<[u8; 64]>| Tx::Exit(Exit::new(k, &dep, c, deposit, 10, ns.to_vec(), sigs));
+        let good = claim_sigs(&notes, 1000, &deposit, 10, &[&alice, &bob]);
+        assert!(format!("{:#}", l.apply(&record(&alice, 1000, &notes, good.clone())).unwrap_err()).contains("not signed by the hub"));
+        let swapped = claim_sigs(&notes, 1000, &deposit, 10, &[&bob, &alice]);
+        assert!(format!("{:#}", l.apply(&record(&hub, 1000, &notes, swapped)).unwrap_err()).contains("its note's owner"));
+        assert!(format!("{:#}", l.apply(&record(&hub, 1000, &notes, good[..1].to_vec())).unwrap_err()).contains("one signature per owner"));
+        let other_b = claim_sigs(&notes, 1000, &deposit, 11, &[&alice, &bob]);
+        assert!(l.apply(&record(&hub, 1000, &notes, other_b)).is_err(), "signed for another b");
+        let mut moved = notes.clone();
+        moved[2].index = 7;
+        let sigs = claim_sigs(&moved, 1000, &deposit, 10, &[&alice, &bob]);
+        assert!(format!("{:#}", l.apply(&record(&hub, 1000, &moved, sigs)).unwrap_err()).contains("not at index"));
+        let backwards: Vec<Spend> = notes.iter().rev().copied().collect();
+        let sigs = claim_sigs(&backwards, 1000, &deposit, 10, &[&alice, &bob]);
+        assert!(format!("{:#}", l.apply(&record(&hub, 1000, &backwards, sigs)).unwrap_err()).contains("positions not increasing"));
+        let x = record(&hub, 1000, &notes, good.clone());
         assert_eq!(l.apply(&x).unwrap(), Vec::<u32>::new());
-        assert_eq!(l.nullifiers.leaf(&nullifier(&n0)), v::smt::exited(1000));
-        assert!(!l.nullifiers.contains(&[0x44; 32]), "a shielded note's claim has no authority to retire it");
-        // the note is gone: no spend, no second record
-        assert!(l.apply(&transfer(vec![(Spend { note: n0, index: i0 }, &alice)], vec![note(xonly(&alice), 10, 0)])).is_err());
-        let again = claim(&n0, 1001, &deposit, 10, &alice);
-        assert!(format!("{:#}", l.apply(&Tx::Exit(Exit::new(&hub, &l.deployment, 1001, deposit, 10, &again))).unwrap_err()).contains("already spent"));
+        for n in [n0, n1, n2] {
+            assert_eq!(l.nullifiers.leaf(&nullifier(&n)), v::smt::exited(1000));
+        }
+        // the notes are gone: no spend, no second record
+        assert!(l.apply(&transfer(vec![(notes[0], &alice)], vec![note(xonly(&alice), 10, 0)])).is_err());
+        let again = claim_sigs(&notes[..1], 1001, &deposit, 10, &[&alice]);
+        assert!(format!("{:#}", l.apply(&record(&hub, 1001, &notes[..1], again)).unwrap_err()).contains("already spent"));
         // kept and read back
         let back: Ledger = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
         assert_eq!(back.pending.len(), 1);
 
         // the block statement agrees, and refuses what the ledger refuses
-        let good = l.block_input().unwrap();
+        let good_input = l.block_input().unwrap();
         let refused = |f: &dyn Fn(&mut v::Tx)| {
-            let mut bad = good.clone();
+            let mut bad = good_input.clone();
             f(&mut bad.txs[0]);
             v::check(&bad, &mut |_| false)
         };
         assert_eq!(refused(&|t| if let v::Tx::Exit { c, .. } = t { *c = 1001 }), Err(v::Reject::BadSignature), "the hub signed another claim");
-        assert_eq!(refused(&|t| if let v::Tx::Exit { posted, .. } = t { posted.notes.swap(0, 1) }), Err(v::Reject::BadSignature), "another E");
+        assert_eq!(refused(&|t| if let v::Tx::Exit { sigs, .. } = t { sigs.swap(0, 1) }), Err(v::Reject::BadSignature), "the owners' signatures out of order");
+        assert_eq!(refused(&|t| if let v::Tx::Exit { sigs, .. } = t { sigs.pop(); }), Err(v::Reject::Shape), "an owner's signature missing");
+        assert_eq!(refused(&|t| if let v::Tx::Exit { notes, .. } = t { notes.swap(0, 1) }), Err(v::Reject::Shape), "positions not increasing");
+        let d = Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: Some(OutPoint { txid: [0x5e; 32], vout: 1 }) };
         assert_eq!(
-            refused(&|t| if let v::Tx::Exit { posted, sig, .. } = t {
-                *posted = claim(&n0, 1000, &deposit, 10, &bob);
-                *sig = sign(&hub, &Exit::digest(&Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: Some(OutPoint { txid: [0x5e; 32], vout: 1 }) }, &posted.fingerprint(1000, &deposit, 10))).try_into().unwrap();
+            refused(&|t| if let v::Tx::Exit { notes, sigs, sig, .. } = t {
+                // bob's note alone, claimed with bob's own signature, but
+                // shown at alice's position: not in the tree
+                *notes = vec![(tnote(&n1), idx[0])];
+                let e = v::exit::fingerprint(1000, &deposit, 10, &[idx[0]]);
+                *sigs = vec![sign(&bob, &v::exit::signed_digest(&e)).try_into().unwrap()];
+                *sig = sign(&hub, &Exit::digest(&d, &e)).try_into().unwrap();
             }),
-            Err(v::Reject::BadSignature),
-            "the hub's record of someone else's signature"
+            Err(v::Reject::NotInTree),
+            "a note not at its position"
         );
         let j2 = seal_checked(&mut l, &seq, (j1.to, j1.recent_to));
         assert_ne!(j2.to, j1.to);

@@ -244,7 +244,7 @@ fn the_hub_proves_on_the_mock_statement() {
     let claim = lichen_withdraw::hp::Claim::from_bytes(&plan.posted().unwrap()).unwrap();
     let unit = w.contracts[0].record.terms.unit.to_sat();
     assert!(u64::from(plan.b) * unit <= back && u64::from(plan.b) == back / unit, "R: b is the return's value, in units");
-    assert_eq!(claim.notes.iter().map(|n| n.index).collect::<Vec<_>>(), vec![note.index], "R: the claim is of the note the return spent");
+    assert_eq!(claim.positions, vec![note.index], "R: the claim is of the note the return spent");
     let k = w.contracts.iter().position(|h| h.record.cid() == cids[0]).unwrap();
     w.contracts[k].exit = Some(plan);
     assert!(matches!(exit(&mut w, &ch, "rita", cids[0]), Outcome::HubTimedOut(_)), "R: the exit after a return is paid");

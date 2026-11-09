@@ -78,6 +78,28 @@ pub fn transparent_commitment(owner: &Hash, value: u64, memo: u32, rho: &Hash) -
     sha256(&[b"lngap/note", owner, &value.to_be_bytes(), &memo.to_be_bytes(), rho])
 }
 
+/// A leaf of the commitment tree: a commitment with its top bit set to
+/// its kind, 0 a transparent note's, 1 a shielded note's
+/// (docs/HUB_PROVES_PLAN.md), so that a leaf says which it is. The chain
+/// statement sets it as it appends; paths are to leaves.
+pub fn t_leaf(cm: &Hash) -> Hash {
+    let mut l = *cm;
+    l[0] &= 0x7f;
+    l
+}
+
+/// A shielded note's leaf ([`t_leaf`]).
+pub fn s_leaf(cm: &Hash) -> Hash {
+    let mut l = *cm;
+    l[0] |= 0x80;
+    l
+}
+
+/// Whether a leaf is a shielded note's ([`t_leaf`]).
+pub fn is_shielded(leaf: &Hash) -> bool {
+    leaf[0] & 0x80 != 0
+}
+
 /// A node of the commitment tree (`lngap-r0-core`'s `node`).
 pub fn node(left: &Hash, right: &Hash) -> Hash {
     sha256(&[left, right])
@@ -184,7 +206,7 @@ pub fn check(input: &SpendInput) -> Result<Journal, Reject> {
             return Err(Reject::PathLength);
         }
         let note = SNote { value: s.value, owner: owner(&s.nk), rho: s.rho };
-        if root_from_path(note.commitment(), s.index, &s.path) != input.anchor {
+        if root_from_path(s_leaf(&note.commitment()), s.index, &s.path) != input.anchor {
             return Err(Reject::NotInTree);
         }
         nfs.push(nullifier(&s.nk, &s.rho));
@@ -350,7 +372,7 @@ mod tests {
         let (alice, bob) = (owner(&h(1)), owner(&h(2)));
         let n5 = SNote { value: 5, owner: alice, rho: h(10) };
         let n7 = SNote { value: 7, owner: alice, rho: h(11) };
-        let (root, paths) = tree(&[transparent_commitment(&h(9), 4, 0, &h(8)), n5.commitment(), n7.commitment()]);
+        let (root, paths) = tree(&[t_leaf(&transparent_commitment(&h(9), 4, 0, &h(8))), s_leaf(&n5.commitment()), s_leaf(&n7.commitment())]);
         let spends = vec![Spend { value: 5, rho: h(10), nk: h(1), index: 1, path: paths[1].clone() }, Spend { value: 7, rho: h(11), nk: h(1), index: 2, path: paths[2].clone() }];
         let input = SpendInput { anchor: root, t_nfs: vec![], t_total: 0, spends, outputs: vec![(9, bob), (3, alice)], t_outputs: vec![] };
         (input, root)

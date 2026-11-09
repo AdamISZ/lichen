@@ -3,24 +3,20 @@
 //! can, that her claim is false. Its statement is fixed when the contract
 //! opens; BABE checks it with the roles swapped (Alice garbles).
 //!
-//! **The claim** ([`Claim`]), posted in `request`'s witness: each note by
-//! its position in the commitment tree and its opening, and one signature
-//! per owner key on the claim's fingerprint
+//! **The claim** ([`Claim`]), posted in `request`'s witness: its notes
+//! by their positions in the commitment tree, increasing, and one
+//! signature per owner key on the claim's fingerprint
 //!
 //! ```text
-//! E = SHA256("lichen/exit" ‖ c ‖ O_D ‖ b ‖ 0 ‖ P ‖ nf_1 ‖ … ‖ nf_n)
-//! P = SHA256("lichen/hp/positions" ‖ i_1 ‖ … ‖ i_n)
+//! E = SHA256("lichen/exit" ‖ c ‖ O_D ‖ b ‖ i_1 ‖ … ‖ i_n)
 //! ```
 //!
-//! `lichen_validity::exit`'s fingerprint with no state named (`h_S` 0)
-//! and the positions' digest for `SR_S`, so that the hub's exit record on
-//! the L2 retires the notes under today's chain statement. Alice signs
-//! `b` and `E` with her one-time keys; the claim's bytes, which script
-//! can't check, must hash to that `E`.
-//!
-//! The opening is posted, not just the position: shielded commitments
-//! share the tree, and the hub couldn't show that a leaf isn't a
-//! transparent note's without one.
+//! (`lichen_validity::exit`), so that the hub's exit record on the L2
+//! retires the notes under the same `E`. Alice signs `b` and `E` with her
+//! one-time keys; the claim's bytes, which script can't check, must hash
+//! to that `E`. A leaf's top bit says its kind, so a position alone names
+//! a transparent note: the hub, which holds every opening, shows one
+//! where a ground needs it.
 //!
 //! **The claim is true** if its notes are hers (each owner signed `E`),
 //! worth at least `b` (in the contract's units), and live at `A*`, the
@@ -32,8 +28,9 @@
 //! confirms.
 //!
 //! **The statement** ([`check`]) holds on any ground ([`Ground`]) that
-//! the claim is false: malformed, not hers, too much, not live at `A*`,
-//! or a second claim of a note through another contract. `A*` is shown
+//! the claim is false: malformed, or, at `A*`, a position that isn't a
+//! transparent note, a note not hers, notes worth too little, a note
+//! spent, or a note claimed through another contract too. `A*` is shown
 //! last by the first spend of its seal output, in a block after the
 //! cutoff: anchors spend the seal one after another, and Bitcoin allows
 //! one spend. Its journal is `c ‖ D ‖ H(O_D ‖ margin)`, fixed at opening.
@@ -48,8 +45,9 @@ use lichen_validity::btc::{self, Header};
 use lichen_validity::{smt, OutPoint, TNote};
 use sha2::{Digest, Sha256};
 
-pub use lichen_validity::exit::{fingerprint, signed_digest};
+pub use lichen_validity::exit::{fingerprint, owners, signed_digest};
 use crate::{contract_id, deployment_id, root_from_path, work_on, Anchored, Hash, Reject, Request, TREE_DEPTH};
+use lichen_shielded::is_shielded;
 
 /// `request`'s witness carries the claim in its first this many items,
 /// concatenated: as many as the script drops, empty ones padding.
@@ -91,18 +89,11 @@ pub const MAX_NOTES: usize = lichen_validity::exit::MAX_NOTES;
 /// The journal's length in bytes: `c ‖ D ‖ H(O_D ‖ margin)`.
 pub const JOURNAL_LEN: usize = 68;
 
-/// A claimed note: its position in the commitment tree, and its opening.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClaimNote {
-    pub index: u32,
-    pub note: TNote,
-}
-
-/// A claim as `request` posts it: its notes, positions increasing, and
+/// A claim as `request` posts it: its notes' positions, increasing, and
 /// one signature per owner key on [`signed_digest`] of its `E`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claim {
-    pub notes: Vec<ClaimNote>,
+    pub positions: Vec<u32>,
     pub sigs: Vec<[u8; 64]>,
 }
 
@@ -112,35 +103,19 @@ fn verifies(owner: &Hash, digest: &Hash, sig: &[u8; 64]) -> bool {
 }
 
 impl Claim {
-    /// `P`: the positions' digest.
-    pub fn positions(&self) -> Hash {
-        let mut h = Sha256::new();
-        h.update(b"lichen/hp/positions");
-        for n in &self.notes {
-            h.update(n.index.to_be_bytes());
-        }
-        h.finalize().into()
-    }
-
-    pub fn nullifiers(&self) -> Vec<Hash> {
-        self.notes.iter().map(|n| n.note.nullifier()).collect()
-    }
-
     /// `E` for contract `c` of deposit coin `deposit`, claiming `b`.
     pub fn fingerprint(&self, c: u32, deposit: &OutPoint, b: u32) -> Hash {
-        fingerprint(c, deposit, b, 0, &self.positions(), &self.nullifiers())
+        fingerprint(c, deposit, b, &self.positions)
     }
 
-    /// Whether it is well formed: one to [`MAX_NOTES`] notes, positions
-    /// increasing and in the tree's range, nullifiers distinct, one to as many signatures as
+    /// Whether it is well formed: one to [`MAX_NOTES`] positions,
+    /// increasing and in the tree's range, one to as many signatures as
     /// notes.
     pub fn well_formed(&self) -> bool {
-        let nfs = self.nullifiers();
-        (1..=MAX_NOTES).contains(&self.notes.len())
-            && self.notes.windows(2).all(|w| w[0].index < w[1].index)
-            && self.notes.iter().all(|n| n.index >> TREE_DEPTH == 0)
-            && nfs.iter().enumerate().all(|(i, a)| !nfs[..i].contains(a))
-            && (1..=self.notes.len()).contains(&self.sigs.len())
+        (1..=MAX_NOTES).contains(&self.positions.len())
+            && self.positions.windows(2).all(|w| w[0] < w[1])
+            && self.positions.iter().all(|i| i >> TREE_DEPTH == 0)
+            && (1..=self.positions.len()).contains(&self.sigs.len())
     }
 
     /// The signature of `owner`'s on the claim `e`, if any.
@@ -149,25 +124,26 @@ impl Claim {
         self.sigs.iter().find(|s| verifies(owner, &d, s)).copied()
     }
 
-    /// The claim as an exit record carries it (`lichen_validity::exit`):
-    /// no state, the positions' digest, each note with its owner's
-    /// signature. None unless every owner signed `e`.
-    pub fn record(&self, e: &Hash) -> Option<lichen_validity::exit::Posted> {
-        let notes = self.notes.iter().map(|n| Some(lichen_validity::exit::PostedNote::Transparent { note: n.note, sig: self.signed_by(&n.note.owner, e)? })).collect::<Option<Vec<_>>>()?;
-        Some(lichen_validity::exit::Posted { h_s: 0, sr_s: self.positions(), notes })
+    /// The exit record's notes and signatures (`lichen_validity::Tx::Exit`)
+    /// from the notes at the claim's positions, in order: each owner's
+    /// signature, in [`owners`]' order. None unless every owner signed
+    /// `e`.
+    #[allow(clippy::type_complexity)]
+    pub fn record(&self, notes: &[TNote], e: &Hash) -> Option<(Vec<(TNote, u32)>, Vec<[u8; 64]>)> {
+        if notes.len() != self.positions.len() {
+            return None;
+        }
+        let notes: Vec<(TNote, u32)> = notes.iter().copied().zip(self.positions.iter().copied()).collect();
+        let sigs = owners(&notes).iter().map(|o| self.signed_by(o, e)).collect::<Option<Vec<_>>>()?;
+        Some((notes, sigs))
     }
 
-    /// `[n] (index ‖ owner ‖ value ‖ memo ‖ rho)ⁿ [k] sigᵏ`, big-endian:
-    /// 80 bytes a note, 64 a signature.
+    /// `[n] iⁿ [k] sigᵏ`, big-endian: 4 bytes a note, 64 a signature.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut w = Vec::with_capacity(2 + 80 * self.notes.len() + 64 * self.sigs.len());
-        w.push(self.notes.len() as u8);
-        for n in &self.notes {
-            w.extend_from_slice(&n.index.to_be_bytes());
-            w.extend_from_slice(&n.note.owner);
-            w.extend_from_slice(&n.note.value.to_be_bytes());
-            w.extend_from_slice(&n.note.memo.to_be_bytes());
-            w.extend_from_slice(&n.note.rho);
+        let mut w = Vec::with_capacity(2 + 4 * self.positions.len() + 64 * self.sigs.len());
+        w.push(self.positions.len() as u8);
+        for i in &self.positions {
+            w.extend_from_slice(&i.to_be_bytes());
         }
         w.push(self.sigs.len() as u8);
         for s in &self.sigs {
@@ -179,21 +155,15 @@ impl Claim {
     pub fn from_bytes(b: &[u8]) -> Result<Claim, Reject> {
         let mut r = crate::R(b);
         let [n] = r.take()?;
-        let mut notes = Vec::with_capacity((n as usize).min(MAX_NOTES));
-        for _ in 0..n {
-            let index = u32::from_be_bytes(r.take()?);
-            let note = TNote { owner: r.take()?, value: u64::from_be_bytes(r.take()?), memo: u32::from_be_bytes(r.take()?), rho: r.take()? };
-            notes.push(ClaimNote { index, note });
-        }
+        let positions = (0..n).map(|_| Ok(u32::from_be_bytes(r.take()?))).collect::<Result<Vec<_>, Reject>>()?;
         let [k] = r.take()?;
         let sigs = (0..k).map(|_| r.take()).collect::<Result<Vec<_>, _>>()?;
         if !r.0.is_empty() {
             return Err(Reject::Encoding);
         }
-        Ok(Claim { notes, sigs })
+        Ok(Claim { positions, sigs })
     }
 }
-
 /// What `request` carries: `b`, `E` and the claim's bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Requested {
@@ -280,14 +250,31 @@ pub struct Last {
     pub seal: SealSpend,
 }
 
-/// How a claimed note isn't live at `A*`.
+/// A claimed note's opening in `A*`'s tree: the transparent note at its
+/// position, and the path from its leaf.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum How {
-    /// The leaf at its position isn't its commitment (an empty leaf past
-    /// the tree's end, too): the leaf and its path.
-    Mismatch { leaf: Hash, path: Vec<Hash> },
-    /// Its nullifier is spent, so, by this path in `A*`'s nullifier tree.
-    Spent { spent: Spent, proof: smt::Proof },
+pub struct Opening {
+    pub note: TNote,
+    pub path: Vec<Hash>,
+}
+
+/// Why the claim is false at `A*`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// The leaf at the `which`th position isn't a transparent note's: a
+    /// shielded note's, or empty (past the tree's end); the leaf and its
+    /// path.
+    NotANote { which: u8, leaf: Hash, path: Vec<Hash> },
+    /// The `which`th note's owner signed none of the claim's signatures.
+    NotHers { which: u8, opening: Opening },
+    /// The notes, all opened, are worth less than `b` units.
+    TooMuch { openings: Vec<Opening> },
+    /// The `which`th note's nullifier is spent, so, by this path in
+    /// `A*`'s nullifier tree.
+    Spent { which: u8, opening: Opening, spent: Spent, proof: smt::Proof },
+    /// The `which`th note's owner signed a claim of it through another
+    /// contract `c'` (of deposit coin `deposit'`, for `b'`).
+    Second { which: u8, opening: Opening, other_c: u32, other_deposit: OutPoint, other_b: u32, other: Claim },
 }
 
 /// Why the claim is false.
@@ -297,15 +284,8 @@ pub enum Ground {
     /// The claim's bytes don't parse, aren't well formed, or don't hash to
     /// the `E` she signed.
     Malformed,
-    /// The note `which`'s owner signed none of the claim's signatures.
-    NotHers { which: u8 },
-    /// The notes are worth less than `b` units.
-    TooMuch,
-    /// The note `which` isn't live at `A*`.
-    NotLive { which: u8, last: Last, how: How },
-    /// The note `which`'s owner signed a claim of it through another
-    /// contract `c'` (of deposit coin `deposit'`, for `b'`).
-    Second { which: u8, other_c: u32, other_deposit: OutPoint, other_b: u32, other: Claim },
+    /// At `A*`, shown the last anchor before the cutoff.
+    At { last: Last, why: Why },
 }
 
 /// The statement's input: the contract (`c`, its deposit coin, the
@@ -365,6 +345,14 @@ fn is_last(last: &Last, request: &Header, margin: u32) -> bool {
         && btc::parse_tx(&last.seal.tx).is_some_and(|t| t.inputs.contains(&s.anchor.seal))
 }
 
+/// The leaf at `index` of the tree `root`, by `path`.
+fn at(root: &Hash, index: u32, leaf: &Hash, path: &[Hash]) -> Result<(), Reject> {
+    if path.len() != TREE_DEPTH || root_from_path(*leaf, index, path) != *root {
+        return Err(Reject::PathLength);
+    }
+    Ok(())
+}
+
 /// The hub's statement: check `input` against a chain receipt of
 /// `chain_id`; on success, the journal `c ‖ D ‖ H(O_D ‖ margin)`.
 pub fn check(input: &HubInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<[u8; JOURNAL_LEN], Reject> {
@@ -381,60 +369,68 @@ pub fn check(input: &HubInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u
     }
     let r = requested(&witness).ok_or(Reject::Posted)?;
     let claim = claim_of(input, &r);
-    let note = |which: u8| claim.as_ref().and_then(|c| c.notes.get(which as usize)).ok_or(Reject::NotSpent);
-    match &input.ground {
-        Ground::Malformed => {
-            if claim.is_some() {
+    let Ground::At { last, why } = &input.ground else {
+        return match claim {
+            Some(_) => Err(Reject::Holds),
+            None => Ok(journal(input.c, &d, &input.deposit, input.margin)),
+        };
+    };
+    let claim = claim.ok_or(Reject::Posted)?;
+    // A*: this deployment's and contract's, anchored, the last
+    let s = &last.state;
+    if (s.sequencer, s.hub, s.anchor.genesis, s.work, s.unit) != (t.sequencer, t.hub, t.genesis, t.work, t.unit) {
+        return Err(Reject::NotAnchored);
+    }
+    if s.check(&last.tree, chain_id, verify_chain)? != d {
+        return Err(Reject::NotAnchored);
+    }
+    if !is_last(last, &header, input.margin) {
+        return Err(Reject::Last);
+    }
+    let position = |which: u8| claim.positions.get(which as usize).copied().ok_or(Reject::Encoding);
+    let opened = |which: u8, o: &Opening| -> Result<(), Reject> { at(&last.tree, position(which)?, &o.note.leaf(), &o.path) };
+    match why {
+        Why::NotANote { which, leaf, path } => {
+            at(&last.tree, position(*which)?, leaf, path)?;
+            if *leaf != [0; 32] && !is_shielded(leaf) {
                 return Err(Reject::Holds);
             }
         }
-        Ground::NotHers { which } => {
-            if claim.as_ref().ok_or(Reject::Holds)?.signed_by(&note(*which)?.note.owner, &r.e).is_some() {
+        Why::NotHers { which, opening } => {
+            opened(*which, opening)?;
+            if claim.signed_by(&opening.note.owner, &r.e).is_some() {
                 return Err(Reject::Holds);
             }
         }
-        Ground::TooMuch => {
-            let total = claim.as_ref().ok_or(Reject::Holds)?.notes.iter().try_fold(0u64, |s, n| s.checked_add(n.note.value)).ok_or(Reject::TooLarge)?;
+        Why::TooMuch { openings } => {
+            if openings.len() != claim.positions.len() {
+                return Err(Reject::Encoding);
+            }
+            for (k, o) in openings.iter().enumerate() {
+                opened(k as u8, o)?;
+            }
+            let total = openings.iter().try_fold(0u64, |s, o| s.checked_add(o.note.value)).ok_or(Reject::TooLarge)?;
             if total / t.unit >= u64::from(r.b) {
                 return Err(Reject::Holds);
             }
         }
-        Ground::NotLive { which, last, how } => {
-            let n = note(*which)?;
-            let s = &last.state;
-            if (s.sequencer, s.hub, s.anchor.genesis, s.work, s.unit) != (t.sequencer, t.hub, t.genesis, t.work, t.unit) {
-                return Err(Reject::NotAnchored);
+        Why::Spent { which, opening, spent, proof } => {
+            opened(*which, opening)?;
+            match *spent {
+                Spent::Return { c, r: v } if c == input.c && v / t.unit >= u64::from(r.b) => return Err(Reject::Own),
+                Spent::Exit { c } if c == input.c => return Err(Reject::Own),
+                _ => {}
             }
-            if s.check(&last.tree, chain_id, verify_chain)? != d {
-                return Err(Reject::NotAnchored);
-            }
-            if !is_last(last, &header, input.margin) {
-                return Err(Reject::Last);
-            }
-            match how {
-                How::Mismatch { leaf, path } => {
-                    if path.len() != TREE_DEPTH || root_from_path(*leaf, n.index, path) != last.tree || *leaf == n.note.commitment() {
-                        return Err(Reject::NotSpent);
-                    }
-                }
-                How::Spent { spent, proof } => {
-                    match *spent {
-                        Spent::Return { c, r: v } if c == input.c && v / t.unit >= u64::from(r.b) => return Err(Reject::Own),
-                        Spent::Exit { c } if c == input.c => return Err(Reject::Own),
-                        _ => {}
-                    }
-                    if !smt::holds(&s.nullifiers, &n.note.nullifier(), &spent.leaf(), proof, smt::empties()) {
-                        return Err(Reject::NotSpent);
-                    }
-                }
-            }
-        }
-        Ground::Second { which, other_c, other_deposit, other_b, other } => {
-            let n = note(*which)?;
-            if *other_c == input.c || !other.well_formed() || !other.nullifiers().contains(&n.note.nullifier()) {
+            if !smt::holds(&s.nullifiers, &opening.note.nullifier(), &spent.leaf(), proof, smt::empties()) {
                 return Err(Reject::NotSpent);
             }
-            if other.signed_by(&n.note.owner, &other.fingerprint(*other_c, other_deposit, *other_b)).is_none() {
+        }
+        Why::Second { which, opening, other_c, other_deposit, other_b, other } => {
+            opened(*which, opening)?;
+            if *other_c == input.c || !other.well_formed() || !other.positions.contains(&position(*which)?) {
+                return Err(Reject::NotSpent);
+            }
+            if other.signed_by(&opening.note.owner, &other.fingerprint(*other_c, other_deposit, *other_b)).is_none() {
                 return Err(Reject::NotYours);
             }
         }
@@ -443,6 +439,19 @@ pub fn check(input: &HubInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u
 }
 
 // ----- the encoding, the guest's input (big-endian, as the other statements') -----
+
+fn put_opening(w: &mut crate::W, o: &Opening) {
+    w.put(&o.note.owner);
+    w.put(&o.note.value.to_be_bytes());
+    w.put(&o.note.memo.to_be_bytes());
+    w.put(&o.note.rho);
+    w.list(&o.path);
+}
+
+fn read_opening(r: &mut crate::R) -> Result<Opening, Reject> {
+    let note = TNote { owner: r.take()?, value: u64::from_be_bytes(r.take()?), memo: u32::from_be_bytes(r.take()?), rho: r.take()? };
+    Ok(Opening { note, path: r.list()? })
+}
 
 impl HubInput {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -458,48 +467,60 @@ impl HubInput {
         w.put(&t.unit.to_be_bytes());
         self.request.write(&mut w);
         w.list(&self.headers);
-        match &self.ground {
-            Ground::Malformed => w.put(&[0]),
-            Ground::NotHers { which } => w.put(&[1, *which]),
-            Ground::TooMuch => w.put(&[2]),
-            Ground::NotLive { which, last, how } => {
-                w.put(&[3, *which]);
-                last.state.write(&mut w);
-                w.put(&last.tree);
-                let s = &last.seal;
-                w.bytes(&s.tx);
-                w.put(&s.at.to_be_bytes());
-                w.put(&s.index.to_be_bytes());
-                w.list(&s.path);
-                w.bytes(&s.coinbase);
-                w.list(&s.coinbase_path);
-                match how {
-                    How::Mismatch { leaf, path } => {
-                        w.put(&[0]);
-                        w.put(leaf);
-                        w.list(path);
-                    }
-                    How::Spent { spent, proof } => {
-                        w.put(&[1]);
-                        match *spent {
-                            Spent::Spend => w.put(&[0]),
-                            Spent::Return { c, r } => {
-                                w.put(&[1]);
-                                w.put(&c.to_be_bytes());
-                                w.put(&r.to_be_bytes());
-                            }
-                            Spent::Exit { c } => {
-                                w.put(&[2]);
-                                w.put(&c.to_be_bytes());
-                            }
-                        }
-                        w.put(&proof.bitmap);
-                        w.list(&proof.siblings);
-                    }
+        let (last, why) = match &self.ground {
+            Ground::Malformed => {
+                w.put(&[0]);
+                return w.0;
+            }
+            Ground::At { last, why } => (last, why),
+        };
+        w.put(&[1]);
+        last.state.write(&mut w);
+        w.put(&last.tree);
+        let s = &last.seal;
+        w.bytes(&s.tx);
+        w.put(&s.at.to_be_bytes());
+        w.put(&s.index.to_be_bytes());
+        w.list(&s.path);
+        w.bytes(&s.coinbase);
+        w.list(&s.coinbase_path);
+        match why {
+            Why::NotANote { which, leaf, path } => {
+                w.put(&[0, *which]);
+                w.put(leaf);
+                w.list(path);
+            }
+            Why::NotHers { which, opening } => {
+                w.put(&[1, *which]);
+                put_opening(&mut w, opening);
+            }
+            Why::TooMuch { openings } => {
+                w.put(&[2, openings.len() as u8]);
+                for o in openings {
+                    put_opening(&mut w, o);
                 }
             }
-            Ground::Second { which, other_c, other_deposit, other_b, other } => {
+            Why::Spent { which, opening, spent, proof } => {
+                w.put(&[3, *which]);
+                put_opening(&mut w, opening);
+                match *spent {
+                    Spent::Spend => w.put(&[0]),
+                    Spent::Return { c, r } => {
+                        w.put(&[1]);
+                        w.put(&c.to_be_bytes());
+                        w.put(&r.to_be_bytes());
+                    }
+                    Spent::Exit { c } => {
+                        w.put(&[2]);
+                        w.put(&c.to_be_bytes());
+                    }
+                }
+                w.put(&proof.bitmap);
+                w.list(&proof.siblings);
+            }
+            Why::Second { which, opening, other_c, other_deposit, other_b, other } => {
                 w.put(&[4, *which]);
+                put_opening(&mut w, opening);
                 w.put(&other_c.to_be_bytes());
                 w.put(&other_deposit.to_bytes());
                 w.put(&other_b.to_be_bytes());
@@ -517,32 +538,33 @@ impl HubInput {
         let headers = r.list()?;
         let ground = match r.take()? {
             [0] => Ground::Malformed,
-            [1] => Ground::NotHers { which: r.take::<1>()?[0] },
-            [2] => Ground::TooMuch,
-            [3] => {
-                let [which] = r.take()?;
+            [1] => {
                 let state = Anchored::read(&mut r)?;
                 let tree = r.take()?;
                 let seal = SealSpend { tx: r.bytes()?, at: u32::from_be_bytes(r.take()?), index: u32::from_be_bytes(r.take()?), path: r.list()?, coinbase: r.bytes()?, coinbase_path: r.list()? };
-                let how = match r.take()? {
-                    [0] => How::Mismatch { leaf: r.take()?, path: r.list()? },
-                    [1] => {
+                let [kind, which] = r.take()?;
+                let why = match kind {
+                    0 => Why::NotANote { which, leaf: r.take()?, path: r.list()? },
+                    1 => Why::NotHers { which, opening: read_opening(&mut r)? },
+                    2 => Why::TooMuch { openings: (0..which).map(|_| read_opening(&mut r)).collect::<Result<_, _>>()? },
+                    3 => {
+                        let opening = read_opening(&mut r)?;
                         let spent = match r.take()? {
                             [0] => Spent::Spend,
                             [1] => Spent::Return { c: u32::from_be_bytes(r.take()?), r: u64::from_be_bytes(r.take()?) },
                             [2] => Spent::Exit { c: u32::from_be_bytes(r.take()?) },
                             _ => return Err(Reject::Encoding),
                         };
-                        How::Spent { spent, proof: smt::Proof { bitmap: r.take()?, siblings: r.list()? } }
+                        Why::Spent { which, opening, spent, proof: smt::Proof { bitmap: r.take()?, siblings: r.list()? } }
+                    }
+                    4 => {
+                        let opening = read_opening(&mut r)?;
+                        let (other_c, other_deposit, other_b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
+                        Why::Second { which, opening, other_c, other_deposit, other_b, other: Claim::from_bytes(&r.bytes()?)? }
                     }
                     _ => return Err(Reject::Encoding),
                 };
-                Ground::NotLive { which, last: Last { state, tree, seal }, how }
-            }
-            [4] => {
-                let [which] = r.take()?;
-                let (other_c, other_deposit, other_b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
-                Ground::Second { which, other_c, other_deposit, other_b, other: Claim::from_bytes(&r.bytes()?)? }
+                Ground::At { last: Last { state, tree, seal }, why }
             }
             _ => return Err(Reject::Encoding),
         };
@@ -608,28 +630,31 @@ mod tests {
     struct World {
         alice: SigningKey,
         deposit: OutPoint,
+        note: TNote,
         input: HubInput,
         id: Hash,
     }
 
     const MARGIN: u32 = 2;
 
-    /// Alice's claim of one note of 600 at position 0 for `b` units of 100,
-    /// alone in A*'s tree (height 3); `A*` anchored in block [9; 32], ten
-    /// headers on it; `request` in the third, the seal spent in the
+    fn alices_note() -> TNote {
+        TNote { owner: xonly(&key(3)), value: 600, memo: 0, rho: [7; 32] }
+    }
+
+    /// Alice's claim of position 0 for `b` units of 100, `leaf` alone at
+    /// position 0 in A*'s tree (height 3); `A*` anchored in block [9; 32],
+    /// ten headers on it; `request` in the third, the seal spent in the
     /// fourth; `f` to change the claim before it is posted.
-    fn world(b: u32, mut f: impl FnMut(&mut Claim)) -> World {
+    fn world_with(b: u32, leaf: Hash, mut f: impl FnMut(&mut Claim)) -> World {
         let (seq, hub, alice) = (key(1), key(2), key(3));
         let deposit = OutPoint { txid: [0xd0; 32], vout: 1 };
         let c = 1007;
-        let note = TNote { owner: xonly(&alice), value: 600, memo: 0, rho: [7; 32] };
-        let mut claim = Claim { notes: vec![ClaimNote { index: 0, note }], sigs: vec![] };
+        let mut claim = Claim { positions: vec![0], sigs: vec![] };
         let e = claim.fingerprint(c, &deposit, b);
         claim.sigs = vec![alice.sign_raw(&signed_digest(&e), &[0; 32]).unwrap().to_bytes()];
         f(&mut claim);
         let e = claim.fingerprint(c, &deposit, b);
-        let path = lichen_validity::tree_empties()[..TREE_DEPTH].to_vec();
-        let tree = root_from_path(note.commitment(), 0, &path);
+        let tree = root_from_path(leaf, 0, &empties());
         let nullifiers = smt::root(&[], smt::empties());
         let root = state_root(3, &tree, &nullifiers);
         let signature = seq.sign_raw(&root, &[0; 32]).unwrap().to_bytes();
@@ -653,37 +678,48 @@ mod tests {
         let path = vec![sha256d(&spend.coinbase)];
         let last = Last { state, tree, seal: SealSpend { tx: bare, at: 3, index: spend.index, path, coinbase: spend.coinbase, coinbase_path: spend.coinbase_path } };
         let terms = Terms { sequencer: xonly(&seq), hub: xonly(&hub), genesis, work, unit: 100 };
-        let input = HubInput {
-            c,
-            deposit,
-            margin: MARGIN,
-            terms,
-            request,
-            headers: headers[3..].to_vec(),
-            ground: Ground::NotLive { which: 0, last, how: How::Mismatch { leaf: [0; 32], path: vec![] } },
-        };
-        World { alice, deposit, input, id: [0xc4; 32] }
+        let input = HubInput { c, deposit, margin: MARGIN, terms, request, headers: headers[3..].to_vec(), ground: Ground::At { last, why: Why::TooMuch { openings: vec![] } } };
+        World { alice, deposit, note: alices_note(), input, id: [0xc4; 32] }
+    }
+
+    fn world(b: u32, f: impl FnMut(&mut Claim)) -> World {
+        world_with(b, alices_note().leaf(), f)
+    }
+
+    fn empties() -> Vec<Hash> {
+        lichen_validity::tree_empties()[..TREE_DEPTH].to_vec()
     }
 
     /// Position 1's path in A*'s tree: the note at 0 beside it.
-    fn past_end(empties: &[Hash]) -> Vec<Hash> {
-        let note = TNote { owner: xonly(&key(3)), value: 600, memo: 0, rho: [7; 32] };
-        let mut p = empties.to_vec();
-        p[0] = note.commitment();
+    fn past_end() -> Vec<Hash> {
+        let mut p = empties();
+        p[0] = alices_note().leaf();
         p
     }
 
     fn last(w: &World) -> Last {
         match &w.input.ground {
-            Ground::NotLive { last, .. } => last.clone(),
+            Ground::At { last, .. } => last.clone(),
             _ => unreachable!(),
         }
+    }
+
+    fn opening(w: &World) -> Opening {
+        Opening { note: w.note, path: empties() }
     }
 
     fn check_ground(w: &World, ground: Ground) -> Result<[u8; JOURNAL_LEN], Reject> {
         let mut i = w.input.clone();
         i.ground = ground;
         check(&i, &w.id, &mut |_| true)
+    }
+
+    fn check_why(w: &World, why: Why) -> Result<[u8; JOURNAL_LEN], Reject> {
+        check_ground(w, Ground::At { last: last(w), why })
+    }
+
+    fn claim_of(w: &World) -> Claim {
+        Claim::from_bytes(&requested(&w.input.request.spending(&w.deposit).unwrap()).unwrap().posted).unwrap()
     }
 
     #[test]
@@ -696,77 +732,106 @@ mod tests {
         assert!(claim.well_formed());
         assert_eq!(claim.fingerprint(w.input.c, &w.deposit, 5), r.e);
         assert_eq!(claim.signed_by(&xonly(&w.alice), &r.e), Some(claim.sigs[0]));
-        let rec = claim.record(&r.e).unwrap();
-        assert_eq!(rec.fingerprint(w.input.c, &w.deposit, 5), r.e, "the exit record's E is the claim's");
+        let (notes, sigs) = claim.record(&[w.note], &r.e).unwrap();
+        assert_eq!((notes, sigs), (vec![(w.note, 0)], claim.sigs.clone()), "the exit record's notes and signatures");
+        assert_eq!(lichen_validity::exit::fingerprint(w.input.c, &w.deposit, 5, &[0]), r.e, "the exit record's E is the claim's");
         assert_eq!(Claim::from_bytes(&claim.to_bytes()[1..]), Err(Reject::Encoding));
+    }
+
+    #[test]
+    fn a_claim_is_well_formed() {
+        let sig = [0; 64];
+        let c = |positions: Vec<u32>, n: usize| Claim { positions, sigs: vec![sig; n] };
+        assert!(c(vec![0, 5], 1).well_formed());
+        assert!(c((0..MAX_NOTES as u32).collect(), 1).well_formed(), "the most notes");
+        assert!(!c((0..=MAX_NOTES as u32).collect(), 1).well_formed(), "too many notes");
+        assert!(!c(vec![], 1).well_formed(), "no notes");
+        assert!(!c(vec![5, 5], 1).well_formed(), "a position twice");
+        assert!(!c(vec![5, 0], 1).well_formed(), "positions not increasing");
+        assert!(!c(vec![1 << TREE_DEPTH], 1).well_formed(), "past the tree's range");
+        assert!(!c(vec![0], 0).well_formed(), "no signature");
+        assert!(!c(vec![0], 2).well_formed(), "more signatures than notes");
+        // the most notes and signatures fit request's witness
+        assert!(posted_items(&c((0..MAX_NOTES as u32).collect(), 14).to_bytes()).is_some());
     }
 
     #[test]
     fn a_true_claim_has_no_ground() {
         let w = world(5, |_| {});
-        let last = last(&w);
         assert_eq!(check_ground(&w, Ground::Malformed), Err(Reject::Holds));
-        assert_eq!(check_ground(&w, Ground::NotHers { which: 0 }), Err(Reject::Holds));
-        assert_eq!(check_ground(&w, Ground::TooMuch), Err(Reject::Holds));
-        // the note's own leaf: no mismatch
-        let path = lichen_validity::tree_empties()[..TREE_DEPTH].to_vec();
-        let leaf = Claim::from_bytes(&requested(&w.input.request.spending(&w.deposit).unwrap()).unwrap().posted).unwrap().notes[0].note.commitment();
-        assert_eq!(check_ground(&w, Ground::NotLive { which: 0, last: last.clone(), how: How::Mismatch { leaf, path } }), Err(Reject::NotSpent));
+        assert_eq!(check_why(&w, Why::NotHers { which: 0, opening: opening(&w) }), Err(Reject::Holds));
+        assert_eq!(check_why(&w, Why::TooMuch { openings: vec![opening(&w)] }), Err(Reject::Holds));
+        // the note's own leaf: a transparent note
+        assert_eq!(check_why(&w, Why::NotANote { which: 0, leaf: w.note.leaf(), path: empties() }), Err(Reject::Holds));
+        // unspent
+        let proof = smt::proof(&[], &w.note.nullifier(), smt::empties());
+        assert_eq!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), spent: Spent::Spend, proof }), Err(Reject::NotSpent));
+    }
+
+    #[test]
+    fn an_opening_must_be_at_its_position() {
+        let w = world(7, |_| {});
+        // another note than the one there
+        let mut o = opening(&w);
+        o.note.value = 700;
+        assert_eq!(check_why(&w, Why::TooMuch { openings: vec![o] }), Err(Reject::PathLength));
+        // a short path
+        let mut o = opening(&w);
+        o.path.pop();
+        assert_eq!(check_why(&w, Why::NotHers { which: 0, opening: o }), Err(Reject::PathLength));
+        // not every note opened
+        assert_eq!(check_why(&w, Why::TooMuch { openings: vec![] }), Err(Reject::Encoding));
+        // a position the claim hasn't
+        assert_eq!(check_why(&w, Why::NotHers { which: 1, opening: opening(&w) }), Err(Reject::Encoding));
     }
 
     #[test]
     fn the_grounds_of_a_false_claim() {
-        let path = lichen_validity::tree_empties()[..TREE_DEPTH].to_vec();
         // too much: 600 is 6 units, not 7
         let w = world(7, |_| {});
-        let j = check_ground(&w, Ground::TooMuch).unwrap();
+        let j = check_why(&w, Why::TooMuch { openings: vec![opening(&w)] }).unwrap();
         assert_eq!(j, journal(w.input.c, &w.input.terms.d(), &w.deposit, MARGIN));
         // not hers: signed by another key
         let w = world(5, |c| c.sigs = vec![key(9).sign_raw(&[0; 32], &[0; 32]).unwrap().to_bytes()]);
-        assert!(check_ground(&w, Ground::NotHers { which: 0 }).is_ok());
-        // malformed: not hashing to the E signed (another b in E)
+        assert!(check_why(&w, Why::NotHers { which: 0, opening: opening(&w) }).is_ok());
+        // malformed: not hashing to the E signed
         let mut w = world(5, |_| {});
-        let wit = witness(&Claim { notes: vec![], sigs: vec![] }.to_bytes(), &[0; 32], 5);
+        let wit = witness(&Claim { positions: vec![], sigs: vec![] }.to_bytes(), &[0; 32], 5);
         let items: Vec<&[u8]> = wit.iter().map(Vec::as_slice).collect();
         let prev = Header(w.input.request.header).prev();
         let (rh, req) = request_on(&prev, &w.deposit, &items);
         w.input.request = req;
         w.input.headers = headers_on(&sha256d(&rh), 10);
         assert!(check_ground(&w, Ground::Malformed).is_ok());
-        // not live: a note at a position past the tree's end
-        let w = world(5, |c| c.notes[0].index = 1);
-        let w = {
-            // re-signed for its own E
-            let e = Claim::from_bytes(&requested(&w.input.request.spending(&w.deposit).unwrap()).unwrap().posted).unwrap();
-            assert!(e.well_formed());
-            w
-        };
-        let leaf = lichen_validity::tree_empties()[0];
-        let r = check_ground(&w, Ground::NotLive { which: 0, last: last(&w), how: How::Mismatch { leaf, path: past_end(&path) } });
-        // (the signature was on position 0's E: not hers too; but the
-        // mismatch holds whatever the signature)
-        assert!(r.is_ok(), "{r:?}");
+        // not a note: a position past the tree's end
+        let w = world(5, |c| c.positions[0] = 1);
+        assert!(check_why(&w, Why::NotANote { which: 0, leaf: [0; 32], path: past_end() }).is_ok());
+        // not a note: a shielded note's leaf
+        let sleaf = lichen_shielded::s_leaf(&[0x55; 32]);
+        let w = world_with(5, sleaf, |_| {});
+        assert!(check_why(&w, Why::NotANote { which: 0, leaf: sleaf, path: empties() }).is_ok());
+        // a transparent leaf with the shielded bit cleared is a note
+        let w = world_with(5, lichen_shielded::t_leaf(&[0xd5; 32]), |_| {});
+        assert_eq!(check_why(&w, Why::NotANote { which: 0, leaf: lichen_shielded::t_leaf(&[0xd5; 32]), path: empties() }), Err(Reject::Holds));
     }
 
     #[test]
-    fn not_live_needs_the_last_anchor() {
-        let w = world(5, |c| c.notes[0].index = 1);
-        let leaf = lichen_validity::tree_empties()[0];
-        let path = past_end(&lichen_validity::tree_empties()[..TREE_DEPTH]);
-        let how = How::Mismatch { leaf, path };
-        let ok = |l: Last| check_ground(&w, Ground::NotLive { which: 0, last: l, how: how.clone() });
+    fn a_ground_needs_the_last_anchor() {
+        let w = world(5, |c| c.positions[0] = 1);
+        let why = Why::NotANote { which: 0, leaf: [0; 32], path: past_end() };
+        let ok = |l: Last| check_ground(&w, Ground::At { last: l, why: why.clone() });
         assert!(ok(last(&w)).is_ok());
         // a margin request's block is too close to the anchor for
         let mut far = w.input.clone();
         far.margin = 4;
-        far.ground = Ground::NotLive { which: 0, last: last(&w), how: how.clone() };
+        far.ground = Ground::At { last: last(&w), why: why.clone() };
         assert_eq!(check(&far, &w.id, &mut |_| true), Err(Reject::Last));
         // a margin of one block: the spend, a block after request's, still
         // after the cutoff
         let mut l = last(&w);
         let mut near = w.input.clone();
         near.margin = 1;
-        near.ground = Ground::NotLive { which: 0, last: l.clone(), how: how.clone() };
+        near.ground = Ground::At { last: l.clone(), why: why.clone() };
         assert!(check(&near, &w.id, &mut |_| true).is_ok(), "the spend one block after request's");
         // the spend shown in another block than its own
         l.seal.at = 4;
@@ -777,7 +842,7 @@ mod tests {
         assert!(ok(l).is_err());
         // no chain receipt
         let mut i = w.input.clone();
-        i.ground = Ground::NotLive { which: 0, last: last(&w), how };
+        i.ground = Ground::At { last: last(&w), why };
         assert_eq!(check(&i, &w.id, &mut |_| false), Err(Reject::Chain));
     }
 
@@ -785,52 +850,53 @@ mod tests {
     fn a_spend_and_what_doesnt_count() {
         // the note spent at A*: its nullifier's leaf in the tree
         let mut w = world(5, |_| {});
-        let nf = Claim::from_bytes(&requested(&w.input.request.spending(&w.deposit).unwrap()).unwrap().posted).unwrap().nullifiers()[0];
-        let spent_leaf = |s: Spent| {
+        let nf = w.note.nullifier();
+        let set = |w: &mut World, s: Spent| -> Why {
             let keys = [(nf, s.leaf())];
-            (smt::root(&keys, smt::empties()), smt::proof(&keys, &nf, smt::empties()))
-        };
-        let set = |w: &mut World, s: Spent| -> How {
-            let (root, proof) = spent_leaf(s);
+            let (root, proof) = (smt::root(&keys, smt::empties()), smt::proof(&keys, &nf, smt::empties()));
             // A*'s nullifier root, signed and anchored again
-            let Ground::NotLive { last, .. } = &mut w.input.ground else { unreachable!() };
+            let Ground::At { last, .. } = &mut w.input.ground else { unreachable!() };
             let st = &mut last.state;
             st.nullifiers = root;
             let r = state_root(3, &last.tree, &root);
             st.signature = key(1).sign_raw(&r, &[0; 32]).unwrap().to_bytes();
             st.anchor.root = r;
-            How::Spent { spent: s, proof }
+            Why::Spent { which: 0, opening: opening(w), spent: s, proof }
         };
-        let how = set(&mut w, Spent::Spend);
-        assert!(check_ground(&w, Ground::NotLive { which: 0, last: last(&w), how }).is_ok());
+        let why = set(&mut w, Spent::Spend);
+        assert!(check_why(&w, why).is_ok());
         // her return of at least b to this contract: not a spend
-        let how = set(&mut w, Spent::Return { c: 1007, r: 500 });
-        assert_eq!(check_ground(&w, Ground::NotLive { which: 0, last: last(&w), how }), Err(Reject::Own));
+        let why = set(&mut w, Spent::Return { c: 1007, r: 500 });
+        assert_eq!(check_why(&w, why), Err(Reject::Own));
         // of less than b, or to another contract: a spend
-        let how = set(&mut w, Spent::Return { c: 1007, r: 499 });
-        assert!(check_ground(&w, Ground::NotLive { which: 0, last: last(&w), how }).is_ok());
-        let how = set(&mut w, Spent::Return { c: 1008, r: 500 });
-        assert!(check_ground(&w, Ground::NotLive { which: 0, last: last(&w), how }).is_ok());
+        let why = set(&mut w, Spent::Return { c: 1007, r: 499 });
+        assert!(check_why(&w, why).is_ok());
+        let why = set(&mut w, Spent::Return { c: 1008, r: 500 });
+        assert!(check_why(&w, why).is_ok());
         // this contract's exit record: not a spend; another's: a spend
-        let how = set(&mut w, Spent::Exit { c: 1007 });
-        assert_eq!(check_ground(&w, Ground::NotLive { which: 0, last: last(&w), how }), Err(Reject::Own));
-        let how = set(&mut w, Spent::Exit { c: 1008 });
-        assert!(check_ground(&w, Ground::NotLive { which: 0, last: last(&w), how }).is_ok());
+        let why = set(&mut w, Spent::Exit { c: 1007 });
+        assert_eq!(check_why(&w, why), Err(Reject::Own));
+        let why = set(&mut w, Spent::Exit { c: 1008 });
+        assert!(check_why(&w, why).is_ok());
     }
 
     #[test]
     fn the_input_round_trips() {
         let w = world(5, |_| {});
-        let claim = Claim::from_bytes(&requested(&w.input.request.spending(&w.deposit).unwrap()).unwrap().posted).unwrap();
         let proof = smt::proof(&[], &[1; 32], smt::empties());
+        let other = Claim { positions: vec![0, 3], sigs: vec![[5; 64]] };
         for ground in [
-            Ground::Malformed,
-            Ground::NotHers { which: 0 },
-            Ground::TooMuch,
-            w.input.ground.clone(),
-            Ground::NotLive { which: 0, last: last(&w), how: How::Spent { spent: Spent::Return { c: 9, r: 10 }, proof } },
-            Ground::Second { which: 0, other_c: 8, other_deposit: OutPoint { txid: [1; 32], vout: 2 }, other_b: 3, other: claim },
-        ] {
+            Why::NotANote { which: 0, leaf: [1; 32], path: empties() },
+            Why::NotHers { which: 0, opening: opening(&w) },
+            Why::TooMuch { openings: vec![opening(&w), opening(&w)] },
+            Why::Spent { which: 0, opening: opening(&w), spent: Spent::Return { c: 9, r: 10 }, proof },
+            Why::Second { which: 0, opening: opening(&w), other_c: 8, other_deposit: OutPoint { txid: [1; 32], vout: 2 }, other_b: 3, other },
+        ]
+        .into_iter()
+        .map(|why| Ground::At { last: last(&w), why })
+        .chain([Ground::Malformed])
+        .collect::<Vec<_>>()
+        {
             let mut i = w.input.clone();
             i.ground = ground;
             let b = i.to_bytes();
@@ -843,18 +909,22 @@ mod tests {
     #[test]
     fn a_second_claim() {
         let w = world(5, |_| {});
-        let claim = Claim::from_bytes(&requested(&w.input.request.spending(&w.deposit).unwrap()).unwrap().posted).unwrap();
         let other_deposit = OutPoint { txid: [0xd1; 32], vout: 0 };
-        let mut other = Claim { notes: claim.notes.clone(), sigs: vec![] };
+        let mut other = Claim { positions: claim_of(&w).positions, sigs: vec![] };
         let e2 = other.fingerprint(1008, &other_deposit, 3);
         other.sigs = vec![w.alice.sign_raw(&signed_digest(&e2), &[0; 32]).unwrap().to_bytes()];
-        let g = |c: u32, o: &Claim| Ground::Second { which: 0, other_c: c, other_deposit, other_b: 3, other: o.clone() };
-        assert!(check_ground(&w, g(1008, &other)).is_ok());
+        let g = |c: u32, o: &Claim| Why::Second { which: 0, opening: opening(&w), other_c: c, other_deposit, other_b: 3, other: o.clone() };
+        assert!(check_why(&w, g(1008, &other)).is_ok());
         // through this contract: not a second claim
-        assert_eq!(check_ground(&w, g(1007, &other)), Err(Reject::NotSpent));
+        assert_eq!(check_why(&w, g(1007, &other)), Err(Reject::NotSpent));
         // not signed by her
         let mut forged = other.clone();
         forged.sigs = vec![key(9).sign_raw(&signed_digest(&e2), &[0; 32]).unwrap().to_bytes()];
-        assert_eq!(check_ground(&w, g(1008, &forged)), Err(Reject::NotYours));
+        assert_eq!(check_why(&w, g(1008, &forged)), Err(Reject::NotYours));
+        // of another position
+        let mut elsewhere = Claim { positions: vec![4], sigs: vec![] };
+        let e3 = elsewhere.fingerprint(1008, &other_deposit, 3);
+        elsewhere.sigs = vec![w.alice.sign_raw(&signed_digest(&e3), &[0; 32]).unwrap().to_bytes()];
+        assert_eq!(check_why(&w, g(1008, &elsewhere)), Err(Reject::NotSpent));
     }
 }

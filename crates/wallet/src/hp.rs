@@ -10,7 +10,7 @@ use lichen_babe::setup::{instance, par, VALUES};
 use lichen_proto::babe::{dealing_to_hex, min_soundness, shares_to_hex, soundness, statement_outpoint, Opened};
 use lichen_proto::hp::{check_setup, HpCommit, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
 use lichen_proto::{DisputeKeys, Net, Statement};
-use lichen_withdraw::hp::{Claim, ClaimNote, MAX_NOTES};
+use lichen_withdraw::hp::{Claim, MAX_NOTES};
 use lngap_sessions::contract::Presign;
 use std::collections::BTreeSet;
 
@@ -205,13 +205,13 @@ impl Wallet {
                 break;
             }
             total += n.value;
-            chosen.push(ClaimNote { index: i, note: lichen_ledger::lichen_validity::TNote { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho } });
+            chosen.push(i);
         }
         ensure!(!chosen.is_empty(), "no notes of ours to claim");
-        chosen.sort_by_key(|n| n.index);
+        chosen.sort();
         let b = u32::try_from(total.min(cap) / unit).context("b fits in a u32")?;
         ensure!(b > 0, "the notes claimable come to less than the contract's unit, {unit} sats");
-        let mut claim = Claim { notes: chosen, sigs: vec![] };
+        let mut claim = Claim { positions: chosen, sigs: vec![] };
         let e = claim.fingerprint(cid, &statement_outpoint(&k.deposit), b);
         claim.sigs = vec![self.key.sign_raw(&lichen_withdraw::hp::signed_digest(&e), &[0; 32]).map_err(|e| anyhow::anyhow!("signing the claim: {e}"))?.to_bytes()];
         ensure!(claim.well_formed(), "the claim isn't well formed");

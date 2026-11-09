@@ -337,7 +337,7 @@ pub fn withdrawal(input: &WithdrawInput, chain_id: &Hash, verify_chain: &mut dyn
 impl WithdrawInput {
     /// The commitment tree's root its note and path reach.
     pub fn tree(&self) -> Hash {
-        root_from_path(self.note.commitment(), self.index, &self.path)
+        root_from_path(self.note.leaf(), self.index, &self.path)
     }
 
     /// The anchored state it proves the return in.
@@ -560,7 +560,7 @@ pub(crate) mod tests {
         let note = TNote { owner: xonly(&hub), value, memo: 42, rho: [7; 32] };
         let path = lichen_validity::tree_empties()[..TREE_DEPTH].to_vec();
         let nullifiers = [5; 32];
-        let root = state_root(3, &root_from_path(note.commitment(), 0, &path), &nullifiers);
+        let root = state_root(3, &root_from_path(note.leaf(), 0, &path), &nullifiers);
         let signature = seq.sign_raw(&root, &[0; 32]).unwrap().to_bytes();
         let genesis = OutPoint { txid: [3; 32], vout: 1 };
         let anchor = AnchorState { genesis, sequencer: xonly(&seq), seal: OutPoint { txid: [4; 32], vout: 0 }, height: 3, root, block: [9; 32] };

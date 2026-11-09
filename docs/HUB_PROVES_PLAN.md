@@ -715,8 +715,14 @@ Next:
 
 5. One chain-guest change, built natively and tested on regtest first,
    then one rebuild of the guests and their fixtures:
-   - the leaf's kind (its commitment's top bit), claims by position
-     alone, `E` over positions, and the exit record's note limit raised;
+   - done natively (2026-11-09): the leaf's kind (its commitment's top
+     bit, set by the chain statement as it appends: `t_leaf`, `s_leaf`);
+     claims by position alone, `E = H(c ‖ O_D ‖ b ‖ i_1 ‖ … ‖ i_n)`; the
+     exit record carrying its notes and positions (shown in the tree) and
+     one signature per owner, at most 64 notes; the hub's statement as
+     malformed, or false at `A*` (not a note, not hers, too much, spent,
+     a second claim), the hub opening each note a ground needs. The
+     ledger's return check is its own, on leaves, no longer ln-gap's;
    - sender acknowledgment: `ak` in every spend, locked outputs, the
      acknowledgment transaction against an applied anchor, the
      `Pending`, `Locked`, `Void` and `Anchors` (the chain guest's

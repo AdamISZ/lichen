@@ -58,6 +58,10 @@ impl TNote {
     pub fn commitment(&self) -> Hash {
         sh::transparent_commitment(&self.owner, self.value, self.memo, &self.rho)
     }
+    /// Its leaf in the commitment tree ([`sh::t_leaf`]).
+    pub fn leaf(&self) -> Hash {
+        sh::t_leaf(&self.commitment())
+    }
     /// Its nullifier (the ledger's `nullifier`).
     pub fn nullifier(&self) -> Hash {
         sha256(&[b"lngap/nf", &self.commitment()])
@@ -176,11 +180,12 @@ pub enum Tx {
     Shielded { anchor: Hash, t_spends: Vec<(TNote, u32)>, t_sigs: Vec<[u8; 64]>, nfs: Vec<Hash>, cms: Vec<Hash>, ciphertexts: Vec<Vec<u8>>, t_outputs: Vec<TNote> },
     /// An anchor on Bitcoin of this history ([`AnchorRecord`]).
     Anchor(AnchorRecord),
-    /// An exit record: contract `c`, of deposit coin `deposit`, paid a claim of
-    /// `b` as its `request` posted it; the hub's signature
-    /// ([`exit::record_digest`]). Its transparent notes are retired,
-    /// leaf `exited(c)`.
-    Exit { c: u32, deposit: OutPoint, b: u32, posted: exit::Posted, sig: [u8; 64] },
+    /// An exit record: contract `c`, of deposit coin `deposit`, paid a
+    /// claim of `b`; its notes with their positions (shown in the tree),
+    /// their owners' signatures on `E` ([`exit::owners`]' order) and the
+    /// hub's ([`exit::record_digest`]). Its notes are retired, leaf
+    /// `exited(c)`.
+    Exit { c: u32, deposit: OutPoint, b: u32, notes: Vec<(TNote, u32)>, sigs: Vec<[u8; 64]>, sig: [u8; 64] },
 }
 
 /// The history hash after `root`: `hist_h = H(hist_{h-1} ‖ root_h)`, from
@@ -412,7 +417,7 @@ impl State<'_> {
     /// A transparent note at `index`: under `T_i` (a path), or made
     /// earlier in this block.
     fn in_tree(&mut self, n: &TNote, index: u32) -> Result<(), Reject> {
-        let cm = n.commitment();
+        let cm = n.leaf();
         if index < self.input.tree.size {
             let path = self.paths.next().ok_or(Reject::Shape)?;
             if path.len() != TREE_DEPTH || sh::root_from_path(cm, index, path) != self.t_i {
@@ -461,14 +466,19 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
     for tx in &input.txs {
         match tx {
             Tx::Anchor(rec) => anchor = check_anchor(&anchor, input.height, &input.hist, rec)?,
-            Tx::Exit { c, deposit, b, posted, sig } => {
-                let e = posted.fingerprint(*c, deposit, *b);
+            Tx::Exit { c, deposit, b, notes, sigs, sig } => {
+                let owners = exit::owners(notes);
+                if !exit::well_formed(notes) || owners.len() != sigs.len() {
+                    return Err(Reject::Shape);
+                }
+                let e = exit::fingerprint(*c, deposit, *b, &notes.iter().map(|n| n.1).collect::<Vec<_>>());
                 check_sig(&input.hub, &exit::record_digest(&input.anchor.sequencer, &input.hub, &input.anchor.genesis, &e), sig)?;
-                for n in &posted.notes {
-                    if let exit::PostedNote::Transparent { note, sig } = n {
-                        check_sig(&note.owner, &exit::signed_digest(&e), sig)?;
-                        st.spend_nf(&note.nullifier(), &smt::exited(*c))?;
-                    }
+                for (o, s) in owners.iter().zip(sigs) {
+                    check_sig(o, &exit::signed_digest(&e), s)?;
+                }
+                for (n, i) in notes {
+                    st.in_tree(n, *i)?;
+                    st.spend_nf(&n.nullifier(), &smt::exited(*c))?;
                 }
             }
             Tx::Mint { outputs, sig } => {
@@ -477,7 +487,7 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                     if n.value == 0 {
                         return Err(Reject::Empty);
                     }
-                    st.make(n.commitment())?;
+                    st.make(n.leaf())?;
                 }
             }
             Tx::Transfer { spends, outputs, sigs } => {
@@ -498,7 +508,7 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                     if n.value == 0 {
                         return Err(Reject::Empty);
                     }
-                    st.make(n.commitment())?;
+                    st.make(n.leaf())?;
                 }
             }
             Tx::Shielded { anchor, t_spends, t_sigs, nfs, cms, ciphertexts, t_outputs } => {
@@ -532,10 +542,10 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                     st.spend_nf(&n, &leaf)?;
                 }
                 for cm in cms {
-                    st.make(*cm)?;
+                    st.make(sh::s_leaf(cm))?;
                 }
                 for n in t_outputs {
-                    st.make(n.commitment())?;
+                    st.make(n.leaf())?;
                 }
             }
         }
@@ -778,12 +788,13 @@ impl BlockInput {
                     w.0.push(ANCHOR);
                     w.record(a);
                 }
-                Tx::Exit { c, deposit, b, posted, sig } => {
+                Tx::Exit { c, deposit, b, notes, sigs, sig } => {
                     w.0.push(EXIT);
                     w.put(&c.to_be_bytes());
                     w.put(&deposit.to_bytes());
                     w.put(&b.to_be_bytes());
-                    w.bytes(&posted.to_bytes());
+                    w.spends(notes);
+                    w.sigs(sigs);
                     w.put(sig);
                 }
             }
@@ -828,7 +839,7 @@ impl BlockInput {
                     t_outputs: r.notes()?,
                 },
                 ANCHOR => Tx::Anchor(r.record()?),
-                EXIT => Tx::Exit { c: r.u32()?, deposit: OutPoint::from_bytes(&r.take()?), b: r.u32()?, posted: exit::Posted::from_bytes(&r.bytes()?)?, sig: r.take()? },
+                EXIT => Tx::Exit { c: r.u32()?, deposit: OutPoint::from_bytes(&r.take()?), b: r.u32()?, notes: r.spends()?, sigs: r.sigs()?, sig: r.take()? },
                 _ => return Err(Reject::Encoding),
             })
         })?;

@@ -85,7 +85,7 @@ impl State {
     pub fn tree(&self) -> Tree {
         let mut t = Tree::default();
         for l in &self.notes {
-            t.append(l.commitment()).expect("the sequencer's tree fits");
+            t.append(l.leaf()).expect("the sequencer's tree fits");
         }
         t
     }
@@ -252,7 +252,7 @@ impl Event {
                 }
                 Err(_) => Event::Anchored { height: 0, txid: [0; 32] },
             },
-            Tx::Exit(x) => Event::Exited { c: x.c, b: x.b, nfs: x.claim().map(|p| p.nullifiers()).unwrap_or_default() },
+            Tx::Exit(x) => Event::Exited { c: x.c, b: x.b, nfs: x.notes.iter().map(|n| lichen_ledger::nullifier(&n.note)).collect() },
             Tx::Shielded(t) => Event::Shielded {
                 from: t.t_spends.iter().map(|s| s.note.owner).collect(),
                 spent: t.nfs.len(),
