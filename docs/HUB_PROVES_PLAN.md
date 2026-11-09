@@ -102,7 +102,7 @@ It holds on any of these grounds:
 | too much | `b` exceeds the notes' value |
 | not live | at `A*`, the leaf at a note's position isn't its commitment (an empty one past the tree's end, too), or its nullifier is spent by a spend that counts (with acknowledgment: "Data availability") |
 | locked | at `A*`, a note is an output of an unacknowledged spend, and the claim carries no acknowledgment of it |
-| voided | a note's spend had its inputs retired by an exit whose cutoff preceded its acknowledgment's anchor, or by any paid exit if the claim carries no receipt of the hub's |
+| voided | at `A*`, a note is an output of a spend an exit record voided |
 | a second claim | her signature on a claim of one of these notes through another contract |
 
 "Not live" is today's "later spend", plus "no such note", which Alice
@@ -237,151 +237,163 @@ the commitment tree only grows, so she needs it once.
 
 ### The design
 
+The simple version first (the user, 2026-11-09: walk before run). Its
+gist: **a payee who waits for full finality before counting a payment
+can't be robbed by any collusion**; the sender is safe throughout if she
+acknowledges only with her data in hand; the hub protects itself by
+what it sequences.
+
 - **Every spend names a one-time key `ak`.** The sender's, for this
   spend only (unlinkable, for shielded spends; a public input of the
-  spend's proof). Hub-signed transactions (exit records, the hub's own
-  spends) acknowledge themselves.
+  spend's proof). Hub-signed transactions acknowledge themselves.
 - **The sequencer seals as now,** at any height. A sealed spend spends
   its inputs and appends its outputs, but its outputs are **locked**:
-  nobody spends them on the L2 until it's acknowledged.
-- **At the next anchor,** the sequencer sends each sender whose spends
-  were sealed since the last one her data: her outputs' positions and
-  paths against her block's root `R_h`, `hist_{h-1}`, and the roots
-  `R_{h+1}..R_a` up to the anchor's height `a`. It does so once the
-  anchor is broadcast, when `hist_a` is public in the mempool; it
-  needn't wait for confirmations.
-- **She checks and signs.** Her paths against `R_h`, and that
+  nobody spends them, the sender's change included, until the spend is
+  acknowledged on the L2.
+- **At the next anchor,** once it's broadcast (`hist_a` public in the
+  mempool), the sequencer sends each sender whose spends were sealed
+  since the last one her data: her outputs' positions and paths against
+  her block's root `R_h`, `hist_{h-1}`, and the roots `R_{h+1}..R_a`.
+- **She checks and signs:** her paths against `R_h`, and that
   `hist_{h-1}`, `R_h..R_a` hash-chain (`hist_next`) to the `hist_a` the
-  anchor commits. Then the acknowledgment: her signature under `ak` on
-  `H("lichen/ack" ‖ txid ‖ a ‖ hist_a)`. She sends it to the sequencer,
-  and to her payee.
-- **The sequencer's receipt.** In return the sequencer signs that it
-  holds the acknowledgment (or sequences it, which is the same
-  statement on the L2). The payee's finality needs it; see "The
-  receipt".
-- **If anchor `a` never confirms** (replaced by an anchor of another
-  height, or reorged out), her acknowledgment names an anchor that
-  isn't on Bitcoin and is void. She signs another for the anchor that
-  does confirm, once she has the roots up to it. An acknowledgment may
-  name any anchor at or above the spend's height.
+  anchor commits. Then the acknowledgment, her signature under `ak` on
+  `H("lichen/ack" ‖ txid ‖ a ‖ hist_a)`, to the sequencer and to her
+  payee, with the payee's position, opening and path.
+- **If anchor `a` never confirms** (replaced, or reorged out), her
+  acknowledgment is void; she signs another for the anchor that does
+  confirm, once she has the roots to it. An acknowledgment may name any
+  anchor at or above the spend's height.
 
 The ack names the anchor, not her block, so seals stay as frequent as
-today; an exact-height rule (ack names `hist_h`, valid only if height
-`h` is itself anchored) would force a seal per anchor, payments then
-waiting up to an anchor cycle for the sequencer's answer.
+today. An exact-height rule (the ack names `hist_h`, valid only if
+height `h` is itself anchored) would force a seal per anchor.
 
-### What counts
+### The chain guest's rules
 
-- **A spend counts against its sender** at a cutoff if an
-  acknowledgment of it exists naming an anchor confirmed before that
-  cutoff. Exists, not sequenced: whoever needs the fact shows it. On the
-  L2 it's sequenced; in a dispute, the hub puts it in its statement's
-  input, or a claimant in `request`'s witness. So the operator can't
-  suppress one by censoring it.
-- **Locked outputs unlock** on the L2 when an acknowledgment is
-  sequenced whose anchor's record the chain guest has applied. The
-  chain guest knows each applied anchor's `(a, hist_a)` already.
-- **The earlier of an exit and a spend wins.** If a claim of a spend's
-  inputs has its cutoff before the acknowledgment's anchor confirmed,
-  the spend doesn't count against it; the claim is paid, the exit
-  record retires the inputs, and the spend is void: its outputs stay
-  locked, and a later acknowledgment is invalid.
+State, beyond today's (the commitment tree, the spent set, the
+anchoring state):
 
-### In an exit
+- `Pending`: txid → (`ak`, height `h`, output positions), the
+  unacknowledged spends;
+- `Locked`: their outputs' positions;
+- `Void`: spends voided by an exit;
+- `Anchors`: each applied anchor's height `a` → `hist_a`.
 
-- **Claiming her inputs** (she never acknowledged, or her ack names an
-  anchor after her cutoff): the hub can refute only with an
-  acknowledgment whose anchor is before the cutoff. She signed none.
-- **Claiming outputs locked at `A*`** (her change, or Bob's payment):
-  the claim carries the acknowledgment (its anchor's height and the
-  signature, about 70 bytes a spend; with the receipt, about 135).
-  "Locked at `A*`" is a fact of the anchored state, so it's a ground
-  the hub can show; the acknowledgment defeats it.
-- **The hub's grounds,** then:
-  - "not live: spent" means spent by a spend that counts;
-  - "locked at `A*`, and no acknowledgment carried";
-  - "voided": the spend's inputs were retired by an exit whose cutoff
-    preceded its acknowledgment's anchor, or (see the receipt) by any
-    paid exit, unless the claim carries the hub's receipt.
-- **Both at once** (her inputs through one contract, the outputs
-  through another) is a second claim: the acknowledgment is her
-  signature, the claim of the inputs hers.
+Rules:
 
-So the spend's fate at any cutoff is decided by what's on Bitcoin,
-whether an anchor `(a, hist_a)` her acknowledgment names confirmed
-before it, and she holds the data for either fate before her signature
-makes the spend count:
+1. **A user's spend:** as today (inputs in the tree, nullifiers
+   unspent, the owners' authority), and no input's position in
+   `Locked`. It names `ak`. Effect: nullifiers spent and outputs
+   appended as today; `Pending[txid]` set; its outputs into `Locked`.
+2. **A hub-signed transaction** (an exit record, the hub's own spend or
+   mint) is acknowledged by its signature: its outputs aren't locked.
+3. **An acknowledgment** `(txid, a, hist_a, sig)`: `txid` in `Pending`
+   and not in `Void`; `Anchors[a] = hist_a` (the anchor's record
+   applied); `h ≤ a`; `sig` under `ak` on
+   `H("lichen/ack" ‖ txid ‖ a ‖ hist_a)`. Effect: `txid` leaves
+   `Pending`, its outputs leave `Locked`.
+4. **An anchor record:** as today, and `Anchors[a] = hist_a`.
+5. **An exit record** retires its notes' nullifiers. A nullifier
+   already spent by a spend in `Pending` puts that spend in `Void`
+   (its outputs locked for good, a later acknowledgment rejected); one
+   spent by an acknowledged spend rejects the record.
 
-| the operator | Alice | her payee |
-|---|---|---|
-| never anchors past her spend, or serves no data | she never acknowledged: she claims the inputs | no payment |
-| anchors, then withholds all data | she has her paths: she claims her outputs, with the acknowledgment | he has his position and opening from her: he claims, with the acknowledgment |
-| anchors, never sequences the acknowledgment | the same | the same |
-| censors her spend, data served | the margin protects her claim of its inputs, as before | no payment |
+**The sequencer's policy** (the hub's protection, not a guest rule): it
+sequences an acknowledgment only once the anchor it names is the margin
+deep, and no claim of the spend's inputs is pending. Otherwise Alice
+could acknowledge, claim her inputs at once with a cutoff before the
+anchor, and have the hub pay her while her payee's outputs were already
+unlocked.
 
-### The receipt
+### The hub's guest's rules: "this claim is false"
 
-An acknowledgment that only the payee holds breaks the symmetry
-between two collusions:
+Its input: `request` from Bitcoin, `A*` and its proof of being last,
+the chain state at `A*`, and the claim (notes by position and opening,
+signatures on `E`, and an acknowledgment for each claimed note still
+locked at `A*`). Any one ground suffices:
 
-- **Alice and Bob against the hub.** Alice acknowledges to Bob alone,
-  then claims her inputs. The hub, never shown the acknowledgment,
-  can't refute her and pays. Later Bob claims his output with it. If
-  that counts, the hub pays twice.
-- **Alice and the operator against Bob.** If instead an exit of the
-  inputs voids the spend, the operator can pretend it never got the
-  acknowledgment, let Alice's claim through, and void Bob's payment.
+1. **Malformed;** 2. **not hers;** 3. **too much:** as before.
+4. **Not in the tree:** the leaf at a note's position at `A*` isn't its
+   commitment.
+5. **Spent:** its nullifier is spent at `A*` by a spend `T` that counts:
+   hub-signed, or acknowledged at `A*`, or pending at `A*` with an
+   acknowledgment of `T`, shown by the hub from anywhere (the L2,
+   another claim on Bitcoin), whose anchor confirmed before the cutoff.
+   Excepted, as before: her own return of at least `b` to this
+   contract, and this contract's exit record.
+6. **Locked:** the note is an output of a spend pending at `A*`, and the
+   claim carries no valid acknowledgment of it (the signature under
+   `ak`, `a ≥ h`, anchor `a` confirmed before the cutoff).
+7. **Voided:** the note is an output of a spend in `Void` at `A*`.
+8. **A second claim:** as before.
 
-The hub's signed receipt for the acknowledgment decides between them.
-A paid exit of a spend's inputs voids the spend unless the claim of its
-outputs carries the hub's receipt: the hub signs a receipt only for an
-acknowledgment it holds, so it could have refuted the exit, and its
-failure to is its own loss. Before the receipt, Bob trusts Alice; if
-the operator refuses receipts, payments stall, nothing is taken.
+Claiming both sides of one spend (her inputs through one contract, her
+change with the acknowledgment through another) fails: the
+acknowledgment posted in the one is the hub's evidence under ground 5
+against the other.
+
+### The collusions
+
+- **Alice and the operator against Bob.** The operator never sequences
+  Alice's acknowledgment and lets her claim her inputs; the exit record
+  voids her spend, and Bob's output with it. Bob never counted the
+  payment: it wasn't firm. A stall, not a theft.
+- **Alice and Bob against the hub.** Alice gives her acknowledgment to
+  Bob alone and claims her inputs. The hub can't refute her and pays,
+  then records the exit, which voids the spend: Bob's claim of his
+  output fails on ground 7. The hub pays once.
+- **The operator against Alice.** It can't use a spend she hasn't
+  acknowledged, and she acknowledges only with her data. Withholding
+  stalls her payments.
 
 ### Finality
 
-- **The sender:** online until the next anchor is broadcast, to
-  acknowledge. If she goes away first, her spend waits for her: it
-  counts for nothing, her inputs stay claimable, and she can
-  acknowledge on her return (against whatever anchor is then
-  confirmed).
-- **The payee:** final once he holds the acknowledgment and the hub's
-  receipt, its anchor is confirmed the margin deep, and no claim of the
-  spend's inputs confirmed before that. The last he checks on Bitcoin:
-  a claim posts its notes' positions and openings. Before the receipt
-  he trusts the sequencer and Alice; before the margin, the anchor's
-  confirmations (understood, the user, 2026-11-09).
-- **Her own spending** isn't slowed: she can spend her locked change
-  before acknowledging. The new spend depends on the old, and
-  acknowledging it acknowledges its locked inputs' spends, so payments
-  chain at the sequencer's speed and acknowledgments trail by an
-  anchor. If the data stops, she claims the inputs of her earliest
-  unacknowledged spend.
+- **The payee:** firm once the acknowledgment is sequenced in a block
+  anchored the margin deep, which he can show with a path from it to
+  that anchor. Rule 5 then forbids voiding the spend. Before that he
+  holds a soft payment: the sequencer's word, then Alice's
+  acknowledgment (which leaves him trusting Alice and the operator not
+  to collude).
+- **Spending what he received** waits for the same: the sequencer
+  sequences the acknowledgment only once its anchor is the margin deep.
+  About ten minutes on Mutinynet, an hour or more on mainnet. An
+  important limitation of this version: no fast onward transfers.
+- **The sender:** online until the next anchor's broadcast, to
+  acknowledge. If she goes away first, her spend waits: it counts for
+  nothing, her inputs stay claimable, and she can acknowledge on her
+  return against whatever anchor is then confirmed. Her change is
+  locked like any output.
+
+**Later, not now:** softer finality. Spends of locked outputs made
+conditional rather than forbidden (an output's spend counts only if
+its ancestors' do, as with unconfirmed Bitcoin outputs), so payments
+chain at the sequencer's speed; and a hub-signed receipt for an
+acknowledgment, letting a payee be firm before it's sequenced. Both
+need analysis first.
 
 ### What it costs
 
-- **Chain guest, per spend:** one signature check, one insert into an
-  acknowledged set (about 306k cycles, like the other set inserts), and
-  a lookup of the named anchor among those applied. Spending an output
-  checks its spend is in the acknowledged set: a path check. Roughly
-  one more input's work per transparent spend; negligible beside a
-  shielded spend's proof.
+- **Chain guest, per spend:** a `Pending` entry and a `Locked` insert per
+  output, each about 306k cycles like the other set inserts; per
+  acknowledgment, one signature check, an `Anchors` lookup, and the
+  removals. Roughly one more input's work per transparent spend;
+  negligible beside a shielded spend's proof.
 - **The shielded spend proof:** `ak` as one more public input. The
   acknowledgment is a plain signature outside it.
-- **The hub's statement:** the grounds above, a signature check and a
-  lookup each.
-- **On chain:** nothing in normal operation (acknowledgments are L2
-  data; anchors unchanged). In an exit, about 70–135 bytes of witness
-  a spend whose outputs are claimed while locked: under 35 vB.
-- **The wallet:** no proving; it stays online to the next anchor after
-  a payment, and keeps its paths and acknowledgments with its notes.
+- **The hub's guest:** grounds 5–7, a signature check and lookups.
+- **On chain:** nothing in normal operation. In an exit, about 70 bytes
+  of witness a spend whose outputs are claimed while locked: under
+  20 vB.
+- **The wallet:** no proving. It stays online to the next anchor's
+  broadcast after a payment, and keeps its paths and acknowledgments
+  with its notes.
 
 ### Assumptions left
 
 Not gaps in the DA picture, but what it rests on:
 
-- the operator can stop anchoring or refuse receipts: payments stall;
+- the operator can stop anchoring or not sequence acknowledgments:
+  payments stall;
 - Bitcoin: a user exits before `T_close` less the windows, challenges
   a lying hub within its window, and a mass exit needs block space;
 - the cut-and-choose is sound and the hub's statement correct (its
@@ -436,8 +448,8 @@ formalization).
    one contract, so a double exit steals from everyone, hence
    priorities and mass-exit coordination. Here each exit is a dispute
    against the hub's collateral for one contract: no queue, no ordering
-   among users, and a double payment costs the hub. That is what the
-   receipt settles: whether the hub or the payee bears it.
+   among users, and a double payment would cost the hub, which is why
+   the sequencer's policy and the voiding rule are the hub's to keep.
 3. **The burden on the data holder.** Everywhere else the exiter proves
    something: inclusion, a Merkle path, a balance proof. Here she claims
    and the operator proves, since one operator runs the sequencer and
@@ -448,7 +460,8 @@ formalization).
      the signatures with the block; Bitcoin's space rules that out);
    - it counts by existence and claims carry it, so the operator can't
      suppress it by censoring;
-   - the hub's receipt, from (2).
+   - outputs locked until it's sequenced, and an exit voiding a spend
+     still unacknowledged, so a payee who waits for that is firm.
 5. **No in-flight exits.** MoreVP's in-flight exit is the ambiguous
    claim rejected above ("the inputs or the outputs, whichever is
    canonical"), with bonded games of several parties. On Bitcoin each
@@ -462,7 +475,7 @@ interactive step (the sender online to the next anchor's broadcast);
 griefing by withholding (payments stall, nothing taken); the sender's
 free option (until she signs she can take the payment back, a window
 of at most an anchor cycle, which the payee closes by waiting for the
-acknowledgment and the receipt). MoreVP's alternative needs the L1
+acknowledgment sequenced). MoreVP's alternative needs the L1
 machinery Bitcoin lacks.
 
 **Related:** Ark's hArk variant locks a new VTXO until the user signs
@@ -613,11 +626,14 @@ not.
   digit decomposition. No candidates, no reduction of `b` (the user,
   2026-11-09).
 - Sender acknowledgment, mandatory for every spend, naming the next
-  anchor (not the spend's own height), counted by existence, with the
-  hub's receipt deciding a paid exit against a payee: see "Data
-  availability: sender acknowledgment". Finality waiting for the
-  anchor's confirmations is understood (the user, 2026-11-09). It
-  replaces accepting the in-flight risk (decided earlier the same day).
+  anchor (not the spend's own height), counted by existence; outputs
+  locked until it's sequenced, which the sequencer does once its anchor
+  is the margin deep; an exit voiding a spend still unacknowledged. The
+  simple version first: a payee counts a payment only at full
+  finality, and softer finality (conditional spends of locked outputs,
+  a hub's receipt) is for later analysis. See "Data availability:
+  sender acknowledgment" (the user, 2026-11-09). It replaces accepting
+  the in-flight risk (decided earlier the same day).
 - No fixed denominations to shrink it: they multiply inputs and
   outputs, and shielded proving time with them (the user, 2026-11-09).
 
@@ -703,11 +719,11 @@ Next:
      alone, `E` over positions, and the exit record's note limit raised;
    - sender acknowledgment: `ak` in every spend, locked outputs, the
      acknowledgment transaction against an applied anchor, the
-     acknowledged set; the sequencer sending data at each anchor's
-     broadcast and signing receipts; the wallet acknowledging, chaining
-     spends of locked change, and carrying acknowledgments in claims;
-     the hub's new grounds (locked, voided) and "spent" as "spent by a
-     spend that counts".
+     `Pending`, `Locked`, `Void` and `Anchors` (the chain guest's
+     rules); the sequencer sending data at each anchor's broadcast and
+     sequencing acknowledgments once their anchor is the margin deep;
+     the wallet acknowledging, and carrying acknowledgments in claims;
+     the hub's grounds 5–7.
 6. The hub's statement as a guest (its encoding, the chain receipt
    composed, the Groth16 wrap), and the real statement.
 7. Real proofs on regtest, then Mutinynet.
