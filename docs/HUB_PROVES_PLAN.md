@@ -426,6 +426,14 @@ Where these differ from the sections above, they hold.
 - **The claim posts each note's opening,** with its position (80 bytes):
   see "The claim". So at most 8 notes, an exit record's most, until a
   chain-guest change.
+- **Planned, with the next chain-guest change: commit each leaf's
+  kind,** `leaf = H(kind ‖ inner)`, `inner` today's commitment. The
+  kind is public already (a transaction shows which outputs are
+  transparent), so it costs no privacy. The hub can then prove a leaf
+  shielded by revealing its `inner`, and a claim goes back to positions
+  alone, 4 bytes a note. Bundled with raising the exit record's 8 notes
+  and the shielded trapdoor `r`: one new deployment. The spend guest
+  hashes one more time per path.
 - **`E` is today's fingerprint** with `h_S` 0 and the positions' digest
   for `SR_S`: the hub's exit record retires the notes under today's
   chain statement, no guest change.
