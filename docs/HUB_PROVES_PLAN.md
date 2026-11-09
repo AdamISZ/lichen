@@ -412,11 +412,20 @@ need analysis first.
 
 ### What it costs
 
-- **Chain guest, per spend:** a `Pending` entry and a `Locked` insert per
-  output, each about 306k cycles like the other set inserts; per
-  acknowledgment, one signature check, an `Anchors` lookup, and the
-  removals. Roughly one more input's work per transparent spend;
-  negligible beside a shielded spend's proof.
+- **Chain guest, measured (2026-11-10):** every spent set access is a
+  256-level path, about 300k cycles. A transparent spend now reads each
+  input's lock and inserts its pending leaf and a lock per output; its
+  acknowledgment checks a signature (about 260k) and reads four keys
+  and inserts one. A payment of one input and two outputs and its
+  acknowledgment: about 2.7M cycles more than before, against about
+  0.6M for the spend alone then, so some 4 to 5 times the chain guest's
+  work per payment. Negligible beside a shielded spend's proof, which
+  dominates there. To trim later: one lock per spend instead of per
+  output (the lock keyed by the spend, the output's position mapped to
+  it by the tree), the acknowledged state in the pending leaf itself
+  (one insert fewer), and batching the reads of one block. The rebuilt
+  chain guest runs the ledger test's first block (three mints and a
+  transfer) in 2,384k user cycles.
 - **The shielded spend proof:** `ak` as one more public input. The
   acknowledgment is a plain signature outside it.
 - **The hub's guest:** grounds 5–7, a signature check and lookups.
@@ -778,6 +787,10 @@ Next:
      malformed, or false at `A*` (not a note, not hers, too much, spent,
      a second claim), the hub opening each note a ground needs. The
      ledger's return check is its own, on leaves, no longer ln-gap's;
+   - the guests rebuilt (2026-11-10, lichen-vps): spend `755aa218`,
+     chain `0bcd188d` (r0/guests/README.md); no fixture left to prove
+     again (the withdraw and BABE guests and their fixtures went with the
+     return);
    - done natively (2026-11-09): sender acknowledgment ("The
      representation"). Decided while building:
      - locks only in an anchored deployment (a genesis seal): without

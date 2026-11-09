@@ -1464,6 +1464,11 @@ mod tests {
     /// statement's journal, which must run from `from` to the new root.
     fn seal_checked(l: &mut Ledger, seq: &SigningKey, from: (Hash, Hash)) -> lichen_validity::BlockJournal {
         let input = l.block_input().unwrap();
+        // LICHEN_DUMP_BLOCKS=<dir>: each block's input written, for
+        // `lichen-r0 exec-chain` on the guest
+        if let Ok(d) = std::env::var("LICHEN_DUMP_BLOCKS") {
+            std::fs::write(std::path::Path::new(&d).join(format!("block-{}.bin", input.height + 1)), input.to_bytes()).unwrap();
+        }
         let journals: Vec<Vec<u8>> = l.pending.iter().filter_map(|t| if let Tx::Shielded(s) = t { Some(s.journal().unwrap().to_bytes()) } else { None }).collect();
         let j = lichen_validity::check(&input, &mut |jb| journals.iter().any(|x| x == jb)).unwrap();
         assert_eq!(lichen_validity::BlockInput::from_bytes(&input.to_bytes()), Ok(input.clone()), "the guest reads what the sequencer writes");
