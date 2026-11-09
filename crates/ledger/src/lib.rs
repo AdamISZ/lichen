@@ -1438,12 +1438,32 @@ mod tests {
         l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![note([7; 32], 1_000_000, 0)]))).unwrap();
     }
 
+    /// The shielded keys of `nk` (the nullifier key; the spend and exit
+    /// keys derived from it, for the tests): `ask`, `nk`, `x`.
+    fn skeys(nk: &Hash) -> (Hash, Hash, Hash) {
+        (sha256(&[b"ask", nk]), *nk, sha256(&[b"x", nk]))
+    }
+
+    /// The owner of `nk`'s keys.
+    fn sowner(nk: &Hash) -> Hash {
+        let (ask, nk, x) = skeys(nk);
+        shielded::owner(&shielded::auth(&ask), &nk, &x)
+    }
+
+    /// The trapdoor of a test's note of `value` to `owner`.
+    fn trap(value: u64, owner: &Hash) -> Hash {
+        sha256(&[b"trap", owner, &value.to_be_bytes()])
+    }
+
     /// The spend statement's input for spending shielded notes (value,
     /// rho, index) of `nk` under the last sealed root, with `t_spends`
     /// beside them.
     fn spend_input(l: &Ledger, t_spends: &[Spend], nk: &Hash, notes: &[(u64, Hash, u32)], outputs: Vec<(u64, Hash)>, t_outputs: Vec<shielded::TOut>) -> shielded::SpendInput {
         let s = l.sealed.last().unwrap();
-        let spends = notes.iter().map(|&(value, rho, index)| shielded::Spend { value, rho, nk: *nk, index, path: l.tree.path_at(index, s.size) }).collect();
+        let (ask, nk, x) = skeys(nk);
+        let me = sowner(&nk);
+        let spends = notes.iter().map(|&(value, rho, index)| shielded::Spend { value, rho, trap: trap(value, &me), ask, nk, x, index, path: l.tree.path_at(index, s.size) }).collect();
+        let outputs = outputs.into_iter().map(|(value, owner)| shielded::Output { value, owner, trap: trap(value, &owner) }).collect();
         let t_total = t_spends.iter().map(|s| s.note.value).sum();
         shielded::SpendInput { anchor: s.tree, t_nfs: t_spends.iter().map(|s| nullifier(&s.note)).collect(), t_total, spends, outputs, t_outputs, ak: xonly(&key_from_label("test/ak")) }
     }
@@ -1505,7 +1525,7 @@ mod tests {
         let (hub, seq) = (regtest_hub(), regtest_sequencer());
         let alice = key_from_label("test/alice");
         let (alice_nk, bob_nk) = (sha256(&[b"alice nk"]), sha256(&[b"bob nk"]));
-        let (a_owner, b_owner) = (shielded::owner(&alice_nk), shielded::owner(&bob_nk));
+        let (a_owner, b_owner) = (sowner(&alice_nk), sowner(&bob_nk));
         let genesis_seal = OutPoint { txid: [0x5e; 32], vout: 1 };
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: Some(genesis_seal) });
         l.native_proofs = true;
@@ -1571,7 +1591,7 @@ mod tests {
         assert_eq!(v::check(&bad, &mut |_| true), Err(v::Reject::BadSignature));
         let ret_txid = l.pending.iter().find_map(|t| if let Tx::Shielded(t) = t { Some(t.digest().unwrap()) } else { None }).expect("the return");
         let j4 = seal_checked(&mut l, &seq, (j3.to, j3.recent_to));
-        let nf_ret = shielded::nullifier(&bob_nk, &shielded::rho(&nf_pay, 0));
+        let nf_ret = shielded::nullifier(&bob_nk, &shielded::rho(&nf_pay, 0), &trap(12, &b_owner));
         assert_eq!(l.nullifiers.leaf(&nf_ret), ret_txid, "spent by its transaction, and the statement agrees");
 
         // block 5: an anchor of height 4 (a mined block holding it), a
@@ -1809,7 +1829,7 @@ mod tests {
         let (hub, seq) = (regtest_hub(), regtest_sequencer());
         let alice = key_from_label("test/alice");
         let (alice_nk, bob_nk) = (sha256(&[b"alice nk"]), sha256(&[b"bob nk"]));
-        let (a_owner, b_owner) = (shielded::owner(&alice_nk), shielded::owner(&bob_nk));
+        let (a_owner, b_owner) = (sowner(&alice_nk), sowner(&bob_nk));
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
         l.native_proofs = true;
         let minted = note(xonly(&alice), 20, 0);
@@ -1830,7 +1850,7 @@ mod tests {
         assert!(l.apply(&tx).is_err(), "the mint is spent");
         let nf0 = nullifier(&minted);
         let rho15 = shielded::rho(&nf0, 0);
-        assert_eq!(l.tree.leaf(idx[0]), Some(shielded::s_leaf(&shielded::SNote { value: 15, owner: a_owner, rho: rho15 }.commitment())));
+        assert_eq!(l.tree.leaf(idx[0]), Some(shielded::s_leaf(&shielded::SNote { value: 15, owner: a_owner, rho: rho15, trap: trap(15, &a_owner) }.commitment())));
         // not yet sealed: no anchor reaches it
         let early = spend_input(&l, &[], &alice_nk, &[(15, rho15, idx[0])], vec![(15, b_owner)], vec![]);
         assert!(shielded::check(&early).is_err(), "the last sealed root doesn't hold it");

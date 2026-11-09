@@ -3,21 +3,32 @@
 //! the wallet builds.
 //!
 //! ```text
-//! owner = SHA256("lichen/owner" ‖ nk)            nk: the owner's nullifier key
-//! cm    = SHA256("lichen/snote" ‖ owner ‖ value ‖ rho)
-//! nf    = SHA256("lichen/snf" ‖ nk ‖ rho)
+//! auth  = SHA256("lichen/auth" ‖ ask)            ask: the owner's spend key
+//! owner = SHA256("lichen/owner" ‖ auth ‖ nk ‖ x) nk: its nullifier key; x: its exit key
+//! cm    = SHA256("lichen/snote" ‖ owner ‖ value ‖ rho ‖ r)
+//! nf    = SHA256("lichen/snf" ‖ nk ‖ rho ‖ r)
 //! rho_i = SHA256("lichen/rho" ‖ nf_0 ‖ i)        the i-th new note of a transaction
 //! ```
+//!
+//! The keys are split (docs/HUB_PROVES_PLAN.md, "Shielded notes"): `ask`
+//! authorizes spends, in the proof, and is never revealed; `nk` derives
+//! nullifiers, and an exit reveals it (with `auth` and `x`) so that the
+//! hub can check a claimed note unspent; `x`, an x-only Schnorr key, signs
+//! exit claims and nothing else. `r` (the code's `trap`) is a trapdoor the
+//! sender picks and encrypts to the recipient with the value: it hides the
+//! commitment (without it, anyone with an address could test each leaf for
+//! every likely value), and after an exit only a note's sender, who knows
+//! its `r`, can link its spend to the owner whose `nk` the exit revealed.
 //!
 //! Shielded notes are leaves of the ledger's commitment tree beside
 //! transparent ones (`lngap/note`, domain-separated), and their nullifiers
 //! go in the same set. The statement: each shielded spend's note is in the
-//! tree under the anchor and its `nk` is known; the new notes' `rho`s are
+//! tree under the anchor and its owner's keys known; the new notes' `rho`s are
 //! derived from the transaction's first nullifier (so no two notes share
 //! one); and the values balance with the transparent spends' total and
 //! outputs. Its journal ([`Journal`]) is everything public: what the
 //! sequencer recomputes from the transaction. Spend authority is knowing
-//! `nk`; there is no signature.
+//! `ask`; there is no signature.
 //!
 //! Integers are big-endian, as in the withdrawal statement.
 
@@ -44,28 +55,35 @@ fn sha256(parts: &[&[u8]]) -> Hash {
     h.finalize().into()
 }
 
-/// The owner of notes spendable with `nk`.
-pub fn owner(nk: &Hash) -> Hash {
-    sha256(&[b"lichen/owner", nk])
+/// The public part of the spend key `ask`.
+pub fn auth(ask: &Hash) -> Hash {
+    sha256(&[b"lichen/auth", ask])
 }
 
-/// A shielded note.
+/// The owner of notes spendable with the spend key whose public part is
+/// `auth`, of nullifier key `nk` and exit key `x`.
+pub fn owner(auth: &Hash, nk: &Hash, x: &Hash) -> Hash {
+    sha256(&[b"lichen/owner", auth, nk, x])
+}
+
+/// A shielded note: `trap` its trapdoor (the plan's `r`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SNote {
     pub value: u64,
     pub owner: Hash,
     pub rho: Hash,
+    pub trap: Hash,
 }
 
 impl SNote {
     pub fn commitment(&self) -> Hash {
-        sha256(&[b"lichen/snote", &self.owner, &self.value.to_be_bytes(), &self.rho])
+        sha256(&[b"lichen/snote", &self.owner, &self.value.to_be_bytes(), &self.rho, &self.trap])
     }
 }
 
 /// A shielded note's nullifier.
-pub fn nullifier(nk: &Hash, rho: &Hash) -> Hash {
-    sha256(&[b"lichen/snf", nk, rho])
+pub fn nullifier(nk: &Hash, rho: &Hash, trap: &Hash) -> Hash {
+    sha256(&[b"lichen/snf", nk, rho, trap])
 }
 
 /// The `rho` of a transaction's `i`-th new shielded note.
@@ -114,15 +132,27 @@ pub fn root_from_path(leaf: Hash, index: u32, path: &[Hash]) -> Hash {
     h
 }
 
-/// A shielded note being spent: its opening, its owner's `nk`, where it
-/// sits in the tree.
+/// A shielded note being spent: its opening, its owner's keys (the spend
+/// key `ask`, `nk`, the exit key `x`), where it sits in the tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spend {
     pub value: u64,
     pub rho: Hash,
+    pub trap: Hash,
+    pub ask: Hash,
     pub nk: Hash,
+    pub x: Hash,
     pub index: u32,
     pub path: Vec<Hash>,
+}
+
+/// A new shielded note: its value, owner and trapdoor (its `rho` is
+/// derived).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Output {
+    pub value: u64,
+    pub owner: Hash,
+    pub trap: Hash,
 }
 
 /// A transparent note created (a return to the hub): its opening.
@@ -151,8 +181,8 @@ pub struct SpendInput {
     pub t_nfs: Vec<Hash>,
     pub t_total: u64,
     pub spends: Vec<Spend>,
-    /// New shielded notes: (value, owner); their `rho`s are derived.
-    pub outputs: Vec<(u64, Hash)>,
+    /// New shielded notes; their `rho`s are derived.
+    pub outputs: Vec<Output>,
     pub t_outputs: Vec<TOut>,
     /// The sender's one-time acknowledgment key (docs/HUB_PROVES_PLAN.md,
     /// "Data availability"): public, so that the sequencer can't swap it.
@@ -179,7 +209,7 @@ pub enum Reject {
     /// No spend, or too many spends or outputs.
     Shape,
     PathLength,
-    /// A shielded note not under the anchor (or not its owner's `nk`).
+    /// A shielded note not under the anchor (or not its owner's keys).
     NotInTree,
     /// A new note of no value.
     Empty,
@@ -209,22 +239,22 @@ pub fn check(input: &SpendInput) -> Result<Journal, Reject> {
         if s.path.len() != TREE_DEPTH {
             return Err(Reject::PathLength);
         }
-        let note = SNote { value: s.value, owner: owner(&s.nk), rho: s.rho };
+        let note = SNote { value: s.value, owner: owner(&auth(&s.ask), &s.nk, &s.x), rho: s.rho, trap: s.trap };
         if root_from_path(s_leaf(&note.commitment()), s.index, &s.path) != input.anchor {
             return Err(Reject::NotInTree);
         }
-        nfs.push(nullifier(&s.nk, &s.rho));
+        nfs.push(nullifier(&s.nk, &s.rho, &s.trap));
         vin += u128::from(s.value);
     }
     let nf0 = *input.t_nfs.first().or(nfs.first()).ok_or(Reject::Shape)?;
     let mut vout = 0u128;
     let mut cms = Vec::with_capacity(input.outputs.len());
-    for (i, &(value, owner)) in input.outputs.iter().enumerate() {
-        if value == 0 {
+    for (i, o) in input.outputs.iter().enumerate() {
+        if o.value == 0 {
             return Err(Reject::Empty);
         }
-        cms.push(SNote { value, owner, rho: rho(&nf0, i as u32) }.commitment());
-        vout += u128::from(value);
+        cms.push(SNote { value: o.value, owner: o.owner, rho: rho(&nf0, i as u32), trap: o.trap }.commitment());
+        vout += u128::from(o.value);
     }
     for t in &input.t_outputs {
         if t.value == 0 {
@@ -291,14 +321,18 @@ impl SpendInput {
         for s in &self.spends {
             w.put(&s.value.to_be_bytes());
             w.put(&s.rho);
+            w.put(&s.trap);
+            w.put(&s.ask);
             w.put(&s.nk);
+            w.put(&s.x);
             w.put(&s.index.to_be_bytes());
             w.list(&s.path);
         }
         w.0.push(self.outputs.len() as u8);
-        for (v, o) in &self.outputs {
-            w.put(&v.to_be_bytes());
-            w.put(o);
+        for o in &self.outputs {
+            w.put(&o.value.to_be_bytes());
+            w.put(&o.owner);
+            w.put(&o.trap);
         }
         w.0.push(self.t_outputs.len() as u8);
         for t in &self.t_outputs {
@@ -316,9 +350,9 @@ impl SpendInput {
         let t_nfs = r.list()?;
         let t_total = r.u64()?;
         let n = r.u8()?;
-        let spends = (0..n).map(|_| Ok(Spend { value: r.u64()?, rho: r.take()?, nk: r.take()?, index: r.u32()?, path: r.list()? })).collect::<Result<_, _>>()?;
+        let spends = (0..n).map(|_| Ok(Spend { value: r.u64()?, rho: r.take()?, trap: r.take()?, ask: r.take()?, nk: r.take()?, x: r.take()?, index: r.u32()?, path: r.list()? })).collect::<Result<_, _>>()?;
         let n = r.u8()?;
-        let outputs = (0..n).map(|_| Ok((r.u64()?, r.take()?))).collect::<Result<_, _>>()?;
+        let outputs = (0..n).map(|_| Ok(Output { value: r.u64()?, owner: r.take()?, trap: r.take()? })).collect::<Result<_, _>>()?;
         let n = r.u8()?;
         let t_outputs = (0..n).map(|_| Ok(TOut { owner: r.take()?, value: r.u64()?, memo: r.u32()?, rho: r.take()? })).collect::<Result<_, _>>()?;
         let ak = r.take()?;
@@ -373,15 +407,29 @@ mod tests {
         (levels[TREE_DEPTH][0], paths)
     }
 
-    /// Alice (nk 1) holds notes of 5 and 7 at leaves 1 and 2, beside a
-    /// transparent note at 0; she pays Bob (nk 2) 9 and keeps 3.
+    /// The owner of keys `n`: spend key, nullifier key, exit key.
+    fn who(n: u8) -> Hash {
+        owner(&auth(&h(n)), &h(n + 1), &h(n + 2))
+    }
+
+    fn out(value: u64, owner: Hash, trap: u8) -> Output {
+        Output { value, owner, trap: h(trap) }
+    }
+
+    /// A spend of a note of Alice's (keys 1), at `index`.
+    fn spend(value: u64, rho: u8, trap: u8, index: u32, path: &[Hash]) -> Spend {
+        Spend { value, rho: h(rho), trap: h(trap), ask: h(1), nk: h(2), x: h(3), index, path: path.to_vec() }
+    }
+
+    /// Alice (keys 1) holds notes of 5 and 7 at leaves 1 and 2, beside a
+    /// transparent note at 0; she pays Bob (keys 4) 9 and keeps 3.
     fn payment() -> (SpendInput, Hash) {
-        let (alice, bob) = (owner(&h(1)), owner(&h(2)));
-        let n5 = SNote { value: 5, owner: alice, rho: h(10) };
-        let n7 = SNote { value: 7, owner: alice, rho: h(11) };
+        let (alice, bob) = (who(1), who(4));
+        let n5 = SNote { value: 5, owner: alice, rho: h(10), trap: h(20) };
+        let n7 = SNote { value: 7, owner: alice, rho: h(11), trap: h(21) };
         let (root, paths) = tree(&[t_leaf(&transparent_commitment(&h(9), 4, 0, &h(8))), s_leaf(&n5.commitment()), s_leaf(&n7.commitment())]);
-        let spends = vec![Spend { value: 5, rho: h(10), nk: h(1), index: 1, path: paths[1].clone() }, Spend { value: 7, rho: h(11), nk: h(1), index: 2, path: paths[2].clone() }];
-        let input = SpendInput { anchor: root, t_nfs: vec![], t_total: 0, spends, outputs: vec![(9, bob), (3, alice)], t_outputs: vec![], ak: h(0xa0) };
+        let spends = vec![spend(5, 10, 20, 1, &paths[1]), spend(7, 11, 21, 2, &paths[2])];
+        let input = SpendInput { anchor: root, t_nfs: vec![], t_total: 0, spends, outputs: vec![out(9, bob, 30), out(3, alice, 31)], t_outputs: vec![], ak: h(0xa0) };
         (input, root)
     }
 
@@ -390,12 +438,14 @@ mod tests {
         let (input, root) = payment();
         let j = check(&input).unwrap();
         assert_eq!(j.anchor, root);
-        assert_eq!(j.nfs, vec![nullifier(&h(1), &h(10)), nullifier(&h(1), &h(11))]);
-        // the new notes' rhos come from the first nullifier: Bob can
-        // recompute his note's commitment
+        assert_eq!(j.nfs, vec![nullifier(&h(2), &h(10), &h(20)), nullifier(&h(2), &h(11), &h(21))]);
+        // the new notes' rhos come from the first nullifier: Bob, told the
+        // value and the trapdoor, can recompute his note's commitment
         let nf0 = j.nf0().unwrap();
-        assert_eq!(j.cms[0], SNote { value: 9, owner: owner(&h(2)), rho: rho(nf0, 0) }.commitment());
-        assert_eq!(j.cms[1], SNote { value: 3, owner: owner(&h(1)), rho: rho(nf0, 1) }.commitment());
+        assert_eq!(j.cms[0], SNote { value: 9, owner: who(4), rho: rho(nf0, 0), trap: h(30) }.commitment());
+        assert_eq!(j.cms[1], SNote { value: 3, owner: who(1), rho: rho(nf0, 1), trap: h(31) }.commitment());
+        // without the trapdoor, no value tests as Bob's note
+        assert!((0..100).all(|v| SNote { value: v, owner: who(4), rho: rho(nf0, 0), trap: h(0) }.commitment() != j.cms[0]));
         // the encodings round-trip
         assert_eq!(SpendInput::from_bytes(&input.to_bytes()).unwrap(), input);
         assert_eq!(Journal::from_bytes(&j.to_bytes()).unwrap(), j);
@@ -408,10 +458,14 @@ mod tests {
     #[test]
     fn what_the_statement_refuses() {
         let (input, _) = payment();
-        // another nk (Bob's) for Alice's note: not its owner
-        let mut i = input.clone();
-        i.spends[0].nk = h(2);
-        assert_eq!(check(&i), Err(Reject::NotInTree));
+        // another spend key, nullifier key or exit key (Bob's) for Alice's
+        // note: not its owner; another trapdoor: not the note
+        let changes: [fn(&mut Spend); 4] = [|s| s.ask = h(4), |s| s.nk = h(5), |s| s.x = h(6), |s| s.trap = h(22)];
+        for f in changes {
+            let mut i = input.clone();
+            f(&mut i.spends[0]);
+            assert_eq!(check(&i), Err(Reject::NotInTree));
+        }
         // a value she doesn't hold
         let mut i = input.clone();
         i.spends[0].value = 6;
@@ -422,10 +476,10 @@ mod tests {
         assert_eq!(check(&i), Err(Reject::NotInTree));
         // more out than in, a zero note, a short path
         let mut i = input.clone();
-        i.outputs[0].0 = 10;
+        i.outputs[0].value = 10;
         assert_eq!(check(&i), Err(Reject::Unbalanced));
         let mut i = input.clone();
-        i.outputs = vec![(12, owner(&h(2))), (0, owner(&h(1)))];
+        i.outputs = vec![out(12, who(4), 30), out(0, who(1), 31)];
         assert_eq!(check(&i), Err(Reject::Empty));
         let mut i = input.clone();
         i.spends[1].path.pop();
@@ -436,7 +490,7 @@ mod tests {
         i.outputs.clear();
         assert_eq!(check(&i), Err(Reject::Shape));
         let mut i = input.clone();
-        i.outputs = vec![(3, owner(&h(2))); 4];
+        i.outputs = vec![out(3, who(4), 30); 4];
         i.t_outputs = vec![TOut { owner: h(9), value: 0, memo: 0, rho: h(0) }];
         assert_eq!(check(&i), Err(Reject::Shape));
         let mut i = input.clone();
@@ -449,15 +503,15 @@ mod tests {
         // shielding: a transparent note of 20 (the sequencer checks its
         // signature) into notes of 15 and 5
         let t_nf = h(30);
-        let shield = SpendInput { anchor: h(0), t_nfs: vec![t_nf], t_total: 20, spends: vec![], outputs: vec![(15, owner(&h(1))), (5, owner(&h(1)))], t_outputs: vec![], ak: h(0xa0) };
+        let shield = SpendInput { anchor: h(0), t_nfs: vec![t_nf], t_total: 20, spends: vec![], outputs: vec![out(15, who(1), 30), out(5, who(1), 31)], t_outputs: vec![], ak: h(0xa0) };
         let j = check(&shield).unwrap();
         assert_eq!(j.nf0(), Some(&t_nf));
-        assert_eq!(j.cms[0], SNote { value: 15, owner: owner(&h(1)), rho: rho(&t_nf, 0) }.commitment());
+        assert_eq!(j.cms[0], SNote { value: 15, owner: who(1), rho: rho(&t_nf, 0), trap: h(30) }.commitment());
         // a return: shielded notes to a transparent note of the hub's,
         // memo c, change shielded
         let (mut ret, _) = payment();
         let hub = TOut { owner: h(7), value: 10, memo: 1000, rho: h(12) };
-        ret.outputs = vec![(2, owner(&h(1)))];
+        ret.outputs = vec![out(2, who(1), 32)];
         ret.t_outputs = vec![hub];
         let j = check(&ret).unwrap();
         assert_eq!(j.t_cms, vec![transparent_commitment(&h(7), 10, 1000, &h(12))]);
