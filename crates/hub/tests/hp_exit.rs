@@ -79,6 +79,8 @@ fn the_hub_proves_on_the_mock_statement() {
     let dir = std::env::temp_dir().join(format!("lichen-hp-exit-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    // the statement's inputs the hub asserts on (S's chain journal, below)
+    std::env::set_var("LICHEN_DUMP_HP", &dir);
     let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w).unwrap();
     for w in ["sequencer", "hub"] {
         rt.fund(&chain(w).new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
@@ -210,6 +212,16 @@ fn the_hub_proves_on_the_mock_statement() {
     stale(&mut w, &ch, cids[0]);
     assert_eq!(exit(&mut w, &ch, "sam", cids[0]), Outcome::Countered, "S: the hub asserts the stale claim false");
     wait("success the hub's", || hub.contracts().iter().any(|(r, closed)| r.cid() == cids[0] && closed.is_some()));
+    // the chain receipt the statement asks for at A* is the one the chain
+    // statement gives for the block sealing that height (checked natively:
+    // on the mock no receipt is read)
+    let input = lichen_withdraw::hp::HubInput::from_bytes(&std::fs::read(dir.join(format!("hp-{}.bin", cids[0]))).unwrap()).unwrap();
+    let lichen_withdraw::hp::Ground::At { last, .. } = &input.ground else { panic!("S: a ground at A*") };
+    let h = last.state.chain_height;
+    let block = v::BlockInput::from_bytes(&std::fs::read(lichen_sequencer::blocks_dir(&ledger).join(format!("{h}.input"))).unwrap()).unwrap();
+    let id: [u8; 32] = hex::decode(lichen_ledger::CHAIN_IMAGE_ID.trim()).unwrap().try_into().unwrap();
+    let journal = v::chain(&id, &block, &mut |_| true, &mut |_| true).unwrap();
+    assert_eq!(journal.to_bytes(), last.state.chain_journal(&id).to_bytes(), "S: the statement asks for the chain receipt at A*'s chain height");
 
     // C: the same, challenged anyway: the hub answers
     let (mut w, ch, cids) = open("cleo", 1);
