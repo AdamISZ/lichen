@@ -46,11 +46,6 @@ const fn words_be(st: &[u32; 8]) -> Hash {
     out
 }
 
-/// A nullifier's leaf, spent by a transaction.
-pub fn spent() -> Hash {
-    sha256(&[b"lichen/nf-spent"])
-}
-
 /// A nullifier's leaf, retired by contract `c`'s exit record.
 pub fn exited(c: u32) -> Hash {
     sha256(&[b"lichen/nf-exit", &c.to_be_bytes()])
@@ -132,6 +127,14 @@ impl Proof {
     fn has(&self, h: usize) -> bool {
         self.bitmap[h / 8] >> (h % 8) & 1 == 1
     }
+}
+
+/// A key's leaf in the set (zero: absent) and its path: what the
+/// statement reads, or checks absent before inserting.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Opening {
+    pub leaf: Hash,
+    pub proof: Proof,
 }
 
 /// The root after spending `key` (its leaf now `leaf`) in a tree of root
@@ -265,7 +268,7 @@ mod tests {
         assert_eq!(root, e[DEPTH]);
         // spend them one by one, each shown unspent first, in an order
         // the sorted set isn't, with each kind of leaf
-        let leaves = [spent(), exited(1000), exited(1001), spent(), exited(1002), spent()];
+        let leaves = [h(0xee), exited(1000), exited(1001), h(0xee), exited(1002), h(0xee)];
         for (k, leaf) in [h(9), h(1), [0x80; 32], h(2), [0x81; 32], h(0)].into_iter().zip(leaves) {
             let p = proof(&keys, &k, e);
             let next = insert(&root, &k, &leaf, &p, e).expect("unspent");
@@ -275,14 +278,14 @@ mod tests {
             root = next;
             // spent now: no proof of it unspent, a proof of its leaf
             let p = proof(&keys, &k, e);
-            assert_eq!(insert(&root, &k, &spent(), &p, e), None);
+            assert_eq!(insert(&root, &k, &h(0xee), &p, e), None);
             assert!(!unspent(&root, &k, &p, e));
             assert!(holds(&root, &k, &leaf, &p, e));
         }
         // a leaf says how: not another kind, nor another contract
         let p = proof(&keys, &h(1), e);
         assert!(holds(&root, &h(1), &exited(1000), &p, e));
-        for other in [spent(), exited(1001)] {
+        for other in [h(0xee), exited(1001)] {
             assert!(!holds(&root, &h(1), &other, &p, e));
         }
         // unspent agrees with insert
@@ -290,13 +293,13 @@ mod tests {
         // a proof against another root, or tampered, is refused
         let k = h(5);
         let p = proof(&keys, &k, e);
-        assert!(insert(&root, &k, &spent(), &p, e).is_some());
-        assert_eq!(insert(&e[DEPTH], &k, &spent(), &p, e), None);
+        assert!(insert(&root, &k, &h(0xee), &p, e).is_some());
+        assert_eq!(insert(&e[DEPTH], &k, &h(0xee), &p, e), None);
         let mut bad = p.clone();
         bad.siblings[0][0] ^= 1;
-        assert_eq!(insert(&root, &k, &spent(), &bad, e), None);
+        assert_eq!(insert(&root, &k, &h(0xee), &bad, e), None);
         let mut short = p;
         short.siblings.pop();
-        assert_eq!(insert(&root, &k, &spent(), &short, e), None);
+        assert_eq!(insert(&root, &k, &h(0xee), &short, e), None);
     }
 }

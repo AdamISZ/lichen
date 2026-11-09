@@ -307,6 +307,43 @@ could acknowledge, claim her inputs at once with a cutoff before the
 anchor, and have the hub pay her while her payee's outputs were already
 unlocked.
 
+### The representation (for building, 2026-11-09)
+
+All in the existing spent-set SMT, under domain-separated keys, insert
+only (nothing is ever deleted; "unlocked" is "acknowledged"):
+
+| key | leaf | inserted by |
+|---|---|---|
+| `nf` (a nullifier, as now) | `spent(txid)` for a user's spend, `exited(c)` for an exit record | the spend, the record |
+| `H("lichen/k/tx" ‖ txid)` | `H("lichen/pending" ‖ ak ‖ h)` | a user's spend, sealed at `h` |
+| `H("lichen/k/lock" ‖ i)` | `txid` | each of its outputs, at position `i` |
+| `H("lichen/k/acked" ‖ txid)` | `H("lichen/acked" ‖ a)` | its acknowledgment |
+| `H("lichen/k/void" ‖ txid)` | `H("lichen/void")` | an exit record retiring its inputs |
+| `H("lichen/k/anchor" ‖ a)` | `hist_a` | the anchor record of height `a` |
+
+- **`txid`** is the digest the spend's authority signs: `transfer_digest`
+  (now over `ak` too), or `shielded_digest` (its journal now carries `ak`).
+  The nullifier's leaf `spent(txid)` names the spend, so an exit record
+  can void it, and the hub's statement can tell which spend spent a note.
+- **An acknowledgment** `(txid, ak, h, a, hist_a, sig)`: the pending
+  leaf recomputed from `ak` and `h`, not void, not acknowledged
+  (inserted), `anchor(a) = hist_a`, `h ≤ a`, `sig` under `ak` on
+  `H("lichen/ack" ‖ txid ‖ a ‖ hist_a)`.
+- **A transparent input** at `i`: `lock(i)` absent, or `lock(i) = txid`
+  and `acked(txid)` present. (A shielded input's position is private: its
+  lock is the wallet's and the sequencer's to keep, until shielded exits
+  are built.)
+- **The exit record** carries the claim's acknowledgments and applies them
+  first; `E` covers them (`E = H(c ‖ O_D ‖ b ‖ positions ‖ H(acks))`), so
+  a relayer can't strip them from `request`. A claimed note already spent
+  by a pending spend `T` (its leaf `spent(T)`) voids `T`: `acked(T)` absent,
+  `void(T)` inserted once.
+- **The hub's statement** judges spends, locks and voids at `A*`'s state
+  (height `h*`), and an acknowledgment's anchor in the state where `A*`'s
+  own anchor record is applied (the chain receipt's height): anchor
+  records are applied in seal order, so every anchor up to `A*` is there,
+  each confirmed before the cutoff.
+
 ### The hub's guest's rules: "this claim is false"
 
 Its input: `request` from Bitcoin, `A*` and its proof of being last,
@@ -741,13 +778,34 @@ Next:
      malformed, or false at `A*` (not a note, not hers, too much, spent,
      a second claim), the hub opening each note a ground needs. The
      ledger's return check is its own, on leaves, no longer ln-gap's;
-   - sender acknowledgment: `ak` in every spend, locked outputs, the
-     acknowledgment transaction against an applied anchor, the
-     `Pending`, `Locked`, `Void` and `Anchors` (the chain guest's
-     rules); the sequencer sending data at each anchor's broadcast and
-     sequencing acknowledgments once their anchor is the margin deep;
-     the wallet acknowledging, and carrying acknowledgments in claims;
-     the hub's grounds 5–7.
+   - done natively (2026-11-09): sender acknowledgment ("The
+     representation"). Decided while building:
+     - locks only in an anchored deployment (a genesis seal): without
+       anchors there is no exit and nothing to acknowledge against;
+     - the margin is structural: the sequencer records an anchor only
+       its margin deep (anchoring confirmations = the margin, 6 on
+       regtest, 20 on Mutinynet), and an acknowledgment must name a
+       recorded anchor;
+     - the hub holds a claim's notes as soon as it sees the request, and
+       the sequencer refuses an acknowledgment of a spend whose inputs
+       are held (the earlier of an exit and a spend wins);
+     - a claim carries the wallet's acknowledgments of every claimed
+       output of its own spends, locked or not when it claims: a note
+       unlocked now may be locked at `A*`. An exit record skips one whose
+       spend is acknowledged already;
+     - the sequencer serves acknowledgments with their signatures (`GET
+       /ack/<txid>`), for the hub's statement; the hub also takes them
+       from other contracts' claims on chain;
+     - the wallet: a one-time `ak` per spend (derived from its key and
+       the spend's first nullifier); `lichen ack [--wait]`; `balance`
+       counts locked notes, `spendable` doesn't; a withdrawal
+       acknowledges the wallet's spends first. A shielded input's lock
+       is the wallet's to keep (its position is private), until shielded
+       exits;
+     - regtest: `hp_exit` cases U (never acknowledged: its input claimed,
+       paid, the payment voided, the payee's note locked for good) and W
+       (acknowledged, the acknowledgment withheld: the locked change
+       claimed carrying it, paid, the payee's note unlocked).
 6. The hub's statement as a guest (its encoding, the chain receipt
    composed, the Groth16 wrap), and the real statement.
 7. Real proofs on regtest, then Mutinynet.

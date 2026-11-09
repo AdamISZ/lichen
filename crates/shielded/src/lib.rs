@@ -154,6 +154,9 @@ pub struct SpendInput {
     /// New shielded notes: (value, owner); their `rho`s are derived.
     pub outputs: Vec<(u64, Hash)>,
     pub t_outputs: Vec<TOut>,
+    /// The sender's one-time acknowledgment key (docs/HUB_PROVES_PLAN.md,
+    /// "Data availability"): public, so that the sequencer can't swap it.
+    pub ak: Hash,
 }
 
 /// What the statement makes public: the anchor, the transparent spends'
@@ -167,6 +170,7 @@ pub struct Journal {
     pub nfs: Vec<Hash>,
     pub cms: Vec<Hash>,
     pub t_cms: Vec<Hash>,
+    pub ak: Hash,
 }
 
 /// Why an input is rejected.
@@ -231,7 +235,7 @@ pub fn check(input: &SpendInput) -> Result<Journal, Reject> {
     if vin != vout {
         return Err(Reject::Unbalanced);
     }
-    Ok(Journal { anchor: input.anchor, t_nfs: input.t_nfs.clone(), t_total: input.t_total, nfs, cms, t_cms: input.t_outputs.iter().map(|t| t.commitment()).collect() })
+    Ok(Journal { anchor: input.anchor, t_nfs: input.t_nfs.clone(), t_total: input.t_total, nfs, cms, t_cms: input.t_outputs.iter().map(|t| t.commitment()).collect(), ak: input.ak })
 }
 
 // ----- encodings: what the guest reads and commits -----
@@ -303,6 +307,7 @@ impl SpendInput {
             w.put(&t.memo.to_be_bytes());
             w.put(&t.rho);
         }
+        w.put(&self.ak);
         w.0
     }
     pub fn from_bytes(b: &[u8]) -> Result<SpendInput, Reject> {
@@ -316,8 +321,9 @@ impl SpendInput {
         let outputs = (0..n).map(|_| Ok((r.u64()?, r.take()?))).collect::<Result<_, _>>()?;
         let n = r.u8()?;
         let t_outputs = (0..n).map(|_| Ok(TOut { owner: r.take()?, value: r.u64()?, memo: r.u32()?, rho: r.take()? })).collect::<Result<_, _>>()?;
+        let ak = r.take()?;
         r.end()?;
-        Ok(SpendInput { anchor, t_nfs, t_total, spends, outputs, t_outputs })
+        Ok(SpendInput { anchor, t_nfs, t_total, spends, outputs, t_outputs, ak })
     }
 }
 
@@ -330,11 +336,12 @@ impl Journal {
         w.list(&self.nfs);
         w.list(&self.cms);
         w.list(&self.t_cms);
+        w.put(&self.ak);
         w.0
     }
     pub fn from_bytes(b: &[u8]) -> Result<Journal, Reject> {
         let mut r = R(b);
-        let j = Journal { anchor: r.take()?, t_nfs: r.list()?, t_total: r.u64()?, nfs: r.list()?, cms: r.list()?, t_cms: r.list()? };
+        let j = Journal { anchor: r.take()?, t_nfs: r.list()?, t_total: r.u64()?, nfs: r.list()?, cms: r.list()?, t_cms: r.list()?, ak: r.take()? };
         r.end()?;
         Ok(j)
     }
@@ -374,7 +381,7 @@ mod tests {
         let n7 = SNote { value: 7, owner: alice, rho: h(11) };
         let (root, paths) = tree(&[t_leaf(&transparent_commitment(&h(9), 4, 0, &h(8))), s_leaf(&n5.commitment()), s_leaf(&n7.commitment())]);
         let spends = vec![Spend { value: 5, rho: h(10), nk: h(1), index: 1, path: paths[1].clone() }, Spend { value: 7, rho: h(11), nk: h(1), index: 2, path: paths[2].clone() }];
-        let input = SpendInput { anchor: root, t_nfs: vec![], t_total: 0, spends, outputs: vec![(9, bob), (3, alice)], t_outputs: vec![] };
+        let input = SpendInput { anchor: root, t_nfs: vec![], t_total: 0, spends, outputs: vec![(9, bob), (3, alice)], t_outputs: vec![], ak: h(0xa0) };
         (input, root)
     }
 
@@ -442,7 +449,7 @@ mod tests {
         // shielding: a transparent note of 20 (the sequencer checks its
         // signature) into notes of 15 and 5
         let t_nf = h(30);
-        let shield = SpendInput { anchor: h(0), t_nfs: vec![t_nf], t_total: 20, spends: vec![], outputs: vec![(15, owner(&h(1))), (5, owner(&h(1)))], t_outputs: vec![] };
+        let shield = SpendInput { anchor: h(0), t_nfs: vec![t_nf], t_total: 20, spends: vec![], outputs: vec![(15, owner(&h(1))), (5, owner(&h(1)))], t_outputs: vec![], ak: h(0xa0) };
         let j = check(&shield).unwrap();
         assert_eq!(j.nf0(), Some(&t_nf));
         assert_eq!(j.cms[0], SNote { value: 15, owner: owner(&h(1)), rho: rho(&t_nf, 0) }.commitment());

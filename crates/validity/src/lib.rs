@@ -27,6 +27,7 @@ use k256::schnorr::{Signature, VerifyingKey};
 use lichen_shielded::{self as sh, Hash, TREE_DEPTH};
 use sha2::{Digest, Sha256};
 
+pub mod ack;
 pub mod btc;
 pub mod exit;
 pub mod smt;
@@ -98,10 +99,12 @@ pub fn mint_digest(sequencer: &Hash, hub: &Hash, genesis: &OutPoint, outputs: &[
     h.finalize().into()
 }
 
-/// The ledger's `Transfer::digest`.
-pub fn transfer_digest(spends: &[(TNote, u32)], outputs: &[TNote]) -> Hash {
+/// The ledger's `Transfer::digest`, the transfer's `txid`: over its
+/// acknowledgment key `ak` too.
+pub fn transfer_digest(spends: &[(TNote, u32)], outputs: &[TNote], ak: &Hash) -> Hash {
     let mut h = Sha256::new();
     h.update(b"lichen/transfer");
+    h.update(ak);
     for (n, i) in spends {
         h.update(n.commitment());
         h.update(i.to_be_bytes());
@@ -174,18 +177,23 @@ impl Frontier {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Tx {
     Mint { outputs: Vec<TNote>, sig: [u8; 64] },
-    Transfer { spends: Vec<(TNote, u32)>, outputs: Vec<TNote>, sigs: Vec<[u8; 64]> },
+    /// A user's spend, its outputs locked until acknowledged under `ak`
+    /// ([`ack`]).
+    Transfer { spends: Vec<(TNote, u32)>, outputs: Vec<TNote>, sigs: Vec<[u8; 64]>, ak: Hash },
     /// Its receipt is checked by the caller, against the journal
-    /// recomputed from these fields.
-    Shielded { anchor: Hash, t_spends: Vec<(TNote, u32)>, t_sigs: Vec<[u8; 64]>, nfs: Vec<Hash>, cms: Vec<Hash>, ciphertexts: Vec<Vec<u8>>, t_outputs: Vec<TNote> },
+    /// recomputed from these fields; `ak` as [`Tx::Transfer`]'s.
+    Shielded { anchor: Hash, t_spends: Vec<(TNote, u32)>, t_sigs: Vec<[u8; 64]>, nfs: Vec<Hash>, cms: Vec<Hash>, ciphertexts: Vec<Vec<u8>>, t_outputs: Vec<TNote>, ak: Hash },
+    /// A sender's acknowledgment of her spend ([`ack`]).
+    Ack(ack::Ack),
     /// An anchor on Bitcoin of this history ([`AnchorRecord`]).
     Anchor(AnchorRecord),
     /// An exit record: contract `c`, of deposit coin `deposit`, paid a
     /// claim of `b`; its notes with their positions (shown in the tree),
-    /// their owners' signatures on `E` ([`exit::owners`]' order) and the
-    /// hub's ([`exit::record_digest`]). Its notes are retired, leaf
-    /// `exited(c)`.
-    Exit { c: u32, deposit: OutPoint, b: u32, notes: Vec<(TNote, u32)>, sigs: Vec<[u8; 64]>, sig: [u8; 64] },
+    /// the acknowledgments it carries (applied first), its owners'
+    /// signatures on `E` ([`exit::owners`]' order) and the hub's
+    /// ([`exit::record_digest`]). Its notes are retired, leaf `exited(c)`;
+    /// one already spent by a spend still pending voids that spend.
+    Exit { c: u32, deposit: OutPoint, b: u32, notes: Vec<(TNote, u32)>, acks: Vec<ack::Ack>, sigs: Vec<[u8; 64]>, sig: [u8; 64] },
 }
 
 /// The history hash after `root`: `hist_h = H(hist_{h-1} ‖ root_h)`, from
@@ -342,11 +350,11 @@ pub struct BlockInput {
     pub hist: Hash,
     pub anchor: AnchorState,
     pub txs: Vec<Tx>,
-    /// An insert proof per nullifier, in order: each transaction's
-    /// transparent spends', then its shielded ones.
-    pub nf_proofs: Vec<smt::Proof>,
-    /// A path under `T_i` per transparent spend of a note from before the
-    /// block, in order.
+    /// The spent set's openings, in the order the statement reads them
+    /// ([`Witness`]).
+    pub openings: Vec<smt::Opening>,
+    /// A path under `T_i` per note from before the block the statement
+    /// shows in the tree, in order.
     pub paths: Vec<Vec<Hash>>,
 }
 
@@ -387,31 +395,81 @@ pub enum Reject {
     Chain,
     /// An anchor record that doesn't check.
     Seal,
+    /// A spent set's opening that doesn't show its key's leaf.
+    Opening,
+    /// A note spent while locked: its spend unacknowledged.
+    Locked,
+    /// An acknowledgment that doesn't check: not its spend's key or
+    /// height, the spend not pending (acknowledged, void, or none), or its
+    /// anchor not applied.
+    Ack,
 }
 
-fn check_sig(key: &Hash, msg: &Hash, sig: &[u8; 64]) -> Result<(), Reject> {
+pub(crate) fn check_sig(key: &Hash, msg: &Hash, sig: &[u8; 64]) -> Result<(), Reject> {
     let k = VerifyingKey::from_bytes(key).map_err(|_| Reject::BadSignature)?;
     let s = Signature::try_from(&sig[..]).map_err(|_| Reject::BadSignature)?;
     k.verify_raw(msg, &s).map_err(|_| Reject::BadSignature)
 }
 
+/// What the statement reads beside the block, in the order it asks: the
+/// spent set's openings, and the paths of notes from before the block.
+/// The guest's come listed in the input ([`BlockInput::openings`],
+/// [`BlockInput::paths`]); the sequencer's are made from its whole state
+/// as the statement asks, so they are in its order by construction.
+pub trait Witness {
+    /// `key`'s opening in the spent set of root `root`.
+    fn open(&mut self, root: &Hash, key: &Hash) -> Result<smt::Opening, Reject>;
+    /// `key` was inserted with `leaf` (after its opening).
+    fn inserted(&mut self, key: &Hash, leaf: &Hash);
+    /// The path of the note at `index`, from before the block.
+    fn path(&mut self, index: u32) -> Result<Vec<Hash>, Reject>;
+}
+
+/// A witness listed in the input.
+struct Listed<'a> {
+    openings: core::slice::Iter<'a, smt::Opening>,
+    paths: core::slice::Iter<'a, Vec<Hash>>,
+}
+
+impl Witness for Listed<'_> {
+    fn open(&mut self, _: &Hash, _: &Hash) -> Result<smt::Opening, Reject> {
+        self.openings.next().cloned().ok_or(Reject::Shape)
+    }
+    fn inserted(&mut self, _: &Hash, _: &Hash) {}
+    fn path(&mut self, _: u32) -> Result<Vec<Hash>, Reject> {
+        self.paths.next().cloned().ok_or(Reject::Shape)
+    }
+}
+
 struct State<'a> {
     input: &'a BlockInput,
+    w: &'a mut dyn Witness,
     z: [Hash; TREE_DEPTH + 1],
     e: &'static [Hash],
     t_i: Hash,
     tree: Frontier,
-    nullifiers: Hash,
-    /// The leaves appended in this block: (index, commitment).
+    set: Hash,
+    /// The leaves appended in this block: (index, leaf).
     made: Vec<(u32, Hash)>,
-    nf_proofs: core::slice::Iter<'a, smt::Proof>,
-    paths: core::slice::Iter<'a, Vec<Hash>>,
 }
 
 impl State<'_> {
-    fn spend_nf(&mut self, nf: &Hash, leaf: &Hash) -> Result<(), Reject> {
-        let p = self.nf_proofs.next().ok_or(Reject::Shape)?;
-        self.nullifiers = smt::insert(&self.nullifiers, nf, leaf, p, self.e).ok_or(Reject::Spent)?;
+    /// `key`'s leaf in the spent set (zero: absent).
+    fn read(&mut self, key: &Hash) -> Result<Hash, Reject> {
+        let o = self.w.open(&self.set, key)?;
+        if !smt::holds(&self.set, key, &o.leaf, &o.proof, self.e) {
+            return Err(Reject::Opening);
+        }
+        Ok(o.leaf)
+    }
+    /// Insert `key` with `leaf`, `key` absent; else `absent`.
+    fn insert(&mut self, key: &Hash, leaf: &Hash, absent: Reject) -> Result<(), Reject> {
+        let o = self.w.open(&self.set, key)?;
+        if o.leaf != [0; 32] {
+            return Err(absent);
+        }
+        self.set = smt::insert(&self.set, key, leaf, &o.proof, self.e).ok_or(Reject::Opening)?;
+        self.w.inserted(key, leaf);
         Ok(())
     }
     /// A transparent note at `index`: under `T_i` (a path), or made
@@ -419,8 +477,8 @@ impl State<'_> {
     fn in_tree(&mut self, n: &TNote, index: u32) -> Result<(), Reject> {
         let cm = n.leaf();
         if index < self.input.tree.size {
-            let path = self.paths.next().ok_or(Reject::Shape)?;
-            if path.len() != TREE_DEPTH || sh::root_from_path(cm, index, path) != self.t_i {
+            let path = self.w.path(index)?;
+            if path.len() != TREE_DEPTH || sh::root_from_path(cm, index, &path) != self.t_i {
                 return Err(Reject::NotInTree);
             }
             Ok(())
@@ -430,10 +488,42 @@ impl State<'_> {
             Err(Reject::NotInTree)
         }
     }
-    fn make(&mut self, cm: Hash) -> Result<(), Reject> {
-        let i = self.tree.append(cm)?;
-        self.made.push((i, cm));
+    /// The note at `index` isn't locked: no lock, or its spend
+    /// acknowledged.
+    fn unlocked(&mut self, index: u32) -> Result<(), Reject> {
+        let txid = self.read(&ack::lock_key(index))?;
+        if txid != [0; 32] && self.read(&ack::acked_key(&txid))? == [0; 32] {
+            return Err(Reject::Locked);
+        }
         Ok(())
+    }
+    fn make(&mut self, leaf: Hash) -> Result<u32, Reject> {
+        let i = self.tree.append(leaf)?;
+        self.made.push((i, leaf));
+        Ok(i)
+    }
+    /// A user's spend `txid` sealed at this block's height: pending, its
+    /// outputs (at `made`) locked. Only in an anchored deployment (a
+    /// genesis seal): without anchors there is no exit, and nothing to
+    /// acknowledge against.
+    fn pend(&mut self, txid: &Hash, ak: &Hash, made: &[u32]) -> Result<(), Reject> {
+        if self.input.anchor.genesis == OutPoint::default() {
+            return Ok(());
+        }
+        let h = self.input.height + 1;
+        self.insert(&ack::tx_key(txid), &ack::pending(ak, h), Reject::Shape)?;
+        for i in made {
+            self.insert(&ack::lock_key(*i), txid, Reject::Shape)?;
+        }
+        Ok(())
+    }
+    /// Apply an acknowledgment: its spend pending (its key and height),
+    /// not void, not acknowledged yet; its anchor applied.
+    fn ack(&mut self, a: &ack::Ack) -> Result<(), Reject> {
+        if !a.signed() || self.read(&ack::tx_key(&a.txid))? != ack::pending(&a.ak, a.h) || self.read(&ack::void_key(&a.txid))? != [0; 32] || self.read(&ack::anchor_key(a.a))? != a.hist_a {
+            return Err(Reject::Ack);
+        }
+        self.insert(&ack::acked_key(&a.txid), &ack::acked(a.a), Reject::Ack)
     }
 }
 
@@ -441,33 +531,73 @@ fn sum(mut ns: impl Iterator<Item = u64>) -> Result<u64, Reject> {
     ns.try_fold(0u64, |a, v| a.checked_add(v)).ok_or(Reject::Unbalanced)
 }
 
-/// The statement: check the block in `input`; its journal. `verify_spend`
-/// checks a shielded transaction's receipt with the given journal (the
-/// spend statement's, encoded).
+/// The anchor's height and history hash an anchor record commits.
+pub fn anchor_commitment(rec: &AnchorRecord) -> Option<(u64, Hash)> {
+    let tx = btc::parse_tx(&rec.tx)?;
+    let c = tx.outputs.get(1)?.1;
+    (c.len() == 48).then(|| (u64::from_be_bytes(c[8..16].try_into().unwrap()), c[16..].try_into().unwrap()))
+}
+
+/// The statement: check the block in `input`, its witnesses listed in it;
+/// its journal. `verify_spend` checks a shielded transaction's receipt
+/// with the given journal (the spend statement's, encoded).
 pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) -> Result<BlockJournal, Reject> {
+    let mut w = Listed { openings: input.openings.iter(), paths: input.paths.iter() };
+    let j = run(input, &mut w, verify_spend)?;
+    if w.openings.next().is_some() || w.paths.next().is_some() {
+        return Err(Reject::Shape);
+    }
+    Ok(j)
+}
+
+/// The statement on the block in `input` with the witnesses of `w`.
+pub fn run(input: &BlockInput, w: &mut dyn Witness, verify_spend: &mut dyn FnMut(&[u8]) -> bool) -> Result<BlockJournal, Reject> {
     if input.tree.branch.len() != TREE_DEPTH || input.recent.len() > RECENT {
         return Err(Reject::Shape);
     }
     let z = tree_empties();
     let t_i = input.tree.root(&z);
-    let mut st = State { input, z, e: smt::empties(), t_i, tree: input.tree.clone(), nullifiers: input.nullifiers, made: Vec::new(), nf_proofs: input.nf_proofs.iter(), paths: input.paths.iter() };
+    let mut st = State { input, w, z, e: smt::empties(), t_i, tree: input.tree.clone(), set: input.nullifiers, made: Vec::new() };
     let mut anchor = input.anchor;
     for tx in &input.txs {
         match tx {
-            Tx::Anchor(rec) => anchor = check_anchor(&anchor, input.height, &input.hist, rec)?,
-            Tx::Exit { c, deposit, b, notes, sigs, sig } => {
+            Tx::Anchor(rec) => {
+                anchor = check_anchor(&anchor, input.height, &input.hist, rec)?;
+                let (a, hist_a) = anchor_commitment(rec).ok_or(Reject::Seal)?;
+                st.insert(&ack::anchor_key(a), &hist_a, Reject::Seal)?;
+            }
+            Tx::Ack(a) => st.ack(a)?,
+            Tx::Exit { c, deposit, b, notes, acks, sigs, sig } => {
                 let owners = exit::owners(notes);
                 if !exit::well_formed(notes) || owners.len() != sigs.len() {
                     return Err(Reject::Shape);
                 }
-                let e = exit::fingerprint(*c, deposit, *b, &notes.iter().map(|n| n.1).collect::<Vec<_>>());
+                let e = exit::fingerprint(*c, deposit, *b, &notes.iter().map(|n| n.1).collect::<Vec<_>>(), acks);
                 check_sig(&input.hub, &exit::record_digest(&input.anchor.sequencer, &input.hub, &input.anchor.genesis, &e), sig)?;
                 for (o, s) in owners.iter().zip(sigs) {
                     check_sig(o, &exit::signed_digest(&e), s)?;
                 }
+                // each applied, unless its spend is acknowledged already
+                for a in acks {
+                    if st.read(&ack::acked_key(&a.txid))? == [0; 32] {
+                        st.ack(a)?;
+                    }
+                }
                 for (n, i) in notes {
                     st.in_tree(n, *i)?;
-                    st.spend_nf(&n.nullifier(), &smt::exited(*c))?;
+                    let nf = n.nullifier();
+                    let spender = st.read(&nf)?;
+                    if spender == [0; 32] {
+                        st.insert(&nf, &smt::exited(*c), Reject::Spent)?;
+                        continue;
+                    }
+                    // spent by a spend still pending: void it (once)
+                    if st.read(&ack::tx_key(&spender))? == [0; 32] || st.read(&ack::acked_key(&spender))? != [0; 32] {
+                        return Err(Reject::Spent);
+                    }
+                    if st.read(&ack::void_key(&spender))? == [0; 32] {
+                        st.insert(&ack::void_key(&spender), &ack::void(), Reject::Spent)?;
+                    }
                 }
             }
             Tx::Mint { outputs, sig } => {
@@ -479,28 +609,30 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                     st.make(n.leaf())?;
                 }
             }
-            Tx::Transfer { spends, outputs, sigs } => {
+            Tx::Transfer { spends, outputs, sigs, ak } => {
                 if spends.is_empty() || sigs.len() != spends.len() {
                     return Err(Reject::Shape);
                 }
-                let d = transfer_digest(spends, outputs);
-                let leaf = smt::spent();
+                let txid = transfer_digest(spends, outputs, ak);
                 for ((n, i), sig) in spends.iter().zip(sigs) {
                     st.in_tree(n, *i)?;
-                    check_sig(&n.owner, &d, sig)?;
-                    st.spend_nf(&n.nullifier(), &leaf)?;
+                    st.unlocked(*i)?;
+                    check_sig(&n.owner, &txid, sig)?;
+                    st.insert(&n.nullifier(), &txid, Reject::Spent)?;
                 }
                 if sum(spends.iter().map(|s| s.0.value))? != sum(outputs.iter().map(|n| n.value))? {
                     return Err(Reject::Unbalanced);
                 }
+                let mut made = Vec::with_capacity(outputs.len());
                 for n in outputs {
                     if n.value == 0 {
                         return Err(Reject::Empty);
                     }
-                    st.make(n.leaf())?;
+                    made.push(st.make(n.leaf())?);
                 }
+                st.pend(&txid, ak, &made)?;
             }
-            Tx::Shielded { anchor, t_spends, t_sigs, nfs, cms, ciphertexts, t_outputs } => {
+            Tx::Shielded { anchor, t_spends, t_sigs, nfs, cms, ciphertexts, t_outputs, ak } => {
                 if !input.recent.contains(anchor) {
                     return Err(Reject::Anchor);
                 }
@@ -516,31 +648,31 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                     nfs: nfs.clone(),
                     cms: cms.clone(),
                     t_cms: t_outputs.iter().map(|n| n.commitment()).collect(),
+                    ak: *ak,
                 }
                 .to_bytes();
                 if !verify_spend(&journal) {
                     return Err(Reject::Receipt);
                 }
-                let d = shielded_digest(&journal, ciphertexts);
+                let txid = shielded_digest(&journal, ciphertexts);
                 for ((n, i), sig) in t_spends.iter().zip(t_sigs) {
                     st.in_tree(n, *i)?;
-                    check_sig(&n.owner, &d, sig)?;
+                    st.unlocked(*i)?;
+                    check_sig(&n.owner, &txid, sig)?;
                 }
-                let leaf = smt::spent();
                 for n in t_spends.iter().map(|s| s.0.nullifier()).chain(nfs.iter().copied()) {
-                    st.spend_nf(&n, &leaf)?;
+                    st.insert(&n, &txid, Reject::Spent)?;
                 }
+                let mut made = Vec::with_capacity(cms.len() + t_outputs.len());
                 for cm in cms {
-                    st.make(sh::s_leaf(cm))?;
+                    made.push(st.make(sh::s_leaf(cm))?);
                 }
                 for n in t_outputs {
-                    st.make(n.leaf())?;
+                    made.push(st.make(n.leaf())?);
                 }
+                st.pend(&txid, ak, &made)?;
             }
         }
-    }
-    if st.nf_proofs.next().is_some() || st.paths.next().is_some() {
-        return Err(Reject::Shape);
     }
     let t_next = st.tree.root(&st.z);
     let mut recent = input.recent.clone();
@@ -548,7 +680,7 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
     if recent.len() > RECENT {
         recent.remove(0);
     }
-    let to = state_root(input.height + 1, &t_next, &st.nullifiers);
+    let to = state_root(input.height + 1, &t_next, &st.set);
     Ok(BlockJournal {
         hub: input.hub,
         height: input.height,
@@ -733,6 +865,7 @@ const TRANSFER: u8 = 1;
 const SHIELDED: u8 = 2;
 const ANCHOR: u8 = 3;
 const EXIT: u8 = 4;
+const ACK: u8 = 5;
 
 impl BlockInput {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -753,13 +886,18 @@ impl BlockInput {
                     w.notes(outputs);
                     w.put(sig);
                 }
-                Tx::Transfer { spends, outputs, sigs } => {
+                Tx::Transfer { spends, outputs, sigs, ak } => {
                     w.0.push(TRANSFER);
                     w.spends(spends);
                     w.notes(outputs);
                     w.sigs(sigs);
+                    w.put(ak);
                 }
-                Tx::Shielded { anchor, t_spends, t_sigs, nfs, cms, ciphertexts, t_outputs } => {
+                Tx::Ack(a) => {
+                    w.0.push(ACK);
+                    w.put(&a.to_bytes());
+                }
+                Tx::Shielded { anchor, t_spends, t_sigs, nfs, cms, ciphertexts, t_outputs, ak } => {
                     w.0.push(SHIELDED);
                     w.put(anchor);
                     w.spends(t_spends);
@@ -772,26 +910,32 @@ impl BlockInput {
                         w.put(c);
                     }
                     w.notes(t_outputs);
+                    w.put(ak);
                 }
                 Tx::Anchor(a) => {
                     w.0.push(ANCHOR);
                     w.record(a);
                 }
-                Tx::Exit { c, deposit, b, notes, sigs, sig } => {
+                Tx::Exit { c, deposit, b, notes, acks, sigs, sig } => {
                     w.0.push(EXIT);
                     w.put(&c.to_be_bytes());
                     w.put(&deposit.to_bytes());
                     w.put(&b.to_be_bytes());
                     w.spends(notes);
+                    w.len(acks.len());
+                    for a in acks {
+                        w.put(&a.to_bytes());
+                    }
                     w.sigs(sigs);
                     w.put(sig);
                 }
             }
         }
-        w.len(self.nf_proofs.len());
-        for p in &self.nf_proofs {
-            w.put(&p.bitmap);
-            w.hashes(&p.siblings);
+        w.len(self.openings.len());
+        for o in &self.openings {
+            w.put(&o.leaf);
+            w.put(&o.proof.bitmap);
+            w.hashes(&o.proof.siblings);
         }
         w.len(self.paths.len());
         for p in &self.paths {
@@ -812,7 +956,8 @@ impl BlockInput {
         let txs = r.list(|r| {
             Ok(match r.take::<1>()?[0] {
                 MINT => Tx::Mint { outputs: r.notes()?, sig: r.take()? },
-                TRANSFER => Tx::Transfer { spends: r.spends()?, outputs: r.notes()?, sigs: r.sigs()? },
+                TRANSFER => Tx::Transfer { spends: r.spends()?, outputs: r.notes()?, sigs: r.sigs()?, ak: r.take()? },
+                ACK => Tx::Ack(ack::Ack::from_bytes(&r.take()?)),
                 SHIELDED => Tx::Shielded {
                     anchor: r.take()?,
                     t_spends: r.spends()?,
@@ -826,16 +971,17 @@ impl BlockInput {
                         Ok(c.to_vec())
                     })?,
                     t_outputs: r.notes()?,
+                    ak: r.take()?,
                 },
                 ANCHOR => Tx::Anchor(r.record()?),
-                EXIT => Tx::Exit { c: r.u32()?, deposit: OutPoint::from_bytes(&r.take()?), b: r.u32()?, notes: r.spends()?, sigs: r.sigs()?, sig: r.take()? },
+                EXIT => Tx::Exit { c: r.u32()?, deposit: OutPoint::from_bytes(&r.take()?), b: r.u32()?, notes: r.spends()?, acks: r.list(|r| Ok(ack::Ack::from_bytes(&r.take()?)))?, sigs: r.sigs()?, sig: r.take()? },
                 _ => return Err(Reject::Encoding),
             })
         })?;
-        let nf_proofs = r.list(|r| Ok(smt::Proof { bitmap: r.take()?, siblings: r.hashes()? }))?;
+        let openings = r.list(|r| Ok(smt::Opening { leaf: r.take()?, proof: smt::Proof { bitmap: r.take()?, siblings: r.hashes()? } }))?;
         let paths = r.list(|r| r.hashes())?;
         r.end()?;
-        Ok(BlockInput { hub, height, tree, nullifiers, recent, hist, anchor, txs, nf_proofs, paths })
+        Ok(BlockInput { hub, height, tree, nullifiers, recent, hist, anchor, txs, openings, paths })
     }
 }
 

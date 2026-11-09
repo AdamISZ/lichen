@@ -92,7 +92,9 @@ impl Wallet {
     /// records no longer needed: a spend once no kept set holds its notes.
     pub(crate) fn record_signed(&mut self, s: crate::Signed) -> Result<()> {
         let held: BTreeSet<Hash> = self.exit_sets.lock().unwrap().iter().flat_map(|x| x.notes.iter().map(|n| nullifier(&n.note))).collect();
-        self.signed.retain(|x| x.nullifiers.iter().any(|n| held.contains(n)));
+        // kept while unsettled, or while its acknowledgment may be needed by
+        // a claim of its outputs, or its notes are in a kept set
+        self.signed.retain(|x| !x.done || x.ack.is_some() || x.nullifiers.iter().any(|n| held.contains(n)));
         self.signed.push(s);
         self.save()
     }

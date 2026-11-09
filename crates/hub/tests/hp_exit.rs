@@ -21,6 +21,14 @@
 //!   note: the hub records her claim on the L2 (retiring the note split
 //!   off) but won't fold. Her exit posts the same claim: this contract's
 //!   own exit record isn't a spend against it, and she is paid.
+//! - U: an unacknowledged spend. Uma pays Bob and never acknowledges it;
+//!   her exit claims the note it spent: it doesn't count against her, she
+//!   is paid, and the exit record voids the payment, Bob's note locked for
+//!   good.
+//! - W: an acknowledgment withheld. Wendy pays Bob and signs her
+//!   acknowledgment, but it never reaches the L2 (a sequencer that drops
+//!   it); her exit claims her locked change, carrying it: she is paid, and
+//!   the record applies it, unlocking Bob's note.
 //! - G: the operator gone. Gail's wallet has kept its exit set; the hub
 //!   and the sequencer stop. She exits from the set alone, and
 //!   `request_timeout` pays her.
@@ -81,7 +89,7 @@ fn the_hub_proves_on_the_mock_statement() {
     rt.mine(1).unwrap();
     let ledger = dir.join("ledger.json");
     let mut seq = Sequencer::start_with("127.0.0.1:0", Some(ledger.clone()), key, HUB_KEY, Options { native_proofs: true, seal: Some(seal) }).unwrap();
-    seq.anchor(chain("sequencer"), Anchoring { every: Duration::from_millis(100), ..Default::default() }).unwrap();
+    seq.anchor(chain("sequencer"), Anchoring { every: Duration::from_millis(100), confirmations: lichen_proto::hp::margin(lichen_proto::Net::Regtest), ..Default::default() }).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let url = seq.url.clone();
     // the sealer stops apart from the miner, with the sequencer (G)
@@ -130,6 +138,8 @@ fn the_hub_proves_on_the_mock_statement() {
             .map(|_| w.open_contract(&hub_url, &ch, &statement(), ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v).map(|_| ()) }).unwrap().record.cid())
             .collect();
         wait("the deposits", || w.balance().unwrap() == ask.deposit * n as u64);
+        // the deposits' notes moved to our key, acknowledged: unlocked
+        w.acknowledge_all(&ch, 120).unwrap();
         // the exit set kept with our notes, once anchored (as the wallet
         // does as it reads the state, at most every 30 s; at any height: a
         // claim by position needs no kit at one height)
@@ -169,11 +179,13 @@ fn the_hub_proves_on_the_mock_statement() {
     };
     // a stale claim: the plan made, the note paid away, anchored before the
     // cutoff
-    let stale = |w: &mut Wallet, cid: u32| {
+    let stale = |w: &mut Wallet, ch: &Chain, cid: u32| {
         let plan = w.hp_exit_plan(&chain("hub"), cid).unwrap();
         let bob = lichen_ledger::key_from_label("test/bob");
         let old = w.notes(&w.state().unwrap());
         w.send(xonly(&bob), ask.deposit, 0).unwrap();
+        // acknowledged: it counts against him
+        w.acknowledge_all(ch, 120).unwrap();
         let mut spent = 0;
         wait("the payment sealed", || {
             spent = c.spent(&nullifier(&old[0].note)).unwrap().map_or(0, |s| s.1);
@@ -195,13 +207,13 @@ fn the_hub_proves_on_the_mock_statement() {
 
     // S: a stale claim, the payment anchored before the cutoff
     let (mut w, ch, cids) = open("sam", 1);
-    stale(&mut w, cids[0]);
+    stale(&mut w, &ch, cids[0]);
     assert_eq!(exit(&mut w, &ch, "sam", cids[0]), Outcome::Countered, "S: the hub asserts the stale claim false");
     wait("success the hub's", || hub.contracts().iter().any(|(r, closed)| r.cid() == cids[0] && closed.is_some()));
 
     // C: the same, challenged anyway: the hub answers
     let (mut w, ch, cids) = open("cleo", 1);
-    stale(&mut w, cids[0]);
+    stale(&mut w, &ch, cids[0]);
     w.unchecked_claims = true;
     assert_eq!(exit(&mut w, &ch, "cleo", cids[0]), Outcome::Lost, "C: the hub answers a challenge of its valid proof");
     assert!(hub.log().iter().any(|l| l.contains(&format!("contract {}: answered the challenge", cids[0]))), "C: with a kept instance's msg");
@@ -229,7 +241,7 @@ fn the_hub_proves_on_the_mock_statement() {
     // R: an exit after a withdrawal the hub recorded but won't fold
     let (mut w, ch, cids) = open("rita", 1);
     let back = 50_000;
-    let refused = w.withdraw(&hub_url, &statement(), cids[0], back);
+    let refused = w.withdraw(&chain("hub"), &hub_url, &statement(), cids[0], back);
     assert!(refused.is_err(), "R: the hub refuses the fold");
     assert!(hub.log().iter().any(|l| l.contains(&format!("contract {}: the user's withdrawal claim", cids[0]))), "R: the hub recorded the claim");
     let plan = w.contracts.iter().find(|h| h.record.cid() == cids[0]).unwrap().exit.clone().expect("R: the claim kept");
@@ -241,6 +253,33 @@ fn the_hub_proves_on_the_mock_statement() {
     assert!(claim.positions.len() == 1 && split.value == u64::from(plan.b) * unit, "R: the claim of the note split off");
     assert_eq!(c.spent(&nullifier(&split)).unwrap().map(|s| s.0), Some(v::smt::exited(cids[0])), "R: retired by the contract's own record");
     assert!(matches!(exit(&mut w, &ch, "rita", cids[0]), Outcome::HubTimedOut(_)), "R: the exit posting the same claim is paid");
+
+    // U: an unacknowledged spend: its input claimed, and paid
+    use lichen_ledger::lichen_validity::ack;
+    let bob = xonly(&lichen_ledger::key_from_label("test/bob"));
+    let (mut w, ch, cids) = open("uma", 1);
+    let old = w.notes(&w.state().unwrap())[0];
+    let to_bob = w.send(bob, 150_000, 0).unwrap()[0];
+    wait("the payment sealed", || c.state().unwrap().sealed.last().is_some_and(|s| s.size > to_bob));
+    assert!(matches!(exit(&mut w, &ch, "uma", cids[0]), Outcome::HubTimedOut(_)), "U: the note her unacknowledged payment spent, claimed and paid");
+    let txid = c.spent(&nullifier(&old.note)).unwrap().unwrap().0;
+    wait("the payment voided", || c.state().unwrap().spent(&ack::void_key(&txid)));
+    assert!(c.state().unwrap().locked(to_bob), "U: Bob's note locked for good");
+    assert!(w.acknowledge(&ch).is_ok() && !c.state().unwrap().spent(&ack::acked_key(&txid)), "U: the payment can't be acknowledged now");
+
+    // W: an acknowledgment withheld: the locked change claimed, carrying it
+    let (mut w, ch, cids) = open("wendy", 1);
+    let idx = w.send(bob, 150_000, 0).unwrap();
+    let (to_bob, change) = (idx[0], idx[1]);
+    w.acks_unsent = true;
+    w.acknowledge_all(&ch, 120).unwrap();
+    let state = c.state().unwrap();
+    assert!(state.locked(change) && state.locked(to_bob), "W: no acknowledgment on the L2");
+    let plan = w.hp_exit_plan(&ch, cids[0]).unwrap();
+    let claim = lichen_withdraw::hp::Claim::from_bytes(&plan.posted().unwrap()).unwrap();
+    assert_eq!((claim.positions.clone(), claim.acks.len()), (vec![change], 1), "W: the claim of her change, carrying her acknowledgment");
+    assert!(matches!(exit(&mut w, &ch, "wendy", cids[0]), Outcome::HubTimedOut(_)), "W: paid");
+    wait("the acknowledgment applied", || !c.state().unwrap().locked(to_bob));
 
     // G: the operator gone, the exit from the set kept
     let (mut w, ch, cids) = open("gail", 1);

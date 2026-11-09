@@ -40,7 +40,7 @@ pub struct Finality {
 }
 
 /// The history hash at each sealed height of `state`, from `hist_0 = 0`.
-fn hists(state: &State) -> Vec<Hash> {
+pub(crate) fn hists(state: &State) -> Vec<Hash> {
     let mut h = [0u8; 32];
     std::iter::once(h)
         .chain(state.sealed.iter().map(|s| {

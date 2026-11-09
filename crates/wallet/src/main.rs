@@ -62,6 +62,15 @@ enum Cmd {
     /// Pay an L2 address: a transparent one (32 bytes, hex) from
     /// transparent notes, a shielded one (64 bytes) from shielded notes.
     Send { to: String, amount: u64 },
+    /// Acknowledge your spends: each one the sequencer has sealed and an
+    /// anchor on Bitcoin holds (docs/HUB_PROVES_PLAN.md, "Data
+    /// availability"). Until you do, a spend doesn't count against you and
+    /// its outputs, your change and your payee's note, stay locked. With
+    /// --wait, until none waits (about one anchor, the margin deep).
+    Ack {
+        #[arg(long)]
+        wait: bool,
+    },
     /// Move `amount` of transparent notes into a shielded note.
     Shield { amount: u64 },
     /// Move `amount` of shielded notes into a transparent note of ours (a
@@ -246,6 +255,19 @@ fn main() -> Result<()> {
         Cmd::Send { to, amount } => {
             let to: [u8; 32] = hex::decode(&to)?.try_into().ok().context("an address is 32 bytes (transparent) or 64 (shielded), hex")?;
             println!("sent: note {}", w.send(to, amount, 0)?[0]);
+            println!("acknowledge it once it is anchored (`lichen ack --wait`): until then the payment is pending, your change locked");
+        }
+        Cmd::Ack { wait } => {
+            let chain = chain(&a)?;
+            if wait {
+                w.acknowledge_all(&chain, 6 * 3600)?;
+                println!("every spend acknowledged");
+            } else {
+                match w.acknowledge(&chain)? {
+                    0 => println!("every spend acknowledged"),
+                    n => println!("{n} spends wait for an anchor to acknowledge them against"),
+                }
+            }
         }
         Cmd::Shield { amount } => println!("shielded: note {}", w.shield(amount)?[0]),
         Cmd::Unshield { amount } => println!("unshielded: note {}", w.unshield(amount)?),
@@ -349,7 +371,7 @@ fn main() -> Result<()> {
         }
         Cmd::Withdraw { contract, amount, escalate } => {
             w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
-            match w.withdraw(&a.hub, &a.statement, contract, amount) {
+            match w.withdraw(&chain(&a)?, &a.hub, &a.statement, contract, amount) {
                 Ok(txid) if amount == 0 => println!("closed contract {contract} with nothing withdrawn, your reserve back: the fold is {txid}"),
                 Ok(txid) => println!("withdrew {amount} sats from contract {contract}: the fold is {txid}"),
                 Err(e) => {

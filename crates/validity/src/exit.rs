@@ -4,11 +4,12 @@
 //! fingerprint `E` is what each note's owner signed:
 //!
 //! ```text
-//! E = SHA256("lichen/exit" ‖ c ‖ O_D ‖ b ‖ i_1 ‖ … ‖ i_n)
+//! E = SHA256("lichen/exit" ‖ c ‖ O_D ‖ b ‖ n ‖ i_1 ‖ … ‖ i_n ‖ ack_1 ‖ …)
 //! ```
 //!
 //! for contract `c` of deposit coin `O_D`, claiming `b`, positions
-//! increasing. The record carries each note's opening at its position
+//! increasing, with the acknowledgments of the spends whose locked outputs
+//! it claims ([`crate::ack`]). The record applies those, and carries each note's opening at its position
 //! (shown in the tree, as a spend's), one signature on `E` per owner, in
 //! the order the owners first appear ([`owners`]), and the hub's. The
 //! owners' signatures are the authority, as for a spend, so a record
@@ -19,21 +20,27 @@
 use alloc::vec::Vec;
 use sha2::{Digest, Sha256};
 
+use crate::ack::Ack;
 use crate::{Hash, OutPoint, TNote};
 
 /// At most this many notes in a claim.
 pub const MAX_NOTES: usize = 64;
 
 /// `E` for contract `c` of deposit coin `deposit`, claiming `b` with the
-/// notes at `positions`.
-pub fn fingerprint(c: u32, deposit: &OutPoint, b: u32, positions: &[u32]) -> Hash {
+/// notes at `positions`, carrying `acks` (of the spends whose locked
+/// outputs it claims: docs/HUB_PROVES_PLAN.md, "Data availability").
+pub fn fingerprint(c: u32, deposit: &OutPoint, b: u32, positions: &[u32], acks: &[Ack]) -> Hash {
     let mut h = Sha256::new();
     h.update(b"lichen/exit");
     h.update(c.to_be_bytes());
     h.update(deposit.to_bytes());
     h.update(b.to_be_bytes());
+    h.update((positions.len() as u32).to_be_bytes());
     for i in positions {
         h.update(i.to_be_bytes());
+    }
+    for a in acks {
+        h.update(a.to_bytes());
     }
     h.finalize().into()
 }

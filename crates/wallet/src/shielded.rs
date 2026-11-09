@@ -113,8 +113,12 @@ impl Wallet {
     /// Our unspent shielded notes: each shielded leaf that decrypts to us
     /// and whose commitment checks, its nullifier unseen.
     pub fn shielded_notes(&self, state: &State) -> Vec<SOwned> {
+        self.shielded_notes_locked_too(state).into_iter().filter(|o| !state.locked(o.index)).collect()
+    }
+    /// Our unspent shielded notes, locked or not.
+    pub fn shielded_notes_locked_too(&self, state: &State) -> Vec<SOwned> {
         let (nk, e, me) = (self.nk(), self.enc_key(), self.shielded_address().owner);
-        let spent: std::collections::HashSet<&Hash> = state.nullifiers.iter().collect();
+        let spent: std::collections::HashSet<&Hash> = state.nullifiers.iter().map(|e| &e.0).collect();
         let mut out = vec![];
         for (index, leaf) in state.notes.iter().enumerate() {
             if let Leaf::Shielded { cm, ciphertext, nf0, i } = leaf {
@@ -132,8 +136,15 @@ impl Wallet {
         Ok(self.balances_in(&self.state()?))
     }
     /// The same, in a state already fetched.
+    /// Locked notes count: held, but not spendable until their sender
+    /// acknowledges them ([`Wallet::spendable`]).
     pub fn balances_in(&self, state: &State) -> (u64, u64) {
-        (self.notes(state).iter().map(|o| o.note.value).sum(), self.shielded_notes(state).iter().map(|o| o.value).sum())
+        (self.notes_locked_too(state).iter().map(|o| o.note.value).sum(), self.shielded_notes_locked_too(state).iter().map(|o| o.value).sum())
+    }
+    /// What can be spent now: the balances less the locked notes.
+    pub fn spendable(&self) -> Result<(u64, u64)> {
+        let state = self.state()?;
+        Ok((self.notes(&state).iter().map(|o| o.note.value).sum(), self.shielded_notes(&state).iter().map(|o| o.value).sum()))
     }
 
     /// A sealed root holding every leaf below `size`: the last, sealing
@@ -180,13 +191,17 @@ impl Wallet {
     /// (ours, shielded) and `t_spends` (ours, transparent), paying
     /// `outputs` (shielded) and `t_outputs` (transparent). The new
     /// leaves' indices: the shielded outputs', then the transparent ones'.
-    fn submit_shielded(&self, spends: &[SOwned], t_spends: &[Owned], outputs: &[(SAddress, u64)], t_outputs: &[Note]) -> Result<Vec<u32>> {
+    fn submit_shielded(&mut self, spends: &[SOwned], t_spends: &[Owned], outputs: &[(SAddress, u64)], t_outputs: &[Note]) -> Result<Vec<u32>> {
         let need = spends.iter().map(|s| s.index + 1).max().unwrap_or(0);
         let state = self.anchored(need)?;
         let sealed = state.sealed.last().context("no sealed root")?;
         let tree = state.tree();
         let nk = self.nk();
         let t_list: Vec<Spend> = t_spends.iter().map(|o| Spend { note: o.note, index: o.index }).collect();
+        // its nullifiers, the transparent ones first: the first names its
+        // acknowledgment key
+        let nfs: Vec<Hash> = t_list.iter().map(|s| nullifier(&s.note)).chain(spends.iter().map(|s| shielded::nullifier(&nk, &s.rho))).collect();
+        let ak = xonly(&self.ak_key(nfs.first().context("a transaction that spends nothing")?));
         let input = SpendInput {
             anchor: sealed.tree,
             t_nfs: t_list.iter().map(|s| nullifier(&s.note)).collect(),
@@ -194,12 +209,14 @@ impl Wallet {
             spends: spends.iter().map(|s| shielded::Spend { value: s.value, rho: s.rho, nk, index: s.index, path: tree.path_at(s.index, sealed.size) }).collect(),
             outputs: outputs.iter().map(|(a, v)| (*v, a.owner)).collect(),
             t_outputs: t_outputs.iter().map(|n| TOut { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho }).collect(),
+            ak,
         };
         let j = shielded::check(&input).map_err(|r| anyhow::anyhow!("the spend statement rejects this transaction: {r:?}"))?;
         let souts = outputs.iter().zip(&j.cms).map(|((a, v), cm)| Ok(SOut { cm: *cm, ciphertext: encrypt(a, cm, *v)? })).collect::<Result<Vec<_>>>()?;
-        let mut tx = Shielded { anchor: input.anchor, t_spends: t_list, t_sigs: vec![], nfs: j.nfs.clone(), outputs: souts, t_outputs: t_outputs.to_vec(), proof: self.prove(&input)? };
+        let mut tx = Shielded { anchor: input.anchor, t_spends: t_list, t_sigs: vec![], nfs: j.nfs.clone(), outputs: souts, t_outputs: t_outputs.to_vec(), ak, proof: self.prove(&input)? };
         let d = tx.digest()?;
         tx.t_sigs = tx.t_spends.iter().map(|_| sign(&self.key, &d)).collect();
+        self.record_signed(crate::Signed::new(nfs))?;
         self.sequencer.submit(&Tx::Shielded(tx))
     }
 

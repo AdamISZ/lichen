@@ -24,9 +24,11 @@ use lichen_wallet::{Ask, Wallet};
 
 #[test]
 fn withdraw_by_claim_and_default() {
-    let env = Env::new("withdraw");
+    let mut env = Env::new("withdraw");
+    env.anchor();
+    let env = env;
     let rt = &env.rt;
-    let hub = env.hub("hub", |c| c.duration = 40);
+    let hub = env.hub("hub", |c| c.duration = 150);
     let ask = |deposit| Ask { deposit, liquidity: 1_000_000, reserve: 20_000 };
     let mut users = vec![];
     for (name, deposit) in [("alice", 400_000u64), ("bob", 100_000), ("carol", 100_000), ("dave", 100_000), ("erin", 100_000)] {
@@ -47,19 +49,32 @@ fn withdraw_by_claim_and_default() {
         wait("the deposit", || w.balance().unwrap() == d);
     }
 
-    // Bob pays Alice 73 of her contract's units
+    // each deposit's note moved to its owner's key, acknowledged: spendable
+    for (w, ch, _) in &mut users {
+        env.acknowledge(w, ch);
+    }
+
+    // Bob pays Alice 73 of her contract's units: locked until Bob
+    // acknowledges it, once anchored
     let a_unit = users[0].2.record.terms.unit.to_sat();
     let paid = 73 * a_unit;
     let alice_addr = users[0].0.address();
     let to_alice = users[1].0.send(alice_addr, paid, 0).unwrap()[0];
-    assert_eq!(users[0].0.balance().unwrap(), 400_000 + paid);
+    rt.mine(1).unwrap();
+    assert_eq!(users[0].0.balance().unwrap(), 400_000 + paid, "held, locked");
+    assert!(users[0].0.state().unwrap().locked(to_alice), "locked until Bob acknowledges");
+    {
+        let (w, ch, _) = &mut users[1];
+        env.acknowledge(w, ch);
+    }
+    assert!(!users[0].0.state().unwrap().locked(to_alice), "unlocked once acknowledged");
 
     // ===== A: Alice withdraws exactly the note Bob paid =====
     {
         let (w, ch, h) = &mut users[0];
         let before = ch.balance().unwrap();
         let t = Instant::now();
-        let txid = w.withdraw(&hub.url, &statement(), h.record.cid(), paid).unwrap();
+        let txid = w.withdraw(&env.chain("hub"), &hub.url, &statement(), h.record.cid(), paid).unwrap();
         rt.mine(1).unwrap();
         let fold = rt.get_tx(&txid).unwrap();
         let gained = ch.balance().unwrap() - before;
@@ -79,12 +94,13 @@ fn withdraw_by_claim_and_default() {
         let want = 30_000 / unit * unit;
         let before = ch.balance().unwrap();
         let t = Instant::now();
-        let txid = w.withdraw(&hub.url, &statement(), h.record.cid(), 30_000).unwrap();
+        // the note split off is locked until acknowledged: blocks meanwhile
+        let txid = env.mining(|| w.withdraw(&env.chain("hub"), &hub.url, &statement(), h.record.cid(), 30_000)).unwrap();
         rt.mine(1).unwrap();
         assert!(rt.get_tx(&txid).is_ok());
         assert_eq!(ch.balance().unwrap() - before, Amount::from_sat(want) + h.record.terms.reserve_alice, "30,000 rounded down to the unit, and his reserve");
         assert_eq!(w.balance().unwrap(), left - want, "the rest stays his on the L2");
-        assert!(w.withdraw(&hub.url, &statement(), h.record.cid(), 1_000).is_err(), "closed");
+        assert!(w.withdraw(&env.chain("hub"), &hub.url, &statement(), h.record.cid(), 1_000).is_err(), "closed");
         println!("LICHEN B: Bob split off a note of {want} sats, claimed it, and the hub folded ({:.1?}); {} sats stay his on the L2", t.elapsed(), left - want);
     }
 
@@ -92,7 +108,7 @@ fn withdraw_by_claim_and_default() {
     {
         let (w, ch, h) = &mut users[2];
         let before = ch.balance().unwrap();
-        let txid = w.withdraw(&hub.url, &statement(), h.record.cid(), 0).unwrap();
+        let txid = w.withdraw(&env.chain("hub"), &hub.url, &statement(), h.record.cid(), 0).unwrap();
         rt.mine(1).unwrap();
         let gained = ch.balance().unwrap() - before;
         assert_eq!(gained, h.record.terms.reserve_alice, "Carol's reserve alone");

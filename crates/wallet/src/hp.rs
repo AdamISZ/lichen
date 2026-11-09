@@ -188,10 +188,36 @@ impl Wallet {
                 None
             }
         };
-        let spent = |nf: &[u8; 32]| self.signed.iter().any(|s| s.nullifiers.contains(nf)) || live.as_ref().is_some_and(|s| s.nullifiers.contains(nf));
+        use lichen_ledger::lichen_validity::ack;
+        // a note is spent for her if she acknowledged a spend of it, or the
+        // state shows it spent otherwise than by a spend of hers she never
+        // acknowledged (which doesn't count against her)
+        let unacked = |nf: &[u8; 32]| self.signed.iter().any(|s| s.nullifiers.contains(nf) && s.ack.is_none());
+        let spent = |nf: &[u8; 32]| {
+            self.signed.iter().any(|s| s.nullifiers.contains(nf) && s.ack.is_some())
+                || live.as_ref().is_some_and(|s| {
+                    let t = s.leaf(nf);
+                    t != [0; 32] && !(unacked(nf) && !s.spent(&ack::acked_key(&t)))
+                })
+        };
+        // her acknowledgments, by spend: a locked output of one is hers to
+        // claim, carrying it ([`Wallet::acks_for`])
+        let acks: Vec<lichen_ledger::Ack> = self.signed.iter().filter_map(|s| s.ack.clone()).collect();
         // her notes: in the state, else in the newest exit set kept
         let mut mine: Vec<(u32, lichen_ledger::Note)> = match &live {
-            Some(s) => self.notes(s).into_iter().map(|o| (o.index, o.note)).collect(),
+            Some(s) => s
+                .transparent()
+                .filter(|(_, n)| n.owner == self.address() && !spent(&lichen_ledger::nullifier(n)))
+                .map(|(index, n)| crate::Owned { note: *n, index })
+                .filter(|o| {
+                    if !s.locked(o.index) {
+                        return true;
+                    }
+                    let t = s.leaf(&ack::lock_key(o.index));
+                    acks.iter().any(|a| a.txid == t)
+                })
+                .map(|o| (o.index, o.note))
+                .collect(),
             None => self.exit_sets().into_iter().flat_map(|x| x.notes.into_iter().map(|n| (n.index, n.note))).collect(),
         };
         mine.sort_by_key(|(i, _)| *i);
@@ -215,17 +241,40 @@ impl Wallet {
         ensure!(!chosen.is_empty(), "no notes of ours to claim");
         let b = u32::try_from(total.min(cap) / unit).context("b fits in a u32")?;
         ensure!(b > 0, "the notes claimable come to less than the contract's unit, {unit} sats");
-        self.claim_of(record, b, chosen).map(Some)
+        let acks = match &live {
+            Some(s) => self.acks_for(s, &chosen)?,
+            None => vec![],
+        };
+        self.claim_of(record, b, chosen, acks).map(Some)
+    }
+
+    /// Our acknowledgments of the spends whose outputs are at `positions`:
+    /// a claim carries them, so that a note locked at `A*` is shown
+    /// acknowledged (docs/HUB_PROVES_PLAN.md, "Data availability").
+    pub(crate) fn acks_for(&self, state: &lichen_l2::State, positions: &[u32]) -> Result<Vec<lichen_ledger::lichen_validity::ack::Ack>> {
+        use lichen_ledger::lichen_validity::ack;
+        let mut out: Vec<ack::Ack> = vec![];
+        for i in positions {
+            let t = state.leaf(&ack::lock_key(*i));
+            if t == [0; 32] || out.iter().any(|a| a.txid == t) {
+                continue;
+            }
+            if let Some(a) = self.signed.iter().filter_map(|s| s.ack.as_ref()).find(|a| a.txid == t) {
+                out.push(a.v()?);
+            }
+        }
+        Ok(out)
     }
 
     /// A claim of `b` units from contract `record` of the notes at
     /// `positions`, signed: an exit's, or a cooperative withdrawal's.
-    pub(crate) fn claim_of(&self, record: &Record, b: u32, mut positions: Vec<u32>) -> Result<ExitPlan> {
+    pub(crate) fn claim_of(&self, record: &Record, b: u32, mut positions: Vec<u32>, acks: Vec<lichen_ledger::lichen_validity::ack::Ack>) -> Result<ExitPlan> {
         positions.sort_unstable();
-        let mut claim = Claim { positions, sigs: vec![] };
+        let mut claim = Claim { positions, acks, sigs: vec![] };
         let e = claim.fingerprint(record.cid(), &statement_outpoint(&record.hp().deposit), b);
         claim.sigs = vec![self.key.sign_raw(&lichen_withdraw::hp::signed_digest(&e), &[0; 32]).map_err(|e| anyhow::anyhow!("signing the claim: {e}"))?.to_bytes()];
         ensure!(claim.well_formed(), "the claim isn't well formed");
         Ok(ExitPlan { b, e: hex::encode(e), posted: hex::encode(claim.to_bytes()) })
     }
 }
+

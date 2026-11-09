@@ -216,7 +216,7 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
     let seal = lichen_sequencer::anchor::genesis_seal(&seq_chain, &lichen_ledger::xonly(&regtest_sequencer()))?;
     rt.mine(1)?;
     let mut seq = Sequencer::start_with("127.0.0.1:0", Some(ledger), regtest_sequencer(), HUB_KEY, lichen_sequencer::Options { seal: Some(seal), ..Default::default() })?;
-    seq.anchor(seq_chain, lichen_sequencer::anchor::Anchoring { every: Duration::from_millis(500), ..Default::default() })?;
+    seq.anchor(seq_chain, lichen_sequencer::anchor::Anchoring { every: Duration::from_millis(500), confirmations: lichen_proto::hp::margin(lichen_proto::Net::Regtest), ..Default::default() })?;
     // several coins, so the hub can fund more than one contract a block
     let hub_chain = chain("hub")?;
     for _ in 0..8 {
@@ -389,6 +389,10 @@ fn state(d: &Demo) -> Result<Value> {
                     detail = format!("{spent}commitments [{}] · proof {} KB", list(&cms), proof.div_ceil(1024));
                     (if from.is_empty() { "shielded" } else { "shield" }, parts.join("; "))
                 }
+                Event::Acked { txid, a } => {
+                    detail = format!("spend {}", short(&txid));
+                    ("ack", format!("a sender acknowledged her spend, against the anchor of height {a}: its outputs unlock"))
+                }
                 Event::Exited { c, b, nfs } => {
                     detail = format!("nullifiers [{}]", nfs.iter().map(short).collect::<Vec<_>>().join(", "));
                     ("exit", format!("contract {c} paid an exit of {b} sats; its notes are retired"))
@@ -494,7 +498,7 @@ fn withdraw(d: &Arc<Demo>, r: Withdraw) -> Result<Value> {
             }
         }
         set(format!("claiming {want} sats for contract {cid}: the hub records the claim on the L2, then folds ..."));
-        match w.withdraw(&d2.hub.url, &d2.statement, cid, r.amount) {
+        match w.withdraw(&u2.chain, &d2.hub.url, &d2.statement, cid, r.amount) {
             Ok(txid) => {
                 set(format!("withdrawn: the hub folded the contract; {want} sats and the reserve are on chain"));
                 d2.log(format!("{}: contract {cid} folded cooperatively ({txid})", u2.name));

@@ -43,6 +43,7 @@
 use alloc::vec::Vec;
 use k256::schnorr::{Signature, VerifyingKey};
 use lichen_validity::btc::{self, Header};
+use lichen_validity::ack::{self, Ack};
 use lichen_validity::{smt, OutPoint, TNote};
 use sha2::{Digest, Sha256};
 
@@ -64,21 +65,40 @@ pub fn posted_items(bytes: &[u8]) -> Option<Vec<&[u8]>> {
     (bytes.len() <= POSTED_ITEMS * POSTED_ITEM).then(|| (0..POSTED_ITEMS).map(|i| bytes.get(i * POSTED_ITEM..).map_or(&[][..], |b| &b[..b.len().min(POSTED_ITEM)])).collect())
 }
 
-/// How a nullifier was spent: its leaf in the nullifier tree
-/// (`lichen_validity::smt`).
+/// The spent set where `A*`'s own anchor record is applied (the chain
+/// receipt's height, `Anchored::chain_height`): its commitment tree's and
+/// spent set's roots, under the chain journal's state root. Anchor records
+/// are applied in seal order, so every anchor up to `A*`'s is in it, each
+/// confirmed before the cutoff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Spent {
-    Spend,
-    Exit { c: u32 },
+pub struct ChainSet {
+    pub tree: Hash,
+    pub set: Hash,
 }
 
-impl Spent {
-    pub fn leaf(&self) -> Hash {
-        match *self {
-            Spent::Spend => smt::spent(),
-            Spent::Exit { c } => smt::exited(c),
-        }
-    }
+/// How the spend of a claimed note counts against her at `A*`
+/// (docs/HUB_PROVES_PLAN.md, "Data availability").
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
+pub enum Counts {
+    /// Another contract's exit record (the note's leaf `exited(c)`).
+    Exit { c: u32 },
+    /// A user's spend (the note's leaf its `txid`) acknowledged at `A*`:
+    /// its `acked` key's opening.
+    Acked { acked: smt::Opening },
+    /// A user's spend pending at `A*` (its pending leaf, not void), with an
+    /// acknowledgment whose anchor is applied in `chain`.
+    Shown { ack: Ack, pending: smt::Opening, void: smt::Opening, anchor: smt::Opening, chain: ChainSet },
+}
+
+/// Why an acknowledgment a claim carries doesn't hold: its signature
+/// (checked here, no evidence), or shown by an opening: not its spend's
+/// pending leaf at `A*`, or its anchor not applied in `chain`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Bad {
+    Signature,
+    Pending(smt::Opening),
+    Anchor(smt::Opening, ChainSet),
 }
 
 /// At most this many notes in a claim: an exit record's most
@@ -88,11 +108,13 @@ pub const MAX_NOTES: usize = lichen_validity::exit::MAX_NOTES;
 /// The journal's length in bytes: `c ‖ D ‖ H(O_D ‖ margin)`.
 pub const JOURNAL_LEN: usize = 68;
 
-/// A claim as `request` posts it: its notes' positions, increasing, and
-/// one signature per owner key on [`signed_digest`] of its `E`.
+/// A claim as `request` posts it: its notes' positions, increasing, the
+/// acknowledgments of the spends whose locked outputs it claims, and one
+/// signature per owner key on [`signed_digest`] of its `E`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claim {
     pub positions: Vec<u32>,
+    pub acks: Vec<Ack>,
     pub sigs: Vec<[u8; 64]>,
 }
 
@@ -104,7 +126,7 @@ fn verifies(owner: &Hash, digest: &Hash, sig: &[u8; 64]) -> bool {
 impl Claim {
     /// `E` for contract `c` of deposit coin `deposit`, claiming `b`.
     pub fn fingerprint(&self, c: u32, deposit: &OutPoint, b: u32) -> Hash {
-        fingerprint(c, deposit, b, &self.positions)
+        fingerprint(c, deposit, b, &self.positions, &self.acks)
     }
 
     /// Whether it is well formed: one to [`MAX_NOTES`] positions,
@@ -115,6 +137,8 @@ impl Claim {
             && self.positions.windows(2).all(|w| w[0] < w[1])
             && self.positions.iter().all(|i| i >> TREE_DEPTH == 0)
             && (1..=self.positions.len()).contains(&self.sigs.len())
+            && self.acks.len() <= self.positions.len()
+            && self.acks.iter().enumerate().all(|(i, a)| !self.acks[..i].iter().any(|b| b.txid == a.txid))
     }
 
     /// The signature of `owner`'s on the claim `e`, if any.
@@ -123,10 +147,10 @@ impl Claim {
         self.sigs.iter().find(|s| verifies(owner, &d, s)).copied()
     }
 
-    /// The exit record's notes and signatures (`lichen_validity::Tx::Exit`)
-    /// from the notes at the claim's positions, in order: each owner's
-    /// signature, in [`owners`]' order. None unless every owner signed
-    /// `e`.
+    /// The exit record's notes and signatures (`lichen_validity::Tx::Exit`;
+    /// its acknowledgments are the claim's) from the notes at the claim's
+    /// positions, in order: each owner's signature, in [`owners`]' order.
+    /// None unless every owner signed `e`.
     #[allow(clippy::type_complexity)]
     pub fn record(&self, notes: &[TNote], e: &Hash) -> Option<(Vec<(TNote, u32)>, Vec<[u8; 64]>)> {
         if notes.len() != self.positions.len() {
@@ -137,12 +161,17 @@ impl Claim {
         Some((notes, sigs))
     }
 
-    /// `[n] iⁿ [k] sigᵏ`, big-endian: 4 bytes a note, 64 a signature.
+    /// `[n] iⁿ [m] ackᵐ [k] sigᵏ`, big-endian: 4 bytes a note, 176 an
+    /// acknowledgment, 64 a signature.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut w = Vec::with_capacity(2 + 4 * self.positions.len() + 64 * self.sigs.len());
+        let mut w = Vec::with_capacity(3 + 4 * self.positions.len() + Ack::LEN * self.acks.len() + 64 * self.sigs.len());
         w.push(self.positions.len() as u8);
         for i in &self.positions {
             w.extend_from_slice(&i.to_be_bytes());
+        }
+        w.push(self.acks.len() as u8);
+        for a in &self.acks {
+            w.extend_from_slice(&a.to_bytes());
         }
         w.push(self.sigs.len() as u8);
         for s in &self.sigs {
@@ -155,12 +184,14 @@ impl Claim {
         let mut r = crate::R(b);
         let [n] = r.take()?;
         let positions = (0..n).map(|_| Ok(u32::from_be_bytes(r.take()?))).collect::<Result<Vec<_>, Reject>>()?;
+        let [m] = r.take()?;
+        let acks = (0..m).map(|_| Ok(Ack::from_bytes(&r.take()?))).collect::<Result<Vec<_>, Reject>>()?;
         let [k] = r.take()?;
         let sigs = (0..k).map(|_| r.take()).collect::<Result<Vec<_>, _>>()?;
         if !r.0.is_empty() {
             return Err(Reject::Encoding);
         }
-        Ok(Claim { positions, sigs })
+        Ok(Claim { positions, acks, sigs })
     }
 }
 /// What `request` carries: `b`, `E` and the claim's bytes.
@@ -259,6 +290,7 @@ pub struct Opening {
 
 /// Why the claim is false at `A*`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Why {
     /// The leaf at the `which`th position isn't a transparent note's: a
     /// shielded note's, or empty (past the tree's end); the leaf and its
@@ -268,9 +300,15 @@ pub enum Why {
     NotHers { which: u8, opening: Opening },
     /// The notes, all opened, are worth less than `b` units.
     TooMuch { openings: Vec<Opening> },
-    /// The `which`th note's nullifier is spent, so, by this path in
-    /// `A*`'s nullifier tree.
-    Spent { which: u8, opening: Opening, spent: Spent, proof: smt::Proof },
+    /// The `which`th note's nullifier is spent at `A*` (its opening in the
+    /// spent set: the spender), by a spend that counts.
+    Spent { which: u8, opening: Opening, leaf: smt::Opening, counts: Counts },
+    /// The `which`th note is locked at `A*`: an output of the spend its
+    /// lock names, not acknowledged then, and the claim carries no
+    /// acknowledgment of it that holds.
+    Locked { which: u8, lock: smt::Opening, acked: smt::Opening, bad: Option<Bad> },
+    /// The `which`th note is an output of a spend void at `A*`.
+    Voided { which: u8, lock: smt::Opening, void: smt::Opening },
     /// The `which`th note's owner signed a claim of it through another
     /// contract `c'` (of deposit coin `deposit'`, for `b'`).
     Second { which: u8, opening: Opening, other_c: u32, other_deposit: OutPoint, other_b: u32, other: Claim },
@@ -344,6 +382,23 @@ fn is_last(last: &Last, request: &Header, margin: u32) -> bool {
         && btc::parse_tx(&last.seal.tx).is_some_and(|t| t.inputs.contains(&s.anchor.seal))
 }
 
+/// `key`'s leaf in the spent set of root `set`, by its opening (zero:
+/// absent).
+fn shows(set: &Hash, key: &Hash, o: &smt::Opening) -> Result<Hash, Reject> {
+    if !smt::holds(set, key, &o.leaf, &o.proof, smt::empties()) {
+        return Err(Reject::PathLength);
+    }
+    Ok(o.leaf)
+}
+
+/// The spent set at `A*`'s chain receipt's height, shown under its root.
+fn chain_set(s: &Anchored, c: &ChainSet) -> Result<Hash, Reject> {
+    if lichen_validity::state_root(s.chain_height, &c.tree, &c.set) != s.chain_root {
+        return Err(Reject::NotAnchored);
+    }
+    Ok(c.set)
+}
+
 /// The leaf at `index` of the tree `root`, by `path`.
 fn at(root: &Hash, index: u32, leaf: &Hash, path: &[Hash]) -> Result<(), Reject> {
     if path.len() != TREE_DEPTH || root_from_path(*leaf, index, path) != *root {
@@ -413,13 +468,60 @@ pub fn check(input: &HubInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u
                 return Err(Reject::Holds);
             }
         }
-        Why::Spent { which, opening, spent, proof } => {
+        Why::Spent { which, opening, leaf, counts } => {
             opened(*which, opening)?;
-            if *spent == (Spent::Exit { c: input.c }) {
-                return Err(Reject::Own);
-            }
-            if !smt::holds(&s.nullifiers, &opening.note.nullifier(), &spent.leaf(), proof, smt::empties()) {
+            let spender = shows(&s.nullifiers, &opening.note.nullifier(), leaf)?;
+            if spender == [0; 32] {
                 return Err(Reject::NotSpent);
+            }
+            match counts {
+                Counts::Exit { c } => {
+                    if spender != smt::exited(*c) {
+                        return Err(Reject::NotSpent);
+                    }
+                    if *c == input.c {
+                        return Err(Reject::Own);
+                    }
+                }
+                Counts::Acked { acked } => {
+                    if shows(&s.nullifiers, &ack::acked_key(&spender), acked)? == [0; 32] {
+                        return Err(Reject::NotSpent);
+                    }
+                }
+                Counts::Shown { ack: a, pending, void, anchor, chain } => {
+                    let ok = a.txid == spender
+                        && a.signed()
+                        && shows(&s.nullifiers, &ack::tx_key(&spender), pending)? == ack::pending(&a.ak, a.h)
+                        && shows(&s.nullifiers, &ack::void_key(&spender), void)? == [0; 32]
+                        && shows(&chain_set(s, chain)?, &ack::anchor_key(a.a), anchor)? == a.hist_a;
+                    if !ok {
+                        return Err(Reject::NotSpent);
+                    }
+                }
+            }
+        }
+        Why::Locked { which, lock, acked, bad } => {
+            let txid = shows(&s.nullifiers, &ack::lock_key(position(*which)?), lock)?;
+            if txid == [0; 32] || shows(&s.nullifiers, &ack::acked_key(&txid), acked)? != [0; 32] {
+                return Err(Reject::Holds);
+            }
+            // an acknowledgment carried must be shown not to hold
+            if let Some(a) = claim.acks.iter().find(|a| a.txid == txid) {
+                let fails = match bad {
+                    None => false,
+                    Some(Bad::Signature) => !a.signed(),
+                    Some(Bad::Pending(o)) => shows(&s.nullifiers, &ack::tx_key(&txid), o)? != ack::pending(&a.ak, a.h),
+                    Some(Bad::Anchor(o, chain)) => shows(&chain_set(s, chain)?, &ack::anchor_key(a.a), o)? != a.hist_a,
+                };
+                if !fails {
+                    return Err(Reject::Holds);
+                }
+            }
+        }
+        Why::Voided { which, lock, void } => {
+            let txid = shows(&s.nullifiers, &ack::lock_key(position(*which)?), lock)?;
+            if txid == [0; 32] || shows(&s.nullifiers, &ack::void_key(&txid), void)? == [0; 32] {
+                return Err(Reject::Holds);
             }
         }
         Why::Second { which, opening, other_c, other_deposit, other_b, other } => {
@@ -443,6 +545,16 @@ fn put_opening(w: &mut crate::W, o: &Opening) {
     w.put(&o.note.memo.to_be_bytes());
     w.put(&o.note.rho);
     w.list(&o.path);
+}
+
+fn put_set(w: &mut crate::W, o: &smt::Opening) {
+    w.put(&o.leaf);
+    w.put(&o.proof.bitmap);
+    w.list(&o.proof.siblings);
+}
+
+fn read_set(r: &mut crate::R) -> Result<smt::Opening, Reject> {
+    Ok(smt::Opening { leaf: r.take()?, proof: smt::Proof { bitmap: r.take()?, siblings: r.list()? } })
 }
 
 fn read_opening(r: &mut crate::R) -> Result<Opening, Reject> {
@@ -497,18 +609,53 @@ impl HubInput {
                     put_opening(&mut w, o);
                 }
             }
-            Why::Spent { which, opening, spent, proof } => {
+            Why::Spent { which, opening, leaf, counts } => {
                 w.put(&[3, *which]);
                 put_opening(&mut w, opening);
-                match *spent {
-                    Spent::Spend => w.put(&[0]),
-                    Spent::Exit { c } => {
-                        w.put(&[1]);
+                put_set(&mut w, leaf);
+                match counts {
+                    Counts::Exit { c } => {
+                        w.put(&[0]);
                         w.put(&c.to_be_bytes());
                     }
+                    Counts::Acked { acked } => {
+                        w.put(&[1]);
+                        put_set(&mut w, acked);
+                    }
+                    Counts::Shown { ack: a, pending, void, anchor, chain } => {
+                        w.put(&[2]);
+                        w.put(&a.to_bytes());
+                        put_set(&mut w, pending);
+                        put_set(&mut w, void);
+                        put_set(&mut w, anchor);
+                        w.put(&chain.tree);
+                        w.put(&chain.set);
+                    }
                 }
-                w.put(&proof.bitmap);
-                w.list(&proof.siblings);
+            }
+            Why::Locked { which, lock, acked, bad } => {
+                w.put(&[5, *which]);
+                put_set(&mut w, lock);
+                put_set(&mut w, acked);
+                match bad {
+                    None => w.put(&[0]),
+                    Some(Bad::Signature) => w.put(&[1]),
+                    Some(Bad::Pending(o)) => {
+                        w.put(&[2]);
+                        put_set(&mut w, o);
+                    }
+                    Some(Bad::Anchor(o, chain)) => {
+                        w.put(&[3]);
+                        put_set(&mut w, o);
+                        w.put(&chain.tree);
+                        w.put(&chain.set);
+                    }
+                }
+            }
+            Why::Voided { which, lock, void } => {
+                w.put(&[6, *which]);
+                put_set(&mut w, lock);
+                put_set(&mut w, void);
             }
             Why::Second { which, opening, other_c, other_deposit, other_b, other } => {
                 w.put(&[4, *which]);
@@ -541,13 +688,27 @@ impl HubInput {
                     2 => Why::TooMuch { openings: (0..which).map(|_| read_opening(&mut r)).collect::<Result<_, _>>()? },
                     3 => {
                         let opening = read_opening(&mut r)?;
-                        let spent = match r.take()? {
-                            [0] => Spent::Spend,
-                            [1] => Spent::Exit { c: u32::from_be_bytes(r.take()?) },
+                        let leaf = read_set(&mut r)?;
+                        let counts = match r.take()? {
+                            [0] => Counts::Exit { c: u32::from_be_bytes(r.take()?) },
+                            [1] => Counts::Acked { acked: read_set(&mut r)? },
+                            [2] => Counts::Shown { ack: Ack::from_bytes(&r.take()?), pending: read_set(&mut r)?, void: read_set(&mut r)?, anchor: read_set(&mut r)?, chain: ChainSet { tree: r.take()?, set: r.take()? } },
                             _ => return Err(Reject::Encoding),
                         };
-                        Why::Spent { which, opening, spent, proof: smt::Proof { bitmap: r.take()?, siblings: r.list()? } }
+                        Why::Spent { which, opening, leaf, counts }
                     }
+                    5 => {
+                        let (lock, acked) = (read_set(&mut r)?, read_set(&mut r)?);
+                        let bad = match r.take()? {
+                            [0] => None,
+                            [1] => Some(Bad::Signature),
+                            [2] => Some(Bad::Pending(read_set(&mut r)?)),
+                            [3] => Some(Bad::Anchor(read_set(&mut r)?, ChainSet { tree: r.take()?, set: r.take()? })),
+                            _ => return Err(Reject::Encoding),
+                        };
+                        Why::Locked { which, lock, acked, bad }
+                    }
+                    6 => Why::Voided { which, lock: read_set(&mut r)?, void: read_set(&mut r)? },
                     4 => {
                         let opening = read_opening(&mut r)?;
                         let (other_c, other_deposit, other_b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
@@ -640,7 +801,7 @@ mod tests {
         let (seq, hub, alice) = (key(1), key(2), key(3));
         let deposit = OutPoint { txid: [0xd0; 32], vout: 1 };
         let c = 1007;
-        let mut claim = Claim { positions: vec![0], sigs: vec![] };
+        let mut claim = Claim { positions: vec![0], acks: vec![], sigs: vec![] };
         let e = claim.fingerprint(c, &deposit, b);
         claim.sigs = vec![alice.sign_raw(&signed_digest(&e), &[0; 32]).unwrap().to_bytes()];
         f(&mut claim);
@@ -725,14 +886,14 @@ mod tests {
         assert_eq!(claim.signed_by(&xonly(&w.alice), &r.e), Some(claim.sigs[0]));
         let (notes, sigs) = claim.record(&[w.note], &r.e).unwrap();
         assert_eq!((notes, sigs), (vec![(w.note, 0)], claim.sigs.clone()), "the exit record's notes and signatures");
-        assert_eq!(lichen_validity::exit::fingerprint(w.input.c, &w.deposit, 5, &[0]), r.e, "the exit record's E is the claim's");
+        assert_eq!(lichen_validity::exit::fingerprint(w.input.c, &w.deposit, 5, &[0], &[]), r.e, "the exit record's E is the claim's");
         assert_eq!(Claim::from_bytes(&claim.to_bytes()[1..]), Err(Reject::Encoding));
     }
 
     #[test]
     fn a_claim_is_well_formed() {
         let sig = [0; 64];
-        let c = |positions: Vec<u32>, n: usize| Claim { positions, sigs: vec![sig; n] };
+        let c = |positions: Vec<u32>, n: usize| Claim { positions, acks: vec![], sigs: vec![sig; n] };
         assert!(c(vec![0, 5], 1).well_formed());
         assert!(c((0..MAX_NOTES as u32).collect(), 1).well_formed(), "the most notes");
         assert!(!c((0..=MAX_NOTES as u32).collect(), 1).well_formed(), "too many notes");
@@ -754,9 +915,11 @@ mod tests {
         assert_eq!(check_why(&w, Why::TooMuch { openings: vec![opening(&w)] }), Err(Reject::Holds));
         // the note's own leaf: a transparent note
         assert_eq!(check_why(&w, Why::NotANote { which: 0, leaf: w.note.leaf(), path: empties() }), Err(Reject::Holds));
-        // unspent
-        let proof = smt::proof(&[], &w.note.nullifier(), smt::empties());
-        assert_eq!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), spent: Spent::Spend, proof }), Err(Reject::NotSpent));
+        // unspent, unlocked, not void
+        let nf = w.note.nullifier();
+        let absent = |k: &Hash| smt::Opening { leaf: [0; 32], proof: smt::proof(&[], k, smt::empties()) };
+        assert_eq!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), leaf: absent(&nf), counts: Counts::Exit { c: 9 } }), Err(Reject::NotSpent));
+        assert_eq!(check_why(&w, Why::Locked { which: 0, lock: absent(&ack::lock_key(0)), acked: absent(&ack::acked_key(&[0; 32])), bad: None }), Err(Reject::Holds));
     }
 
     #[test]
@@ -787,7 +950,7 @@ mod tests {
         assert!(check_why(&w, Why::NotHers { which: 0, opening: opening(&w) }).is_ok());
         // malformed: not hashing to the E signed
         let mut w = world(5, |_| {});
-        let wit = witness(&Claim { positions: vec![], sigs: vec![] }.to_bytes(), &[0; 32], 5);
+        let wit = witness(&Claim { positions: vec![], acks: vec![], sigs: vec![] }.to_bytes(), &[0; 32], 5);
         let items: Vec<&[u8]> = wit.iter().map(Vec::as_slice).collect();
         let prev = Header(w.input.request.header).prev();
         let (rh, req) = request_on(&prev, &w.deposit, &items);
@@ -837,42 +1000,130 @@ mod tests {
         assert_eq!(check(&i, &w.id, &mut |_| false), Err(Reject::Chain));
     }
 
+    /// `w` with A*'s spent set `keys`, signed and anchored again; each
+    /// key's opening in it.
+    fn with_set(w: &mut World, keys: &[(Hash, Hash)]) -> impl Fn(&Hash) -> smt::Opening {
+        let mut keys = keys.to_vec();
+        keys.sort();
+        let root = smt::root(&keys, smt::empties());
+        let Ground::At { last, .. } = &mut w.input.ground else { unreachable!() };
+        let st = &mut last.state;
+        st.nullifiers = root;
+        let r = state_root(3, &last.tree, &root);
+        st.signature = key(1).sign_raw(&r, &[0; 32]).unwrap().to_bytes();
+        st.anchor.root = r;
+        move |k: &Hash| smt::Opening { leaf: keys.iter().find(|(x, _)| x == k).map_or([0; 32], |e| e.1), proof: smt::proof(&keys, k, smt::empties()) }
+    }
+
+    /// An acknowledgment of `txid` (sealed at 2) by the key `k`, naming
+    /// anchor 3 of history [10; 32].
+    fn ack_of(txid: Hash, k: &SigningKey) -> Ack {
+        let (a, hist_a) = (3, [10; 32]);
+        let sig = k.sign_raw(&ack::digest(&txid, a, &hist_a), &[0; 32]).unwrap().to_bytes();
+        Ack { txid, ak: xonly(k), h: 2, a, hist_a, sig }
+    }
+
+    /// The chain receipt's state with anchor 3 applied (or not): A*'s
+    /// chain root made its root.
+    fn chain_with(w: &mut World, anchored: bool) -> (ChainSet, smt::Opening) {
+        let k = ack::anchor_key(3);
+        let keys = if anchored { vec![(k, [10; 32])] } else { vec![] };
+        let set = smt::root(&keys, smt::empties());
+        let tree = [0x77; 32];
+        let Ground::At { last, .. } = &mut w.input.ground else { unreachable!() };
+        last.state.chain_root = state_root(last.state.chain_height, &tree, &set);
+        (ChainSet { tree, set }, smt::Opening { leaf: if anchored { [10; 32] } else { [0; 32] }, proof: smt::proof(&keys, &k, smt::empties()) })
+    }
+
     #[test]
     fn a_spend_and_what_doesnt_count() {
-        // the note spent at A*: its nullifier's leaf in the tree
+        let nf = alices_note().nullifier();
+        let txid = [0x7a; 32];
+        // another contract's exit record: a spend; this contract's: not
         let mut w = world(5, |_| {});
-        let nf = w.note.nullifier();
-        let set = |w: &mut World, s: Spent| -> Why {
-            let keys = [(nf, s.leaf())];
-            let (root, proof) = (smt::root(&keys, smt::empties()), smt::proof(&keys, &nf, smt::empties()));
-            // A*'s nullifier root, signed and anchored again
-            let Ground::At { last, .. } = &mut w.input.ground else { unreachable!() };
-            let st = &mut last.state;
-            st.nullifiers = root;
-            let r = state_root(3, &last.tree, &root);
-            st.signature = key(1).sign_raw(&r, &[0; 32]).unwrap().to_bytes();
-            st.anchor.root = r;
-            Why::Spent { which: 0, opening: opening(w), spent: s, proof }
+        let o = with_set(&mut w, &[(nf, smt::exited(1008))]);
+        assert!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), leaf: o(&nf), counts: Counts::Exit { c: 1008 } }).is_ok());
+        let o = with_set(&mut w, &[(nf, smt::exited(1007))]);
+        assert_eq!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), leaf: o(&nf), counts: Counts::Exit { c: 1007 } }), Err(Reject::Own));
+        // a user's spend acknowledged at A*: counts; pending: not by itself
+        let o = with_set(&mut w, &[(nf, txid), (ack::acked_key(&txid), ack::acked(3))]);
+        assert!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), leaf: o(&nf), counts: Counts::Acked { acked: o(&ack::acked_key(&txid)) } }).is_ok());
+        let ak = key(8);
+        let o = with_set(&mut w, &[(nf, txid), (ack::tx_key(&txid), ack::pending(&xonly(&ak), 2))]);
+        assert_eq!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), leaf: o(&nf), counts: Counts::Acked { acked: o(&ack::acked_key(&txid)) } }), Err(Reject::NotSpent));
+        // pending, with an acknowledgment shown whose anchor is applied
+        let (chain, anchor) = chain_with(&mut w, true);
+        let shown = |a: Ack, anchor: smt::Opening, chain: ChainSet| Counts::Shown { ack: a, pending: o(&ack::tx_key(&txid)), void: o(&ack::void_key(&txid)), anchor, chain };
+        assert!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), leaf: o(&nf), counts: shown(ack_of(txid, &ak), anchor.clone(), chain) }).is_ok());
+        // by another key than the spend's, or of another spend
+        assert_eq!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), leaf: o(&nf), counts: shown(ack_of(txid, &key(9)), anchor.clone(), chain) }), Err(Reject::NotSpent));
+        assert_eq!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), leaf: o(&nf), counts: shown(ack_of([0x7b; 32], &ak), anchor.clone(), chain) }), Err(Reject::NotSpent));
+        // its anchor not applied by A*'s own record
+        let (chain, anchor) = chain_with(&mut w, false);
+        assert_eq!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), leaf: o(&nf), counts: shown(ack_of(txid, &ak), anchor, chain) }), Err(Reject::NotSpent));
+        // void: doesn't count
+        let o = with_set(&mut w, &[(nf, txid), (ack::tx_key(&txid), ack::pending(&xonly(&ak), 2)), (ack::void_key(&txid), ack::void())]);
+        let (chain, anchor) = chain_with(&mut w, true);
+        let counts = Counts::Shown { ack: ack_of(txid, &ak), pending: o(&ack::tx_key(&txid)), void: o(&ack::void_key(&txid)), anchor, chain };
+        assert_eq!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), leaf: o(&nf), counts }), Err(Reject::NotSpent));
+    }
+
+    #[test]
+    fn a_locked_note_and_a_void_one() {
+        let txid = [0x7a; 32];
+        let ak = key(8);
+        let pend = (ack::tx_key(&txid), ack::pending(&xonly(&ak), 2));
+        // locked at A*, no acknowledgment carried
+        let mut w = world(5, |_| {});
+        let o = with_set(&mut w, &[(ack::lock_key(0), txid), pend]);
+        let locked = |o: &dyn Fn(&Hash) -> smt::Opening, bad: Option<Bad>| Why::Locked { which: 0, lock: o(&ack::lock_key(0)), acked: o(&ack::acked_key(&txid)), bad };
+        assert!(check_why(&w, locked(&o, None)).is_ok());
+        // acknowledged at A*: not locked
+        let o2 = with_set(&mut w, &[(ack::lock_key(0), txid), pend, (ack::acked_key(&txid), ack::acked(3))]);
+        assert_eq!(check_why(&w, locked(&o2, None)), Err(Reject::Holds));
+        // carrying an acknowledgment that holds: not locked
+        let carrying = |a: Ack| {
+            let mut w = world(5, |c| c.acks = vec![a]);
+            let o = with_set(&mut w, &[(ack::lock_key(0), txid), pend]);
+            let (chain, anchor) = chain_with(&mut w, true);
+            (w, o, chain, anchor)
         };
-        let why = set(&mut w, Spent::Spend);
-        assert!(check_why(&w, why).is_ok());
-        // this contract's exit record: not a spend; another's: a spend
-        let why = set(&mut w, Spent::Exit { c: 1007 });
-        assert_eq!(check_why(&w, why), Err(Reject::Own));
-        let why = set(&mut w, Spent::Exit { c: 1008 });
-        assert!(check_why(&w, why).is_ok());
+        let (w, o, chain, anchor) = carrying(ack_of(txid, &ak));
+        assert_eq!(check_why(&w, locked(&o, None)), Err(Reject::Holds));
+        assert_eq!(check_why(&w, locked(&o, Some(Bad::Signature))), Err(Reject::Holds));
+        assert_eq!(check_why(&w, locked(&o, Some(Bad::Pending(o(&ack::tx_key(&txid)))))), Err(Reject::Holds));
+        assert_eq!(check_why(&w, locked(&o, Some(Bad::Anchor(anchor, chain)))), Err(Reject::Holds));
+        // one that doesn't: another key's, or its anchor not applied
+        let (w, o, _, _) = carrying(ack_of(txid, &key(9)));
+        assert_eq!(check_why(&w, locked(&o, Some(Bad::Pending(o(&ack::tx_key(&txid)))))).map(|_| ()), Ok(()));
+        let mut forged = ack_of(txid, &ak);
+        forged.sig[0] ^= 1;
+        let (w, o, _, _) = carrying(forged);
+        assert!(check_why(&w, locked(&o, Some(Bad::Signature))).is_ok());
+        let (mut w, o, _, _) = carrying(ack_of(txid, &ak));
+        let (chain, anchor) = chain_with(&mut w, false);
+        assert!(check_why(&w, locked(&o, Some(Bad::Anchor(anchor, chain)))).is_ok());
+        // void at A*
+        let mut w = world(5, |_| {});
+        let o = with_set(&mut w, &[(ack::lock_key(0), txid), pend, (ack::void_key(&txid), ack::void())]);
+        assert!(check_why(&w, Why::Voided { which: 0, lock: o(&ack::lock_key(0)), void: o(&ack::void_key(&txid)) }).is_ok());
+        let o = with_set(&mut w, &[(ack::lock_key(0), txid), pend]);
+        assert_eq!(check_why(&w, Why::Voided { which: 0, lock: o(&ack::lock_key(0)), void: o(&ack::void_key(&txid)) }), Err(Reject::Holds));
     }
 
     #[test]
     fn the_input_round_trips() {
         let w = world(5, |_| {});
         let proof = smt::proof(&[], &[1; 32], smt::empties());
-        let other = Claim { positions: vec![0, 3], sigs: vec![[5; 64]] };
+        let other = Claim { positions: vec![0, 3], acks: vec![ack_of([1; 32], &key(8))], sigs: vec![[5; 64]] };
         for ground in [
             Why::NotANote { which: 0, leaf: [1; 32], path: empties() },
             Why::NotHers { which: 0, opening: opening(&w) },
             Why::TooMuch { openings: vec![opening(&w), opening(&w)] },
-            Why::Spent { which: 0, opening: opening(&w), spent: Spent::Exit { c: 9 }, proof },
+            Why::Spent { which: 0, opening: opening(&w), leaf: smt::Opening { leaf: [1; 32], proof: proof.clone() }, counts: Counts::Exit { c: 9 } },
+            Why::Spent { which: 0, opening: opening(&w), leaf: smt::Opening::default(), counts: Counts::Shown { ack: ack_of([2; 32], &key(8)), pending: smt::Opening::default(), void: smt::Opening::default(), anchor: smt::Opening::default(), chain: ChainSet { tree: [3; 32], set: [4; 32] } } },
+            Why::Locked { which: 0, lock: smt::Opening::default(), acked: smt::Opening::default(), bad: Some(Bad::Anchor(smt::Opening::default(), ChainSet { tree: [3; 32], set: [4; 32] })) },
+            Why::Voided { which: 0, lock: smt::Opening::default(), void: smt::Opening { leaf: [5; 32], proof } },
             Why::Second { which: 0, opening: opening(&w), other_c: 8, other_deposit: OutPoint { txid: [1; 32], vout: 2 }, other_b: 3, other },
         ]
         .into_iter()
@@ -893,7 +1144,7 @@ mod tests {
     fn a_second_claim() {
         let w = world(5, |_| {});
         let other_deposit = OutPoint { txid: [0xd1; 32], vout: 0 };
-        let mut other = Claim { positions: claim_of(&w).positions, sigs: vec![] };
+        let mut other = Claim { positions: claim_of(&w).positions, acks: vec![], sigs: vec![] };
         let e2 = other.fingerprint(1008, &other_deposit, 3);
         other.sigs = vec![w.alice.sign_raw(&signed_digest(&e2), &[0; 32]).unwrap().to_bytes()];
         let g = |c: u32, o: &Claim| Why::Second { which: 0, opening: opening(&w), other_c: c, other_deposit, other_b: 3, other: o.clone() };
@@ -905,7 +1156,7 @@ mod tests {
         forged.sigs = vec![key(9).sign_raw(&signed_digest(&e2), &[0; 32]).unwrap().to_bytes()];
         assert_eq!(check_why(&w, g(1008, &forged)), Err(Reject::NotYours));
         // of another position
-        let mut elsewhere = Claim { positions: vec![4], sigs: vec![] };
+        let mut elsewhere = Claim { positions: vec![4], acks: vec![], sigs: vec![] };
         let e3 = elsewhere.fingerprint(1008, &other_deposit, 3);
         elsewhere.sigs = vec![w.alice.sign_raw(&signed_digest(&e3), &[0; 32]).unwrap().to_bytes()];
         assert_eq!(check_why(&w, g(1008, &elsewhere)), Err(Reject::NotSpent));

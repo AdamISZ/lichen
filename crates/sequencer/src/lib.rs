@@ -290,6 +290,13 @@ fn handle(sh: &Shared, method: &Method, url: &str, body: &str) -> (u16, String) 
             Err(_) => refuse(404, format!("height {h} not proved (yet)")),
         };
     }
+    if let (Method::Get, Some(q)) = (method, url.strip_prefix("/ack/")) {
+        // a spend's acknowledgment (its txid, hex), if sequenced
+        return match l.acks.get(q) {
+            Some(a) => (200, serde_json::to_string(a).unwrap()),
+            None => refuse(404, "no acknowledgment of that spend sequenced".into()),
+        };
+    }
     if let (Method::Get, Some(q)) = (method, url.strip_prefix("/spent/")) {
         // how a nullifier (hex) was spent: its leaf, and the height whose
         // block spent it
@@ -428,8 +435,9 @@ mod tests {
         assert!(c.hold(&alice, &[nf]).is_err());
         c.hold(&hub, &[nf]).unwrap();
         let spend = lichen_ledger::Spend { note: n, index: i };
-        let d = lichen_ledger::Transfer::digest(&[spend], &[n]);
-        let t = Tx::Transfer(lichen_ledger::Transfer { spends: vec![spend], outputs: vec![n], sigs: vec![lichen_ledger::sign(&alice, &d)] });
+        let ak = [0xa0; 32];
+        let d = lichen_ledger::Transfer::digest(&[spend], &[n], &ak);
+        let t = Tx::Transfer(lichen_ledger::Transfer { spends: vec![spend], outputs: vec![n], sigs: vec![lichen_ledger::sign(&alice, &d)], ak });
         assert!(format!("{:#}", c.submit(&t).unwrap_err()).contains("claimed in an exit"));
     }
 

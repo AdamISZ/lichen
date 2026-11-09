@@ -33,8 +33,8 @@ use lichen_proto::setup::{dealing_from_hex, link_args, shares_from_hex, statemen
 use lichen_proto::hp::{check_commit, HpCommit, HpDisputed, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
 use lichen_proto::{Checkpoint, Presig, Record};
 use lichen_ledger::lichen_validity::TNote;
-use lichen_withdraw::hp::Spent;
-use lichen_withdraw::hp::{Claim, Ground, HubInput, Last, Opening, SealSpend, Terms, Why};
+use lichen_ledger::lichen_validity::ack::{self, Ack};
+use lichen_withdraw::hp::{Bad, ChainSet, Claim, Counts, Ground, HubInput, Last, Opening, SealSpend, Terms, Why};
 use lngap_btc::adaptor::AdaptorSig;
 use lngap_btc::keys::Seed;
 use rand_chacha::ChaCha20Rng;
@@ -317,6 +317,9 @@ impl Inner {
                     self.note_once(format!("contract {cid}: too late to assert; request_timeout will pay the user"));
                     return Ok(bb(State::Requested(d, at, recorded)));
                 }
+                if !recorded {
+                    self.hp_hold(&d)?;
+                }
                 match self.hp_decide(&d, at, recorded)? {
                     Decision::Wait(why) => {
                         self.note_once(format!("contract {cid}: {why}"));
@@ -380,6 +383,27 @@ impl Inner {
         }
     }
 
+    /// Hold the notes a request claims, once, as soon as it is seen: the
+    /// sequencer refuses their spends, and the acknowledgment of a spend of
+    /// them (the earlier of an exit and a spend wins).
+    fn hp_hold(&self, d: &HpDisputed) -> Result<()> {
+        let cid = d.record.cid();
+        let once = format!("contract {cid}: holding the notes the request claims");
+        if self.log.lock().unwrap().contains(&once) {
+            return Ok(());
+        }
+        let req = self.chain.get_tx(&d.txid("request")).context("the request")?;
+        let (_, _, posted) = HpDisputed::requested(&req)?;
+        let Ok(claim) = Claim::from_bytes(&posted) else { return Ok(()) };
+        let state = self.seq.state()?;
+        let nfs: Vec<Hash> = claim.positions.iter().filter_map(|i| state.note(*i)).map(lichen_ledger::nullifier).collect();
+        if !nfs.is_empty() {
+            self.seq.hold(&self.cfg.l2_key, &nfs)?;
+        }
+        self.note(once);
+        Ok(())
+    }
+
     /// The claim holds: hold its notes, and record its exit on the L2,
     /// retiring them.
     fn hp_record(&self, d: &HpDisputed) -> Result<()> {
@@ -396,7 +420,8 @@ impl Inner {
         let deposit = statement_outpoint(&d.record.hp().deposit);
         let Some((notes, sigs)) = claim.record(&notes, &e) else { return Ok(()) };
         let notes = notes.into_iter().map(|(n, index)| lichen_ledger::Spend { note: lichen_ledger::Note { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho }, index }).collect();
-        let tx = lichen_ledger::Tx::Exit(lichen_ledger::Exit::new(&self.cfg.l2_key, &self.seq.deployment, cid, deposit, b, notes, sigs));
+        let acks = claim.acks.iter().map(lichen_ledger::Ack::of).collect();
+        let tx = lichen_ledger::Tx::Exit(lichen_ledger::Exit::new(&self.cfg.l2_key, &self.seq.deployment, cid, deposit, b, notes, acks, sigs));
         match self.seq.submit(&tx) {
             Ok(_) => self.note(format!("contract {cid}: the exit claim recorded on the L2: its notes are retired")),
             Err(e) => self.note(format!("contract {cid}: the exit record: {e:#}")),
@@ -505,29 +530,104 @@ impl Inner {
         if recorded {
             return Ok(Decision::Holds);
         }
+        // its locks at A*: each claimed output of a spend void then, or
+        // pending without an acknowledgment that holds
+        let c_h = a.from;
+        let s_ch = state.sealed.iter().find(|s| s.height == c_h).context("A*'s chain receipt's height isn't sealed")?;
+        let chain = ChainSet { tree: s_ch.tree, set: s_ch.nullifiers };
+        let open = |k: &Hash, h: u64| self.seq.opening(k, h);
+        for (w, &index) in claim.positions.iter().enumerate() {
+            let lock = open(&ack::lock_key(index), h2)?;
+            let t = lock.leaf;
+            if t == [0; 32] {
+                continue;
+            }
+            let void = open(&ack::void_key(&t), h2)?;
+            if void.leaf != [0; 32] {
+                return Ok(Decision::Assert(at_star(Why::Voided { which: w as u8, lock, void }), format!("note {index} is an output of a spend void at A* (height {h2})")));
+            }
+            let acked = open(&ack::acked_key(&t), h2)?;
+            if acked.leaf != [0; 32] {
+                continue;
+            }
+            let bad = match claim.acks.iter().find(|a| a.txid == t) {
+                None => Some(None),
+                Some(a) if !a.signed() => Some(Some(Bad::Signature)),
+                Some(a) => {
+                    let p = open(&ack::tx_key(&t), h2)?;
+                    if p.leaf != ack::pending(&a.ak, a.h) {
+                        Some(Some(Bad::Pending(p)))
+                    } else {
+                        let an = open(&ack::anchor_key(a.a), c_h)?;
+                        (an.leaf != a.hist_a).then_some(Some(Bad::Anchor(an, chain)))
+                    }
+                }
+            };
+            if let Some(bad) = bad {
+                return Ok(Decision::Assert(at_star(Why::Locked { which: w as u8, lock, acked, bad }), format!("note {index} is locked at A* (height {h2}): its spend unacknowledged")));
+            }
+        }
+        // its spends at A*: each that counts against her
+        let known = self.hp_known_acks(cid)?;
         for (w, o) in openings.iter().enumerate() {
             let nf = o.note.nullifier();
-            let Some((leaf, height)) = self.seq.spent(&nf)? else { continue };
-            if height > h2 {
+            let leaf = open(&nf, h2)?;
+            let t = leaf.leaf;
+            if t == [0; 32] {
                 continue;
             }
-            let spent = self.hp_spent_as(&leaf);
-            if spent == (Spent::Exit { c: cid }) {
-                continue;
-            }
-            let why = Why::Spent { which: w as u8, opening: o.clone(), spent, proof: self.seq.nullifier_proof(&nf, h2)? };
+            let counts = if let Some(c) = self.hp_exited(&t) {
+                if c == cid {
+                    continue;
+                }
+                Counts::Exit { c }
+            } else {
+                let acked = open(&ack::acked_key(&t), h2)?;
+                if acked.leaf != [0; 32] {
+                    Counts::Acked { acked }
+                } else {
+                    // pending at A*: it counts if an acknowledgment of it
+                    // exists (sequenced since, or in another claim) whose
+                    // anchor is applied by A*'s own record
+                    let found = match self.seq.ack(&t)? {
+                        Some(a) => Some(a.v()?),
+                        None => known.iter().find(|a| a.txid == t).copied(),
+                    };
+                    let Some(a) = found else { continue };
+                    let (pending, void, anchor) = (open(&ack::tx_key(&t), h2)?, open(&ack::void_key(&t), h2)?, open(&ack::anchor_key(a.a), c_h)?);
+                    if !a.signed() || pending.leaf != ack::pending(&a.ak, a.h) || void.leaf != [0; 32] || anchor.leaf != a.hist_a {
+                        continue;
+                    }
+                    Counts::Shown { ack: a, pending, void, anchor, chain }
+                }
+            };
+            let why = Why::Spent { which: w as u8, opening: o.clone(), leaf, counts };
             return Ok(Decision::Assert(at_star(why), format!("note {} was spent by A* (height {h2})", claim.positions[w])));
         }
         Ok(Decision::Holds)
     }
 
-    /// How a nullifier tree leaf says a note was spent.
-    fn hp_spent_as(&self, leaf: &Hash) -> Spent {
+    /// The contract whose exit record a spent set leaf is, if it is one.
+    fn hp_exited(&self, leaf: &Hash) -> Option<u32> {
         let cids: Vec<u32> = self.open.lock().unwrap().keys().copied().collect();
-        match cids.iter().find(|c| lichen_ledger::lichen_validity::smt::exited(**c) == *leaf) {
-            Some(c) => Spent::Exit { c: *c },
-            None => Spent::Spend,
+        cids.into_iter().find(|c| lichen_ledger::lichen_validity::smt::exited(*c) == *leaf)
+    }
+
+    /// The acknowledgments other contracts' requests on chain carry: a
+    /// user who claims a spend's outputs through one contract shows it
+    /// counts, against a claim of its inputs through another.
+    fn hp_known_acks(&self, cid: u32) -> Result<Vec<Ack>> {
+        let records: Vec<Record> = self.open.lock().unwrap().values().map(|o| o.record.clone()).filter(|r| r.cid() != cid).collect();
+        let mut acks = vec![];
+        for r in records {
+            let Ok(d) = HpDisputed::new(&r, &self.cfg.statement) else { continue };
+            let Some(req) = self.chain.get_tx(&d.txid("request")) else { continue };
+            let Ok((_, _, posted)) = HpDisputed::requested(&req) else { continue };
+            if let Ok(other) = Claim::from_bytes(&posted) {
+                acks.extend(other.acks);
+            }
         }
+        Ok(acks)
     }
 
     /// A second claim of a note of `claim` (`openings`, its notes)

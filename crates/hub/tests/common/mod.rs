@@ -75,7 +75,7 @@ impl Env {
 
     /// The sequencer anchors its history from now on.
     pub fn anchor(&mut self) {
-        self.seq.anchor(self.chain("sequencer"), Anchoring { every: Duration::from_millis(100), ..Default::default() }).unwrap();
+        self.seq.anchor(self.chain("sequencer"), Anchoring { every: Duration::from_millis(100), confirmations: lichen_proto::hp::margin(lichen_proto::Net::Regtest), ..Default::default() }).unwrap();
     }
 
     /// A block every `every` from now on.
@@ -85,6 +85,35 @@ impl Env {
         self.background(every, move || {
             let _ = rpc.generate_to_address(1, &addr);
         });
+    }
+
+    /// Acknowledge `w`'s spends (`Wallet::acknowledge`), a block mined
+    /// each step, until none waits: an anchor, its confirmations.
+    pub fn acknowledge(&self, w: &mut lichen_wallet::Wallet, ch: &Chain) {
+        let start = Instant::now();
+        while w.acknowledge(ch).unwrap() > 0 {
+            assert!(start.elapsed() < Duration::from_secs(120), "spends unacknowledged: timed out");
+            self.rt.mine(1).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// `f`, with a block mined every 150 ms meanwhile.
+    pub fn mining<T>(&self, f: impl FnOnce() -> T) -> T {
+        let rpc = bitcoincore_rpc::Client::new(&format!("{}/wallet/harness", self.rt.rpc_url()), Auth::CookieFile(self.rt.cookie().clone())).unwrap();
+        let addr = rpc.get_new_address(None, None).unwrap().assume_checked();
+        let stop = Arc::new(AtomicBool::new(false));
+        let s = stop.clone();
+        let t = std::thread::spawn(move || {
+            while !s.load(Ordering::Relaxed) {
+                let _ = rpc.generate_to_address(1, &addr);
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        });
+        let r = f();
+        stop.store(true, Ordering::Relaxed);
+        t.join().unwrap();
+        r
     }
 
     pub fn chain(&self, wallet: &str) -> Chain {

@@ -68,7 +68,9 @@ pub mod http {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
     pub notes: Vec<Leaf>,
-    pub nullifiers: Vec<Hash>,
+    /// The spent set: each key with its leaf, by key (nullifiers, and the
+    /// acknowledgment state beside them: `lichen_validity::ack`).
+    pub nullifiers: Vec<(Hash, Hash)>,
     pub sealed: Vec<SignedRoot>,
     /// Each anchoring state on Bitcoin, from the height that first carried
     /// it (none for a sequencer that doesn't anchor).
@@ -79,7 +81,22 @@ pub struct State {
 impl State {
     /// The state of ledger `l`.
     pub fn of(l: &Ledger) -> State {
-        State { notes: l.notes.clone(), nullifiers: l.nullifiers.iter().copied().collect(), sealed: l.sealed.clone(), anchors: l.anchors.clone() }
+        State { notes: l.notes.clone(), nullifiers: l.nullifiers.leaves().map(|(k, v)| (*k, *v)).collect(), sealed: l.sealed.clone(), anchors: l.anchors.clone() }
+    }
+    /// A key's leaf in the spent set (zero: absent).
+    pub fn leaf(&self, key: &Hash) -> Hash {
+        self.nullifiers.binary_search_by_key(key, |e| e.0).map_or([0; 32], |i| self.nullifiers[i].1)
+    }
+    /// Whether a key is in the spent set.
+    pub fn spent(&self, key: &Hash) -> bool {
+        self.leaf(key) != [0; 32]
+    }
+    /// Whether the note at `index` is locked: an output of a spend not
+    /// acknowledged (`lichen_validity::ack`).
+    pub fn locked(&self, index: u32) -> bool {
+        use lichen_ledger::lichen_validity::ack;
+        let txid = self.leaf(&ack::lock_key(index));
+        txid != [0; 32] && !self.spent(&ack::acked_key(&txid))
     }
     /// The commitment tree, rebuilt from the leaves.
     pub fn tree(&self) -> Tree {
@@ -120,7 +137,7 @@ impl State {
         Ok((upto.last().unwrap().root(), lichen_ledger::lichen_validity::recent_hash(&recent), self.hist_at(h)))
     }
     pub fn is_spent(&self, note: &Note) -> bool {
-        self.nullifiers.contains(&lichen_ledger::nullifier(note))
+        self.spent(&lichen_ledger::nullifier(note))
     }
 }
 /// The signed roots a party has seen, by height: a second, different root
@@ -209,6 +226,9 @@ pub enum Event {
     /// An exit recorded: the contract, the amount it paid, the nullifiers
     /// claimed. Unknown to readers from before: skipped.
     Exited { c: u32, b: u32, nfs: Vec<Hash> },
+    /// A spend acknowledged by its sender. Unknown to readers from
+    /// before: skipped.
+    Acked { txid: Hash, a: u64 },
 }
 
 impl Event {
@@ -224,6 +244,7 @@ impl Event {
                 }
                 Err(_) => Event::Anchored { height: 0, txid: [0; 32] },
             },
+            Tx::Ack(a) => Event::Acked { txid: a.txid, a: a.a },
             Tx::Exit(x) => Event::Exited { c: x.c, b: x.b, nfs: x.notes.iter().map(|n| lichen_ledger::nullifier(&n.note)).collect() },
             Tx::Shielded(t) => Event::Shielded {
                 from: t.t_spends.iter().map(|s| s.note.owner).collect(),
@@ -370,6 +391,23 @@ impl Client {
             Err(ureq::Error::Status(404, _)) => Ok(None),
             Err(e) => Err(anyhow!("/spent: {e}")),
         }
+    }
+    /// The acknowledgment sequenced of the spend `txid`, if any.
+    pub fn ack(&self, txid: &Hash) -> Result<Option<lichen_ledger::Ack>> {
+        match http::quick().get(&format!("{}/ack/{}", self.url, hex::encode(txid))).call() {
+            Ok(r) => Ok(Some(r.into_json()?)),
+            Err(ureq::Error::Status(404, _)) => Ok(None),
+            Err(e) => Err(anyhow!("/ack: {e}")),
+        }
+    }
+    /// `key`'s opening in the spent set at sealed height `h`: its leaf
+    /// then (zero: absent) and its path.
+    pub fn opening(&self, key: &Hash, h: u64) -> Result<lichen_ledger::lichen_validity::smt::Opening> {
+        let leaf = match self.spent(key)? {
+            Some((leaf, at)) if at <= h => leaf,
+            _ => [0; 32],
+        };
+        Ok(lichen_ledger::lichen_validity::smt::Opening { leaf, proof: self.nullifier_proof(key, h)? })
     }
     /// Nullifier `nf`'s path in the nullifier tree at sealed height `h`,
     /// whatever its leaf. Not checked here: against the signed root, by

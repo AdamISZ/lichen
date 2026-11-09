@@ -66,7 +66,7 @@ fn a_user_with_no_wallet() {
     println!("LICHEN E1: contract {} opened through Esplora in {:.1?} (deposit {} sats)", held.record.cid(), t.elapsed(), Wallet::deposit_amount(&ask, Net::Regtest).to_sat());
     assert!(alice.deposits.is_empty());
     minted(&alice);
-    let fold = alice.withdraw(&hub_e.url, &statement(), held.record.cid(), u64::from(B)).unwrap();
+    let fold = alice.withdraw(&node("hub"), &hub_e.url, &statement(), held.record.cid(), u64::from(B)).unwrap();
     rt.mine(1).unwrap();
     let b = u64::from(B) / held.record.terms.unit.to_sat() * held.record.terms.unit.to_sat();
     assert_eq!(rt.get_tx(&fold).unwrap().output.iter().filter(|o| o.script_pubkey == to_alice).map(|o| o.value).sum::<Amount>(), Amount::from_sat(b + ask.reserve));
@@ -141,7 +141,7 @@ fn a_user_with_no_wallet() {
     let held = bob.open_contract(&hub_d.url, &esplora, &statement(), ask, to_bob.clone(), &pay).unwrap();
     let cid = held.record.cid();
     minted(&bob);
-    bob.withdraw(&hub_d.url, &statement(), cid, u64::from(B)).unwrap_err();
+    bob.withdraw(&node("hub"), &hub_d.url, &statement(), cid, u64::from(B)).unwrap_err();
     e.wait_synced(rt.datadir(), rt.rpc_url()).unwrap();
     let budget = bob.fees_for(cid).unwrap().balance(&esplora).unwrap();
     let t = Instant::now();
