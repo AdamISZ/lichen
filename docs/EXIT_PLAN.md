@@ -28,6 +28,10 @@ the Mac: about 10 h on lichen-vps); (5) Mutinynet, with a hostile second
 hub; (6) one guest change for a new deployment: the commitment tree at
 depth 32 and sender acknowledgment (step 10).
 
+**2026-11-09.** Being redesigned: HUB_PROVES_PLAN.md, in which only the
+hub proves (Alice claims; the hub proves her claim false or pays), would
+replace the counter design below and the withdrawal by return's dispute.
+
 ## The assumption
 
 The hub and the sequencer cooperate: one operator, or two that trust

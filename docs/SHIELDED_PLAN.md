@@ -5,6 +5,16 @@
 `docs/planning/research/shielded-pool-costs.md` (the measurements behind
 this plan; local notes).
 
+**2026-11-09: two changes planned** (HUB_PROVES_PLAN.md, "Shielded
+notes"). (1) The commitment isn't hiding against anyone who knows the
+address: `rho` is public (derived from the transaction's first
+nullifier), so `H(owner ‖ v ‖ rho)` can be searched over `v` leaf by
+leaf, finding the address's notes and amounts. A sender-chosen trapdoor
+`r` in `cm` (and `nf`), encrypted to the receiver with the value, fixes
+it. (2) For the exit, split keys: `owner = H(H(ask) ‖ nk ‖ X)`, `ask`
+authorizing spends in the proof, `nk` revealed at exit, `X` signing the
+claim. Both are guest changes, for a new deployment.
+
 ## Status
 
 **Phase 1 done** (2026-10-18): shielded notes and transactions
