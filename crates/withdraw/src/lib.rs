@@ -35,6 +35,7 @@ use sha2::{Digest, Sha256};
 pub mod counter;
 pub mod exit;
 pub mod fixed;
+pub mod hp;
 
 pub type Hash = [u8; 32];
 
@@ -274,6 +275,12 @@ pub enum Reject {
     /// contract's outpoint, or not posting the claim's notes and
     /// signatures (`exit::Posted`).
     Posted,
+    /// The hub's statement (`hp`): its ground doesn't hold; the claim is
+    /// as it says on that count.
+    Holds,
+    /// The hub's statement: `A*` isn't shown the last anchor before the
+    /// cutoff.
+    Last,
     Encoding,
 }
 
