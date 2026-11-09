@@ -819,9 +819,25 @@ Next:
        paid, the payment voided, the payee's note locked for good) and W
        (acknowledged, the acknowledgment withheld: the locked change
        claimed carrying it, paid, the payee's note unlocked).
-6. The hub's statement as a guest (its encoding, the chain receipt
-   composed, the Groth16 wrap), and the real statement.
-7. Real proofs on regtest, then Mutinynet.
+6. Done (2026-11-10): the hub's statement as a guest (`r0/hp-guest`, hp
+   `a71fe1ef`, holding the chain guest's id; the chain receipt at `A*` an
+   assumption), and the real statement (`hub-proves`: BABE's
+   `Kind::Risc0` on `hp.id`, the Groth16 seal read by
+   `lichen_babe::risc0::proof_from_seal`). The hub proves in the
+   background (`r0/hp-prover.sh hp-proof`, `LICHEN_HP_PROVER`): the
+   sequencer's chain receipt at `A*`'s chain height first, its files in
+   `hp/<cid>/`. In the guest, hp_exit's inputs (`LICHEN_DUMP_HP`): a
+   spent note 1.68M user cycles, a second claim 1.0M, 2 segments each.
+7. Real proofs on regtest, then Mutinynet. Done (2026-11-10), a first:
+   `hp_real.rs` (opt-in), a malformed claim proved false for real (no
+   chain receipt needed), proved and wrapped on lichen-vps through
+   `r0/hp-remote.sh`, asserted (7,725 vB), the proof checked by the
+   wallet, which concedes; the exit 442 s on regtest, the proving
+   included. Left: a ground at `A*` for real, which needs every chain
+   height to `A*` proved (on lichen-vps some ten minutes a segment: hours
+   for a test's heights), so best on Mutinynet, whose chain prover runs
+   anyway; that needs a fresh ledger there (this branch's state and
+   guests are incompatible with the deployed ones).
 8. Shielded notes ("Shielded notes").
 9. Done (2026-11-09): the old exit removed (the hub's counter,
    `respond`'s countering leaf, the failed-counter branch and its
