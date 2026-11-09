@@ -28,9 +28,13 @@ the Mac: about 10 h on lichen-vps); (5) Mutinynet, with a hostile second
 hub; (6) one guest change for a new deployment: the commitment tree at
 depth 32 and sender acknowledgment (step 10).
 
-**2026-11-09.** Being redesigned: HUB_PROVES_PLAN.md, in which only the
-hub proves (Alice claims; the hub proves her claim false or pays), would
-replace the counter design below and the withdrawal by return's dispute.
+**2026-11-09: superseded.** HUB_PROVES_PLAN.md, in which only the hub
+proves (Alice claims; the hub proves her claim false or her timeout pays
+her), replaces the counter design below, which is removed from the code
+(branch `hub-proves`): the counter, `respond`'s countering leaf, the
+failed-counter branch, the counter guest, the claim proof. Kept here for
+the reasoning that still holds: the cutoff and its margin, the
+data-availability analysis and sender acknowledgment.
 
 ## The assumption
 

@@ -2,7 +2,7 @@
 //! phase 2), so that a block guest can show a nullifier unspent and add
 //! it. 256 levels, a leaf per nullifier by its bits (most significant
 //! first, from the root); a leaf is zero if unspent, and if spent says
-//! how (docs/EXIT_PLAN.md, "The counter"): [`spent`] by an ordinary
+//! how (the hub's statement reads it, docs/HUB_PROVES_PLAN.md): [`spent`] by an ordinary
 //! transaction, [`returned`] by a return to a contract, [`exited`] by a
 //! contract's exit record. Empty subtrees are the precomputed
 //! [`empties`]. Its root is the state root's `N`.

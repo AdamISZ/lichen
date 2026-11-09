@@ -320,21 +320,6 @@ fn handle(sh: &Shared, method: &Method, url: &str, body: &str) -> (u16, String) 
         }
         return (200, serde_json::json!({ "bitmap": hex::encode(p.bitmap), "siblings": p.siblings.iter().map(hex::encode).collect::<Vec<_>>() }).to_string());
     }
-    if let (Method::Get, Some(q)) = (method, url.strip_prefix("/kit/")) {
-        // /kit/<height>/<index>/<nullifier, hex>
-        let parts: Vec<&str> = q.split('/').collect();
-        let parsed = match parts[..] {
-            [h, i, nf] => h.parse::<u64>().ok().zip(i.parse::<u32>().ok()).zip(hex::decode(nf).ok().and_then(|v| <Hash>::try_from(v).ok())),
-            _ => None,
-        };
-        let Some(((h, i), nf)) = parsed else {
-            return refuse(400, "a kit is /kit/<height>/<index>/<nullifier, hex>".into());
-        };
-        return match l.kit(i, &nf, h) {
-            Ok(k) => (200, serde_json::to_string(&k).unwrap()),
-            Err(e) => refuse(404, format!("{e:#}")),
-        };
-    }
     match (method, url) {
         (Method::Post, "/hold") => {
             let held = serde_json::from_str::<Hold>(body).map_err(anyhow::Error::from).and_then(|h| h.decode()).and_then(|(nfs, sig)| l.hold(&nfs, &sig).map(|()| nfs.len()));
@@ -429,11 +414,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An anchor record from a client is refused (the anchorer's alone),
-    /// as is a body over the limit; a read doesn't rewrite the ledger; a
-    /// restart clears the block files of heights the ledger never kept.
+    /// A hold on a claimed note, the hub's only: the note's spend refused.
     #[test]
-    fn serves_exit_kits_and_holds() {
+    fn holds() {
         let s = Sequencer::start("127.0.0.1:0", None, lichen_ledger::regtest_sequencer(), lichen_ledger::HUB_KEY).unwrap();
         let c = lichen_l2::Client::new(&s.url).unwrap();
         let (hub, alice) = (lichen_ledger::regtest_hub(), lichen_ledger::key_from_label("test/alice"));
@@ -441,11 +424,6 @@ mod tests {
         let i = c.submit(&Tx::Mint(lichen_ledger::Mint::new(&hub, &c.deployment, vec![n]))).unwrap()[0];
         c.seal().unwrap();
         let nf = lichen_ledger::nullifier(&n);
-        let k = c.kit(i, &nf, 1).unwrap();
-        let st = c.state().unwrap();
-        assert!(k.check(&st.sealed[0], &n.commitment(), &nf));
-        assert!(format!("{:#}", c.kit(i, &nf, 9).unwrap_err()).contains("no such height"));
-        assert!(ureq::get(&format!("{}/kit/1/x", s.url)).call().is_err());
         // a hold, the hub's only; then the note's spend is refused
         assert!(c.hold(&alice, &[nf]).is_err());
         c.hold(&hub, &[nf]).unwrap();
@@ -455,6 +433,9 @@ mod tests {
         assert!(format!("{:#}", c.submit(&t).unwrap_err()).contains("claimed in an exit"));
     }
 
+    /// An anchor record from a client is refused (the anchorer's alone),
+    /// as is a body over the limit; a read doesn't rewrite the ledger; a
+    /// restart clears the block files of heights the ledger never kept.
     #[test]
     fn refuses_what_isnt_a_clients() {
         let dir = std::env::temp_dir().join(format!("lichen-seq-refuse-{}", std::process::id()));

@@ -26,23 +26,7 @@
 //!   fixed statement (`lichen_withdraw::fixed`, BABE's), as `withdraw`
 //!   with the hub's signature on `b` (JSON: its `key` and `sig`, ten
 //!   32-byte hashes each, hex); prints the claim digest, the same for
-//!   every amount; `exec-babe` runs it without proving. For a contract
-//!   with the exit, the JSON's `exit` (the hub's other keys and the
-//!   deposit coin, as the wallet writes them): the statement with the
-//!   exit, a return (`fixed::Mode::Return`);
-//! - `babe-exit <statement> <out> [<chain receipt>]`: prove the fixed
-//!   statement with the exit (`fixed::check_exit`; its input's bytes,
-//!   `ExitStatement::to_bytes`), the chain receipt for a return or a
-//!   claim; none for a failed counter; `exec-babe-exit` runs it;
-//! - `counter <input> <out> [<chain receipt>]`: prove the counter
-//!   (`counter::check_counter`; its input's bytes, `Counter::to_bytes`),
-//!   the chain receipt for a spend, none for an equivocation;
-//!   `exec-counter` runs it; `wrap` and `bitvmx-input` take its receipt,
-//!   and the input's points are `K`;
-//! - `time-babe-exit <statement>`, `time-counter <input>`: prove them
-//!   for timing, without a chain receipt (the chain journals unresolved
-//!   assumptions, as executed): each segment proved, lifted and joined,
-//!   timed; no receipt;
+//!   every amount; `exec-babe` runs it without proving;
 //! - `wrap <receipt> <out>`: the Groth16 receipt of a succinct withdrawal
 //!   (or BABE) receipt (x86 Linux with Docker: RISC Zero's gnark step);
 //!   `bitvmx-input <Groth16 receipt> <out.hex>`: as the BitVMX verifier's
@@ -51,20 +35,20 @@
 //!   `withdraw`, `wrap`, `bitvmx-input` (what the tower runs);
 //!   `babe-claim <withdraw input> <hub auth> <chain receipt> <out.hex>`,
 //!   BABE's: `babe`, `wrap`, `bitvmx-input` (`lichen dispute` takes it);
-//! - `image-id [spend|chain|withdraw|babe|counter]`: a committed guest's
+//! - `image-id [spend|chain|withdraw|babe]`: a committed guest's
 //!   image id;
 //!   `check-id`: that each is its committed `.id`; `pack-id <bin>`: a
 //!   packed binary's.
 //!
 //! The guests proved are the committed `r0/guests/spend.bin`, `chain.bin`,
-//! `withdraw.bin`, `counter.bin` and `babe.bin`.
+//! `withdraw.bin` and `babe.bin`.
 
 mod bitvmx;
 
 use std::io::{Read, Write};
 
 use anyhow::{bail, ensure, Context, Result};
-use risc0_zkvm::{compute_image_id, default_executor, default_prover, get_prover_server, Digest, ExecutorEnv, ExecutorImpl, InnerReceipt, MaybePruned, ProverOpts, Receipt, ReceiptClaim, Session, SuccinctReceipt, VerifierContext};
+use risc0_zkvm::{compute_image_id, default_executor, default_prover, Digest, ExecutorEnv, InnerReceipt, ProverOpts, Receipt};
 
 const GUESTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../guests");
 
@@ -240,42 +224,18 @@ fn withdraw_input(json: &str, chain: &Receipt) -> Result<(lichen_withdraw::Withd
     Ok((input, chain_id))
 }
 
-/// The hub's signature on `b` (`babe`'s), as JSON; with the exit, its
-/// other keys in `respond` and the deposit coin.
+/// The hub's signature on `b` (`babe`'s), as JSON.
 #[derive(serde::Deserialize)]
 struct HubAuthJson {
     key: Vec<String>,
     sig: Vec<String>,
-    #[serde(default)]
-    exit: Option<ExitJson>,
 }
 
-#[derive(serde::Deserialize)]
-struct ExitJson {
-    e_plain: Vec<String>,
-    e_counter: Vec<String>,
-    k: Vec<String>,
-    /// `<txid>:<vout>`, the txid as Bitcoin displays it
-    deposit: String,
-}
-
-fn hub_auth(path: &str) -> Result<(lichen_withdraw::fixed::HubAuth, Option<(lichen_withdraw::fixed::ExitKeys, lichen_validity::OutPoint)>)> {
+fn hub_auth(path: &str) -> Result<lichen_withdraw::fixed::HubAuth> {
     let a: HubAuthJson = serde_json::from_slice(&read(path)?).with_context(|| format!("{path}: the hub's signature"))?;
     let list = |v: &[String]| -> Result<Vec<lichen_withdraw::Hash>> { v.iter().map(|h| hex::decode(h).ok().and_then(|b| b.try_into().ok()).context("a hash: 32 bytes, hex")).collect() };
     let fixed = |v: &[String]| -> Result<[lichen_withdraw::Hash; lichen_withdraw::fixed::DIGITS]> { list(v)?.try_into().map_err(|v: Vec<_>| anyhow::anyhow!("{} hashes, not {}", v.len(), lichen_withdraw::fixed::DIGITS)) };
-    let e = |v: &[String]| -> Result<[lichen_withdraw::Hash; lichen_withdraw::fixed::E_DIGITS]> { list(v)?.try_into().map_err(|v: Vec<_>| anyhow::anyhow!("{} hashes, not {}", v.len(), lichen_withdraw::fixed::E_DIGITS)) };
-    let auth = lichen_withdraw::fixed::HubAuth { key: fixed(&a.key)?, sig: fixed(&a.sig)? };
-    let exit = match &a.exit {
-        None => None,
-        Some(x) => {
-            let (t, v) = x.deposit.split_once(':').context("the deposit: <txid>:<vout>")?;
-            let mut txid: [u8; 32] = hex::decode(t).ok().and_then(|b| b.try_into().ok()).context("the deposit's txid: 32 bytes, hex")?;
-            txid.reverse();
-            let keys = lichen_withdraw::fixed::ExitKeys { b: auth.key, e_plain: e(&x.e_plain)?, e_counter: e(&x.e_counter)?, k: list(&x.k)? };
-            Some((keys, lichen_validity::OutPoint { txid, vout: v.parse().context("the deposit's vout")? }))
-        }
-    };
-    Ok((auth, exit))
+    Ok(lichen_withdraw::fixed::HubAuth { key: fixed(&a.key)?, sig: fixed(&a.sig)? })
 }
 
 /// Prove the withdrawal statement (or, `execute_only`, run it): the
@@ -283,45 +243,26 @@ fn hub_auth(path: &str) -> Result<(lichen_withdraw::fixed::HubAuth, Option<(lich
 fn prove_withdraw(json: &str, chain: Receipt, execute_only: bool) -> Result<Option<Receipt>> {
     let (input, chain_id) = withdraw_input(json, &chain)?;
     let journal = lichen_withdraw::check(&input, &chain_id, &mut |j| j == chain.journal.bytes.as_slice()).map_err(|r| anyhow::anyhow!("the withdrawal statement rejects the input: {r:?}"))?;
-    prove_guest("withdraw", &input.to_bytes(), &journal, Some(chain), &[], Run::of(execute_only))
+    prove_guest("withdraw", &input.to_bytes(), &journal, chain, Run::of(execute_only))
 }
 
 /// Prove the fixed statement (BABE's; or, `execute_only`, run it): the
 /// succinct receipt, checked.
 fn prove_babe(json: &str, auth: &str, chain: Receipt, execute_only: bool) -> Result<Option<Receipt>> {
     let (withdraw, chain_id) = withdraw_input(json, &chain)?;
-    let (auth, exit) = hub_auth(auth)?;
-    if let Some((keys, deposit)) = exit {
-        // the contract has the exit: its statement, a return
-        let s = lichen_withdraw::fixed::ExitStatement { keys, deposit, mode: lichen_withdraw::fixed::Mode::Return { withdraw, b_sig: auth.sig } };
-        return prove_babe_exit(&s.to_bytes(), Some(chain), Run::of(execute_only));
-    }
+    let auth = hub_auth(auth)?;
     let input = lichen_withdraw::fixed::FixedInput { withdraw, auth };
     let journal = lichen_withdraw::fixed::check(&input, &chain_id, &mut |j| j == chain.journal.bytes.as_slice()).map_err(|r| anyhow::anyhow!("the fixed statement rejects the input: {r:?}"))?;
     let claim = risc0_zkvm::ReceiptClaim::ok(image_id(&committed("babe")?)?, journal.to_vec());
     eprintln!("lichen-r0: the claim digest, the Groth16 public input's: {}", risc0_zkvm::sha::Digestible::digest(&claim));
-    // tag 0: a return only
-    prove_guest("babe", &[&[0][..], &input.to_bytes()].concat(), &journal, Some(chain), &[], Run::of(execute_only))
+    prove_guest("babe", &input.to_bytes(), &journal, chain, Run::of(execute_only))
 }
 
-/// The chain receipt `chain`, if any, checked against the committed chain
-/// guest: its journal (what a statement's `verify_chain` accepts), and
-/// the guest's image id.
-fn chain_check(chain: &Option<Receipt>) -> Result<(Option<Vec<u8>>, [u8; 32])> {
-    let id = image_id(&committed("chain")?)?;
-    if let Some(c) = chain {
-        c.verify(id).context("the chain receipt")?;
-    }
-    Ok((chain.as_ref().map(|c| c.journal.bytes.clone()), id.as_bytes().try_into()?))
-}
-
-/// How a guest is run: proved; executed only (its cycles); or proved
-/// for timing, its chain journals unresolved assumptions.
+/// How a guest is run: proved, or executed only (its cycles).
 #[derive(Clone, Copy, PartialEq)]
 enum Run {
     Prove,
     Execute,
-    Time,
 }
 
 impl Run {
@@ -334,64 +275,12 @@ impl Run {
     }
 }
 
-/// Prove the fixed statement with the exit (BABE's; or run it as `run`
-/// says), checked natively first, the counter's Groth16 check too.
-/// Executed only, input the statement rejects is run anyway, to check
-/// that the guest refuses it too.
-fn prove_babe_exit(input: &[u8], chain: Option<Receipt>, run: Run) -> Result<Option<Receipt>> {
-    let s = lichen_withdraw::fixed::ExitStatement::from_bytes(input).map_err(|r| anyhow::anyhow!("the statement's input: {r:?}"))?;
-    let counter: [u8; 32] = image_id(&committed("counter")?)?.as_bytes().try_into()?;
-    let (known, chain_id) = chain_check(&chain)?;
-    let mut assumed = Vec::new();
-    let checked = lichen_withdraw::fixed::check_exit(&s, &chain_id, &mut |j| assume(&known, j, &mut assumed, run), &mut |k, j| lichen_groth16::verify(&counter, k, j));
-    // tag 1: with the exit
-    let input = [&[1][..], input].concat();
-    match checked {
-        Ok(journal) => prove_guest("babe", &input, &journal, chain, &assumed, run),
-        // executed only: whether the guest refuses it too
-        Err(r) if run == Run::Execute => refused("babe", &input, chain, &assumed, &format!("{r:?}")).map(|()| None),
-        Err(r) => bail!("the statement rejects the input: {r:?}"),
-    }
-}
-
-/// Prove the counter (or run it as `run` says), checked natively first.
-fn prove_counter(input: &[u8], chain: Option<Receipt>, run: Run) -> Result<Option<Receipt>> {
-    let c = lichen_withdraw::counter::Counter::from_bytes(input).map_err(|r| anyhow::anyhow!("the counter's input: {r:?}"))?;
-    let (known, chain_id) = chain_check(&chain)?;
-    let mut assumed = Vec::new();
-    let journal = lichen_withdraw::counter::check_counter(&c, &chain_id, &mut |j| assume(&known, j, &mut assumed, run))
-        .map_err(|r| anyhow::anyhow!("the counter rejects the input: {r:?}"))?;
-    prove_guest("counter", input, &journal, chain, &assumed, run)
-}
-
-/// Whether a statement's chain journal `j` is the chain receipt's
-/// (`known`); with none, executed only or timed, any is: `j` is kept in
-/// `assumed`, to be run as an unresolved assumption (for counting cycles,
-/// or timing, on inputs made up without a chain).
-fn assume(known: &Option<Vec<u8>>, j: &[u8], assumed: &mut Vec<Vec<u8>>, run: Run) -> bool {
-    match known {
-        Some(k) => k == j,
-        None => {
-            assumed.push(j.to_vec());
-            run != Run::Prove
-        }
-    }
-}
-
-/// Prove the guest `name` (the withdrawal's, BABE's or the counter's) on
-/// `input`, the chain receipt an assumption if any (or, executed only or
-/// timed, the chain journals `assumed`, unresolved), its journal to be
-/// `journal`.
-fn prove_guest(name: &str, input: &[u8], journal: &[u8], chain: Option<Receipt>, assumed: &[Vec<u8>], run: Run) -> Result<Option<Receipt>> {
+/// Prove the guest `name` (the withdrawal's or BABE's) on `input`, the
+/// chain receipt an assumption, its journal to be `journal`.
+fn prove_guest(name: &str, input: &[u8], journal: &[u8], chain: Receipt, run: Run) -> Result<Option<Receipt>> {
     let guest = committed(name)?;
     let id = image_id(&guest)?;
-    let env = guest_env(input, chain, assumed)?;
-    if run == Run::Time {
-        let session = ExecutorImpl::from_elf(env, &guest)?.run()?;
-        ensure!(session.journal.as_ref().map(|j| j.bytes.as_slice()) == Some(journal), "the execution's journal isn't the statement's");
-        time_segments(name, &session)?;
-        return Ok(None);
-    }
+    let env = guest_env(input, chain)?;
     if run == Run::Execute {
         let s = default_executor().execute(env, &guest)?;
         ensure!(s.journal.bytes == journal, "the execution's journal isn't the statement's");
@@ -407,76 +296,29 @@ fn prove_guest(name: &str, input: &[u8], journal: &[u8], chain: Option<Receipt>,
     Ok(Some(info.receipt))
 }
 
-/// Prove `session`'s segments, each lifted and joined to the last, timed
-/// (no receipt: its chain journals are unresolved assumptions).
-fn time_segments(name: &str, session: &Session) -> Result<()> {
-    let prover = get_prover_server(&ProverOpts::succinct())?;
-    let ctx = VerifierContext::default();
-    let n = session.segments.len();
-    let (mut proving, mut recursion) = (0.0, 0.0);
-    let mut joined: Option<SuccinctReceipt<ReceiptClaim>> = None;
-    for (i, s) in session.segments.iter().enumerate() {
-        let s = s.resolve()?;
-        let t = std::time::Instant::now();
-        let r = prover.prove_segment(&ctx, &s)?;
-        let p = t.elapsed().as_secs_f64();
-        let t = std::time::Instant::now();
-        let l = prover.lift(&r)?;
-        joined = Some(match joined {
-            Some(j) => prover.join(&j, &l)?,
-            None => l,
-        });
-        let q = t.elapsed().as_secs_f64();
-        (proving, recursion) = (proving + p, recursion + q);
-        eprintln!("lichen-r0: {name}, segment {}/{n} (po2 {}): proved in {p:.1}s, lifted and joined in {q:.1}s", i + 1, s.po2());
-    }
-    eprintln!("lichen-r0: timed {name}: {n} segments ({} user cycles) proved in {proving:.1}s, lifted and joined in {recursion:.1}s", session.user_cycles);
-    Ok(())
-}
-
-/// Execute the guest `name` on `input` that the statement rejects
-/// (`why`): an error unless the guest fails too.
-fn refused(name: &str, input: &[u8], chain: Option<Receipt>, assumed: &[Vec<u8>], why: &str) -> Result<()> {
-    match default_executor().execute(guest_env(input, chain, assumed)?, &committed(name)?) {
-        Ok(_) => bail!("the guest {name} accepts what the statement rejects ({why})"),
-        Err(e) => {
-            eprintln!("lichen-r0: the statement rejects the input ({why}), and the guest {name} fails too: {e}");
-            Ok(())
-        }
-    }
-}
-
 /// The executor's environment for a guest: `input`, and the chain receipt
-/// as an assumption if any (or the chain journals `assumed`, unresolved).
-fn guest_env(input: &[u8], chain: Option<Receipt>, assumed: &[Vec<u8>]) -> Result<ExecutorEnv<'static>> {
+/// as an assumption.
+fn guest_env(input: &[u8], chain: Receipt) -> Result<ExecutorEnv<'static>> {
     let mut env = ExecutorEnv::builder();
-    env.write(&(input.len() as u32))?.write_slice(&words(&input));
-    if let Some(c) = chain {
-        env.add_assumption(c);
-    }
-    if !assumed.is_empty() {
-        let chain_id = image_id(&committed("chain")?)?;
-        for j in assumed {
-            env.add_assumption(MaybePruned::Value(ReceiptClaim::ok(chain_id, j.clone())));
-        }
-    }
+    env.write(&(input.len() as u32))?.write_slice(&words(input));
+    env.add_assumption(chain);
     env.build()
 }
 
 /// Which of the guests whose receipts are wrapped (the withdrawal's,
-/// BABE's, the counter's) proved `r`: its image id.
+/// BABE's) proved `r`: its image id.
 fn wrapped_guest(r: &Receipt) -> Result<Digest> {
-    for name in ["withdraw", "babe", "counter"] {
+    for name in ["withdraw", "babe"] {
         let id = image_id(&committed(name)?)?;
         if r.verify(id).is_ok() {
             return Ok(id);
         }
     }
-    bail!("a receipt of none of the withdrawal, BABE or counter guests")
+    bail!("a receipt of neither the withdrawal nor the BABE guest")
 }
 
-/// The Groth16 receipt of a succinct withdrawal (or BABE, or counter)
-/// receipt, checked.
+/// The Groth16 receipt of a succinct withdrawal (or BABE) receipt,
+/// checked.
 fn wrap(r: &Receipt) -> Result<Receipt> {
     let id = wrapped_guest(r)?;
     let t = std::time::Instant::now();
@@ -488,7 +330,7 @@ fn wrap(r: &Receipt) -> Result<Receipt> {
 
 /// The BitVMX verifier's input for a Groth16 receipt of either
 /// withdrawal guest (BABE's reads it too: the image id, the points, the
-/// journal; and a counter's points are its `K`).
+/// journal).
 fn bitvmx_input(r: &Receipt) -> Result<Vec<u8>> {
     let InnerReceipt::Groth16(g) = &r.inner else { bail!("not a Groth16 receipt") };
     let id = wrapped_guest(r)?;
@@ -536,20 +378,6 @@ fn main() -> Result<()> {
             Some(r) => write(out, &bincode::serialize(&r)?),
             None => Ok(()),
         },
-        [cmd @ ("babe-exit" | "exec-babe-exit"), input, out, chain @ ..] if chain.len() <= 1 => {
-            match prove_babe_exit(&read(input)?, chain.first().map(|c| load(c)).transpose()?, Run::of(*cmd == "exec-babe-exit"))? {
-                Some(r) => write(out, &bincode::serialize(&r)?),
-                None => Ok(()),
-            }
-        }
-        [cmd @ ("counter" | "exec-counter"), input, out, chain @ ..] if chain.len() <= 1 => {
-            match prove_counter(&read(input)?, chain.first().map(|c| load(c)).transpose()?, Run::of(*cmd == "exec-counter"))? {
-                Some(r) => write(out, &bincode::serialize(&r)?),
-                None => Ok(()),
-            }
-        }
-        ["time-babe-exit", input] => prove_babe_exit(&read(input)?, None, Run::Time).map(drop),
-        ["time-counter", input] => prove_counter(&read(input)?, None, Run::Time).map(drop),
         ["wrap", receipt, out] => write(out, &bincode::serialize(&wrap(&load(receipt)?)?)?),
         ["bitvmx-input", receipt, out] => write(out, hex::encode(bitvmx_input(&load(receipt)?)?).as_bytes()),
         ["claim", json, chain, out] => {
@@ -588,7 +416,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         ["check-id"] => {
-            for name in ["spend", "chain", "withdraw", "counter", "babe"] {
+            for name in ["spend", "chain", "withdraw", "babe"] {
                 // a guest not built yet has neither file
                 if !std::path::Path::new(&format!("{GUESTS}/{name}.bin")).exists() && !std::path::Path::new(&format!("{GUESTS}/{name}.id")).exists() {
                     continue;
@@ -599,6 +427,6 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        _ => bail!("usage: lichen-r0 spend <input> <receipt> | verify <receipt> <journal hex> | chain <block input> <out> [--prev <receipt>] [<spend receipt>...] | verify-chain <receipt> | withdraw|exec-withdraw <withdraw input> <chain receipt> <out> | babe|exec-babe <withdraw input> <hub auth> <chain receipt> <out> | babe-exit|exec-babe-exit <statement> <out> [<chain receipt>] | counter|exec-counter <input> <out> [<chain receipt>] | time-babe-exit <statement> | time-counter <input> | wrap <receipt> <out> | bitvmx-input <receipt> <out.hex> | claim <withdraw input> <chain receipt> <out.hex> | babe-claim <withdraw input> <hub auth> <chain receipt> <out.hex> | pack <guest ELF> <out> | pack-id <bin> | image-id [spend|chain|withdraw|counter|babe] | check-id"),
+        _ => bail!("usage: lichen-r0 spend <input> <receipt> | verify <receipt> <journal hex> | chain <block input> <out> [--prev <receipt>] [<spend receipt>...] | verify-chain <receipt> | withdraw|exec-withdraw <withdraw input> <chain receipt> <out> | babe|exec-babe <withdraw input> <hub auth> <chain receipt> <out> | wrap <receipt> <out> | bitvmx-input <receipt> <out.hex> | claim <withdraw input> <chain receipt> <out.hex> | babe-claim <withdraw input> <hub auth> <chain receipt> <out.hex> | pack <guest ELF> <out> | pack-id <bin> | image-id [spend|chain|withdraw|babe] | check-id"),
     }
 }

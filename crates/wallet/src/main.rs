@@ -179,18 +179,11 @@ enum Cmd {
         #[arg(long, hide = true)]
         false_claim: bool,
     },
-    /// Exit through a contract when the operator won't return a
-    /// withdrawal: claim our notes at the latest anchored state on Bitcoin,
-    /// and play the dispute to its end. Run again to resume (the claim is
-    /// kept with the contract); on the real statement, with --input once
-    /// proved.
-    Exit {
-        contract: u32,
-        /// The claim's proof (lichen-r0's, `bitvmx-input` of the BABE
-        /// guest's receipt), hex.
-        #[arg(long)]
-        input: Option<PathBuf>,
-    },
+    /// Exit through a hub-proves contract when the operator won't fold a
+    /// withdrawal, or has gone: claim our notes, and play the dispute to
+    /// its end (the hub proves the claim false or the timeout pays). Run
+    /// again to resume (the claim is kept with the contract).
+    Exit { contract: u32 },
     /// Write the package a tower needs to play a contract's dispute (once
     /// the withdrawal is returned on the L2 and the hub has refused it):
     /// the contract and its one-time secrets, never the wallet's key.
@@ -263,15 +256,9 @@ fn deadline(a: &Args, t_close: u32, height: Option<u32>) -> String {
 
 /// The next step when a withdrawal fails and an exit is the way out
 /// ([`lichen_wallet::exit::Fallback::Exit`]).
-fn exit_note(a: &Args, cid: u32, returned: bool, t_close: u32, height: Option<u32>) -> String {
-    let why = if returned { "your return to the hub isn't provable (not sealed, anchored and proved), so" } else { "so" };
-    let proving = if matches!(a.statement, lichen_proto::Statement::Babe { mock: false }) {
-        " Once the hub responds you prove the claim (minutes; an hour on a laptop if the hub counters falsely) before T_A; if it never responds, its timeout pays you."
-    } else {
-        ""
-    };
+fn exit_note(a: &Args, cid: u32, t_close: u32, height: Option<u32>) -> String {
     format!(
-        "contract {cid}: the withdrawal wasn't folded, and {why} only an exit on Bitcoin gets it out: a claim of your notes at a height anchored on Bitcoin, kept by this wallet, which needs neither the hub nor the sequencer.\n{}{proving}\nWith this command's --network, --wallet and --statement:\n    lichen exit {cid}\nor run this withdrawal again with --escalate.",
+        "contract {cid}: the withdrawal wasn't folded, so only an exit on Bitcoin gets it out: a claim of your notes, which needs neither the hub nor the sequencer. You prove nothing: the hub must prove the claim false within its window, or its timeout pays you.\n{}\nWith this command's --network, --wallet and --statement:\n    lichen exit {cid}\nor run this withdrawal again with --escalate.",
         deadline(a, t_close, height)
     )
 }
@@ -307,15 +294,9 @@ fn dispute_cmd(a: &Args, w: &mut Wallet, contract: u32, amount: Option<u32>, inp
     anyhow::ensure!(!false_claim || a.network.is_test(), "--false-claim is for test networks only, not {}", a.network);
     let chain = chain(a)?;
     let held = w.contracts.iter().find(|h| h.record.cid() == contract).with_context(|| format!("no contract {contract}"))?;
-    let (kept, unit, exit) = (held.claim.clone(), held.record.terms.unit.to_sat(), held.record.babe().is_ok_and(|b| b.exit.is_some()));
+    let (kept, unit) = (held.claim.clone(), held.record.terms.unit.to_sat());
+    anyhow::ensure!(held.record.hp().is_err(), "contract {contract} is a hub-proves contract: exit instead (you prove nothing):\n    lichen exit {contract}");
     let real_babe = matches!(a.statement, lichen_proto::Statement::Babe { mock: false });
-    // a plain request on a contract with the exit only with a provable
-    // return: a hub back within its window responds, and with no return to
-    // prove she loses the contract at T_A (docs/EXIT_PLAN.md, "Always
-    // request in exit mode")
-    if real_babe && !false_claim && kept.is_none() && exit && w.fallback(&a.statement, contract)? == lichen_wallet::exit::Fallback::Exit {
-        anyhow::bail!("contract {contract}: no provable return kept (its withdrawal input, and the chain receipt at its anchor), so a dispute of it would be lost if the hub came back and responded: there would be no return to prove. Exit instead, a claim of your notes at a height anchored on Bitcoin, kept by this wallet:\n    lichen exit {contract}");
-    }
     // the amount in sats, as returned; the dispute's b in the
     // contract's units, rounded down (what a dispute pays)
     let amount = amount.map(|sats| (u64::from(sats) / unit) as u32);
@@ -357,28 +338,13 @@ fn dispute_cmd(a: &Args, w: &mut Wallet, contract: u32, amount: Option<u32>, inp
     Ok(())
 }
 
-/// `lichen exit`: an exit, played to its end or to the proof due.
-fn exit_cmd(a: &Args, w: &mut Wallet, contract: u32, input: Option<&PathBuf>) -> Result<()> {
+/// `lichen exit`: a hub-proves contract's exit, played to its end.
+fn exit_cmd(a: &Args, w: &mut Wallet, contract: u32) -> Result<()> {
     let chain = chain(a)?;
-    let input = match (input, &a.statement) {
-        (Some(p), lichen_proto::Statement::Babe { mock: false }) => w.babe_claim_input(contract, &hex::decode(std::fs::read_to_string(p)?.trim())?)?,
-        (Some(_), _) => anyhow::bail!("--input is the real statement's proof; the mock proves here"),
-        (None, _) => vec![],
-    };
     w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
-    let dir = a.wallet.with_extension("d");
-    let (outcome, swept) = w.exit(&chain, &a.statement, &dir, contract, &input)?;
+    let (outcome, swept) = w.exit(&chain, &a.statement, &a.wallet.with_extension("d"), contract)?;
     match outcome {
-        lichen_wallet::dispute::Outcome::ProofDue(t_a) => {
-            let data = lichen_wallet::engine::babe::data_dir(&dir, contract);
-            let (stmt, receipt) = (data.join("exit-statement.bin"), data.join("exit-chain.receipt"));
-            println!(
-                "The hub responded. Your proof is due: assert it before block {t_a} (T_A), after which the hub may take the contract. Prove with lichen-r0, on Linux or a Mac (the README, \"Disputes on the real statement\"):\n    lichen-r0 babe-exit {} exit.receipt {}\n    lichen-r0 wrap exit.receipt exit.groth16\n    lichen-r0 bitvmx-input exit.groth16 claim.hex\n    lichen exit {contract} --input claim.hex\n(after a false counter, babe-exit takes no chain receipt; anyone can prove it)",
-                stmt.display(),
-                receipt.display()
-            );
-        }
-        lichen_wallet::dispute::Outcome::Countered => println!("The hub countered the claim: a note of it was spent, or claimed through another contract, at an anchored state. No branch of the statement holds."),
+        lichen_wallet::dispute::Outcome::Countered => println!("The hub proved the claim false: a note of it isn't yours, isn't live at the last anchor before the request, or was claimed through another contract too. Its success takes the contract."),
         _ => println!("{outcome:?}; swept {swept:?}"),
     }
     Ok(())
@@ -548,7 +514,7 @@ fn main() -> Result<()> {
             println!("refunded the deposit for contract {contract}: {txid}");
         }
         Cmd::Dispute { contract, amount, ref input, ref lie, false_claim } => dispute_cmd(&a, &mut w, contract, amount, input.as_ref(), lie.as_ref(), false_claim)?,
-        Cmd::Exit { contract, ref input } => exit_cmd(&a, &mut w, contract, input.as_ref())?,
+        Cmd::Exit { contract } => exit_cmd(&a, &mut w, contract)?,
         Cmd::Tower { .. } => unreachable!(),
         Cmd::ExportDispute { contract, ref out, ref input } => {
             let dir = a.wallet.with_extension("d");
@@ -607,7 +573,7 @@ fn main() -> Result<()> {
                     // returned has none: the default pays the reserve)
                     let open = w.contracts.iter().find(|h| h.record.cid() == contract && h.closed.is_none()).map(|h| h.record.terms.t_close);
                     let Some(t_close) = open.filter(|_| amount > 0 || w.returned(contract).is_some()) else { return Err(e) };
-                    let Ok(next) = w.fallback(&a.statement, contract) else { return Err(e) };
+                    let Ok(next) = w.fallback(contract) else { return Err(e) };
                     if escalate {
                         eprintln!("The cooperative withdrawal failed: {e:#}\nEscalating on Bitcoin: {}", match next {
                             lichen_wallet::exit::Fallback::Dispute { b } => format!("a dispute of the return, {b} sats"),
@@ -615,13 +581,13 @@ fn main() -> Result<()> {
                         });
                         match next {
                             lichen_wallet::exit::Fallback::Dispute { b } => dispute_cmd(&a, &mut w, contract, Some(u32::try_from(b)?), None, None, false)?,
-                            lichen_wallet::exit::Fallback::Exit => exit_cmd(&a, &mut w, contract, None)?,
+                            lichen_wallet::exit::Fallback::Exit => exit_cmd(&a, &mut w, contract)?,
                         }
                     } else {
                         let height = chain(&a).and_then(|c| c.height()).ok();
                         let note = match next {
                             lichen_wallet::exit::Fallback::Dispute { b } => escalate_note(&a, contract, b, t_close, height),
-                            lichen_wallet::exit::Fallback::Exit => exit_note(&a, contract, w.returned(contract).is_some(), t_close, height),
+                            lichen_wallet::exit::Fallback::Exit => exit_note(&a, contract, t_close, height),
                         };
                         eprintln!("Error: {e:#}\n\n{note}");
                         std::process::exit(1);
@@ -654,13 +620,10 @@ mod tests {
 
     #[test]
     fn exit_note_names_the_exit_the_deadline_and_escalate() {
-        let a = Args::parse_from(["lichen", "--network", "mutinynet", "--statement", "babe", "contracts"]);
-        let n = exit_note(&a, 1007, true, 3_519_000, Some(3_514_050));
+        let a = Args::parse_from(["lichen", "--network", "mutinynet", "--statement", "hub-proves-mock", "contracts"]);
+        let n = exit_note(&a, 1007, 3_519_000, Some(3_514_050));
         println!("{n}");
-        assert!(n.contains("lichen exit 1007\n") && n.contains("--escalate") && n.contains("by block 3519000") && n.contains("isn't provable"));
-        assert!(n.contains("before T_A") && n.contains("its timeout pays you"));
-        let mock = Args::parse_from(["lichen", "--network", "regtest", "--statement", "babe-mock", "contracts"]);
-        let n = exit_note(&mock, 8, false, 50, None);
-        assert!(n.contains("lichen exit 8\n") && !n.contains("isn't provable") && !n.contains("T_A"));
+        assert!(n.contains("lichen exit 1007\n") && n.contains("--escalate") && n.contains("by block 3519000"));
+        assert!(n.contains("You prove nothing") && n.contains("its timeout pays you"));
     }
 }

@@ -24,10 +24,10 @@ its runs are kept below as records.
   pays Alice exactly `b`, in bits, and the hub the rest. A toy example,
   then Test B's payout traced down to the witness.
 - [Exiting against a hostile operator](exit.md): built, played on
-  regtest. How a user exits from anchored state when the operator
-  censors, stops sealing or vanishes: her claim, posted and signed in
-  BABE's `request`; the hub's counter, a later spend or a second claim,
-  signed in `respond`; her statement's three ways to win; four runs.
+  regtest on the mock statement. How a user exits when the operator
+  censors, stops sealing or vanishes: she claims her notes, and the hub
+  must prove the claim false (BABE with the roles swapped), or her
+  timeout pays her; seven runs.
 
 ## BABE
 

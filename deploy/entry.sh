@@ -68,12 +68,10 @@ case "${1:-}" in
         seq="${SEQUENCER_URL:-http://sequencer:18300}"
         wait_node
         until curl -fsS "$seq/info" >/dev/null 2>&1; do echo "waiting for the sequencer at $seq"; sleep 5; done
-        prover=
-        [ "${STATEMENT:-babe}" = babe ] && prover=/usr/local/bin/lichen-r0
         exec lichen-hub --network "$NETWORK" --listen 0.0.0.0:18310 --sequencer "$seq" \
             --rpc-url "$node" --cookie "$cookie" --chain-wallet hub --dir /hub \
             --statement "${STATEMENT:-babe}" --reserve-ppm "${RESERVE_PPM:-20000}" --fee-ppm "${FEE_PPM:-10000}" --max-liquidity "${MAX_LIQUIDITY:-10000000}" \
-            ${DURATION:+--duration "$DURATION"} ${WINDOWS:+--windows "$WINDOWS"} ${HOSTILE:+--hostile} ${REFUSE_FOLDS:+--refuse-folds} ${prover:+--prover "$prover"}
+            ${DURATION:+--duration "$DURATION"} ${WINDOWS:+--windows "$WINDOWS"} ${HOSTILE:+--hostile} ${REFUSE_FOLDS:+--refuse-folds}
         ;;
     *)
         exec "$@"

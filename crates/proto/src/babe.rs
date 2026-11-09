@@ -46,52 +46,13 @@ pub struct BabeKeys {
     /// value (none until she accepts).
     #[serde(default)]
     pub presigs: Vec<[Presig; VALUES]>,
-    /// The exit's keys (none for a contract of returns only, as before
-    /// 2026-10-31).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exit: Option<BabeExit>,
-}
-
-/// A contract's exit (docs/EXIT_PLAN.md, "Under BABE"): Alice's one-time
-/// key for `E`; the hub's for `respond` (`E` in its plain leaf, in its
-/// counter leaf, and `K`), SHA-256 chains, which the journal commits with
-/// `pk_H`; and the contract's deposit coin, which the journal commits too
-/// (the funding is the transaction spending it).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BabeExit {
-    pub e_key: WotsPublic,
-    #[serde(flatten)]
-    pub hub: SetupExit,
-}
-
-/// The hub's exit keys in a setup, and the deposit coin it is for.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SetupExit {
-    pub hub_e_plain: Wots256Public,
-    pub hub_e_counter: Wots256Public,
-    pub hub_k: Wots256Public,
-    pub deposit: bitcoin::OutPoint,
-}
-
-impl SetupExit {
-    /// Whether the keys are of the parameters the scripts and the statement
-    /// are built for.
-    pub fn check(&self) -> Result<()> {
-        let e = WotsParams::for_bytes(32);
-        ensure!(self.hub_e_plain.params == e && self.hub_e_counter.params == e, "the hub's keys for E are of other parameters");
-        ensure!(self.hub_k.params == WotsParams::for_bytes(lichen_withdraw::fixed::K_LEN as u32), "the hub's key for K is of other parameters");
-        Ok(())
-    }
 }
 
 /// Alice asks for a setup (`POST /babe/setup`), once she has a deposit
-/// address for contract `cid`; with the exit, once she has paid it: the
-/// deposit coin, which the statement names.
+/// address for contract `cid`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetupRequest {
     pub cid: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deposit: Option<bitcoin::OutPoint>,
     /// The contract's unit, which its `D` holds ([`crate::scale`] of the
     /// cap she will ask): 1 sat if not given.
     #[serde(default = "one", skip_serializing_if = "is_one")]
@@ -119,9 +80,6 @@ pub struct Setup {
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub unit: u64,
     pub hub_b: Wots256Public,
-    /// With the exit, the hub's keys for it and the deposit coin.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exit: Option<SetupExit>,
     /// Each instance's hash, hex.
     pub commitments: Vec<String>,
     /// The dealing's commitments, compressed points, hex
@@ -136,9 +94,6 @@ pub struct BabeRequest {
     pub lamport: LamportPub,
     pub adaptor: Vec<[XOnlyPublicKey; VALUES]>,
     pub kept: Vec<u32>,
-    /// With the exit, her one-time key for `E`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub e_key: Option<WotsPublic>,
 }
 
 /// An opened instance: its index, seed and secrets (hex).
@@ -162,15 +117,13 @@ pub struct BabeOffer {
 /// the hub's response, `Δ2` for its challenge, `Δ1` for her answer to it,
 /// and the assertion's deadline early enough before `T_close` for both.
 pub fn windows(net: Net, t_close: u32) -> Windows {
-    // w_H covers a counter (docs/EXIT_PLAN.md, "Windows and load"): the
-    // contract's work on request's block (ten blocks), then the counter
-    // guest's proof and its wrap
+    // w_H is the hub's signature on b, nothing to prove
     let (w_h, delta2, delta1) = match net {
         // blocks every 150 ms in the dispute tests; her answer opens the
         // kept instances first, seconds on a slow runner
         Net::Regtest => (24, 24, 40),
-        // 30 s blocks: 2 h, 2 h, 40 min
-        Net::Mutinynet => (240, 240, 80),
+        // 30 s blocks: 20 min, 2 h, 40 min
+        Net::Mutinynet => (40, 240, 80),
         // 10 min blocks: 6 h, 12 h, 6 h
         Net::Signet => (36, 72, 36),
         // nominally 10 min, in bursts: 12 h, a day, 12 h
@@ -242,9 +195,6 @@ pub fn shares_from_hex(h: &str) -> Result<Vec<[Secret; VALUES]>> {
 pub fn check_request(req: &BabeRequest, n: u32, m: u32) -> Result<()> {
     ensure!(req.b_key.params == WotsParams::for_bytes(4) && req.b_key.digits.len() == 10, "a key for b of other parameters");
     ensure!(req.lamport.0.len() == DIGITS && req.adaptor.len() == DIGITS, "a Lamport and an adaptor key set per digit of π1");
-    if let Some(e) = &req.e_key {
-        ensure!(e.params == WotsParams::for_bytes(32), "a key for E of other parameters");
-    }
     let mut k = req.kept.clone();
     k.sort_unstable();
     k.dedup();
@@ -284,36 +234,19 @@ impl Record {
             adaptor: k.adaptor.clone(),
             hmsg: k.hmsg.clone(),
             windows: k.windows,
-            exit: k.exit.as_ref().map(|x| lichen_babe::graph::ExitKeys { e_key: x.e_key.clone(), hub_e_plain: x.hub.hub_e_plain.clone(), hub_e_counter: x.hub.hub_e_counter.clone(), hub_k: x.hub.hub_k.clone() }),
         })
     }
-    /// The statement's journal: `c ‖ D ‖ H(pk_H)`, or with the exit
-    /// `c ‖ D ‖ H(pk_H ‖ O_D)`.
+    /// The statement's journal: `c ‖ D ‖ H(pk_H)`.
     pub fn babe_journal(&self) -> Result<[u8; lichen_withdraw::fixed::JOURNAL_LEN]> {
         let k = self.babe()?;
-        Ok(babe_journal(self.cid(), &self.deployment, &k.hub_b, k.exit.as_ref().map(|x| &x.hub)))
+        Ok(babe_journal(self.cid(), &self.deployment, &k.hub_b))
     }
 }
 
-/// The journal of contract `c` in `D` with the hub's key `hub_b`, and with
-/// the exit its keys for it and the deposit coin.
-pub fn babe_journal(c: u32, d: &Hash, hub_b: &Wots256Public, exit: Option<&SetupExit>) -> [u8; lichen_withdraw::fixed::JOURNAL_LEN] {
+/// The journal of contract `c` in `D` with the hub's key `hub_b`.
+pub fn babe_journal(c: u32, d: &Hash, hub_b: &Wots256Public) -> [u8; lichen_withdraw::fixed::JOURNAL_LEN] {
     let k: [Hash; lichen_withdraw::fixed::DIGITS] = hub_b.digits.clone().try_into().expect("the key's digits, checked");
-    match exit {
-        None => journal(c, d, &k),
-        Some(x) => lichen_withdraw::fixed::exit_journal(c, d, &exit_keys(hub_b, x), &statement_outpoint(&x.deposit)),
-    }
-}
-
-/// The hub's keys in `respond`, as the statement takes them.
-pub fn exit_keys(hub_b: &Wots256Public, x: &SetupExit) -> lichen_withdraw::fixed::ExitKeys {
-    let arr = |k: &Wots256Public| k.digits.clone();
-    lichen_withdraw::fixed::ExitKeys {
-        b: hub_b.digits.clone().try_into().expect("the key's digits, checked"),
-        e_plain: arr(&x.hub_e_plain).try_into().expect("the key's digits, checked"),
-        e_counter: arr(&x.hub_e_counter).try_into().expect("the key's digits, checked"),
-        k: arr(&x.hub_k),
-    }
+    journal(c, d, &k)
 }
 
 /// A Bitcoin outpoint as the statements read one (txid in internal byte
@@ -385,10 +318,7 @@ impl Disputed {
     }
     /// The hub's key and its signature on `b` from `respond`, as the BABE
     /// prover takes them (`lichen-r0 babe`'s hub auth: JSON, `key` and
-    /// `sig`, ten 32-byte hashes each, hex), checked. With the exit, its
-    /// journal commits to the hub's other keys and the deposit coin too
-    /// (`exit`: `e_plain`, `e_counter`, `k`, hex, and `deposit`), and the
-    /// prover proves the statement with the exit, a return.
+    /// `sig`, ten 32-byte hashes each, hex), checked.
     pub fn hub_auth(&self, respond: &bitcoin::Transaction) -> Result<serde_json::Value> {
         let sig = Self::hub_b(respond)?;
         let keys = self.record.babe()?;
@@ -396,12 +326,7 @@ impl Disputed {
         ensure!(sig.hashes.len() == key.digits.len(), "the hub's signature and key differ in length");
         key.verify(&sig).context("respond's signature on b, under the hub's key")?;
         let h = |v: &[[u8; 32]]| v.iter().map(hex::encode).collect::<Vec<_>>();
-        let mut auth = serde_json::json!({ "key": h(&key.digits), "sig": h(&sig.hashes) });
-        if let Some(x) = &keys.exit {
-            let k = exit_keys(key, &x.hub);
-            auth["exit"] = serde_json::json!({ "e_plain": h(&k.e_plain), "e_counter": h(&k.e_counter), "k": h(&k.k), "deposit": lichen_ledger::outpoint::to_string(&statement_outpoint(&x.hub.deposit)) });
-        }
-        Ok(auth)
+        Ok(serde_json::json!({ "key": h(&key.digits), "sig": h(&sig.hashes) }))
     }
     /// What `assert` put on chain: π1's digits (read under Alice's Lamport
     /// key), their preimages, and the proof, if its points are points.

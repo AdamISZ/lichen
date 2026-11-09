@@ -48,9 +48,41 @@ use lichen_validity::btc::{self, Header};
 use lichen_validity::{smt, OutPoint, TNote};
 use sha2::{Digest, Sha256};
 
-use crate::counter::Spent;
-use crate::exit::{fingerprint, signed_digest, POSTED_ITEMS};
+pub use lichen_validity::exit::{fingerprint, signed_digest};
 use crate::{contract_id, deployment_id, root_from_path, work_on, Anchored, Hash, Reject, Request, TREE_DEPTH};
+
+/// `request`'s witness carries the claim in its first this many items,
+/// concatenated: as many as the script drops, empty ones padding.
+pub const POSTED_ITEMS: usize = 15;
+
+/// The largest item: Bitcoin Core relays no tapscript witness item larger.
+pub const POSTED_ITEM: usize = 80;
+
+/// A claim's bytes as `request`'s witness carries them: [`POSTED_ITEMS`]
+/// items of up to [`POSTED_ITEM`] bytes, bottom first. None if they don't
+/// fit.
+pub fn posted_items(bytes: &[u8]) -> Option<Vec<&[u8]>> {
+    (bytes.len() <= POSTED_ITEMS * POSTED_ITEM).then(|| (0..POSTED_ITEMS).map(|i| bytes.get(i * POSTED_ITEM..).map_or(&[][..], |b| &b[..b.len().min(POSTED_ITEM)])).collect())
+}
+
+/// How a nullifier was spent: its leaf in the nullifier tree
+/// (`lichen_validity::smt`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spent {
+    Spend,
+    Return { c: u32, r: u64 },
+    Exit { c: u32 },
+}
+
+impl Spent {
+    pub fn leaf(&self) -> Hash {
+        match *self {
+            Spent::Spend => smt::spent(),
+            Spent::Return { c, r } => smt::returned(c, r),
+            Spent::Exit { c } => smt::exited(c),
+        }
+    }
+}
 
 /// At most this many notes in a claim: an exit record's most
 /// (`lichen_validity::exit::MAX_NOTES`).
@@ -145,7 +177,7 @@ impl Claim {
     }
 
     pub fn from_bytes(b: &[u8]) -> Result<Claim, Reject> {
-        let mut r = crate::exit::R(b);
+        let mut r = crate::R(b);
         let [n] = r.take()?;
         let mut notes = Vec::with_capacity((n as usize).min(MAX_NOTES));
         for _ in 0..n {
@@ -410,6 +442,117 @@ pub fn check(input: &HubInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u
     Ok(journal(input.c, &d, &input.deposit, input.margin))
 }
 
+// ----- the encoding, the guest's input (big-endian, as the other statements') -----
+
+impl HubInput {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut w = crate::W(Vec::new());
+        w.put(&self.c.to_be_bytes());
+        w.put(&self.deposit.to_bytes());
+        w.put(&self.margin.to_be_bytes());
+        let t = &self.terms;
+        w.put(&t.sequencer);
+        w.put(&t.hub);
+        w.put(&t.genesis.to_bytes());
+        w.put(&t.work.to_be_bytes());
+        w.put(&t.unit.to_be_bytes());
+        self.request.write(&mut w);
+        w.list(&self.headers);
+        match &self.ground {
+            Ground::Malformed => w.put(&[0]),
+            Ground::NotHers { which } => w.put(&[1, *which]),
+            Ground::TooMuch => w.put(&[2]),
+            Ground::NotLive { which, last, how } => {
+                w.put(&[3, *which]);
+                last.state.write(&mut w);
+                w.put(&last.tree);
+                let s = &last.seal;
+                w.bytes(&s.tx);
+                w.put(&s.at.to_be_bytes());
+                w.put(&s.index.to_be_bytes());
+                w.list(&s.path);
+                w.bytes(&s.coinbase);
+                w.list(&s.coinbase_path);
+                match how {
+                    How::Mismatch { leaf, path } => {
+                        w.put(&[0]);
+                        w.put(leaf);
+                        w.list(path);
+                    }
+                    How::Spent { spent, proof } => {
+                        w.put(&[1]);
+                        match *spent {
+                            Spent::Spend => w.put(&[0]),
+                            Spent::Return { c, r } => {
+                                w.put(&[1]);
+                                w.put(&c.to_be_bytes());
+                                w.put(&r.to_be_bytes());
+                            }
+                            Spent::Exit { c } => {
+                                w.put(&[2]);
+                                w.put(&c.to_be_bytes());
+                            }
+                        }
+                        w.put(&proof.bitmap);
+                        w.list(&proof.siblings);
+                    }
+                }
+            }
+            Ground::Second { which, other_c, other_deposit, other_b, other } => {
+                w.put(&[4, *which]);
+                w.put(&other_c.to_be_bytes());
+                w.put(&other_deposit.to_bytes());
+                w.put(&other_b.to_be_bytes());
+                w.bytes(&other.to_bytes());
+            }
+        }
+        w.0
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Result<HubInput, Reject> {
+        let mut r = crate::R(b);
+        let (c, deposit, margin) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
+        let terms = Terms { sequencer: r.take()?, hub: r.take()?, genesis: OutPoint::from_bytes(&r.take()?), work: u128::from_be_bytes(r.take()?), unit: u64::from_be_bytes(r.take()?) };
+        let request = Request::read(&mut r)?;
+        let headers = r.list()?;
+        let ground = match r.take()? {
+            [0] => Ground::Malformed,
+            [1] => Ground::NotHers { which: r.take::<1>()?[0] },
+            [2] => Ground::TooMuch,
+            [3] => {
+                let [which] = r.take()?;
+                let state = Anchored::read(&mut r)?;
+                let tree = r.take()?;
+                let seal = SealSpend { tx: r.bytes()?, at: u32::from_be_bytes(r.take()?), index: u32::from_be_bytes(r.take()?), path: r.list()?, coinbase: r.bytes()?, coinbase_path: r.list()? };
+                let how = match r.take()? {
+                    [0] => How::Mismatch { leaf: r.take()?, path: r.list()? },
+                    [1] => {
+                        let spent = match r.take()? {
+                            [0] => Spent::Spend,
+                            [1] => Spent::Return { c: u32::from_be_bytes(r.take()?), r: u64::from_be_bytes(r.take()?) },
+                            [2] => Spent::Exit { c: u32::from_be_bytes(r.take()?) },
+                            _ => return Err(Reject::Encoding),
+                        };
+                        How::Spent { spent, proof: smt::Proof { bitmap: r.take()?, siblings: r.list()? } }
+                    }
+                    _ => return Err(Reject::Encoding),
+                };
+                Ground::NotLive { which, last: Last { state, tree, seal }, how }
+            }
+            [4] => {
+                let [which] = r.take()?;
+                let (other_c, other_deposit, other_b) = (u32::from_be_bytes(r.take()?), OutPoint::from_bytes(&r.take()?), u32::from_be_bytes(r.take()?));
+                Ground::Second { which, other_c, other_deposit, other_b, other: Claim::from_bytes(&r.bytes()?)? }
+            }
+            _ => return Err(Reject::Encoding),
+        };
+        if !r.0.is_empty() {
+            return Err(Reject::Encoding);
+        }
+        Ok(HubInput { c, deposit, margin, terms, request, headers, ground })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -445,7 +588,7 @@ mod tests {
 
     /// `request`'s witness for `claim` of `b` with `E` `e`.
     fn witness(posted: &[u8], e: &Hash, b: u32) -> Vec<Vec<u8>> {
-        let mut w: Vec<Vec<u8>> = crate::exit::posted_items(posted).unwrap().into_iter().map(<[u8]>::to_vec).collect();
+        let mut w: Vec<Vec<u8>> = posted_items(posted).unwrap().into_iter().map(<[u8]>::to_vec).collect();
         w.extend(wots_items(e));
         w.extend(wots_items(&b.to_be_bytes()));
         w.extend([vec![1; 64], vec![2; 64], vec![0x51], vec![0xc0; 33]]);
@@ -673,6 +816,28 @@ mod tests {
         assert_eq!(check_ground(&w, Ground::NotLive { which: 0, last: last(&w), how }), Err(Reject::Own));
         let how = set(&mut w, Spent::Exit { c: 1008 });
         assert!(check_ground(&w, Ground::NotLive { which: 0, last: last(&w), how }).is_ok());
+    }
+
+    #[test]
+    fn the_input_round_trips() {
+        let w = world(5, |_| {});
+        let claim = Claim::from_bytes(&requested(&w.input.request.spending(&w.deposit).unwrap()).unwrap().posted).unwrap();
+        let proof = smt::proof(&[], &[1; 32], smt::empties());
+        for ground in [
+            Ground::Malformed,
+            Ground::NotHers { which: 0 },
+            Ground::TooMuch,
+            w.input.ground.clone(),
+            Ground::NotLive { which: 0, last: last(&w), how: How::Spent { spent: Spent::Return { c: 9, r: 10 }, proof } },
+            Ground::Second { which: 0, other_c: 8, other_deposit: OutPoint { txid: [1; 32], vout: 2 }, other_b: 3, other: claim },
+        ] {
+            let mut i = w.input.clone();
+            i.ground = ground;
+            let b = i.to_bytes();
+            assert_eq!(HubInput::from_bytes(&b), Ok(i));
+            assert_eq!(HubInput::from_bytes(&b[..b.len() - 1]), Err(Reject::Encoding));
+            assert_eq!(HubInput::from_bytes(&[&b[..], &[0]].concat()), Err(Reject::Encoding));
+        }
     }
 
     #[test]

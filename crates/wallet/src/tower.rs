@@ -223,12 +223,12 @@ impl Signer for PackageSigner {
 }
 
 impl crate::engine::babe::Secrets for PackageSigner {
-    fn request_wire(&self, b: u32, _exit: bool) -> Result<Vec<Vec<u8>>> {
+    fn request_wire(&self, b: u32) -> Result<Vec<Vec<u8>>> {
         ensure!(b == self.p.b, "the claim's b is {b}, the package's {}", self.p.b);
         self.p.b_wire.iter().map(|h| Ok(hex::decode(h)?)).collect()
     }
     fn exit_wire(&self, _b: u32, _e: &[u8; 32], _posted: &[u8]) -> Result<Vec<Vec<u8>>> {
-        anyhow::bail!("a tower doesn't exit yet: its package carries no claim")
+        anyhow::bail!("a tower doesn't exit: a hub-proves challenge reveals her secrets")
     }
     fn sign_pi1(&self, digits: &[u8]) -> Result<Vec<Preimage>> {
         let pi1 = self.p.pi1.as_ref().context("no signature on π1 in the package")?;
@@ -387,7 +387,7 @@ impl Wallet {
         let kind = statement.babe_kind().context("not a BABE statement")?;
         ensure!(kind.verify(&h.record.babe_journal()?, &proof), "the proof doesn't verify for contract {cid}'s journal: the hub would challenge it and win");
         let s = self.secrets(&h.nonce);
-        let b_wire = crate::engine::babe::return_wire(&s, b, h.record.babe()?.exit.is_some())?.iter().map(hex::encode).collect();
+        let b_wire = crate::engine::babe::return_wire(&s, b)?.iter().map(hex::encode).collect();
         let pi1 = s.babe_lamport().sign(&digits(&lichen_babe::gadget::input(&proof.a))).iter().map(hex::encode).collect();
         let fee_key = hex::encode(s.fees(h.record.network).keypair.secret_bytes());
         Ok(Package {

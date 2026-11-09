@@ -69,7 +69,6 @@ pub struct Guests {
     pub chain: String,
     pub withdraw: String,
     pub babe: String,
-    pub counter: String,
 }
 
 impl Guests {
@@ -81,7 +80,6 @@ impl Guests {
             chain: id(lichen_ledger::CHAIN_IMAGE_ID),
             withdraw: id(IMAGE_ID),
             babe: id(lichen_babe::statement::IMAGE_ID),
-            counter: id(lichen_babe::statement::COUNTER_ID),
         }
     }
 }

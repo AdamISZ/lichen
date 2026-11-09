@@ -172,11 +172,9 @@ pub(crate) struct Inner {
     /// For tests: close a dispute the user won without collecting.
     leave_bits: AtomicBool,
     /// For tests: counter every exit claim, with a `K` that isn't one.
-    forge_counters: AtomicBool,
+    forge_assertions: AtomicBool,
     /// For tests: post no defaults (as a hub gone would not).
     hold_defaults: AtomicBool,
-    /// The prover of counters on the real statement (`lichen-r0`), if any.
-    prover: Mutex<Option<PathBuf>>,
     /// For tests: a fault in each opening.
     opening_fault: Mutex<OpeningFault>,
     log: Mutex<Vec<String>>,
@@ -241,7 +239,7 @@ impl Hub {
         let server = Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let server = Arc::new(Mutex::new(Arc::new(server)));
-        let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), forge_counters: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), prover: Mutex::new(None), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), forge_assertions: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             listen(&srv, &i1.stop, |mut req| {
@@ -356,16 +354,11 @@ impl Hub {
         self.misbehave();
         *self.inner.opening_fault.lock().unwrap() = f;
     }
-    /// The prover of counters on the real statement: a command run as
-    /// `<prover> counter <input> <receipt> [<chain receipt>]`, then `wrap`
-    /// and `bitvmx-input` (`lichen-r0`).
-    pub fn set_prover(&self, prover: Option<PathBuf>) {
-        *self.inner.prover.lock().unwrap() = prover;
-    }
-    /// Counter every exit claim with a `K` that isn't a counter.
-    pub fn set_forge_counters(&self, on: bool) {
+    /// With the hub proving, assert a false proof against every exit claim
+    /// that holds.
+    pub fn set_forge_assertions(&self, on: bool) {
         self.misbehave();
-        self.inner.forge_counters.store(on, Ordering::Relaxed);
+        self.inner.forge_assertions.store(on, Ordering::Relaxed);
     }
     /// For tests: post no defaults after `T_close`, as a hub gone would
     /// not (the user posts hers).
@@ -559,7 +552,7 @@ impl Inner {
             }
             // the statement fixed at the setup, its checkpoint with it
             RequestKeys::Babe(k) => {
-                let (d, o, c) = self.babe_open_keys(cid, k, &req.deposit_coin.0, t_close, scaled.unit)?;
+                let (d, o, c) = self.babe_open_keys(cid, k, t_close, scaled.unit)?;
                 (d, o, Some(c))
             }
             RequestKeys::HubProves(k) => {

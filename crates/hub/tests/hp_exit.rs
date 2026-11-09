@@ -145,7 +145,7 @@ fn the_hub_proves_on_the_mock_statement() {
     };
     let exit = |w: &mut Wallet, ch: &Chain, user: &str, cid: u32| {
         let t = Instant::now();
-        let (o, swept) = w.exit(ch, &statement(), &dir.join(user), cid, &[]).unwrap();
+        let (o, swept) = w.exit(ch, &statement(), &dir.join(user), cid).unwrap();
         println!("LICHEN {user}: {o:?} in {:.1?}; swept {swept:?}", t.elapsed());
         o
     };
@@ -222,9 +222,9 @@ fn the_hub_proves_on_the_mock_statement() {
 
     // K: a lying hub, its false proof challenged
     let (mut w, ch, cids) = open("kim", 1);
-    hub.set_forge_counters(true);
+    hub.set_forge_assertions(true);
     let o = exit(&mut w, &ch, "kim", cids[0]);
-    hub.set_forge_counters(false);
+    hub.set_forge_assertions(false);
     assert!(matches!(o, Outcome::Refuted(_)), "K: the false assertion refuted, she is paid");
 
     // R: an exit after a return the hub won't fold

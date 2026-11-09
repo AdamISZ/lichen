@@ -16,24 +16,24 @@ is its image id (`lichen-r0 image-id <g>` recomputes it from the file;
   reaches). It holds `chain.id`, so it is rebuilt after the chain guest.
   The contracts pin `withdraw.id` (`lichen_proto::IMAGE_ID`): a new build
   is a new deployment's contracts.
-- `counter`: the counter of `crates/withdraw` (`counter`), the hub's
+- `counter` (removed 2026-11-09 with the old exit, docs/HUB_PROVES_PLAN.md):
+  the counter of `crates/withdraw` (`counter`), the hub's
   answer to an exit claim (docs/EXIT_PLAN.md): a spend of a claimed note
   at a later anchored state, or its owner's signed claim through another
   contract; its journal `D ‖ E`. Wrapped in Groth16, its points are the
   `K` the hub signs in `respond`. It holds `chain.id`.
 - `babe`: the fixed statement of `crates/withdraw` (`fixed`), for BABE
   (docs/BABE_GADGET_PLAN.md, step 1): the withdrawal's, `b` in the
-  witness under the hub's signature, its journal `c ‖ D ‖ H(pk_H)`; and
-  with the exit (a tag in its input), its three branches, the journal
-  `c ‖ D ‖ H(pk_H ‖ O_D)`, a counter checked as a Groth16 receipt of the
-  counter guest (`lichen-groth16`). It holds `chain.id` and
-  `counter.id`, so it is rebuilt after both.
+  witness under the hub's signature, its journal `c ‖ D ‖ H(pk_H)`. It
+  holds `chain.id`, so it is rebuilt after the chain guest. (Its exit
+  mode, with the counter's Groth16 check, was removed 2026-11-09.)
 
 | guest | built by | image id |
 |---|---|---|
+| **babe**, return-only again (the old exit removed), holding the chain guest below, 2026-11-09: **the current file** | x86 Linux (lichen-vps), `build-guest.sh elf babe`, then `pack babe` there (lichen branch `hub-proves`). ELF SHA-256 `75c617778d7f64ce51aeb16bfc920f401376f30888045e0a26ce99f296d1ce77`; `babe.bin` 403,456 bytes, SHA-256 `5a1ee17c263e0124d4c9b3de4b2217a1811861a12899e8730b4a5507fa7f8a92` | **`62b8cb27318d6bfbbf07df104ac9bb40d0fc97644ba5ed6b40f36126d5eaa8c3`** |
 | **withdraw**, `b` in the contract's unit (docs/LIQUIDITY_PLAN.md: the unit in the input and in `D`), holding the chain guest below, 2026-10-31: **the current file** | x86 Linux (lichen-vps), `build-guest.sh elf withdraw`, then `pack withdraw` there (lichen `db0c525`). ELF SHA-256 `018221cbbc08a02006f46a2260996774bd2ebc9117219e54ca32d3d2e5fa1b71`; `withdraw.bin` 395,200 bytes, SHA-256 `c125692eadb7a20a425c2d563066196fbc2b797bae494e9b53a892898871ba4b` | **`3c47ef27d7af76e9a05f2a478b4860f59a847bf7b516463bacd5dbb2f716210b`** |
-| **counter**, an own return counted in units, holding the chain guest below, 2026-10-31: **the current file** | the same way (`elf counter`, `pack counter`). ELF SHA-256 `aba3915a7cf8b6df55716532cbebdd40bb2e307441c4cfaa18535f672b349d92`; `counter.bin` 435,052 bytes, SHA-256 `146eb85278f5f92de45dc5a0c5fbfcf196d24e22dad0ccb3c3bb2cae24b732d9` | **`34a99cf4fa6005fd1a273fc056f9f07cf190dfb41fefda77603d3ddc2714b312`** |
-| **babe**, the exit's total in units, holding the chain guest below and the counter guest above, 2026-10-31: **the current file** | the same way (`elf babe`, `pack babe`). ELF SHA-256 `d5be776678632b9a405a46a9d48d3b1b75c1e8e74deed1edc4c6807a220d7fb7`; `babe.bin` 892,940 bytes, SHA-256 `b7d55ff564cc10b6b7df710b4c8bd18c44f9ca705d1ad757c3fa3325f2ef5b03` | **`30a14d2d9dd796ac65e85927f5e1bfa083fca1d26be08f8cb021d77e6e99fc0d`** |
+| counter, an own return counted in units, holding the chain guest below, 2026-10-31 (removed 2026-11-09) | the same way (`elf counter`, `pack counter`). ELF SHA-256 `aba3915a7cf8b6df55716532cbebdd40bb2e307441c4cfaa18535f672b349d92`; `counter.bin` 435,052 bytes, SHA-256 `146eb85278f5f92de45dc5a0c5fbfcf196d24e22dad0ccb3c3bb2cae24b732d9` | **`34a99cf4fa6005fd1a273fc056f9f07cf190dfb41fefda77603d3ddc2714b312`** |
+| babe, the exit's total in units, holding the chain guest below and the counter guest above, 2026-10-31 | the same way (`elf babe`, `pack babe`). ELF SHA-256 `d5be776678632b9a405a46a9d48d3b1b75c1e8e74deed1edc4c6807a220d7fb7`; `babe.bin` 892,940 bytes, SHA-256 `b7d55ff564cc10b6b7df710b4c8bd18c44f9ca705d1ad757c3fa3325f2ef5b03` | **`30a14d2d9dd796ac65e85927f5e1bfa083fca1d26be08f8cb021d77e6e99fc0d`** |
 | **chain**, with `Tx::Exit` (exit records, signed by the hub and the claimed notes' owners) and the witness reads of `btc`, holding the spend guest below, 2026-10-30: **the current file** | x86 Linux (lichen-vps), `build-guest.sh elf chain`, then `pack chain` there (lichen `7a456a0`). ELF SHA-256 `9ea80d4ffddfa970b7679b1c64f68d9ce087ea8278d18a92174cf408bd308647`; `chain.bin` 465,184 bytes, SHA-256 `cf12a2b94ebccb34519c2d35d6f3fe42d21a83d84938925e59b862dcb94661dc` | **`f1442ca9e6971c77c214bad82741672848e35cacd99d93e63d08af8333652faa`** |
 | withdraw, with the exit's chain guest, 2026-10-30 | the same way (`elf withdraw`, `pack withdraw`). ELF SHA-256 `f27585097b20db0c6fe20965ca992c71477df5d5865b7cb97846d7740795c5ec`; `withdraw.bin` 394,648 bytes, SHA-256 `bae3edfd0376e00244361055289bae2507fbe668868add5ebb29fe372eadfd41` | **`d9c267f0557713c8577b2b66c589d4cdae6cd5522a886570d16c5254f8ad0118`** |
 | counter, its first build, 2026-10-30 | the same way (`elf counter`, `pack counter`). ELF SHA-256 `6f09a95794ab262ac96c5205bc741c929344a02b27fd05ba4c7a4fe671d94c7a`; `counter.bin` 434,120 bytes, SHA-256 `2fcad606df484d2b813b345d23d695cc3c29fd542cdbdc929b65b4d65f212d00` | **`4293dfbea56549b352c22f6b3ed1cb6f4e46e03a6031badcc7b5e0016735d1a0`** |
@@ -63,8 +63,10 @@ hub's signature on 60 (120 SHA-256 chain steps): 482k user cycles, one
 segment; on lichen-vps (4 vCPUs) proved in 660 s, wrapped in Groth16 in
 258 s. The withdrawal guest, on an earlier return: 333k, 360 s there. (Above 2^19
 cycles with the paging, perhaps: the time grows more than the cycles.)
-Again with a regtest hub's signature, as its `respond` carried it (the
-claim `crates/proto/tests/data/babe-claim-60-42.hex`): 662 s and 257 s.
+Again with a regtest hub's signature, as its `respond` carried it: 662 s
+and 257 s. The return-only guest (2026-11-09), the fixture
+`crates/babe/tests/data/babe-60-42.hex` (`babe-claim` of the canned return
+and `babe-auth-60-42.json`): 489k, proved in 653 s, wrapped in 262 s.
 
 With units (2026-10-31), on the Mac natively (`lichen-r0` built with
 Xcode's Metal toolchain, the wrap in Docker): the canned return made

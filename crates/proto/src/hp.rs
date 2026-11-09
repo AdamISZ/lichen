@@ -247,7 +247,7 @@ impl HpDisputed {
     /// `request`'s claim: `b`, `E` and the claim's bytes, from its
     /// arguments.
     pub fn requested(request: &bitcoin::Transaction) -> Result<(u32, [u8; 32], Vec<u8>)> {
-        let (b, e, posted) = lichen_babe::graph::Babe::read_request_exit(&crate::babe::Disputed::args(request))?;
+        let (b, e, posted) = lichen_babe::hp::HubProves::read_request(&crate::babe::Disputed::args(request))?;
         let b = u32::from_be_bytes(b.message().try_into().map_err(|_| anyhow::anyhow!("b's signature signs 4 bytes"))?);
         let e = e.message().try_into().map_err(|_| anyhow::anyhow!("E's signature signs 32 bytes"))?;
         Ok((b, e, posted))

@@ -32,7 +32,7 @@ use lichen_chain::NodeWallet;
 use lichen_proto::babe::{dealing_from_hex, shares_from_hex, statement_outpoint, Opened};
 use lichen_proto::hp::{check_commit, HpCommit, HpDisputed, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
 use lichen_proto::{Checkpoint, DisputeKeys, OfferKeys, Presig, Record};
-use lichen_withdraw::counter::Spent;
+use lichen_withdraw::hp::Spent;
 use lichen_withdraw::hp::{Claim, Ground, How, HubInput, Last, SealSpend, Terms};
 use lngap_btc::adaptor::AdaptorSig;
 use lngap_btc::keys::Seed;
@@ -272,7 +272,7 @@ impl Inner {
     pub(super) fn hp_claimed_b(&self, record: &Record) -> Result<(u32, Vec<Vec<u8>>)> {
         let d = HpDisputed::new(record, &self.cfg.statement)?;
         let req = self.chain.get_tx(&d.txid("request")).context("the request")?;
-        let (b, _, _) = lichen_babe::graph::Babe::read_request_exit(&lichen_proto::babe::Disputed::args(&req))?;
+        let (b, _, _) = HubProves::read_request(&lichen_proto::babe::Disputed::args(&req))?;
         let v = u32::from_be_bytes(b.message().try_into().map_err(|_| anyhow::anyhow!("b's signature signs 4 bytes"))?);
         Ok((v, lngap_ladder::script::wots_wire(&b)))
     }
@@ -314,7 +314,7 @@ impl Inner {
                         Ok(bb(State::Requested(d, at, recorded)))
                     }
                     // for tests: a lying hub asserts against a claim that holds
-                    Decision::Holds if self.forge_counters.load(std::sync::atomic::Ordering::Relaxed) => {
+                    Decision::Holds if self.forge_assertions.load(std::sync::atomic::Ordering::Relaxed) => {
                         self.hp_assert(&d, None, "")?;
                         Ok(bb(State::Requested(d, at, recorded)))
                     }

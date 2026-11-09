@@ -26,7 +26,7 @@
 //! below them (the hub's statement reads it, `lichen_withdraw::hp`).
 
 use anyhow::{ensure, Context, Result};
-use lichen_withdraw::exit::{posted_items, POSTED_ITEM, POSTED_ITEMS};
+use lichen_withdraw::hp::{posted_items, POSTED_ITEM, POSTED_ITEMS};
 use lngap_btc::bitcoin::opcodes::all::*;
 use lngap_btc::bitcoin::script::Builder;
 use lngap_btc::bitcoin::transaction::Version;
@@ -211,10 +211,21 @@ impl HubProves {
 
     // ----- the links' witnesses, below both signatures -----
 
-    /// `request`'s: the claim as posted, then her signatures on `E` and
-    /// `b` (as [`crate::graph::Babe::request_exit_wire`]).
+    /// `request`'s: the claim as posted (in [`POSTED_ITEMS`] items of up
+    /// to [`POSTED_ITEM`] bytes, its first items), then her signatures on
+    /// `E` and on `b`.
     pub fn request_wire(b: &WotsSig, e: &WotsSig, posted: &[u8]) -> Result<Vec<Vec<u8>>> {
-        crate::graph::Babe::request_exit_wire(b, e, posted)
+        let items = posted_items(posted).with_context(|| format!("a claim of {} bytes posted", posted.len()))?;
+        Ok(items.into_iter().map(<[u8]>::to_vec).chain(e.consumption_order().into_iter().rev()).chain(b.consumption_order().into_iter().rev()).collect())
+    }
+    /// Read `request`'s arguments (consumption order, below both
+    /// signatures): her signatures on `b` and `E`, and the claim as posted.
+    pub fn read_request(args: &[Vec<u8>]) -> Result<(WotsSig, WotsSig, Vec<u8>)> {
+        let (nb, ne) = (2 * WotsParams::for_bytes(4).total_digits() as usize, 2 * WotsParams::for_bytes(32).total_digits() as usize);
+        ensure!(args.len() == nb + ne + POSTED_ITEMS, "a request of {} arguments", args.len());
+        let b = WotsSig::from_consumption_order(WotsParams::for_bytes(4), &args[..nb])?;
+        let e = WotsSig::from_consumption_order(WotsParams::for_bytes(32), &args[nb..nb + ne])?;
+        Ok((b, e, args[nb + ne..].iter().rev().flatten().copied().collect()))
     }
     /// `assert`'s: π1's digits, Lamport-signed, then π2 and π3.
     pub fn assert_wire(preimages: &[Preimage], pi2: &[u8], pi3: &[u8]) -> Vec<Vec<u8>> {

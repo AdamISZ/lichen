@@ -32,10 +32,11 @@ use lichen_validity::btc::{self, work, Header};
 use lichen_validity::{state_root, AnchorState, ChainJournal, OutPoint, TNote};
 use sha2::{Digest, Sha256};
 
-pub mod counter;
-pub mod exit;
+mod codec;
 pub mod fixed;
 pub mod hp;
+
+use codec::{R, W};
 
 pub type Hash = [u8; 32];
 
@@ -207,7 +208,7 @@ impl Request {
         t.witness.into_iter().nth(i)
     }
 
-    pub(crate) fn write(&self, w: &mut exit::W) {
+    pub(crate) fn write(&self, w: &mut W) {
         w.bytes(&self.funding);
         w.bytes(&self.tx);
         w.put(&self.header);
@@ -218,7 +219,7 @@ impl Request {
         w.put(&self.reserved);
     }
 
-    pub(crate) fn read(r: &mut exit::R) -> Result<Request, Reject> {
+    pub(crate) fn read(r: &mut R) -> Result<Request, Reject> {
         Ok(Request { funding: r.bytes()?, tx: r.bytes()?, header: r.take()?, index: u32::from_be_bytes(r.take()?), path: r.list()?, coinbase: r.bytes()?, coinbase_path: r.list()?, reserved: r.take()? })
     }
 }
@@ -240,40 +241,17 @@ pub enum Reject {
     /// The hub's signature on `b` doesn't verify (the fixed statement's,
     /// [`fixed`]).
     HubAuth,
-    /// An exit claims no notes, or more than [`exit::MAX_NOTES`].
-    Notes,
-    /// An exit's nullifiers aren't in increasing order, so not distinct.
-    Order,
-    /// A claimed note isn't in the state's commitment tree.
-    NotInTree,
-    /// A claimed note was spent at the state.
-    Spent,
-    /// No authority over a claimed note: the owner's signature on the
-    /// claim, for a transparent note. For an equivocation counter, the
-    /// cited claim's signature (or a shielded note, which has none).
+    /// The hub's statement (`hp`): a second claim not signed by the note's
+    /// owner.
     NotYours,
-    /// An exit claims more than its notes are worth.
-    Short,
-    /// A counter cites the contract's own return (of at least `b`), exit
-    /// record, or signed claim.
+    /// The hub's statement: a spend that doesn't count against this
+    /// contract (her return of at least `b` to it, its own exit record).
     Own,
-    /// A counter's spend isn't the leaf it names in the later state, or
-    /// an equivocation cites a note the claim doesn't.
+    /// The hub's statement: the note named isn't the claim's, its leaf is
+    /// its commitment, or it isn't spent so.
     NotSpent,
-    /// A counter's later state isn't in the claim's history.
-    History,
-    /// A counter's spend isn't shown final before the request: no request
-    /// spending the contract's outpoint in a block on the later state's
-    /// anchor (the contract's work on it), or within the grace before it.
-    Cutoff,
-    /// An exit's `E` names another funding outpoint than the contract's.
-    Outpoint,
-    /// The hub's counter verifies: no way to win.
-    Countered,
-    /// A claim's `request` doesn't carry it: not in a block on the
-    /// anchor's with the contract's work on it, not spending the
-    /// contract's outpoint, or not posting the claim's notes and
-    /// signatures (`exit::Posted`).
+    /// The hub's statement: `request` doesn't spend the contract's funding
+    /// output, or its witness isn't a request's.
     Posted,
     /// The hub's statement (`hp`): its ground doesn't hold; the claim is
     /// as it says on that count.

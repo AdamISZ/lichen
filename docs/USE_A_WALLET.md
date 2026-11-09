@@ -144,22 +144,18 @@ To be away while it runs, hand it to a tower: `lw export-dispute
 ([RUN_A_TOWER.md](RUN_A_TOWER.md)). The tower holds your signatures,
 not your keys.
 
-If the operator won't even take your return on the L2, or seals it but
-never anchors or proves it, exit instead: `lw exit <contract>` claims
-your notes at a state anchored on Bitcoin ([the exit](explainers/exit.md)).
-The wallet keeps what that needs as it reads the sequencer: your notes'
-kits at the last height anchored and proved, and its chain receipt (the
-exit set, about 250 kB). So an exit needs neither the hub nor the
-sequencer: if both have vanished, `lw exit` claims from the set kept,
-and the hub's timeout pays you. After a return to the contract, the exit
-claims the notes that return spent, up to its value.
-
-`lw dispute` refuses a contract with the exit unless the return is
-provable with what the wallet has kept (its input and chain receipt): a
-hub that comes back within its window and responds would otherwise win,
-since there would be no return to prove. When `lw withdraw` fails, it
-names the next step, a dispute or an exit; `lw withdraw <contract>
-<amount> --escalate` takes it at once.
+**With a hub-proves contract** (`--statement hub-proves-mock`, the mock
+only for now), a refused or ignored withdrawal is an exit instead: `lw
+exit <contract>` claims your notes ([the exit](explainers/exit.md)). You
+prove nothing: the hub must prove the claim false within its window, or
+its timeout pays you. The wallet claims your notes in the last anchor at
+least a margin of blocks deep (it waits for that once your notes are
+anchored), and keeps your notes as it reads the sequencer, so an exit
+needs neither the hub nor the sequencer: if both have vanished, `lw exit`
+claims from the notes kept. After a return to the contract, the exit
+claims the notes that return spent, up to its value. When `lw withdraw`
+fails, it names the next step, a dispute or an exit; `lw withdraw
+<contract> <amount> --escalate` takes it at once.
 
 ## Checking the operator
 

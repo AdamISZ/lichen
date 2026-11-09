@@ -213,8 +213,8 @@ impl Wallet {
         ensure!(b > 0, "the notes claimable come to less than the contract's unit, {unit} sats");
         let mut claim = Claim { notes: chosen, sigs: vec![] };
         let e = claim.fingerprint(cid, &statement_outpoint(&k.deposit), b);
-        claim.sigs = vec![self.key.sign_raw(&lichen_withdraw::exit::signed_digest(&e), &[0; 32]).map_err(|e| anyhow::anyhow!("signing the claim: {e}"))?.to_bytes()];
+        claim.sigs = vec![self.key.sign_raw(&lichen_withdraw::hp::signed_digest(&e), &[0; 32]).map_err(|e| anyhow::anyhow!("signing the claim: {e}"))?.to_bytes()];
         ensure!(claim.well_formed(), "the claim isn't well formed");
-        Ok(Some(ExitPlan { b, e: hex::encode(e), posted: hex::encode(claim.to_bytes()), claim: String::new() }))
+        Ok(Some(ExitPlan { b, e: hex::encode(e), posted: hex::encode(claim.to_bytes()) }))
     }
 }

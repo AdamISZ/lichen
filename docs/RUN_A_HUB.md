@@ -162,15 +162,15 @@ proof checks its root ends a valid history, and the hub checks the same
 before it folds. A small height takes under a minute on a laptop; the
 prover runs behind the seals, so a withdrawal waits for it.
 
-**Exits.** A user whose withdrawal the hub won't fold can exit instead:
-claim her notes from a state already anchored (`lichen exit`; [the
-explainer](explainers/exit.md)). The hub answers each claim in its
-`respond`: plainly, holding the claimed notes and recording the exit on
-the L2, or with a counter, when one of the notes was spent at an
-anchored state before the claim, or claimed through another contract.
-On the real statement a counter is a RISC Zero proof, wrapped in
-Groth16, which the hub makes itself with `lichen-r0`. The response
-window `w_H` is long enough for it: two hours on Mutinynet.
+**Exits.** Under `--statement hub-proves-mock`, a user whose
+withdrawal the hub won't fold exits instead (`lichen exit`; [the
+explainer](explainers/exit.md)): she claims her notes, and the hub must
+prove the claim false within `w_H` (two hours on Mutinynet), or her
+timeout pays her. It decides natively, from the L2's state and the
+chain, and asserts on its own; a claim that holds it lets stand, holding
+the claimed notes and recording the exit on the L2. The mock only, for
+now: the hub's statement has no guest yet. Under `babe`, a refused
+withdrawal is disputed, as before.
 
 ## Keeping it
 

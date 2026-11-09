@@ -67,7 +67,7 @@ struct Stored {
 /// for a return to the hub, the contract's memo and the value returned.
 /// So that an exit with the sequencer gone knows which kept notes it may
 /// have spent since, and which notes a contract's own return spent
-/// (docs/EXIT_PLAN.md, "The exit set" and "An exit after a return").
+/// (docs/HUB_PROVES_PLAN.md).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Signed {
     pub nullifiers: Vec<Hash>,
@@ -659,7 +659,7 @@ impl Wallet {
         let (dispute, setup) = match statement.gadget() {
             Gadget::BitVmx => (RequestKeys::BitVmx(engine::bitvmx::request_keys(&secrets, program.context("the statement's program")?)), None),
             Gadget::Babe => {
-                let (keys, setup) = self.babe_request(hub, dep.cid, coin.0, quote.unit, &secrets, net)?;
+                let (keys, setup) = self.babe_request(hub, dep.cid, quote.unit, &secrets, net)?;
                 (RequestKeys::Babe(Box::new(keys)), Some(setup))
             }
             Gadget::HubProves => {

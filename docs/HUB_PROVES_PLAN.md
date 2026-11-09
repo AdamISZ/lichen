@@ -11,8 +11,10 @@ statement, transparent notes only: the hub's statement natively
 setup in which Alice garbles and uploads (`lichen_proto::hp`), both
 sides' play, and a regtest test of seven cases (`hp_exit.rs`). Not yet:
 the hub's statement as a guest, real proofs, shielded notes. Alongside
-today's statements, as `hub-proves-mock`. Being thought through with the user. "Open questions" is
-the live part; where a question is settled, it moves to "Decided".
+`babe` (a return's dispute), as `hub-proves-mock`; the old exit is
+removed (build order, step 8). Being thought through with the user:
+"Open questions" is the live part; where a question is settled, it moves
+to "Decided".
 
 ## Why
 
@@ -490,5 +492,10 @@ Next:
    composed, the Groth16 wrap), and the real statement.
 6. Real proofs on regtest, then Mutinynet.
 7. Shielded notes ("Shielded notes").
-8. Retiring the old exit and the return's dispute, once this replaces
-   them.
+8. Done (2026-11-09): the old exit removed (the hub's counter,
+   `respond`'s countering leaf, the failed-counter branch and its
+   in-guest Groth16 check, the counter guest, Alice's claim proof and
+   its exit set's kits and chain receipts). BABE contracts are
+   return-only again, and the BABE guest is rebuilt without the exit.
+   The return's dispute stays, under `babe`, until this runs on real
+   proofs.

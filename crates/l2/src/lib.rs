@@ -386,17 +386,6 @@ impl Client {
         let _: serde_json::Value = self.post("/hold", &serde_json::to_string(&Hold { nfs: nfs.iter().map(hex::encode).collect(), sig: hex::encode(sig) })?)?;
         Ok(())
     }
-    /// The exit kit's part for the note at `index`, of nullifier `nf`, at
-    /// sealed height `h`: not checked here (`Kit::check`, against the
-    /// signed root).
-    pub fn kit(&self, index: u32, nf: &Hash, h: u64) -> Result<lichen_ledger::Kit> {
-        let path = format!("/kit/{h}/{index}/{}", hex::encode(nf));
-        match http::quick().get(&format!("{}{path}", self.url)).call() {
-            Ok(r) => Ok(r.into_json()?),
-            Err(ureq::Error::Status(_, r)) => Err(anyhow!("the sequencer refused: {}", r.into_json::<Refused>().map_or("refused".into(), |e| e.error))),
-            Err(e) => Err(anyhow!("{path}: {e}")),
-        }
-    }
     /// How nullifier `nf` was spent, if it was: its leaf and the height
     /// whose block spent it.
     pub fn spent(&self, nf: &Hash) -> Result<Option<(Hash, u64)>> {

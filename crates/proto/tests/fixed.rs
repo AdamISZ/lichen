@@ -28,23 +28,20 @@ fn the_hubs_signer_is_ln_gaps() {
     }
 }
 
-/// So are its digits and signatures on `E` and `K`, the exit's (32 and
-/// 128 bytes).
+/// The hub's statement reads `b`, `E` and the claim from `request`'s
+/// witness as ln-gap's Winternitz signatures lay them out: what the
+/// swapped game's `request` posts, the statement reads back.
 #[test]
-fn e_and_k_are_ln_gaps() {
-    use lichen_withdraw::fixed::{digits_of, verify_msg, E_DIGITS, K_DIGITS, K_LEN};
-    for (len, n) in [(32, E_DIGITS), (K_LEN, K_DIGITS)] {
-        let sk = Wots256Secret::from_entropy(WotsParams::for_bytes(len as u32), [7; 32]);
-        let key = sk.public().digits;
-        assert_eq!(key.len(), n);
-        for fill in [0u8, 0x5a, 0xff] {
-            let msg = vec![fill; len];
-            let sig = sk.sign(&msg).unwrap();
-            assert_eq!(sig.digits, digits_of(&msg));
-            assert!(verify_msg(&key, &sig.hashes, &msg));
-            let mut other = msg.clone();
-            other[len - 1] ^= 1;
-            assert!(!verify_msg(&key, &sig.hashes, &other));
-        }
+fn the_hubs_statement_reads_the_request() {
+    let b_key = WotsSecret::from_entropy(WotsParams::for_bytes(4), [3; 32]);
+    let e_key = WotsSecret::from_entropy(WotsParams::for_bytes(32), [4; 32]);
+    let posted: Vec<u8> = (0..700u32).map(|i| i as u8).collect();
+    for (b, e) in [(0u32, [0u8; 32]), (60, [0x5a; 32]), (u32::MAX, [0xff; 32])] {
+        let mut wire = lichen_babe::hp::HubProves::request_wire(&b_key.sign(&b.to_be_bytes()).unwrap(), &e_key.sign(&e).unwrap(), &posted).unwrap();
+        // the 2-of-2's signatures, the script, the control block
+        wire.extend([vec![1; 64], vec![2; 64], vec![0x51], vec![0xc0; 33]]);
+        let items: Vec<&[u8]> = wire.iter().map(Vec::as_slice).collect();
+        let r = lichen_withdraw::hp::requested(&items).unwrap();
+        assert_eq!((r.b, r.e, &r.posted[..]), (b, e, &posted[..]));
     }
 }

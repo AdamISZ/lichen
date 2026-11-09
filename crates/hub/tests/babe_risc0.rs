@@ -11,11 +11,9 @@
 //! tests' withdrawal input and chain receipt; the contracts' unit,
 //! `lichen_proto::canned_unit`, 684 sats), each hub's first contract number
 //! 42 and every hub of the same seed: the hub's key for `b` is the same for
-//! each (babe-auth-60-42.json). Each contract has the exit, so its journal
-//! `c ‖ D ‖ H(pk_H ‖ O_D)` commits to its deposit coin too, and her claim
-//! is proved for it: `lichen-r0 babe-claim` of the hub's signature as the
-//! wallet writes it (with the exit's keys and coin), the statement with the
-//! exit, a return.
+//! each (babe-auth-60-42.json), and so is the journal `c ‖ D ‖ H(pk_H)`.
+//! Her claim is proved live: `lichen-r0 babe-claim` of the hub's
+//! signature as the wallet writes it.
 //!
 //! - T: an honest hub. Alice disputes before proving: she requests, the
 //!   hub responds, and her wallet stops with the proof due, the hub's
@@ -126,7 +124,6 @@ fn babe_disputes_on_a_risc0_proof() {
                 let a: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&auth).unwrap()).unwrap();
                 let c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(data("babe-auth-60-42.json")).unwrap()).unwrap();
                 assert_eq!((&a["key"], &a["sig"]), (&c["key"], &c["sig"]), "{label}: the hub's signature on 60 is the canned key's");
-                assert!(a["exit"].is_object(), "{label}: with the exit's keys and coin");
                 // her claim, proved for this contract's journal
                 let out = dir.join(format!("claim-{label}.hex"));
                 let t = Instant::now();

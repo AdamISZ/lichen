@@ -17,10 +17,9 @@
 //!   notes (`lichen-shielded`) and transparent ones, and creates both,
 //!   with a proof of the spend statement; the tree holds both kinds of
 //!   leaf ([`Leaf`]);
-//! - an [`Exit`] record (docs/EXIT_PLAN.md, "Exit authority on chain"):
-//!   the hub records a contract's exit claim as its `request` posted it,
-//!   and the claim's transparent notes are retired, each authorised by its
-//!   owner's signature on the claim;
+//! - an [`Exit`] record (docs/HUB_PROVES_PLAN.md): the hub records a
+//!   contract's exit claim that holds, and the claim's transparent notes
+//!   are retired, each authorised by its owner's signature on the claim;
 //! - an anchor's record, from the sequencer's anchorer.
 
 pub mod files;
@@ -326,7 +325,7 @@ pub struct Nullifiers {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "pairs")]
     tags: BTreeMap<Hash, Hash>,
     /// The height whose block spent each nullifier, for proofs at an
-    /// earlier height (exit kits). Absent from ledgers kept before
+    /// earlier height (the hub's statement's, at `A*`). Absent from ledgers kept before
     /// 2026-10-30, whose nullifiers count as spent from the start.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "pairs")]
     at: BTreeMap<Hash, u64>,
@@ -687,7 +686,7 @@ pub struct Ledger {
     /// Nullifiers claimed in an exit whose record hasn't retired them (a
     /// `request` not yet confirmed, or a shielded note's claim, which no
     /// record retires): their spends are refused, so that a spend can't
-    /// race the claim (docs/EXIT_PLAN.md, "A claim racing a spend").
+    /// race the claim (docs/HUB_PROVES_PLAN.md, "After a claim").
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub held: BTreeSet<Hash>,
 }
@@ -969,19 +968,6 @@ impl Ledger {
         Ok(())
     }
 
-    /// The exit kit's part for one note (docs/EXIT_PLAN.md, "What Alice
-    /// must hold"): at sealed height `h`, the path of the note at `index`
-    /// to the tree's root then, and its nullifier `nf`'s absence from the
-    /// nullifier tree then.
-    pub fn kit(&self, index: u32, nf: &Hash, h: u64) -> Result<Kit> {
-        let s = self.sealed.get(usize::try_from(h).ok().and_then(|h| h.checked_sub(1)).context("no height 0")?).context("no such height sealed")?;
-        ensure!(index < s.size, "note {index} is not in height {h}'s tree");
-        ensure!(!self.nullifiers.spent_by(nf, h), "the note is spent by height {h}");
-        let (root, unspent) = self.nullifiers.proof_at(nf, h);
-        ensure!(root == s.nullifiers, "height {h}'s nullifiers can't be rebuilt");
-        Ok(Kit { height: h, index, path: self.tree.path_at(index, s.size), bitmap: unspent.bitmap, siblings: unspent.siblings })
-    }
-
     /// The first sealed height that includes note `index`.
     pub fn sealed_with(&self, index: u32) -> Option<&SignedRoot> {
         self.sealed.iter().find(|s| s.size > index)
@@ -1019,32 +1005,6 @@ pub fn hold_digest(d: &Deployment, nfs: &[Hash]) -> Hash {
         h.update(nf);
     }
     h.finalize().into()
-}
-
-/// One note's part of an exit kit: at sealed height `height`, the note's
-/// path to the tree's root, and its nullifier's absence from the nullifier
-/// tree (`lichen_validity::smt::Proof`'s bitmap and siblings).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Kit {
-    pub height: u64,
-    pub index: u32,
-    pub path: Vec<Hash>,
-    pub bitmap: Hash,
-    pub siblings: Vec<Hash>,
-}
-
-impl Kit {
-    /// Whether the note of commitment `cm` and nullifier `nf` is in the
-    /// tree of `sealed` (this kit's height) at the kit's index, its
-    /// nullifier absent from the nullifier tree.
-    pub fn check(&self, sealed: &SignedRoot, cm: &Hash, nf: &Hash) -> bool {
-        let unspent = lichen_validity::smt::Proof { bitmap: self.bitmap, siblings: self.siblings.clone() };
-        sealed.height == self.height
-            && self.index < sealed.size
-            && self.path.len() == TREE_DEPTH
-            && root_from_path(*cm, self.index, &self.path) == sealed.tree
-            && lichen_validity::smt::unspent(&sealed.nullifiers, nf, &unspent, lichen_validity::smt::empties())
-    }
 }
 
 /// What a prover of the withdrawal statement is given beside the chain
@@ -1703,30 +1663,14 @@ mod tests {
     }
 
     #[test]
-    fn exit_kits_at_past_heights_and_holds() {
+    fn holds() {
         let (hub, seq) = (regtest_hub(), regtest_sequencer());
         let alice = key_from_label("test/alice");
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
         let (n0, n1) = (note(xonly(&alice), 10, 0), note(xonly(&alice), 4, 0));
         let idx = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![n0, n1]))).unwrap();
-        let s1 = l.seal(&seq);
-        // height 2: n0 spent
-        l.apply(&transfer(vec![(Spend { note: n0, index: idx[0] }, &alice)], vec![note(xonly(&alice), 10, 0)])).unwrap();
-        let s2 = l.seal(&seq);
-        let (nf0, nf1) = (nullifier(&n0), nullifier(&n1));
-        // at height 1 both are unspent, and the kit shows it under that
-        // height's signed root; at 2, n0 isn't
-        let k = l.kit(idx[0], &nf0, 1).unwrap();
-        assert!(k.check(&s1, &n0.commitment(), &nf0));
-        assert!(!k.check(&s2, &n0.commitment(), &nf0), "another height's root");
-        assert!(!k.check(&s1, &n1.commitment(), &nf0), "another note");
-        assert!(format!("{:#}", l.kit(idx[0], &nf0, 2).unwrap_err()).contains("spent by height 2"));
-        let k = l.kit(idx[1], &nf1, 2).unwrap();
-        assert!(k.check(&s2, &n1.commitment(), &nf1));
-        assert!(l.kit(idx[1] + 5, &nf1, 2).is_err() && l.kit(idx[1], &nf1, 3).is_err() && l.kit(idx[1], &nf1, 0).is_err());
-        // kept and read back: the heights with it
-        let back: Ledger = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
-        assert_eq!(back.kit(idx[0], &nf0, 1).unwrap(), l.kit(idx[0], &nf0, 1).unwrap());
+        l.seal(&seq);
+        let nf1 = nullifier(&n1);
         // the hub holds n1 for a claim: its spend is refused; only the
         // hub's hold counts
         assert!(l.hold(&[nf1], &sign(&alice, &hold_digest(&l.deployment, &[nf1]))).is_err());

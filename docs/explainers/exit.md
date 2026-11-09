@@ -1,249 +1,146 @@
 # Exiting against a hostile operator
 
 How a user leaves when the operator, running both the hub and the
-sequencer, wants her money: she claims her notes from a state already
-anchored on Bitcoin, and the operator may answer only with something
-that really happened. Built (`lichen exit`), and played on regtest on
-BABE's mock statement; not yet on real proofs or on Mutinynet. This note
-is about the proofs, and how they ride on BABE's dispute.
+sequencer, wants her money: she claims her notes, and the hub must
+prove her claim false, or pay. She proves nothing. Built (`lichen exit`,
+a `hub-proves` contract) and played on regtest on the mock statement;
+not yet on real proofs or on Mutinynet. The design and its working
+notes are docs/HUB_PROVES_PLAN.md.
 
 ## The problem
 
-In today's withdrawal, Alice returns her tokens to the hub on the L2,
-and then proves that return on Bitcoin. That needs the sequencer to
-include her return. If the hub and the sequencer are one operator, it
-profits from not including it: whatever isn't withdrawn by `T_close`
-goes to the hub. So it might:
+In a cooperative withdrawal, Alice returns her tokens to the hub on the
+L2, and the hub folds the contract. If the hub and the sequencer are one
+operator, it profits from not doing that: whatever isn't withdrawn by
+`T_close` goes to the hub. So it might:
 
 - censor her return;
 - stop sealing the L2 to Bitcoin;
-- withhold the data she needs to prove anything;
+- withhold the data she would need to prove anything;
 - or simply vanish.
 
-Each of these blocks a withdrawal that starts with a return. The exit
-doesn't start with one.
+## The idea: she claims, the hub proves
 
-## The idea: claim from the past, answer with something real
+Alice posts a claim on Bitcoin: "these notes are mine, unspent, and
+worth `b`." Everything that could make the claim false is in data the
+operator holds, since it runs the L2. So the burden is the operator's:
+the hub has a window, `w_H`, to prove the claim false. If it can't, or
+doesn't try, her timeout pays her `b`.
 
-Alice claims from a state of the L2 that's already anchored on Bitcoin:
-"at state `S`, these notes of mine were unspent; pay me `b`." She can
-make that claim with no help from the operator. She needs only data she
-already holds.
+An honest exit is two transactions, and her wallet runs no prover.
 
-The operator gets one answer, a **counter**, on one of two grounds:
+## Her claim
 
-- **a later spend:** one of those notes was spent at an anchored state
-  after `S`, and that state was final on Bitcoin when she claimed;
-- **a second claim:** she signed a claim of one of those notes through
-  another of her contracts too.
+**What it says.** Each note by its position in the L2's commitment tree
+and its opening (owner, value, memo, `rho`: 80 bytes), and one signature
+per owner key on the claim's fingerprint `E`. Her `request` carries it
+in its witness, beside her one-time signatures on `b` and on `E`. Script
+can't check the claim's bytes, so the hub's statement checks they hash
+to the `E` she signed.
 
-Those are the only ways a claim from the past can be wrong, and each
-points to something only Alice could have done.
+**When it's judged.** At `A*`: the last anchor confirmed at least a
+margin of blocks before her `request`'s block (6 on regtest, 20 on
+Mutinynet). The margin is for censorship. If the operator holds a
+payment of hers unsequenced, she sees at the tip that it isn't
+included and claims its inputs; an anchor slipped in while her `request`
+confirms doesn't count.
 
-![the two proofs](img/exit-proofs.svg)
+**What her wallet claims.** Its notes in `A*`'s tree, unspent, the
+largest first, up to the contract's cap: so it waits, once her notes are
+anchored, until that anchor is the margin deep. After a return to the
+contract it claims the notes the return spent, `b` at most the return's
+value. With the sequencer gone, it claims from the notes it kept as it
+read the L2.
 
-## Alice's claim
+## The hub's statement
 
-**Her exit kit.** For an anchored state `S`, the sequencer serves each
-note's part of a kit (`/kit/<height>/<index>/<nullifier>`): the note's
-path in the commitment tree `T_S`, and its nullifier's absence from the
-spent set `N_S`. Her wallet checks both against the root the sequencer
-signed at that height. With the chain receipt at `S` (the sequencer's
-recursive proof that every L2 block up to `S` was valid), that's all she
-needs. A kit never goes stale: the tree only grows, and a nullifier
-absent from `N_S` stays absent from `N_S`.
+"The claim posted in `request` is false", on one of five grounds:
 
-**Kept ahead.** A claim names one state, so her notes' kits must all be
-at the same height. Her wallet keeps that set as it reads the sequencer:
-at the last height anchored on Bitcoin, recorded on the L2 and proved,
-every note it holds with its kit (about 0.7 kB each), and the chain
-receipt there (about 230 kB). It fetches a new set only when her notes
-change. So when she exits, the operator may be gone: the claim comes
-from what she holds, and only Bitcoin is needed.
+| ground | shown by |
+|---|---|
+| malformed | the claim doesn't parse, doesn't hash to her `E`, or repeats a note |
+| not hers | a note's owner signed none of the claim's signatures |
+| too much | the notes are worth less than `b` |
+| not live | at `A*`, the leaf at a note's position isn't its commitment, or its nullifier is spent |
+| a second claim | the note's owner signed a claim of it through another contract |
 
-**The claim.** Her wallet claims her notes in the latest anchored state,
-the largest first, up to the contract's cap `V_max`. It computes the
-claim's fingerprint
+A spend that doesn't count: her own return of at least `b` to this
+contract (the hub holds those tokens), and this contract's own exit
+record.
 
-```
-E = H(c ‖ O_D ‖ b ‖ h_S ‖ SR_S ‖ nullifiers)
-```
-
-over the contract `c`, its deposit coin `O_D`, the amount, the state and
-the notes, and each note's owner signs `E`. The deposit coin names the
-contract on Bitcoin: the contract's funding is the only transaction that
-can spend it, and `request` the only one spending the funding's output.
-
-**Posted, not just proved.** Her `request` carries the claim in its
-witness: `h_S`, `SR_S`, each note's opening and its owner's signature
-on `E`. At most 1,169 bytes, in fifteen items of 80 bytes (Bitcoin Core
-relays no larger tapscript item). It's there so that the operator can
-search for the notes, and cite the signatures against her if she claims
-them twice. Her proof checks that `request` posted exactly this claim,
-so she can't post junk and prove something else.
-
-**The proof** is the claim branch of her statement (below): her notes
-in `T_S` and unspent in `N_S`, `S` anchored with the contract's work on
-its anchor block, `request` in a block with that work on it too, and
-`b ≤ Σ`. RISC Zero proves it as a STARK, and the STARK is wrapped in
-Groth16.
-
-## The hub's counter
-
-**A later spend.** A note's nullifier enters the spent set in only two
-ways:
-
-- **a spend,** which needs the note's keys. The chain proof checks every
-  spend's authority, so the operator can't sign one for her;
-- **an exit record,** which the operator posts after a claim to retire
-  its notes on the L2. A record must carry the owners' signatures on the
-  claim, which the chain guest checks. Without that rule, the operator
-  could post a record with Alice's nullifiers, taken from her request,
-  and counter her with it.
-
-The counter cites a spend at a state `S′` after `S`, in the one anchored
-history, and:
-
-- **only if final when she claimed:** `S′`'s anchor confirmed in or
-  before `request`'s block. Otherwise any transaction she signed and the
-  operator holds would be a counter in waiting, sequenced after she
-  committed to her claim;
-- **not her own return to this contract,** of at least `b`: she tries
-  the cooperative way first, and the operator still holds that signed
-  return. If the return is sequenced, the hub has her tokens, and the
-  contract still pays once;
-- **another contract's exit record counts whenever anchored:** it needs
-  her signature on a claim through that contract.
-
-![a counter needs a real insertion after S](img/exit-heights.svg)
-
-**A second claim.** The counter may also cite her signed claim of one of
-the notes through another contract, from that contract's `request`. Only
-she can sign it, and an honest wallet claims a note through one contract
-only. This one needs no anchoring, so the hub can cite it as soon as the
-other `request` is on chain, which matters: under BABE the hub responds
-before Alice proves, so two requests in one block would otherwise both
-be paid.
-
-**The proof** is the counter guest's: the claim's `E` from what it
-hashes, and either the spend in `S′` (the nullifier's leaf in the spent
-set says how it was spent: a spend, a return, an exit record), with
-`S′`'s history passing through `S` and `request` in its block, or the
-other claim's signature. Its journal is `D ‖ E`, so it answers this
-contract's claim and no other. Wrapped in Groth16, its points, 128
-bytes, are the counter `K`.
+The hub shows `A*` is the last anchor before the cutoff by the first
+spend of its seal output, confirmed after it: anchors spend the seal one
+after another, and Bitcoin allows one spend. The statement reads
+`request` from Bitcoin, in a block with the contract's work on it.
 
 ## On chain
 
-BABE's dispute keeps its shape. What the exit adds rides on its first
-two transactions:
+```
+request (Alice: b, E, the claim)
+ ├─ request_timeout (after w_H)      → Alice: b
+ └─ assert (the hub: its proof)
+     ├─ success (after Δ2)           → the hub: the contract
+     └─ challenge_assert (Alice)
+         ├─ wrongly_challenged_k     → the hub (its proof was valid)
+         └─ failure (after Δ1)       → Alice: b
+```
 
-![request, the two responses, and the statement's branches](img/exit-graph.svg)
+It is BABE's game with the roles swapped. At opening, Alice garbles the
+instances for the hub's statement and commits to them; the hub keeps a
+few, which she uploads (23 MB each), and checks the rest. If the hub
+asserts, her wallet checks the proof natively. A false one she
+challenges, revealing its input labels; the hub can answer only with a
+valid proof, by opening one of her instances. On regtest `request` is
+about 2.1 kvB, `assert` 7,725 vB, her `challenge_assert` 20,717 vB.
 
-- **`request`:** Alice signs `b`, as for any dispute, and `E` under a
-  second one-time key, and posts her claim beside them.
-- **`respond`,** within `w_H`: the hub signs `b` again, and `E`, in one
-  of two leaves of the same transaction. The plain leaf signs `E` under
-  one key. The countering leaf signs it under another, and signs `K`
-  itself, 259 digits. Script checks the hub's `E` digit for digit
-  against Alice's (her signature's digits feed the hub's signature check
-  directly), so the hub can't answer some other claim. Which key signed
-  `E` tells her statement which leaf ran.
-- **`assert`:** Alice's proof of her statement, before `T_A`. Her
-  statement is fixed when the contract opens, with the journal
-  `c ‖ D ‖ H(pk_H ‖ O_D)`: her contract, its `D`, and the hub's keys for
-  `respond` with the deposit coin. She wins on any of three branches:
-
-| branch | holds when |
-|---|---|
-| return | the hub signed `b`, and a return of `b` to the contract is anchored: a refused withdrawal, as before the exit |
-| claim | the hub signed `b` and `E` in the plain leaf, and her claim holds |
-| failed counter | the hub signed `E` and `K` in the countering leaf, and `K` isn't a counter for her `D ‖ E` |
-
-A true counter leaves her no branch: she can't assert, and from `T_A`
-the contract is the hub's. A false one pays her through the third
-branch. That branch's proof checks a Groth16 proof inside RISC Zero,
-56.3 million cycles in 58 segments (about an hour on a laptop's CPU,
-about a minute on a CUDA GPU, estimated from measured segments), and
-needs no secret of hers: anyone can prove it for her. It has days to
-run, since her deadline is `T_A`, near the contract's end.
-
-The rest is BABE's: a false assertion is challenged, a true one pays
-her `b` and the reserves after `Δ2`, and a hub that never responds lets
-her `request_timeout` pay her.
-
-## After a claim
-
-With no counter, the hub responds plainly, then:
-
-- **holds** the claimed notes: the sequencer refuses their spends;
-- **records the exit on the L2:** the claim, as posted, with the owners'
-  signatures, retires its notes. Another claim of them, through another
-  contract, then meets that record, as well as her signature.
+**After a claim that holds,** the hub holds its notes (the sequencer
+refuses their spends) and records the exit on the L2, which retires
+them.
 
 ## A run on regtest
 
-Six exits on BABE's mock statement (a proof anyone can make; the hub
-and the wallet decide each claim's truth natively, as the guests would),
-in a deployment anchoring its history on regtest, blocks every 150 ms.
-The hub refuses every cooperative withdrawal.
+Seven exits on the mock statement (the hub decides its statement
+natively and asserts the mock's proof), in a deployment anchoring on
+regtest, blocks every 150 ms. The hub refuses every cooperative
+withdrawal (`hp_exit.rs`).
 
-| | what Alice does | what happens |
+| | what happens | outcome |
 |---|---|---|
-| E | claims her note from the latest anchored state | the hub has no counter: it responds plainly, holds the note and records the exit. She proves her claim, and `success` pays her 375,719 sats (`b` 200,000 in bits, the reserves, the fee budget's rest) |
-| S | prepares her claim, pays Bob, and once the payment is anchored claims the old note anyway | the hub counters with the spend, anchored before her request: she has no branch |
-| Q | claims the same note through two contracts, one request after the other | the second is countered by the first's signed claim; the first is paid |
-| K | claims honestly; the hub, misbehaving, counters with a `K` that isn't one | she proves it false, and is paid |
-| R | withdraws, and the hub refuses the fold; once her return is anchored, her wallet names the dispute, and she exits instead, claiming the note the return spent, `b` its value | the return isn't a counter to this contract: the hub responds plainly, and she is paid |
-| G | holds an exit set; the hub and the sequencer both stop | her wallet can't reach the sequencer, claims from the set it kept, and the hub's timeout pays her |
-
-Both counters were also built as the counter guest's real input and
-checked natively before the hub posted them. On regtest under standard
-policy `request` is 2,373 vB with the largest claim, and `respond`
-4,480 vB plain or 12,255 vB countering.
+| E | an honest claim: the hub finds no ground, records the exit | `request_timeout` pays her |
+| S | a stale claim, after a payment anchored before the cutoff | the hub asserts the note spent at `A*`; her wallet finds the proof valid and concedes |
+| C | the same, challenged anyway | the hub opens one of her instances and answers; it takes the contract |
+| Q | one note claimed through two contracts at once | each is asserted false as the other's second claim |
+| K | a lying hub asserts a false proof against an honest claim | she challenges; it can't answer; `failure` pays her |
+| R | an exit after a return the hub wouldn't fold | her own return isn't a spend against the contract; she is paid |
+| G | the hub and the sequencer gone | she claims from the notes kept; `request_timeout` pays her |
 
 ## What a hostile operator can try
 
 | the operator | what happens |
 |---|---|
-| censors her return | she exits from her kit; the return can't be used against her |
-| stops sealing | her kit's `S` is already anchored |
-| withholds data, with no spend of hers since her kit | her last kit still works |
-| holds a transaction she signed, and seals it after her claim | past the cutoff: not a counter |
-| seals a spend of hers, then withholds its new notes' data | she loses: the data-availability gap, see Limits |
-| vanishes, the sequencer with it | she claims from the exit set she kept; no response: `request_timeout` pays her |
-| responds, then waits | she proves and asserts; the gadget pays her |
-| counters with something false | she proves it false, and is paid |
-| forges an insertion | it can't: a spend needs her keys, an exit record her signature |
-| cites a copy of her claim through another contract | it can't make one: only she signs |
-| counters with her own return | excluded |
+| censors her return | she exits, claiming the notes the return spent |
+| stops sealing, or vanishes | she claims what was anchored; no assertion, the timeout pays her |
+| holds a payment of hers, and anchors it once she has claimed | past the cutoff: it doesn't count |
+| asserts a false proof | she challenges, and `failure` pays her |
+| claims her notes through its own contract | it can't: only she signs |
+| anchors a spend of hers, then withholds its data | she may lose the notes that spend touched: see Limits |
 
 ## Limits
 
-- **Not yet on real proofs.** The guests are built and checked against
-  real receipts, but the exit hasn't been played with real proofs on
-  chain.
-- **Transparent notes only.** A shielded note's owner proves her
-  authority by knowing its key inside the proof, so there's nothing to
-  post or cite: the exit claims a wallet's transparent notes. Shielded
-  addresses will gain an owner key for this.
-- **No towers yet.** A tower plays a return's dispute without her keys
-  because she signs her proof ahead. An exit's proof depends on how the
-  hub responds, so it can't be signed ahead.
-- **A request commits its notes.** Once claimed through a contract, a
-  note can't be claimed through another, even if the first claim fails.
-- **Exits are disputes.** Hours, and fees, against the fold's 193 vB,
-  unless the operator folds.
-- **Data availability: the one substantial gap.** The exit is safe
-  exactly when Alice can read the anchored data she needs. In the
-  consolidation attack, she merges her covered notes into one new note;
-  the operator seals that and withholds the new note's data: the old
-  notes are countered, and the new one has no kit. The planned remedy
-  is the sender's acknowledgment: a spend can counter her only once she
-  has signed that she holds its data, its outputs locked until then.
-- **Whole notes.** A claim spends whole notes. Alice claims everything
-  up to `V_max`, and above the cap the claimed notes' excess is
-  forfeit.
-- **Mass exit.** A hostile operator can refuse every user at once. Each
-  exit is one dispute, competing for block space, and `w_H` is longer
-  (two hours on Mutinynet) so that the hub can prove a counter.
+- **Not yet on real proofs.** The hub's statement is checked natively;
+  its guest, the real statement, is next.
+- **Transparent notes only, at most 8 a claim.** Shielded notes are
+  planned (docs/HUB_PROVES_PLAN.md, "Shielded notes"), and the limit is
+  an exit record's.
+- **Data availability.** Money at rest is safe: only her keys spend her
+  notes. A spend in flight when the operator turns can lose the notes
+  it spends: if the operator anchors it and withholds the data, she
+  can't tell whether to claim its inputs or its outputs.
+- **No tower.** Her challenge reveals her dealing's secrets, so a tower
+  can't play it keyless. She has to challenge only a lying hub, and her
+  window for it is long (a day on Mutinynet).
+- **Her opening uploads** the instances the hub keeps: ten of 23 MB at
+  real parameters.
+- **Mass exit.** Each exit is a dispute competing for block space, and a
+  hub that asserts falsely against everyone forces each user's 20.7 kvB
+  challenge.

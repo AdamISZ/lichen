@@ -1,19 +1,18 @@
-//! An exit claim as it is posted, and as it retires notes
-//! (docs/EXIT_PLAN.md, "Exit authority on chain"). Alice's `request`
-//! posts her claim ([`Posted`]), and its fingerprint `E` is what each
-//! transparent note's owner signs:
+//! An exit claim as it retires notes (docs/HUB_PROVES_PLAN.md): the
+//! hub's exit record (`Tx::Exit`) of a claim that holds carries the
+//! claim's notes ([`Posted`]), and its fingerprint `E` is what each
+//! transparent note's owner signed:
 //!
 //! ```text
 //! E = SHA256("lichen/exit" ‖ c ‖ O_D ‖ b ‖ h_S ‖ SR_S ‖ nf_1 ‖ … ‖ nf_n)
 //! ```
 //!
-//! for contract `c` of deposit coin `O_D`, claiming `b` from the
-//! state of height `h_S` and root `SR_S`. The hub's exit record
-//! (`Tx::Exit`) carries the claim as posted, and retires its transparent
+//! for contract `c` of deposit coin `O_D`, claiming `b`. A claim names no
+//! state: `h_S` is 0 and `SR_S` the digest of its notes' positions
+//! (`lichen_withdraw::hp::Claim`). The record retires its transparent
 //! notes: their owners' signatures are the authority, as for a spend, so
-//! a record exists only for a claim the owners made. A shielded note's
-//! claim carries only its nullifier, its owner's authority being `nk`
-//! inside the claim's proof, so a record doesn't retire it.
+//! a record exists only for a claim the owners made. (A shielded note
+//! carries only its nullifier, and no record retires it.)
 //!
 //! Integers are big-endian, as in the statements.
 
