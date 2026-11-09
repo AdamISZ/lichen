@@ -110,10 +110,17 @@ impl Wallet {
     /// least the margin below her request's block: so the claim waits,
     /// once her notes are anchored, until that anchor is the margin deep.
     pub fn hp_exit_plan(&self, chain: &lichen_chain::Chain, cid: u32) -> Result<ExitPlan> {
-        let mut stall = lichen_chain::Stall::new(chain.height()?, chain.network);
+        let start = chain.height()?;
+        let mut stall = lichen_chain::Stall::new(start, chain.network);
+        let margin = self.contracts.iter().find(|h| h.record.cid() == cid).map_or(0, |h| h.record.hp().margin);
+        // how long to wait for a note newer than the anchor the margin deep:
+        // past it, anchoring seems stopped, and the claim leaves such notes
+        // out rather than wait for ever
+        let patience = 3 * margin.max(1);
         let mut said = false;
         loop {
-            if let Some(p) = self.hp_plan_now(chain, cid)? {
+            let patient = chain.height()? < start + patience;
+            if let Some(p) = self.hp_plan_now(chain, cid, patient)? {
                 return Ok(p);
             }
             if !said {
@@ -176,9 +183,10 @@ impl Wallet {
         }
     }
 
-    /// [`Wallet::hp_exit_plan`], or none while a note of ours is newer
-    /// than the anchor the margin deep.
-    fn hp_plan_now(&self, chain: &lichen_chain::Chain, cid: u32) -> Result<Option<ExitPlan>> {
+    /// [`Wallet::hp_exit_plan`], or, while `patient`, none while a note of
+    /// ours is newer than the anchor the margin deep; not `patient`, the
+    /// plan without such notes.
+    fn hp_plan_now(&self, chain: &lichen_chain::Chain, cid: u32, patient: bool) -> Result<Option<ExitPlan>> {
         let h = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
         let record = &h.record;
         let live = match self.sequencer.state() {
@@ -226,8 +234,14 @@ impl Wallet {
         let cap = record.terms.v_max().to_sat();
         let mut notes: Vec<(u32, lichen_ledger::Note)> = mine.into_iter().filter(|(_, n)| !spent(&lichen_ledger::nullifier(n))).collect();
         let safe = self.hp_safe_size(chain, record.hp().margin, live.as_ref())?;
-        if notes.iter().any(|(i, _)| safe.is_none_or(|s| *i >= s)) {
-            return Ok(None);
+        let newer = |i: &u32| safe.is_none_or(|s| *i >= s);
+        if notes.iter().any(|(i, _)| newer(i)) {
+            if patient {
+                return Ok(None);
+            }
+            let left = notes.iter().filter(|(i, _)| newer(i)).count();
+            self.say(format!("no anchor the margin deep holds {left} of our notes yet, and anchoring seems stopped: claiming without them"));
+            notes.retain(|(i, _)| !newer(i));
         }
         notes.sort_by_key(|(_, n)| std::cmp::Reverse(n.value));
         let (mut chosen, mut total) = (vec![], 0u64);
