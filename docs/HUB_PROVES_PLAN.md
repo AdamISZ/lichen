@@ -404,6 +404,88 @@ inputs, outputs, and shielded proving time), publishing each anchor's
 nullifiers and commitments (about 24 vB per L2 transaction), and
 ambiguous claims (the user prefers definite ones).
 
+## Precedents
+
+How other designs handle a hostile operator, and where lichen's choices
+differ (surveyed 2026-11-09; the Intmax2 paper's own text couldn't be
+fetched, so its sign-off semantics are from its docs and Nethermind's
+formalization).
+
+| | data | when it's withheld | sender sign-off | who proves at exit | what L1 enforces |
+|---|---|---|---|---|---|
+| Plasma (2017) | off-chain, headers on L1 | mass exit, coordinated | §5.4: both parties acknowledge after inclusion; unacknowledged stays withdrawable | the exiter (inclusion); challengers (spends) | bonds, challenge games |
+| Plasma MVP (2018) | off-chain | exit within 7 days | confirmation signatures: a spend counts only once its owner confirms | the exiter, with confirm signatures | priority queue, 14-day exits |
+| More Viable Plasma (2018) | off-chain | in-flight exits: post the transaction, piggyback with bonds, the canonical side exits | dropped: an extra step, operator griefing, the sender's free option | the exiter, plus a canonicity game | youngest-input priority, two-period games |
+| Validium (StarkEx) | a committee signs each update | forced withdrawal, freeze, escape with a path against the frozen root (needs the data) | none | the user | committee signatures, freeze, escape hatch |
+| Adamantium (StarkWare, 2021) | the committee; power users keep their own | a power user signs each state update touching her, or the operator posts her funds back on L1 | per state update, an availability attestation | none needed | no update without her signature or her withdrawal |
+| Vitalik 2023, Plasma Free | off-chain, validity-proven | forced inclusion; if not served, L1 reverts blocks | none | the user (a branch) | forced-inclusion queue, reversion |
+| Intmax2 | client-side; root, aggregate signature, signer IDs on L1 | unsigned is nothing; signed and unavailable counts as the sender's worst case | BLS-signs the root after receiving her proof, before posting | the user (a ZK balance proof) | the signer set, balance proofs |
+| lichen | off-chain; a hash chain of roots anchored on Bitcoin | she claims; the hub proves the claim false or pays | signs `(txid, a, hist_a)` after the anchor's broadcast; counted by existence; outputs locked until then | the hub only | nothing: an anchor is an `OP_RETURN` Bitcoin can't reject |
+
+**Where lichen differs, and why:**
+
+1. **Bitcoin enforces nothing about the L2, so every rule is applied
+   after the fact, in a dispute.** The precedents use L1 to stop a bad
+   state or rescue funds: committee signatures, "sign or be withdrawn",
+   forced inclusion and reversion, signer sets, priority queues.
+   Bitcoin can't reject an anchor, freeze, or revert. So lichen never
+   prevents a bad anchor; its exit statement decides which anchored
+   facts count. "A spend counts only with an acknowledgment" is applied
+   at a claim's cutoff, not at anchoring.
+2. **Per-user collateral, not a shared pool.** A Plasma exit draws on
+   one contract, so a double exit steals from everyone, hence
+   priorities and mass-exit coordination. Here each exit is a dispute
+   against the hub's collateral for one contract: no queue, no ordering
+   among users, and a double payment costs the hub. That is what the
+   receipt settles: whether the hub or the payee bears it.
+3. **The burden on the data holder.** Everywhere else the exiter proves
+   something: inclusion, a Merkle path, a balance proof. Here she claims
+   and the operator proves, since one operator runs the sequencer and
+   the hub: it holds all the data and pays the exits.
+4. **The acknowledgment is Plasma 2017 and MVP's, with three changes:**
+   - it binds to a history fixed on Bitcoin, `(a, hist_a)`, not to a
+     block, so a spend's fate is public (Intmax2 gets this by posting
+     the signatures with the block; Bitcoin's space rules that out);
+   - it counts by existence and claims carry it, so the operator can't
+     suppress it by censoring;
+   - the hub's receipt, from (2).
+5. **No in-flight exits.** MoreVP's in-flight exit is the ambiguous
+   claim rejected above ("the inputs or the outputs, whichever is
+   canonical"), with bonded games of several parties. On Bitcoin each
+   party in a game is another garbled-circuit setup. Acknowledgment
+   keeps claims definite and disputes two-party.
+6. **Validity proofs throughout,** as in Vitalik 2023, Intmax2, Plasma
+   Free and Plasma Next: no exit argues about an invalid history.
+
+**MoreVP's objections still apply, and are accepted:** the extra
+interactive step (the sender online to the next anchor's broadcast);
+griefing by withholding (payments stall, nothing taken); the sender's
+free option (until she signs she can take the payment back, a window
+of at most an anchor cycle, which the payee closes by waiting for the
+acknowledgment and the receipt). MoreVP's alternative needs the L1
+machinery Bitcoin lacks.
+
+**Related:** Ark's hArk variant locks a new VTXO until the user signs
+the forfeit, the same shape as locked outputs. Plasma Next (2024) has
+sender and operator co-sign, the operator handing the receiver its
+path. Plasma Cash binds each transaction to a block number, which
+removes in-flight ambiguity at the price of indivisible coins.
+
+Sources:
+
+- Plasma: https://www.plasma.io/plasma.pdf (§5.4, §5.7)
+- Plasma MVP: https://ethresear.ch/t/minimal-viable-plasma/426
+- More Viable Plasma: https://ethresear.ch/t/more-viable-plasma/2160
+- Plasma Cash: https://ethresear.ch/t/plasma-cash-plasma-with-much-less-per-user-data-checking/1298
+- Exit games for EVM validiums: https://vitalik.eth.limo/general/2023/11/14/neoplasma.html
+- Plasma Free: https://ethresear.ch/t/plasma-free/16570
+- Plasma Next: https://ethresear.ch/t/plasma-next-plasma-without-online-requirements/18786
+- Intmax2: https://eprint.iacr.org/2023/1082; https://docs.network.intmax.io/developers-hub/payment-lifecycle; https://nethermind.io/blog/formally-verifying-the-security-properties-of-intmax2
+- Validium: https://ethereum.org/developers/docs/scaling/validium/; https://docs.starkware.co/starkex/con_data_availability.html; https://docs.starkware.co/starkex/spot/full-withdrawal_reference.html
+- Adamantium: https://ethresear.ch/t/adamantium-power-users/9600
+- Ark forfeits: https://docs.second.tech/ark-protocol/forfeits-connectors; https://blog.second.tech/hark-explained/
+- Camacho and Hevia, "On the impossibility of batch update for cryptographic accumulators" (LATINCRYPT 2010)
+
 ## Shielded notes
 
 The exit must claim shielded notes directly. Unshielding is an L2
