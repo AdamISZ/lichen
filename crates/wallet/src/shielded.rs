@@ -216,7 +216,7 @@ impl Wallet {
         let mut tx = Shielded { anchor: input.anchor, t_spends: t_list, t_sigs: vec![], nfs: j.nfs.clone(), outputs: souts, t_outputs: t_outputs.to_vec(), ak, proof: self.prove(&input)? };
         let d = tx.digest()?;
         tx.t_sigs = tx.t_spends.iter().map(|_| sign(&self.key, &d)).collect();
-        self.record_signed(crate::Signed::new(nfs))?;
+        self.record_signed(crate::Signed::new(nfs, t_outputs))?;
         self.sequencer.submit(&Tx::Shielded(tx))
     }
 

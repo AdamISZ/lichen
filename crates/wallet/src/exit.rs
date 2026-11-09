@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 use crate::dispute::{Outcome, Swept};
-use crate::{Owned as Mine, Wallet};
+use crate::Wallet;
 
 /// An exit's claim, prepared before `request` and kept with the contract
 /// until its dispute ends.
@@ -129,12 +129,14 @@ impl Wallet {
         let hs = a.anchor.height;
         let s = state.sealed.iter().find(|s| s.height == hs).with_context(|| format!("the anchored height {hs} isn't sealed"))?;
         ensure!(s.root() == a.anchor.root, "the anchor isn't of the root signed at height {hs}");
-        let mine: Vec<Mine> = self.notes(state).into_iter().filter(|o| o.index < s.size).collect();
-        let want: BTreeSet<u32> = mine.iter().map(|o| o.index).collect();
+        // what a claim may take: our locked notes too whose acknowledgment
+        // we hold, and a note our own unacknowledged spend took
+        let mine: Vec<(u32, Note)> = self.claimable(state).into_iter().filter(|(i, _)| *i < s.size).collect();
+        let want: BTreeSet<u32> = mine.iter().map(|(i, _)| *i).collect();
         if want.is_empty() || self.exit_sets.lock().unwrap().last().is_some_and(|n| n.indices() == want || n.height() >= hs) {
             return Ok(None);
         }
-        let notes = mine.iter().map(|o| SetNote { index: o.index, note: o.note }).collect();
+        let notes = mine.iter().map(|(index, note)| SetNote { index: *index, note: *note }).collect();
         *self.exit_sets.lock().unwrap() = vec![ExitSet { anchored: a, sealed: s.clone(), notes }];
         self.save()?;
         Ok(Some(format!("the exit set kept at L2 height {hs}: {} notes", mine.len())))

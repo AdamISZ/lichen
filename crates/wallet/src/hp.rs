@@ -196,37 +196,15 @@ impl Wallet {
                 None
             }
         };
-        use lichen_ledger::lichen_validity::ack;
-        // a note is spent for her if she acknowledged a spend of it, or the
-        // state shows it spent otherwise than by a spend of hers she never
-        // acknowledged (which doesn't count against her)
-        let unacked = |nf: &[u8; 32]| self.signed.iter().any(|s| s.nullifiers.contains(nf) && s.ack.is_none());
-        let spent = |nf: &[u8; 32]| {
-            self.signed.iter().any(|s| s.nullifiers.contains(nf) && s.ack.is_some())
-                || live.as_ref().is_some_and(|s| {
-                    let t = s.leaf(nf);
-                    t != [0; 32] && !(unacked(nf) && !s.spent(&ack::acked_key(&t)))
-                })
+        let spent = |nf: &[u8; 32]| self.spent_for_us(live.as_ref(), nf);
+        let kept: Vec<(u32, lichen_ledger::Note)> = match &live {
+            Some(_) => vec![],
+            None => self.exit_sets().into_iter().flat_map(|x| x.notes.into_iter().map(|n| (n.index, n.note))).collect(),
         };
-        // her acknowledgments, by spend: a locked output of one is hers to
-        // claim, carrying it ([`Wallet::acks_for`])
-        let acks: Vec<lichen_ledger::Ack> = self.signed.iter().filter_map(|s| s.ack.clone()).collect();
         // her notes: in the state, else in the newest exit set kept
         let mut mine: Vec<(u32, lichen_ledger::Note)> = match &live {
-            Some(s) => s
-                .transparent()
-                .filter(|(_, n)| n.owner == self.address() && !spent(&lichen_ledger::nullifier(n)))
-                .map(|(index, n)| crate::Owned { note: *n, index })
-                .filter(|o| {
-                    if !s.locked(o.index) {
-                        return true;
-                    }
-                    let t = s.leaf(&ack::lock_key(o.index));
-                    acks.iter().any(|a| a.txid == t)
-                })
-                .map(|o| (o.index, o.note))
-                .collect(),
-            None => self.exit_sets().into_iter().flat_map(|x| x.notes.into_iter().map(|n| (n.index, n.note))).collect(),
+            Some(s) => self.claimable(s),
+            None => kept.clone(),
         };
         mine.sort_by_key(|(i, _)| *i);
         mine.dedup_by_key(|(i, _)| *i);
@@ -257,7 +235,7 @@ impl Wallet {
         ensure!(b > 0, "the notes claimable come to less than the contract's unit, {unit} sats");
         let acks = match &live {
             Some(s) => self.acks_for(s, &chosen)?,
-            None => vec![],
+            None => self.acks_kept(&kept, &chosen)?,
         };
         self.claim_of(record, b, chosen, acks).map(Some)
     }
@@ -275,6 +253,55 @@ impl Wallet {
             }
             if let Some(a) = self.signed.iter().filter_map(|s| s.ack.as_ref()).find(|a| a.txid == t) {
                 out.push(a.v()?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether the note of nullifier `nf` is spent for us: by a spend of
+    /// ours we acknowledged, or, in `state`, otherwise than by a spend of
+    /// ours never acknowledged (which doesn't count against us).
+    fn spent_for_us(&self, state: Option<&lichen_l2::State>, nf: &[u8; 32]) -> bool {
+        use lichen_ledger::lichen_validity::ack;
+        let unacked = self.signed.iter().any(|s| s.nullifiers.contains(nf) && s.ack.is_none());
+        self.signed.iter().any(|s| s.nullifiers.contains(nf) && s.ack.is_some())
+            || state.is_some_and(|s| {
+                let t = s.leaf(nf);
+                t != [0; 32] && !(unacked && !s.spent(&ack::acked_key(&t)))
+            })
+    }
+
+    /// Our notes a claim may take at `state`: ours, not spent for us, and
+    /// unlocked or locked by a spend we hold the acknowledgment of (a
+    /// claim carries it: [`Wallet::acks_for`]).
+    pub(crate) fn claimable(&self, state: &lichen_l2::State) -> Vec<(u32, lichen_ledger::Note)> {
+        use lichen_ledger::lichen_validity::ack;
+        let me = self.address();
+        state
+            .transparent()
+            .filter(|(_, n)| n.owner == me && !self.spent_for_us(Some(state), &lichen_ledger::nullifier(n)))
+            .filter(|(i, _)| {
+                if !state.locked(*i) {
+                    return true;
+                }
+                let t = state.leaf(&ack::lock_key(*i));
+                self.signed.iter().filter_map(|s| s.ack.as_ref()).any(|a| a.txid == t)
+            })
+            .map(|(i, n)| (i, *n))
+            .collect()
+    }
+
+    /// Without the sequencer: our acknowledgments of the spends that output
+    /// the notes kept at `positions` (each spend's outputs recorded with
+    /// it, [`crate::Signed`]); a note locked at `A*` is shown acknowledged.
+    fn acks_kept(&self, kept: &[(u32, lichen_ledger::Note)], positions: &[u32]) -> Result<Vec<lichen_ledger::lichen_validity::ack::Ack>> {
+        let mut out: Vec<lichen_ledger::lichen_validity::ack::Ack> = vec![];
+        for (_, n) in kept.iter().filter(|(i, _)| positions.contains(i)) {
+            let nf = lichen_ledger::nullifier(n);
+            if let Some(a) = self.signed.iter().filter(|s| s.outputs.contains(&nf)).find_map(|s| s.ack.as_ref()) {
+                if !out.iter().any(|x| x.txid == a.txid) {
+                    out.push(a.v()?);
+                }
             }
         }
         Ok(out)

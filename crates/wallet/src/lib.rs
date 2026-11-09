@@ -69,11 +69,16 @@ pub struct Signed {
     pub ack: Option<lichen_ledger::Ack>,
     #[serde(default)]
     pub done: bool,
+    /// Its transparent outputs, by their nullifiers: a claim of one made
+    /// without the sequencer (from the exit set kept) finds its
+    /// acknowledgment by them.
+    #[serde(default)]
+    pub outputs: Vec<Hash>,
 }
 
 impl Signed {
-    pub fn new(nullifiers: Vec<Hash>) -> Signed {
-        Signed { nullifiers, ack: None, done: false }
+    pub fn new(nullifiers: Vec<Hash>, outputs: &[Note]) -> Signed {
+        Signed { nullifiers, ack: None, done: false, outputs: outputs.iter().map(lichen_ledger::nullifier).collect() }
     }
 }
 
@@ -352,7 +357,7 @@ impl Wallet {
         let sigs = spends.iter().map(|_| sign(&self.key, &digest)).collect();
         // kept before it goes: an exit without the sequencer must know,
         // and the wallet acknowledges it
-        self.record_signed(Signed::new(nfs))?;
+        self.record_signed(Signed::new(nfs, &outputs))?;
         self.sequencer.submit(&Tx::Transfer(Transfer { spends, outputs, sigs, ak }))
     }
 }
@@ -690,7 +695,7 @@ impl Wallet {
             let nf = lichen_ledger::nullifier(&n);
             let ak = xonly(&self.ak_key(&nf));
             let digest = Transfer::digest(&spends, &outputs, &ak);
-            self.record_signed(Signed::new(vec![nf]))?;
+            self.record_signed(Signed::new(vec![nf], &outputs))?;
             self.sequencer.submit(&Tx::Transfer(Transfer { sigs: vec![sign(&key, &digest)], spends, outputs, ak }))?;
         }
         self.contracts[k].mint.as_mut().expect("checked").claimed = true;

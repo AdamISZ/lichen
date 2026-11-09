@@ -29,8 +29,10 @@
 //!   acknowledgment, but it never reaches the L2 (a sequencer that drops
 //!   it); her exit claims her locked change, carrying it: she is paid, and
 //!   the record applies it, unlocking Bob's note.
-//! - G: the operator gone. Gail's wallet has kept its exit set; the hub
-//!   and the sequencer stop. She exits from the set alone, and
+//! - G: the operator gone. Gail pays Bob, her acknowledgment never
+//!   reaching the L2, and her wallet keeps its exit set with her locked
+//!   change; the hub and the sequencer stop. She exits from the set alone,
+//!   the claim of her change carrying her acknowledgment, and
 //!   `request_timeout` pays her.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -293,14 +295,26 @@ fn the_hub_proves_on_the_mock_statement() {
     assert!(matches!(exit(&mut w, &ch, "wendy", cids[0]), Outcome::HubTimedOut(_)), "W: paid");
     wait("the acknowledgment applied", || !c.state().unwrap().locked(to_bob));
 
-    // G: the operator gone, the exit from the set kept
+    // G: the operator gone, the exit from the set kept: her change from a
+    // payment whose acknowledgment never reached the L2, locked there,
+    // claimed carrying it
     let (mut w, ch, cids) = open("gail", 1);
-    assert!(w.exit_sets().last().is_some_and(|s| s.notes.len() == 1));
+    let change = w.send(bob, 150_000, 0).unwrap()[1];
+    w.acks_unsent = true;
+    w.acknowledge_all(&ch, 120).unwrap();
+    wait("her change anchored and kept", || {
+        let _ = w.keep_exit_set(&w.state().unwrap()).unwrap();
+        w.exit_sets().last().is_some_and(|s| s.notes.iter().any(|n| n.index == change))
+    });
+    assert!(c.state().unwrap().locked(change), "G: her change locked on the L2");
     let log = hub.stop();
     seal_stop.store(true, Ordering::Relaxed);
     sealer.join().unwrap();
     drop(seq);
     assert!(w.sequencer.state().is_err(), "G: the sequencer is gone");
+    let plan = w.hp_exit_plan(&ch, cids[0]).unwrap();
+    let claim = lichen_withdraw::hp::Claim::from_bytes(&plan.posted().unwrap()).unwrap();
+    assert_eq!((claim.positions.clone(), claim.acks.len()), (vec![change], 1), "G: the claim of her change, carrying her acknowledgment, from the set kept");
     assert!(matches!(exit(&mut w, &ch, "gail", cids[0]), Outcome::HubTimedOut(_)), "G: request_timeout pays her");
     assert!(!log.iter().any(|l| l.contains(&format!("contract {}", cids[0])) && l.contains("exit claim")), "G: the hub saw no request");
 
