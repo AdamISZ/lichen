@@ -17,10 +17,10 @@
 //!   asserts a second claim against each.
 //! - K: a lying hub. It asserts a false proof against Kim's honest claim;
 //!   she challenges, it can't answer, and `failure` pays her.
-//! - R: an exit after a return. Rita returns part of her note to the
-//!   contract, and the hub won't fold it. Her exit claims the note the
-//!   return spent, `b` at most the return's value: her own return isn't a
-//!   spend against the contract, and she is paid.
+//! - R: an exit after a withdrawal not folded. Rita withdraws part of her
+//!   note: the hub records her claim on the L2 (retiring the note split
+//!   off) but won't fold. Her exit posts the same claim: this contract's
+//!   own exit record isn't a spend against it, and she is paid.
 //! - G: the operator gone. Gail's wallet has kept its exit set; the hub
 //!   and the sequencer stop. She exits from the set alone, and
 //!   `request_timeout` pays her.
@@ -105,9 +105,8 @@ fn the_hub_proves_on_the_mock_statement() {
         max_liquidity: 10_000_000,
         duration: 2_000,
         refuse_folds: true,
-        dispute_true_claims: false,
+        forge_assertions: false,
         first_cid: 1000,
-        windows: None,
     })
     .unwrap();
     let miner = {
@@ -128,7 +127,7 @@ fn the_hub_proves_on_the_mock_statement() {
         let label = user.to_string();
         w.progress = Some(Arc::new(move |m: String| println!("LICHEN {label}: {m}")));
         let cids = (0..n)
-            .map(|_| w.open_contract(&hub_url, &ch, &statement(), &dir.join(user), ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v).map(|_| ()) }).unwrap().record.cid())
+            .map(|_| w.open_contract(&hub_url, &ch, &statement(), ask, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v).map(|_| ()) }).unwrap().record.cid())
             .collect();
         wait("the deposits", || w.balance().unwrap() == ask.deposit * n as u64);
         // the exit set kept with our notes, once anchored (as the wallet
@@ -145,7 +144,7 @@ fn the_hub_proves_on_the_mock_statement() {
     };
     let exit = |w: &mut Wallet, ch: &Chain, user: &str, cid: u32| {
         let t = Instant::now();
-        let (o, swept) = w.exit(ch, &statement(), &dir.join(user), cid).unwrap();
+        let (o, swept) = w.exit(ch, &statement(), cid).unwrap();
         println!("LICHEN {user}: {o:?} in {:.1?}; swept {swept:?}", t.elapsed());
         o
     };
@@ -227,27 +226,21 @@ fn the_hub_proves_on_the_mock_statement() {
     hub.set_forge_assertions(false);
     assert!(matches!(o, Outcome::Refuted(_)), "K: the false assertion refuted, she is paid");
 
-    // R: an exit after a return the hub won't fold
+    // R: an exit after a withdrawal the hub recorded but won't fold
     let (mut w, ch, cids) = open("rita", 1);
-    let note = w.notes(&w.state().unwrap())[0];
     let back = 50_000;
-    let refused = w.withdraw(&hub_url, &statement(), &dir.join("rita"), cids[0], back);
+    let refused = w.withdraw(&hub_url, &statement(), cids[0], back);
     assert!(refused.is_err(), "R: the hub refuses the fold");
-    let idx = w.returned(cids[0]).unwrap();
-    let mut sealed = 0;
-    wait("the return sealed", || {
-        sealed = c.state().unwrap().sealed.iter().find(|s| s.size > idx).map_or(0, |s| s.height);
-        sealed > 0
-    });
-    past_cutoff(sealed);
-    let plan = w.hp_exit_plan(&ch, cids[0]).unwrap();
+    assert!(hub.log().iter().any(|l| l.contains(&format!("contract {}: the user's withdrawal claim", cids[0]))), "R: the hub recorded the claim");
+    let plan = w.contracts.iter().find(|h| h.record.cid() == cids[0]).unwrap().exit.clone().expect("R: the claim kept");
     let claim = lichen_withdraw::hp::Claim::from_bytes(&plan.posted().unwrap()).unwrap();
     let unit = w.contracts[0].record.terms.unit.to_sat();
-    assert!(u64::from(plan.b) * unit <= back && u64::from(plan.b) == back / unit, "R: b is the return's value, in units");
-    assert_eq!(claim.positions, vec![note.index], "R: the claim is of the note the return spent");
-    let k = w.contracts.iter().position(|h| h.record.cid() == cids[0]).unwrap();
-    w.contracts[k].exit = Some(plan);
-    assert!(matches!(exit(&mut w, &ch, "rita", cids[0]), Outcome::HubTimedOut(_)), "R: the exit after a return is paid");
+    assert_eq!(u64::from(plan.b), back / unit, "R: b the withdrawal's, in units");
+    let state = w.state().unwrap();
+    let split = *state.note(claim.positions[0]).unwrap();
+    assert!(claim.positions.len() == 1 && split.value == u64::from(plan.b) * unit, "R: the claim of the note split off");
+    assert_eq!(c.spent(&nullifier(&split)).unwrap().map(|s| s.0), Some(v::smt::exited(cids[0])), "R: retired by the contract's own record");
+    assert!(matches!(exit(&mut w, &ch, "rita", cids[0]), Outcome::HubTimedOut(_)), "R: the exit posting the same claim is paid");
 
     // G: the operator gone, the exit from the set kept
     let (mut w, ch, cids) = open("gail", 1);

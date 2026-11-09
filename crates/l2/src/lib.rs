@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{anyhow, ensure, Context, Result};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_ledger::{Deployment, Hash, Leaf, Ledger, Note, SignedRoot, Tree, Tx, WithdrawInput};
+use lichen_ledger::{Deployment, Hash, Leaf, Ledger, Note, SignedRoot, Tree, Tx};
 use serde::{Deserialize, Serialize};
 
 /// The HTTP agents lichen's clients use. Without timeouts, a call whose
@@ -121,34 +121,6 @@ impl State {
     }
     pub fn is_spent(&self, note: &Note) -> bool {
         self.nullifiers.contains(&lichen_ledger::nullifier(note))
-    }
-    /// The withdrawal statement's input for the return at `index` in
-    /// deployment `d`, built and checked locally: ln-gap's, under the first
-    /// sealed root that includes it.
-    pub fn withdraw_input(&self, index: u32, d: &Deployment) -> Result<WithdrawInput> {
-        let s = self.sealed.iter().find(|s| s.size > index).context("the return is not sealed yet")?;
-        self.withdraw_input_at(index, s.height, d)
-    }
-    /// As [`State::withdraw_input`], under the root sealed at `height`.
-    pub fn withdraw_input_at(&self, index: u32, height: u64, d: &Deployment) -> Result<WithdrawInput> {
-        let note = *self.note(index).context("no such note")?;
-        let s = self.sealed.iter().find(|s| s.height == height).with_context(|| format!("no height {height}"))?;
-        ensure!(s.size > index, "note {index} isn't in the tree at height {height}");
-        let input = WithdrawInput { height: s.height, nullifiers: s.nullifiers, signature: s.signature.clone(), note, index, path: self.tree().path_at(index, s.size), sequencer: d.sequencer, hub: d.hub };
-        lichen_ledger::check(&input).map_err(|r| anyhow!("the statement would reject this return: {r:?}"))?;
-        Ok(input)
-    }
-    /// In an anchored deployment, the return at `index` under the first
-    /// anchor that covers it (docs/ANCHOR_PLAN.md): ln-gap's input at the
-    /// anchored height, and that anchor's state with the height whose
-    /// chain receipt first carries it.
-    pub fn anchored_input(&self, index: u32, d: &Deployment) -> Result<(WithdrawInput, lichen_ledger::Anchored)> {
-        let sealed = self.sealed.iter().find(|s| s.size > index).context("the return is not sealed yet")?;
-        let a = *self.anchors.iter().find(|a| a.anchor.height >= sealed.height).with_context(|| format!("the return, at height {}, isn't anchored on Bitcoin yet", sealed.height))?;
-        let input = self.withdraw_input_at(index, a.anchor.height, d)?;
-        let root = self.sealed.iter().find(|s| s.height == a.anchor.height).map(|s| s.root());
-        ensure!(root == Some(a.anchor.root), "the anchor of height {} isn't of the root signed there", a.anchor.height);
-        Ok((input, a))
     }
 }
 /// The signed roots a party has seen, by height: a second, different root

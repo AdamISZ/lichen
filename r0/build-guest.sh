@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a guest (spend, the default, chain, withdraw or babe) and commit it, in two
+# Build a guest (spend, the default, or chain) and commit it, in two
 # steps:
 #
 #   r0/build-guest.sh elf [g]   on x86_64 Linux (RISC Zero's pinned builder
@@ -11,18 +11,15 @@
 #                               and <g>.id
 #
 # Commit <g>.bin and <g>.id (not the ELF), and record the build in
-# r0/guests/README.md. The chain guest holds the spend guest's image id,
-# the withdrawal and BABE guests the chain guest's: rebuild each after the
-# ones it holds.
+# r0/guests/README.md. The chain guest holds the spend guest's image id:
+# rebuild it after the spend guest.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 g="${2:-spend}"
 case "$g" in
 spend) dir=r0/guest ;;
 chain) dir=r0/chain-guest ;;
-withdraw) dir=r0/withdraw-guest ;;
-babe) dir=r0/babe-guest ;;
-*) echo "no guest $g (spend, chain, withdraw, babe)" >&2; exit 2 ;;
+*) echo "no guest $g (spend, chain)" >&2; exit 2 ;;
 esac
 case "${1:-}" in
 elf)
@@ -46,7 +43,7 @@ pack)
     docker build -f r0/Dockerfile -t lichen-r0 .
     ;;
 *)
-    echo "usage: $0 elf|pack [spend|chain|withdraw|babe]" >&2
+    echo "usage: $0 elf|pack [spend|chain]" >&2
     exit 2
     ;;
 esac

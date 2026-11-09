@@ -1,9 +1,10 @@
 //! `lichen-demo`: Alice and Bob, each with a contract on a hub, on a
 //! private regtest node, shown in a web page (four panes: Alice, Bob, the
 //! ledger, the hub). Each deposit is shielded once minted; they pay each
-//! other in shielded notes and withdraw; with the hub refusing, a
-//! withdrawal is enforced on Bitcoin, the dispute playing out move by
-//! move.
+//! other in shielded notes and withdraw (a claim of transparent notes,
+//! unshielded first, which the hub records on the L2 before it folds);
+//! with the hub refusing, the user exits on Bitcoin, the dispute playing
+//! out move by move.
 //!
 //! Everything runs here: bitcoind (regtest, its own data directory), the
 //! sequencer, the hub, the two wallets, a block every second. Every
@@ -11,11 +12,10 @@
 //! prover image) and checked by the sequencer; the chain prover proves
 //! each sealed height as it goes (r0/chain-prover.sh; off with
 //! --no-chain-prover). The ledger pane shows what anyone sees: commitments,
-//! nullifiers and proofs, not amounts or parties. Disputes are BABE's
-//! (docs/BABE_GADGET_PLAN.md) on its mock statement, where each claim's
-//! proof is of a toy circuit for the contract's journal, so every claim is
-//! true: a stand-in for the proof of the return, which the real statement
-//! checks (minutes on x86, too slow to watch).
+//! nullifiers and proofs, not amounts or parties. Exits are the hub
+//! proving (docs/HUB_PROVES_PLAN.md) on its mock statement: the hub
+//! decides natively, and asserts a toy circuit's proof for the contract's
+//! journal.
 
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -43,7 +43,7 @@ use tiny_http::{Header, Method, Response, Server};
 const FIRST_CID: u32 = 1000;
 /// Millions of sats, so that fees at a realistic feerate stay small beside
 /// them: 14M sats of liquidity (a cap of about 15.9M, after the hub's
-/// fee), and a reserve above a BABE dispute's floors (31k sats).
+/// fee), and a reserve above a dispute's floors.
 const ASK: Ask = Ask { deposit: 2_000_000, liquidity: 14_000_000, reserve: 250_000 };
 
 #[derive(Parser)]
@@ -69,7 +69,6 @@ struct User {
     name: &'static str,
     wallet: Mutex<Wallet>,
     chain: Chain,
-    dir: PathBuf,
     address: Hash,
     saddr: SAddress,
     cid: Mutex<u32>,
@@ -180,7 +179,7 @@ impl Demo {
 
 fn open_contract(d: &Demo, u: &User) -> Result<u32> {
     let mut w = u.wallet.lock().unwrap();
-    let h = w.open_contract(&d.hub.url, &u.chain, &d.statement, &u.dir, ASK, u.chain.new_spk()?, &|addr: &bitcoin::Address, v| u.chain.pay(&addr.script_pubkey(), v).map(|_| ()))?;
+    let h = w.open_contract(&d.hub.url, &u.chain, &d.statement, ASK, u.chain.new_spk()?, &|addr: &bitcoin::Address, v| u.chain.pay(&addr.script_pubkey(), v).map(|_| ()))?;
     let cid = h.record.cid();
     *u.cid.lock().unwrap() = cid;
     d.log(format!("{}: contract {cid} opened with the hub: deposit {} sats, cap {} sats, reserves {} + {} sats", u.name, ASK.deposit, h.record.terms.v_max().to_sat(), h.record.terms.reserve_alice.to_sat(), h.record.terms.reserve_hub.to_sat()));
@@ -223,9 +222,8 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
     for _ in 0..8 {
         rt.fund(&hub_chain.new_spk()?, Amount::from_sat(50_000_000))?;
     }
-    // BABE on its mock statement: every claim true, a stand-in for proving
-    // the return
-    let statement = Statement::Babe { mock: true };
+    // the hub proving, on its mock statement
+    let statement = Statement::HubProves { mock: true };
     let hub = Hub::start(Config {
         network: lichen_proto::Net::Regtest,
         listen: "127.0.0.1:0".into(),
@@ -242,9 +240,8 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
         max_liquidity: 20_000_000,
         duration: 5_000,
         refuse_folds: false,
-        dispute_true_claims: false,
+        forge_assertions: false,
         first_cid: FIRST_CID,
-        windows: None,
     })?;
     let mut users = vec![];
     for name in ["Alice", "Bob"] {
@@ -257,7 +254,6 @@ fn start(args: &Args) -> Result<Arc<Demo>> {
             name,
             wallet: Mutex::new(w),
             chain: ch,
-            dir: args.dir.join(name.to_lowercase()),
             address,
             saddr,
             cid: Mutex::new(0),
@@ -373,9 +369,9 @@ fn state(d: &Demo) -> Result<Value> {
                     let parts: Vec<String> = to
                         .iter()
                         .filter(|(o, _, _)| *o != from[0])
-                        .map(|(o, v, memo)| if *o == HUB_KEY { format!("{who} returned {v} sats to the hub (memo {memo}): a withdrawal") } else { format!("{who} paid {v} sats to {}", d.name_of(o)) })
+                        .map(|(o, v, _)| format!("{who} paid {v} sats to {}", d.name_of(o)))
                         .collect();
-                    (if to.iter().any(|t| t.0 == HUB_KEY) { "return" } else { "transfer" }, parts.join("; "))
+                    ("transfer", parts.join("; "))
                 }
                 Event::Shielded { from, spent, made, to, t_total, nfs, cms, proof } => {
                     // what anyone sees: the transparent ends in full, the
@@ -387,11 +383,11 @@ fn state(d: &Demo) -> Result<Value> {
                     } else {
                         parts.push(format!("{spent} shielded note{} spent, {made} made: amounts and owners hidden", if spent == 1 { "" } else { "s" }));
                     }
-                    parts.extend(to.iter().filter(|t| t.0 == HUB_KEY).map(|(_, v, memo)| format!("{v} sats returned to the hub (memo {memo}): a withdrawal")));
+                    parts.extend(to.iter().filter(|t| Some(&t.0) != from.first()).map(|(o, v, _)| format!("{v} sats unshielded to {}", d.name_of(o))));
                     let list = |hs: &[Hash]| hs.iter().map(short).collect::<Vec<_>>().join(", ");
                     let spent = if nfs.is_empty() { String::new() } else { format!("nullifiers [{}] → ", list(&nfs)) };
                     detail = format!("{spent}commitments [{}] · proof {} KB", list(&cms), proof.div_ceil(1024));
-                    (if to.iter().any(|t| t.0 == HUB_KEY) { "return" } else if from.is_empty() { "shielded" } else { "shield" }, parts.join("; "))
+                    (if from.is_empty() { "shielded" } else { "shield" }, parts.join("; "))
                 }
                 Event::Exited { c, b, nfs } => {
                     detail = format!("nullifiers [{}]", nfs.iter().map(short).collect::<Vec<_>>().join(", "));
@@ -412,7 +408,7 @@ fn state(d: &Demo) -> Result<Value> {
         .collect();
     let open: Vec<_> = contracts.iter().filter(|c| c.1.is_none()).collect();
     let headroom: u64 = open.iter().map(|c| (c.0.terms.v_max() - Amount::from_sat(u64::from(c.0.terms.deposit)) + c.0.terms.reserve_hub).to_sat()).sum();
-    let (refuse, dispute_all) = d.hub.switches();
+    let (refuse, forge) = d.hub.switches();
     let hub_contracts: Vec<Value> = contracts
         .iter()
         .map(|(r, closed)| {
@@ -428,10 +424,10 @@ fn state(d: &Demo) -> Result<Value> {
         "chain_log": d.chain_log.lock().unwrap().clone(),
         "hub": {
             "onchain": d.hub.balance().map(|b| b.to_sat()).unwrap_or(0),
-            "returned": l2(&HUB_KEY),
+            "l2": l2(&HUB_KEY),
             "headroom": headroom,
             "refuse_folds": refuse,
-            "dispute_true_claims": dispute_all,
+            "forge_assertions": forge,
             "contracts": hub_contracts,
             "log": d.hub.log(),
         },
@@ -454,7 +450,7 @@ struct Withdraw {
 #[derive(Deserialize)]
 struct Switches {
     refuse_folds: Option<bool>,
-    dispute_true_claims: Option<bool>,
+    forge_assertions: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -478,7 +474,8 @@ fn send(d: &Demo, s: Send) -> Result<Value> {
     Ok(json!({ "ok": "started" }))
 }
 
-/// A withdrawal: the fold, or, if the hub refuses, the dispute (in the
+/// A withdrawal: the amount unshielded (a claim takes transparent notes),
+/// claimed and folded; or, if the hub refuses, the exit (in the
 /// background; the page follows it).
 fn withdraw(d: &Arc<Demo>, r: Withdraw) -> Result<Value> {
     let u = d.user(&r.who)?;
@@ -487,30 +484,35 @@ fn withdraw(d: &Arc<Demo>, r: Withdraw) -> Result<Value> {
     task(&u, move |u2| {
         let set = |m: String| u2.say(m);
         let mut w = u2.wallet.lock().unwrap();
-        set(format!("returning {} sats to the hub from shielded notes (memo {cid}): proving the spend (RISC Zero), then the fold ...", r.amount));
-        match w.withdraw(&d2.hub.url, &d2.statement, &u2.dir, cid, r.amount) {
+        let unit = w.contracts.iter().find(|h| h.record.cid() == cid).map_or(1, |h| h.record.terms.unit.to_sat());
+        let want = r.amount / unit * unit;
+        let transparent = w.balances().map_or(0, |b| b.0);
+        if want > transparent {
+            set(format!("unshielding {} sats to claim: proving the spend (RISC Zero) ...", want - transparent));
+            if let Err(e) = w.unshield(want - transparent) {
+                return set(format!("not withdrawn: {e:#}"));
+            }
+        }
+        set(format!("claiming {want} sats for contract {cid}: the hub records the claim on the L2, then folds ..."));
+        match w.withdraw(&d2.hub.url, &d2.statement, cid, r.amount) {
             Ok(txid) => {
-                set(format!("withdrawn: the hub folded the contract; {} sats and the reserve are on chain", r.amount));
+                set(format!("withdrawn: the hub folded the contract; {want} sats and the reserve are on chain"));
                 d2.log(format!("{}: contract {cid} folded cooperatively ({txid})", u2.name));
             }
-            // a dispute only for a return made and refused: not for an error
+            // an exit only for a claim made and refused: not for an error
             // before it (more than the balance, above the cap)
-            Err(e) if w.returned(cid).is_none() || u32::try_from(r.amount).is_err() => set(format!("not withdrawn: {e:#}")),
+            Err(e) if w.contracts.iter().all(|h| h.record.cid() != cid || h.exit.is_none()) => set(format!("not withdrawn: {e:#}")),
             Err(e) => {
-                set(format!("the hub refused ({e:#}); enforcing the withdrawal on Bitcoin ..."));
-                d2.log(format!("{}: the hub refused to fold; escalating to Bitcoin", u2.name));
+                set(format!("the hub refused ({e:#}); exiting on Bitcoin ..."));
+                d2.log(format!("{}: the hub refused to fold; exiting on Bitcoin", u2.name));
                 let (d3, u3) = (d2.clone(), u2.clone());
                 w.progress = Some(Arc::new(move |m: String| {
                     *u3.activity.lock().unwrap() = m.clone();
                     d3.log(format!("{}: {m}", u3.name));
                 }));
-                let input = match w.babe_mock_input(cid) {
-                    Ok(i) => i,
-                    Err(e) => return set(format!("the dispute failed: {e:#}")),
-                };
-                match w.dispute(&u2.chain, &d2.statement, &u2.dir, cid, r.amount as u32, &input) {
-                    Ok((o, _)) => set(format!("the dispute ended: {o:?}")),
-                    Err(e) => set(format!("the dispute failed: {e:#}")),
+                match w.exit(&u2.chain, &d2.statement, cid) {
+                    Ok((o, _)) => set(format!("the exit ended: {o:?}")),
+                    Err(e) => set(format!("the exit failed: {e:#}")),
                 }
                 w.progress = None;
             }
@@ -556,8 +558,8 @@ fn route(d: &Arc<Demo>, method: &Method, url: &str, body: &str) -> Result<(Strin
             if let Some(v) = s.refuse_folds {
                 d.hub.set_refuse_folds(v);
             }
-            if let Some(v) = s.dispute_true_claims {
-                d.hub.set_dispute_true_claims(v);
+            if let Some(v) = s.forge_assertions {
+                d.hub.set_forge_assertions(v);
             }
             j(json!({ "ok": "set" }))
         }

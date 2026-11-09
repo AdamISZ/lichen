@@ -1,4 +1,4 @@
-# Sourced by deploy/build.sh and deploy/tower/build.sh: a Docker build
+# Sourced by deploy/build.sh: a Docker build
 # context of committed sources only, lichen's HEAD and ln-gap at the
 # commit in LNGAP_REV, both exported with `git archive` (no working-tree
 # changes, no target/). lichen depends on ln-gap by path, and cargo reads

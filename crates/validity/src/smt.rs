@@ -2,9 +2,8 @@
 //! phase 2), so that a block guest can show a nullifier unspent and add
 //! it. 256 levels, a leaf per nullifier by its bits (most significant
 //! first, from the root); a leaf is zero if unspent, and if spent says
-//! how (the hub's statement reads it, docs/HUB_PROVES_PLAN.md): [`spent`] by an ordinary
-//! transaction, [`returned`] by a return to a contract, [`exited`] by a
-//! contract's exit record. Empty subtrees are the precomputed
+//! how (the hub's statement reads it, docs/HUB_PROVES_PLAN.md): [`spent`]
+//! by a transaction, [`exited`] by a contract's exit record. Empty subtrees are the precomputed
 //! [`empties`]. Its root is the state root's `N`.
 
 use super::{sha256, Hash};
@@ -47,14 +46,9 @@ const fn words_be(st: &[u32; 8]) -> Hash {
     out
 }
 
-/// A nullifier's leaf, spent by an ordinary transaction.
+/// A nullifier's leaf, spent by a transaction.
 pub fn spent() -> Hash {
     sha256(&[b"lichen/nf-spent"])
-}
-
-/// A nullifier's leaf, spent by a return of `r` to the hub with memo `c`.
-pub fn returned(c: u32, r: u64) -> Hash {
-    sha256(&[b"lichen/nf-return", &c.to_be_bytes(), &r.to_be_bytes()])
 }
 
 /// A nullifier's leaf, retired by contract `c`'s exit record.
@@ -271,7 +265,7 @@ mod tests {
         assert_eq!(root, e[DEPTH]);
         // spend them one by one, each shown unspent first, in an order
         // the sorted set isn't, with each kind of leaf
-        let leaves = [spent(), returned(1000, 9), exited(1001), spent(), returned(1001, 9), spent()];
+        let leaves = [spent(), exited(1000), exited(1001), spent(), exited(1002), spent()];
         for (k, leaf) in [h(9), h(1), [0x80; 32], h(2), [0x81; 32], h(0)].into_iter().zip(leaves) {
             let p = proof(&keys, &k, e);
             let next = insert(&root, &k, &leaf, &p, e).expect("unspent");
@@ -285,10 +279,10 @@ mod tests {
             assert!(!unspent(&root, &k, &p, e));
             assert!(holds(&root, &k, &leaf, &p, e));
         }
-        // a leaf says how: not another kind, nor another contract or amount
+        // a leaf says how: not another kind, nor another contract
         let p = proof(&keys, &h(1), e);
-        assert!(holds(&root, &h(1), &returned(1000, 9), &p, e));
-        for other in [spent(), returned(1000, 8), returned(1001, 9), exited(1000)] {
+        assert!(holds(&root, &h(1), &exited(1000), &p, e));
+        for other in [spent(), exited(1001)] {
             assert!(!holds(&root, &h(1), &other, &p, e));
         }
         // unspent agrees with insert

@@ -29,9 +29,9 @@ use lichen_babe::setup::{check_opened, choose, digits, par, Hash, Instance, Secr
 use lichen_babe::vsss::interpolate;
 use lichen_babe::we::decrypt;
 use lichen_chain::NodeWallet;
-use lichen_proto::babe::{dealing_from_hex, shares_from_hex, statement_outpoint, Opened};
+use lichen_proto::setup::{dealing_from_hex, link_args, shares_from_hex, statement_outpoint, Opened};
 use lichen_proto::hp::{check_commit, HpCommit, HpDisputed, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
-use lichen_proto::{Checkpoint, DisputeKeys, OfferKeys, Presig, Record};
+use lichen_proto::{Checkpoint, Presig, Record};
 use lichen_ledger::lichen_validity::TNote;
 use lichen_withdraw::hp::Spent;
 use lichen_withdraw::hp::{Claim, Ground, HubInput, Last, Opening, SealSpend, Terms, Why};
@@ -107,7 +107,7 @@ impl Inner {
         }
         ensure!(self.seq.deployment.seal.is_some(), "the exit where the hub proves needs an anchored deployment");
         self.check_deposit(cid, &req.deposit)?;
-        let (n, m) = super::babe::cut_and_choose(self.cfg.network);
+        let (n, m) = cut_and_choose(self.cfg.network);
         let setup = HpSetup {
             cid,
             n,
@@ -162,7 +162,7 @@ impl Inner {
     /// instance uploaded, the others opened, their shares on her dealing
     /// and each rebuilt to its commitment. The record's and the offer's
     /// (the pre-signatures to come, [`Inner::hp_presign`]).
-    pub(crate) fn hp_open_keys(&self, cid: u32, req: &HpRequest, deposit: &OutPoint, t_close: u32, unit: bitcoin::Amount) -> Result<(DisputeKeys, OfferKeys, Option<Checkpoint>)> {
+    pub(crate) fn hp_open_keys(&self, cid: u32, req: &HpRequest, deposit: &OutPoint, t_close: u32, unit: bitcoin::Amount) -> Result<(HpKeys, HpOffer, Option<Checkpoint>)> {
         let mut p = self.hp_prepared(cid)?;
         let s = p.setup.clone();
         ensure!(s.unit == unit.to_sat() && s.deposit == *deposit, "the setup is for another unit or deposit than the opening's");
@@ -200,22 +200,20 @@ impl Inner {
             deposit: s.deposit,
             hub_presigs: vec![],
         };
-        Ok((DisputeKeys::HubProves(Box::new(keys)), OfferKeys::HubProves(Box::new(HpOffer { hp_windows: windows, hp_presigs: vec![] })), s.checkpoint))
+        Ok((keys, HpOffer { hp_windows: windows, hp_presigs: vec![] }, s.checkpoint))
     }
 
     /// The hub's adaptor pre-signatures on `challenge_assert`, adapted to
     /// Alice's dealing's points, into the record and the offer.
-    pub(crate) fn hp_presign(&self, record: &mut Record, offer: &mut OfferKeys, set: &[lngap_sessions::contract::Presign]) -> Result<()> {
+    pub(crate) fn hp_presign(&self, record: &mut Record, offer: &mut HpOffer, set: &[lngap_sessions::contract::Presign]) -> Result<()> {
         let cid = record.cid();
         let p = self.hp_prepared(cid)?;
         let commit = p.commit.as_ref().context("no instances committed")?;
         let dealing = dealing_from_hex(&commit.dealing, (p.setup.n - p.setup.m) as usize)?;
         let msg = HubProves::challenge_sighash(set)?;
         let presigs: Vec<[Presig; VALUES]> = hub_adaptor(&self.cfg.seed, cid).presign(&msg, &lichen_babe::reveal::points(&dealing)).into_iter().map(|p| p.map(Presig::from)).collect();
-        let DisputeKeys::HubProves(k) = &mut record.dispute else { anyhow::bail!("not a hub-proves contract") };
-        k.hub_presigs = presigs.clone();
-        let OfferKeys::HubProves(o) = offer else { anyhow::bail!("not a hub-proves offer") };
-        o.hp_presigs = presigs;
+        record.dispute.hub_presigs = presigs.clone();
+        offer.hp_presigs = presigs;
         Ok(())
     }
 
@@ -223,11 +221,21 @@ impl Inner {
     /// (`wrongly_challenged`): its answer needs them.
     pub(crate) fn hp_accept(&self, record: &Record) -> Result<()> {
         let built = self.built(record)?;
-        for p in built.presign(record.funding)?.iter().filter(|p| built.hub_withholds(&p.name)) {
+        for p in built.presign(record.funding)?.iter().filter(|p| built.withheld(&p.name)) {
             let s = record.alice_sigs.get(&p.name).with_context(|| format!("the user didn't sign {}", p.name))?;
             p.verify_input(&record.pubs[0].payment, 0, s).with_context(|| format!("the user's signature on {}", p.name))?;
         }
         Ok(())
+    }
+}
+
+/// The cut-and-choose on a network: `N` instances, `M` kept. BABE's
+/// smallest point with secret sharing, (78, 10); regtest's tests keep 2
+/// of 4.
+pub fn cut_and_choose(net: lichen_proto::Net) -> (u32, u32) {
+    match net {
+        lichen_proto::Net::Regtest => (4, 2),
+        _ => (78, 10),
     }
 }
 
@@ -273,9 +281,9 @@ impl Inner {
     pub(super) fn hp_claimed_b(&self, record: &Record) -> Result<(u32, Vec<Vec<u8>>)> {
         let d = HpDisputed::new(record, &self.cfg.statement)?;
         let req = self.chain.get_tx(&d.txid("request")).context("the request")?;
-        let (b, _, _) = HubProves::read_request(&lichen_proto::babe::Disputed::args(&req))?;
+        let (b, _, _) = HubProves::read_request(&link_args(&req))?;
         let v = u32::from_be_bytes(b.message().try_into().map_err(|_| anyhow::anyhow!("b's signature signs 4 bytes"))?);
-        Ok((v, lngap_ladder::script::wots_wire(&b)))
+        Ok((v, HubProves::b_wire(&b)))
     }
 
     /// If Alice has requested, the dispute from where the chain shows it.
@@ -385,7 +393,7 @@ impl Inner {
         if let Err(e) = self.seq.hold(&self.cfg.l2_key, &notes.iter().map(TNote::nullifier).collect::<Vec<_>>()) {
             self.note(format!("contract {cid}: holding the claimed notes: {e:#}"));
         }
-        let deposit = statement_outpoint(&d.record.hp()?.deposit);
+        let deposit = statement_outpoint(&d.record.hp().deposit);
         let Some((notes, sigs)) = claim.record(&notes, &e) else { return Ok(()) };
         let notes = notes.into_iter().map(|(n, index)| lichen_ledger::Spend { note: lichen_ledger::Note { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho }, index }).collect();
         let tx = lichen_ledger::Tx::Exit(lichen_ledger::Exit::new(&self.cfg.l2_key, &self.seq.deployment, cid, deposit, b, notes, sigs));
@@ -401,7 +409,7 @@ impl Inner {
     fn hp_decide(&self, d: &HpDisputed, at: u32, recorded: bool) -> Result<Decision> {
         let record = &d.record;
         let cid = record.cid();
-        let k = record.hp()?;
+        let k = record.hp();
         let deposit = statement_outpoint(&k.deposit);
         let req_id = d.txid("request");
         let req = self.chain.get_tx(&req_id).context("the request")?;
@@ -503,11 +511,9 @@ impl Inner {
             if height > h2 {
                 continue;
             }
-            let spent = self.hp_spent_as(&state, &leaf);
-            match spent {
-                Spent::Return { c, r } if c == cid && r / terms.unit >= u64::from(b) => continue,
-                Spent::Exit { c } if c == cid => continue,
-                _ => {}
+            let spent = self.hp_spent_as(&leaf);
+            if spent == (Spent::Exit { c: cid }) {
+                continue;
             }
             let why = Why::Spent { which: w as u8, opening: o.clone(), spent, proof: self.seq.nullifier_proof(&nf, h2)? };
             return Ok(Decision::Assert(at_star(why), format!("note {} was spent by A* (height {h2})", claim.positions[w])));
@@ -516,15 +522,10 @@ impl Inner {
     }
 
     /// How a nullifier tree leaf says a note was spent.
-    fn hp_spent_as(&self, state: &lichen_l2::State, leaf: &Hash) -> Spent {
-        use lichen_ledger::lichen_validity::smt;
+    fn hp_spent_as(&self, leaf: &Hash) -> Spent {
         let cids: Vec<u32> = self.open.lock().unwrap().keys().copied().collect();
-        if let Some(c) = cids.iter().find(|c| smt::exited(**c) == *leaf) {
-            return Spent::Exit { c: *c };
-        }
-        let hub = self.seq.deployment.hub;
-        match state.transparent().find(|(_, n)| n.owner == hub && n.memo != 0 && smt::returned(n.memo, n.value) == *leaf) {
-            Some((_, n)) => Spent::Return { c: n.memo, r: n.value },
+        match cids.iter().find(|c| lichen_ledger::lichen_validity::smt::exited(**c) == *leaf) {
+            Some(c) => Spent::Exit { c: *c },
             None => Spent::Spend,
         }
     }
@@ -533,13 +534,13 @@ impl Inner {
     /// through another hub-proves contract, its request on chain and
     /// signed by the note's owner.
     fn hp_second(&self, cid: u32, claim: &Claim, openings: &[Opening]) -> Result<Option<(Why, String)>> {
-        let records: Vec<Record> = self.open.lock().unwrap().values().map(|o| o.record.clone()).filter(|r| r.cid() != cid && r.hp().is_ok()).collect();
+        let records: Vec<Record> = self.open.lock().unwrap().values().map(|o| o.record.clone()).filter(|r| r.cid() != cid).collect();
         for r in records {
             let Ok(d) = HpDisputed::new(&r, &self.cfg.statement) else { continue };
             let Some(req) = self.chain.get_tx(&d.txid("request")) else { continue };
             let Ok((b2, _, posted)) = HpDisputed::requested(&req) else { continue };
             let Ok(other) = Claim::from_bytes(&posted) else { continue };
-            let d2 = statement_outpoint(&r.hp()?.deposit);
+            let d2 = statement_outpoint(&r.hp().deposit);
             let e2 = other.fingerprint(r.cid(), &d2, b2);
             for (w, (index, o)) in claim.positions.iter().zip(openings).enumerate() {
                 if other.positions.contains(index) && other.signed_by(&o.note.owner, &e2).is_some() {
@@ -572,7 +573,7 @@ impl Inner {
         let record = &d.record;
         let cid = record.cid();
         let kind = self.cfg.statement.hp_kind()?;
-        let journal = record.hp_journal()?;
+        let journal = record.hp_journal();
         let proof = if let Some(input) = input {
             match lichen_withdraw::hp::check(input, &[0; 32], &mut |_| true) {
                 Ok(j) if j == journal => {}
@@ -582,11 +583,10 @@ impl Inner {
             self.note(format!("contract {cid}: the user's exit claim is false: {why}: asserting"));
             match kind {
                 lichen_babe::statement::Kind::Mock => lichen_babe::statement::mock_prove(&journal),
-                lichen_babe::statement::Kind::Risc0 => anyhow::bail!("the hub's statement has no guest yet"),
             }
         } else {
             self.note(format!("contract {cid}: asserting a forged proof against the claim"));
-            lichen_babe::statement::mock_prove(&lichen_proto::hp::journal(cid + 1, &record.deployment, &record.hp()?.deposit, record.hp()?.margin))
+            lichen_babe::statement::mock_prove(&lichen_proto::hp::journal(cid + 1, &record.deployment, &record.hp().deposit, record.hp().margin))
         };
         let bits = lichen_babe::gadget::input(&proof.a);
         let (pi2, pi3) = lichen_babe::statement::pi23_to_bytes(&proof);
@@ -604,12 +604,12 @@ impl Inner {
     /// if no kept instance opens.
     fn hp_answer(&self, d: &HpDisputed) -> Result<Option<bitcoin::Txid>> {
         let cid = d.record.cid();
-        let keys = d.record.hp()?;
+        let keys = d.record.hp();
         let asserted = d.asserted(&self.chain.get_tx(&d.txid("assert")).context("the assertion")?)?;
         let proof = asserted.proof.clone().context("the assertion's points aren't points")?;
         let tx = self.chain.get_tx(&d.txid("challenge_assert")).context("the challenge")?;
         let presigs: Vec<[AdaptorSig; VALUES]> = keys.hub_presigs.iter().map(|s| s.each_ref().map(AdaptorSig::from)).collect();
-        let (posted, revealed) = extract(&keys.hub_lamport, &presigs, &lichen_proto::babe::Disputed::args(&tx)).context("the challenge's secrets")?;
+        let (posted, revealed) = extract(&keys.hub_lamport, &presigs, &link_args(&tx)).context("the challenge's secrets")?;
         ensure!(posted == asserted.digits, "the challenge reveals other digits than asserted");
         let p = self.hp_prepared(cid)?;
         let of_digits: Vec<(u64, Vec<Secret>)> = p.opened.iter().map(|o| Ok((u64::from(o.i), shares_from_hex(&o.shares)?.iter().zip(&posted).map(|(s, v)| s[*v as usize]).collect()))).collect::<Result<_>>()?;

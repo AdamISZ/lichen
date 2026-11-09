@@ -1,12 +1,12 @@
 //! The L2 end to end: a sequencer, the hub minting, two wallets paying
-//! each other, a return to the hub, and the withdrawal statement's input.
+//! each other, a wallet reopened with its sequencer gone and back.
 
-use lichen_ledger::{check, regtest_hub, regtest_sequencer, xonly, Deployment, Mint, Tx, HUB_KEY};
+use lichen_ledger::{regtest_hub, regtest_sequencer, Deployment, Mint, Tx, HUB_KEY};
 use lichen_sequencer::Sequencer;
 use lichen_wallet::Wallet;
 
 #[test]
-fn pay_return_and_the_withdrawal_input() {
+fn pay_and_reopen() {
     let dir = std::env::temp_dir().join(format!("lichen-l2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let seq = Sequencer::start("127.0.0.1:0", Some(dir.join("ledger.json")), regtest_sequencer(), HUB_KEY).unwrap();
@@ -26,32 +26,13 @@ fn pay_return_and_the_withdrawal_input() {
     assert_eq!((alice.balance().unwrap(), bob.balance().unwrap()), (7, 3));
     assert!(bob.send(alice.address(), 4, 0).is_err(), "Bob has 3");
 
-    // Alice returns 7 to the hub with her contract's memo 42
-    let r = alice.return_to_hub(7, 42).unwrap();
-    assert_eq!(alice.balance().unwrap(), 0);
-    assert!(alice.withdraw_input(42).is_err(), "not sealed yet");
-    let sealed = alice.sequencer.seal().unwrap();
-    let input = alice.withdraw_input(42).unwrap();
-    assert_eq!((input.index, input.height), (r, sealed.height));
-    let journal = check(&input).unwrap();
-    assert_eq!(journal[..8], [7, 0, 0, 0, 42, 0, 0, 0]);
-    assert_eq!(journal[8..], Deployment::toy().id(), "the wallet pinned the sequencer's deployment");
-    assert_eq!(xonly(&regtest_hub()), input.note.owner);
-    // for proving it elsewhere (lngap-r0 prove-input / claim)
-    if let Ok(path) = std::env::var("LICHEN_WRITE_WITHDRAW_INPUT") {
-        std::fs::write(&path, serde_json::to_string_pretty(&input).unwrap()).unwrap();
-    }
-
-    // the wallet keeps the input and, once proved, the chain receipt: a
-    // sequencer gone after that stops neither
-    assert!(alice.chain_receipt(42).is_err(), "height not proved yet");
-    std::fs::write(dir.join(format!("ledger.json.blocks/{}.chain", input.height)), b"a receipt").unwrap();
-    assert_eq!(alice.chain_receipt(42).unwrap(), b"a receipt");
+    // the wallet pinned the sequencer's deployment; with the sequencer
+    // gone it opens, and says so
+    assert_eq!(alice.sequencer.deployment.id(), Deployment::toy().id());
+    alice.sequencer.seal().unwrap();
     drop(seq);
-    let mut alice = Wallet::open(&dir.join("alice.json"), "http://127.0.0.1:9").unwrap();
+    let alice = Wallet::open(&dir.join("alice.json"), "http://127.0.0.1:9").unwrap();
     assert!(alice.balance().is_err(), "the sequencer is gone");
-    assert_eq!(serde_json::to_value(alice.withdraw_input(42).unwrap()).unwrap(), serde_json::to_value(&input).unwrap());
-    assert_eq!(alice.chain_receipt(42).unwrap(), b"a receipt");
 
     // a restarted sequencer keeps the ledger
     let seq = Sequencer::start("127.0.0.1:0", Some(dir.join("ledger.json")), regtest_sequencer(), HUB_KEY).unwrap();

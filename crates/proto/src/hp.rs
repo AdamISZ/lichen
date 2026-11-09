@@ -23,8 +23,7 @@
 use anyhow::{ensure, Context, Result};
 use bitcoin::secp256k1::XOnlyPublicKey;
 use bitcoin::Amount;
-use lichen_babe::graph::Windows;
-use lichen_babe::hp::{HubProves, Spec};
+use lichen_babe::hp::{HubProves, Spec, Windows};
 use lichen_babe::reveal::LamportPub;
 use lichen_babe::setup::{Hash, DIGITS, VALUES};
 use lichen_babe::statement::Kind;
@@ -32,7 +31,7 @@ use lngap_lamport::winternitz::{WotsParams, WotsPublic};
 use lngap_sessions::contract::Presign;
 use serde::{Deserialize, Serialize};
 
-use crate::babe::Opened;
+use crate::setup::Opened;
 use crate::{feerate, params, terminal_fee, Checkpoint, Net, Presig, Record, Statement};
 
 /// Alice asks for a setup (`POST /hp/setup`), once she has paid her
@@ -62,7 +61,7 @@ pub struct HpSetup {
 
 /// Alice's commitment to her instances (`POST /hp/commit`): her keys
 /// for `b` and `E`, each instance's hash (hex), and the dealing's
-/// commitments ([`crate::babe::dealing_to_hex`]).
+/// commitments ([`crate::setup::dealing_to_hex`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HpCommit {
     pub cid: u32,
@@ -152,22 +151,18 @@ impl Statement {
         match self {
             Statement::HubProves { mock: true } => Ok(Kind::Mock),
             Statement::HubProves { mock: false } => anyhow::bail!("the hub's statement has no guest yet: hub-proves runs on the mock only"),
-            _ => anyhow::bail!("not a hub-proves statement"),
         }
     }
 }
 
 impl Record {
-    /// The keys, for a hub-proves contract.
-    pub fn hp(&self) -> Result<&HpKeys> {
-        match &self.dispute {
-            crate::DisputeKeys::HubProves(k) => Ok(k),
-            _ => anyhow::bail!("contract {} is not a hub-proves contract", self.cid()),
-        }
+    /// The dispute's keys.
+    pub fn hp(&self) -> &HpKeys {
+        &self.dispute
     }
     /// Its graph.
     pub fn hp_graph(&self) -> Result<HubProves> {
-        let k = self.hp()?;
+        let k = self.hp();
         HubProves::new(Spec {
             terms: self.terms,
             params: params(self.network),
@@ -181,16 +176,16 @@ impl Record {
         })
     }
     /// The hub's statement's journal: `c ‖ D ‖ H(O_D ‖ margin)`.
-    pub fn hp_journal(&self) -> Result<[u8; lichen_withdraw::hp::JOURNAL_LEN]> {
-        let k = self.hp()?;
-        Ok(lichen_withdraw::hp::journal(self.cid(), &self.deployment, &crate::babe::statement_outpoint(&k.deposit), k.margin))
+    pub fn hp_journal(&self) -> [u8; lichen_withdraw::hp::JOURNAL_LEN] {
+        let k = self.hp();
+        lichen_withdraw::hp::journal(self.cid(), &self.deployment, &crate::setup::statement_outpoint(&k.deposit), k.margin)
     }
 }
 
 /// The journal of contract `c` in `D`, of deposit coin `deposit` and
 /// margin `margin`.
 pub fn journal(c: u32, d: &Hash, deposit: &bitcoin::OutPoint, margin: u32) -> [u8; lichen_withdraw::hp::JOURNAL_LEN] {
-    lichen_withdraw::hp::journal(c, d, &crate::babe::statement_outpoint(deposit), margin)
+    lichen_withdraw::hp::journal(c, d, &crate::setup::statement_outpoint(deposit), margin)
 }
 
 /// The keys of a commitment: of the parameters the scripts are built for,
@@ -229,10 +224,9 @@ pub struct HpDisputed {
 
 impl HpDisputed {
     pub fn new(record: &Record, statement: &Statement) -> Result<HpDisputed> {
-        let built = record.build(statement, None)?;
+        let built = record.build(statement)?;
         let set = record.presigned(&built)?.into_iter().map(|p| (p.name.clone(), p)).collect();
-        let crate::Built::HubProves(graph) = built else { anyhow::bail!("contract {} is not a hub-proves contract", record.cid()) };
-        Ok(HpDisputed { record: record.clone(), graph: *graph, set })
+        Ok(HpDisputed { record: record.clone(), graph: *built.0, set })
     }
     /// A pre-signed transaction with both signatures, `wire` below them.
     pub fn finish(&self, name: &str, wire: Vec<Vec<u8>>) -> Result<bitcoin::Transaction> {
@@ -247,7 +241,7 @@ impl HpDisputed {
     /// `request`'s claim: `b`, `E` and the claim's bytes, from its
     /// arguments.
     pub fn requested(request: &bitcoin::Transaction) -> Result<(u32, [u8; 32], Vec<u8>)> {
-        let (b, e, posted) = lichen_babe::hp::HubProves::read_request(&crate::babe::Disputed::args(request))?;
+        let (b, e, posted) = lichen_babe::hp::HubProves::read_request(&crate::setup::link_args(request))?;
         let b = u32::from_be_bytes(b.message().try_into().map_err(|_| anyhow::anyhow!("b's signature signs 4 bytes"))?);
         let e = e.message().try_into().map_err(|_| anyhow::anyhow!("E's signature signs 32 bytes"))?;
         Ok((b, e, posted))
@@ -255,13 +249,13 @@ impl HpDisputed {
     /// What `assert` put on chain: π1's digits (read under the hub's
     /// Lamport key), their preimages, and the proof, if its points are
     /// points.
-    pub fn asserted(&self, assert: &bitcoin::Transaction) -> Result<crate::babe::Asserted> {
-        let args = crate::babe::Disputed::args(assert);
-        let (signed, pi2, pi3) = lichen_babe::graph::Babe::read_assert(&args).context("assert's arguments")?;
+    pub fn asserted(&self, assert: &bitcoin::Transaction) -> Result<crate::setup::Asserted> {
+        let args = crate::setup::link_args(assert);
+        let (signed, pi2, pi3) = HubProves::read_assert(&args).context("assert's arguments")?;
         let lamport = &self.graph.spec.lamport;
         let preimages: Vec<lichen_babe::reveal::Preimage> = signed.iter().map(|a| a[..].try_into().context("a preimage's length")).collect::<Result<_>>()?;
         let digits: Vec<u8> = preimages.iter().enumerate().map(|(d, p)| lamport.read(d, p).context("a preimage of no digit")).collect::<Result<_>>()?;
         let bits: Vec<bool> = digits.iter().flat_map(|v| [v & 1 == 1, v & 2 == 2]).collect();
-        Ok(crate::babe::Asserted { proof: lichen_babe::statement::proof_from_chain(&bits, pi2, pi3), digits, bits, preimages })
+        Ok(crate::setup::Asserted { proof: lichen_babe::statement::proof_from_chain(&bits, pi2, pi3), digits, bits, preimages })
     }
 }

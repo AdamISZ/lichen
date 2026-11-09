@@ -21,9 +21,10 @@
 //! **The claim is true** if its notes are hers (each owner signed `E`),
 //! worth at least `b` (in the contract's units), and live at `A*`, the
 //! last anchor confirmed at least `margin` blocks before `request`'s
-//! block: each in the tree at its position, its nullifier unspent (her
-//! return of at least `b` to this contract, or this contract's exit
-//! record, not counting as a spend). The margin keeps the operator from
+//! block: each in the tree at its position, its nullifier unspent (this
+//! contract's own exit record not counting as a spend: the hub records
+//! one when it takes her claim to withdraw cooperatively, and if it then
+//! won't fold, her exit posts the same claim). The margin keeps the operator from
 //! slipping a held spend of hers into an anchor while her `request`
 //! confirms.
 //!
@@ -68,7 +69,6 @@ pub fn posted_items(bytes: &[u8]) -> Option<Vec<&[u8]>> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Spent {
     Spend,
-    Return { c: u32, r: u64 },
     Exit { c: u32 },
 }
 
@@ -76,7 +76,6 @@ impl Spent {
     pub fn leaf(&self) -> Hash {
         match *self {
             Spent::Spend => smt::spent(),
-            Spent::Return { c, r } => smt::returned(c, r),
             Spent::Exit { c } => smt::exited(c),
         }
     }
@@ -416,10 +415,8 @@ pub fn check(input: &HubInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u
         }
         Why::Spent { which, opening, spent, proof } => {
             opened(*which, opening)?;
-            match *spent {
-                Spent::Return { c, r: v } if c == input.c && v / t.unit >= u64::from(r.b) => return Err(Reject::Own),
-                Spent::Exit { c } if c == input.c => return Err(Reject::Own),
-                _ => {}
+            if *spent == (Spent::Exit { c: input.c }) {
+                return Err(Reject::Own);
             }
             if !smt::holds(&s.nullifiers, &opening.note.nullifier(), &spent.leaf(), proof, smt::empties()) {
                 return Err(Reject::NotSpent);
@@ -505,13 +502,8 @@ impl HubInput {
                 put_opening(&mut w, opening);
                 match *spent {
                     Spent::Spend => w.put(&[0]),
-                    Spent::Return { c, r } => {
-                        w.put(&[1]);
-                        w.put(&c.to_be_bytes());
-                        w.put(&r.to_be_bytes());
-                    }
                     Spent::Exit { c } => {
-                        w.put(&[2]);
+                        w.put(&[1]);
                         w.put(&c.to_be_bytes());
                     }
                 }
@@ -551,8 +543,7 @@ impl HubInput {
                         let opening = read_opening(&mut r)?;
                         let spent = match r.take()? {
                             [0] => Spent::Spend,
-                            [1] => Spent::Return { c: u32::from_be_bytes(r.take()?), r: u64::from_be_bytes(r.take()?) },
-                            [2] => Spent::Exit { c: u32::from_be_bytes(r.take()?) },
+                            [1] => Spent::Exit { c: u32::from_be_bytes(r.take()?) },
                             _ => return Err(Reject::Encoding),
                         };
                         Why::Spent { which, opening, spent, proof: smt::Proof { bitmap: r.take()?, siblings: r.list()? } }
@@ -865,14 +856,6 @@ mod tests {
         };
         let why = set(&mut w, Spent::Spend);
         assert!(check_why(&w, why).is_ok());
-        // her return of at least b to this contract: not a spend
-        let why = set(&mut w, Spent::Return { c: 1007, r: 500 });
-        assert_eq!(check_why(&w, why), Err(Reject::Own));
-        // of less than b, or to another contract: a spend
-        let why = set(&mut w, Spent::Return { c: 1007, r: 499 });
-        assert!(check_why(&w, why).is_ok());
-        let why = set(&mut w, Spent::Return { c: 1008, r: 500 });
-        assert!(check_why(&w, why).is_ok());
         // this contract's exit record: not a spend; another's: a spend
         let why = set(&mut w, Spent::Exit { c: 1007 });
         assert_eq!(check_why(&w, why), Err(Reject::Own));
@@ -889,7 +872,7 @@ mod tests {
             Why::NotANote { which: 0, leaf: [1; 32], path: empties() },
             Why::NotHers { which: 0, opening: opening(&w) },
             Why::TooMuch { openings: vec![opening(&w), opening(&w)] },
-            Why::Spent { which: 0, opening: opening(&w), spent: Spent::Return { c: 9, r: 10 }, proof },
+            Why::Spent { which: 0, opening: opening(&w), spent: Spent::Exit { c: 9 }, proof },
             Why::Second { which: 0, opening: opening(&w), other_c: 8, other_deposit: OutPoint { txid: [1; 32], vout: 2 }, other_b: 3, other },
         ]
         .into_iter()

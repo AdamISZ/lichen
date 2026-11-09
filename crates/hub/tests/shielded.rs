@@ -1,81 +1,27 @@
 //! Contracts over shielded notes (docs/SHIELDED_PLAN.md), native proofs:
 //! Alice and Bob open contracts and shield their deposits; Bob pays Alice
-//! 50,000 sats in a shielded note; Alice withdraws 450,000 from her
-//! shielded notes and the hub folds, the return a transparent note as the
-//! withdrawal statement wants. Then the hub refuses folds: Bob's refused
-//! withdrawal of his last 50,000 exports a dispute package whose
-//! withdrawal input, built as a tower builds it, is the wallet's and
-//! passes the statement.
+//! 50,000 sats in a shielded note; Alice unshields what she withdraws (a
+//! claim takes transparent notes), claims it, and the hub folds. Then the
+//! hub refuses folds: Bob's refused withdrawal keeps its claim, of his
+//! unshielded note, for his exit.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+mod common;
 
 use bitcoin::Amount;
-use lichen_chain::Chain;
-use lichen_hub::{Config, Hub};
-use lichen_ledger::{regtest_sequencer, HUB_KEY};
-use lichen_proto::Statement;
-use lichen_l2::Client;
-use lichen_sequencer::{Options, Sequencer};
+use common::{statement, wait, Env};
 use lichen_wallet::{Ask, Wallet};
-use lngap_btc::regtest::Regtest;
-
-fn wait(what: &str, mut ok: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !ok() {
-        assert!(start.elapsed() < Duration::from_secs(60), "{what}: timed out");
-        std::thread::sleep(Duration::from_millis(200));
-    }
-}
-
-fn mock() -> Statement {
-    Statement::BitVmxMock { session: 0, returns: vec![] }
-}
 
 #[test]
-fn shielded_deposits_a_fold_and_a_dispute_input() {
-    let rt = Regtest::start_standard().unwrap();
-    let dir = std::env::temp_dir().join(format!("lichen-hub-shielded-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let seq = Sequencer::start_with("127.0.0.1:0", None, regtest_sequencer(), HUB_KEY, Options { native_proofs: true, ..Default::default() }).unwrap();
-    let stop = Arc::new(AtomicBool::new(false));
-    let (s2, url) = (stop.clone(), seq.url.clone());
-    let sealer = std::thread::spawn(move || {
-        while !s2.load(Ordering::Relaxed) {
-            let _ = Client::new(&url).and_then(|c| c.seal());
-            std::thread::sleep(Duration::from_millis(200));
-        }
-    });
-    let chain = |w: &str| Chain::connect(rt.rpc_url(), rt.cookie(), w).unwrap();
-    rt.fund(&chain("hub").new_spk().unwrap(), Amount::from_sat(100_000_000)).unwrap();
-    let hub = Hub::start(Config {
-        network: lichen_proto::Net::Regtest,
-        listen: "127.0.0.1:0".into(),
-        sequencer: seq.url.clone(),
-        rpc_url: rt.rpc_url().to_string(),
-        cookie: rt.cookie().clone(),
-        wallet: "hub".into(),
-        statement: mock(),
-        dir: dir.join("hub"),
-        seed: "test-hub".into(),
-        l2_key: lichen_ledger::regtest_hub(),
-        reserve_ppm: 20_000,
-        fee_ppm: 0,
-        max_liquidity: 10_000_000,
-        duration: 2_000,
-        refuse_folds: false,
-        dispute_true_claims: false,
-        first_cid: 1000,
-        windows: None,
-    })
-    .unwrap();
+fn contracts_over_shielded_notes() {
+    let env = Env::new("shielded");
+    let rt = &env.rt;
+    let hub = env.hub("hub", |c| c.duration = 500);
     let mut users = vec![];
     for (name, deposit) in [("alice", 400_000u64), ("bob", 100_000)] {
-        let ch = chain(name);
+        let ch = env.chain(name);
         rt.fund(&ch.new_spk().unwrap(), Amount::from_sat(10_000_000)).unwrap();
-        let mut w = Wallet::create(&dir.join(format!("{name}.json")), &seq.url).unwrap();
-        let held = w.open_contract(&hub.url, &ch, &mock(), &dir.join(name), Ask { deposit, liquidity: 1_000_000, reserve: 20_000 }, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
+        let mut w = Wallet::create(&env.dir.join(format!("{name}.json")), &env.seq.url).unwrap();
+        let held = w.open_contract(&hub.url, &ch, &statement(), Ask { deposit, liquidity: 1_000_000, reserve: 20_000 }, ch.new_spk().unwrap(), &|addr: &bitcoin::Address, v| { ch.pay(&addr.script_pubkey(), v)?; rt.mine(1)?; Ok(()) }).unwrap();
         users.push((w, ch, held));
     }
     rt.mine(1).unwrap();
@@ -89,37 +35,31 @@ fn shielded_deposits_a_fold_and_a_dispute_input() {
     users[1].0.send_shielded(&to_alice, 50_000).unwrap();
     assert_eq!(users[0].0.balances().unwrap(), (0, 450_000));
 
-    // Alice withdraws 450,000 cooperatively, returned from shielded notes
+    // Alice withdraws 450,000 cooperatively: unshielded, then claimed
     {
         let (w, ch, h) = &mut users[0];
+        let want = 450_000 / h.record.terms.unit.to_sat() * h.record.terms.unit.to_sat();
+        w.unshield(want).unwrap();
+        assert_eq!(w.balances().unwrap(), (want, 450_000 - want));
         let before = ch.balance().unwrap();
-        let txid = w.withdraw(&hub.url, &mock(), &dir.join("alice"), h.record.cid(), 450_000).unwrap();
+        let txid = w.withdraw(&hub.url, &statement(), h.record.cid(), 450_000).unwrap();
         rt.mine(1).unwrap();
-        assert_eq!(ch.balance().unwrap() - before, Amount::from_sat(450_000) + h.record.terms.reserve_alice);
-        assert_eq!(w.balance().unwrap(), 0);
-        println!("LICHEN Alice withdrew 450,000 from shielded notes; the hub folded ({txid})");
+        assert_eq!(ch.balance().unwrap() - before, Amount::from_sat(want) + h.record.terms.reserve_alice);
+        assert_eq!(w.balances().unwrap(), (0, 450_000 - want), "the rest still shielded");
+        println!("LICHEN Alice unshielded {want} sats and withdrew them; the hub folded ({txid})");
     }
 
     // the hub refuses folds now: Bob's withdrawal of 50,000 is refused,
-    // and his dispute's input is a tower's as the wallet's
+    // and his claim is kept for his exit
     hub.set_refuse_folds(true);
     let (w, _, h) = &mut users[1];
     let cid = h.record.cid();
-    assert!(w.withdraw(&hub.url, &mock(), &dir.join("bob"), cid, 50_000).is_err(), "refused");
-    let input = w.withdraw_input(cid).unwrap();
-    let journal = lichen_ledger::check(&input).unwrap();
-    assert_eq!(journal[..8], [0x50, 0xc3, 0, 0, (cid & 0xff) as u8, (cid >> 8) as u8, 0, 0], "b = 50,000 and memo c");
-    let program = mock().program(&dir.join("bob")).unwrap();
-    let pkg = w.export_dispute(&mock(), Some(&program), cid, None).unwrap();
-    assert_eq!(serde_json::to_value(lichen_wallet::tower::withdraw_input(&pkg).unwrap()).unwrap(), serde_json::to_value(&input).unwrap());
-    // the package carries the input: the tower needs no sequencer for it
-    let mut gone = pkg.clone();
-    gone.sequencer = "http://127.0.0.1:9".into();
-    assert_eq!(serde_json::to_value(lichen_wallet::tower::withdraw_input(&gone).unwrap()).unwrap(), serde_json::to_value(&input).unwrap());
-    gone.b += 1;
-    assert!(lichen_wallet::tower::withdraw_input(&gone).is_err(), "checked against the package's amount");
-    println!("LICHEN Bob's refused withdrawal of 50,000 from shielded notes: the dispute's input checks");
-    stop.store(true, Ordering::Relaxed);
-    sealer.join().unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
+    let want = 50_000 / h.record.terms.unit.to_sat() * h.record.terms.unit.to_sat();
+    let note = w.unshield(want).unwrap();
+    assert!(w.withdraw(&hub.url, &statement(), cid, 50_000).is_err(), "refused");
+    let plan = w.contracts.iter().find(|x| x.record.cid() == cid).unwrap().exit.clone().expect("the claim kept");
+    let claim = lichen_withdraw::hp::Claim::from_bytes(&plan.posted().unwrap()).unwrap();
+    assert_eq!((claim.positions, u64::from(plan.b) * h.record.terms.unit.to_sat()), (vec![note], want), "the claim of his unshielded note");
+    assert!(w.withdraw(&hub.url, &statement(), cid, 60_000).is_err(), "another amount than the claim kept");
+    println!("LICHEN Bob's refused withdrawal of {want} sats from an unshielded note: its claim kept for his exit");
 }

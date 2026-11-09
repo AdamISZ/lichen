@@ -1,9 +1,10 @@
-//! The statement BABE verifies, as both parties build it: RISC Zero's (the
-//! BABE guest's Groth16 receipt, [`crate::risc0`]) or the mock (a Groth16
-//! proof of a toy circuit, for fast tests). Either way its public input is
-//! the contract's journal `c ‖ D ‖ H(pk_H)` (`lichen_withdraw::fixed`),
-//! fixed at opening. And a proof's encoding, and π1 read back from the
-//! bits `assert` signs.
+//! The statement BABE verifies, as both parties build it. With the hub
+//! proving (`crate::hp`), the hub's statement (`lichen_withdraw::hp`);
+//! its guest is still to build, so only the mock is here: a Groth16
+//! proof of a toy circuit, for tests of the protocol. Its public input is
+//! the contract's journal, fixed at opening. A RISC Zero receipt's
+//! Groth16 form is [`crate::risc0`]'s. And a proof's encoding, and π1
+//! read back from the bits `assert` signs.
 
 use std::sync::OnceLock;
 
@@ -15,33 +16,16 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisE
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_snark::SNARK;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
-use lichen_withdraw::fixed::{key_digest, DIGITS, JOURNAL_LEN};
 use sha2::{Digest, Sha256};
 
 use crate::field::BITS;
-use crate::setup::Hash;
-
-/// The BABE guest's image id, hex (the build committed in
-/// `r0/guests/babe.id`; with the file's newline).
-pub const IMAGE_ID: &str = include_str!("../../../r0/guests/babe.id");
 
 /// Which statement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// RISC Zero's receipt of the BABE guest.
-    Risc0,
     /// A proof anyone can make: for tests of the protocol, not of the
-    /// withdrawal.
+    /// claim.
     Mock,
-}
-
-/// The journal: `c` (little-endian), `D`, and the hub's key for `b`.
-pub fn journal(c: u32, d: &Hash, hub_b: &[Hash; DIGITS]) -> [u8; JOURNAL_LEN] {
-    let mut j = [0u8; JOURNAL_LEN];
-    j[..4].copy_from_slice(&c.to_le_bytes());
-    j[4..36].copy_from_slice(d);
-    j[36..].copy_from_slice(&key_digest(hub_b));
-    j
 }
 
 /// The mock's circuit: knowledge of `w` equal to the public `y`.
@@ -71,13 +55,11 @@ fn mock_input(journal: &[u8]) -> Fr {
 impl Kind {
     pub fn verifying_key(&self) -> VerifyingKey<Bn254> {
         match self {
-            Kind::Risc0 => crate::risc0::verifying_key(),
             Kind::Mock => mock_keys().1.clone(),
         }
     }
     pub fn public_inputs(&self, journal: &[u8]) -> Vec<Fr> {
         match self {
-            Kind::Risc0 => crate::risc0::public_inputs(&image_id(), journal).to_vec(),
             Kind::Mock => vec![mock_input(journal)],
         }
     }
@@ -87,12 +69,6 @@ impl Kind {
     }
 }
 
-/// The BABE guest's image id.
-pub fn image_id() -> [u8; 32] {
-    let b = (0..32).map(|i| u8::from_str_radix(&IMAGE_ID.trim()[2 * i..2 * i + 2], 16).expect("hex")).collect::<Vec<_>>();
-    b.try_into().expect("32 bytes")
-}
-
 /// A mock proof for `journal`.
 pub fn mock_prove(journal: &[u8]) -> Proof<Bn254> {
     let rng = &mut StdRng::from_seed(Sha256::digest(journal).into());
@@ -100,17 +76,6 @@ pub fn mock_prove(journal: &[u8]) -> Proof<Bn254> {
 }
 
 /// A proof's bytes: its three points, compressed (128 bytes).
-/// A RISC Zero claim as `lichen-r0 bitvmx-input` writes it (the image id,
-/// the points, the journal): its proof, once the image is the BABE guest's
-/// and the journal `journal`.
-pub fn risc0_claim(data: &[u8], journal: &[u8]) -> anyhow::Result<Proof<Bn254>> {
-    let (id, points, j) = lngap_zk::groth16::split_input(data)?;
-    let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
-    anyhow::ensure!(id == IMAGE_ID.trim(), "a claim of image {id}, not the BABE guest's");
-    anyhow::ensure!(j == journal, "the claim's journal is not the contract's");
-    crate::risc0::proof(points)
-}
-
 pub fn proof_to_bytes(p: &Proof<Bn254>) -> Vec<u8> {
     let mut v = Vec::new();
     p.serialize_compressed(&mut v).expect("serialize");
@@ -160,10 +125,10 @@ mod tests {
 
     #[test]
     fn a_mock_proof_and_its_round_trips() {
-        let j = journal(7, &[1; 32], &[[2; 32]; DIGITS]);
+        let j = [7u8; 68];
         let p = mock_prove(&j);
         assert!(Kind::Mock.verify(&j, &p));
-        assert!(!Kind::Mock.verify(&journal(8, &[1; 32], &[[2; 32]; DIGITS]), &p), "another contract's");
+        assert!(!Kind::Mock.verify(&[8u8; 68], &p), "another contract's");
         assert_eq!(proof_from_bytes(&proof_to_bytes(&p)), Some(p.clone()));
         assert_eq!(proof_to_bytes(&p).len(), 128);
         let (b, c) = pi23_to_bytes(&p);

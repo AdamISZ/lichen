@@ -17,13 +17,18 @@
 //! hashlocks), so she holds the input secrets and reveals π1's in her
 //! challenge, by completing the hub's adaptor pre-signatures; the hub
 //! evaluates them and answers with a `msg`. The hub keeps its signature
-//! on `wrongly_challenged` from her ([`HubProves::withheld`]), as Alice
-//! does of hers in [`crate::graph`]: she knows every `msg` and could post
-//! it herself, large and at a low fee rate, and pin the hub's own.
+//! on `wrongly_challenged` from her ([`HubProves::withheld`]): she knows
+//! every `msg` and could post it herself, large and at a low fee rate,
+//! and pin the hub's own (papers/lichen-babe §7). It is TRUC (version
+//! 3), which bounds what could pin with it.
 //!
-//! The contract output's `request` leaf is the exit's of
-//! [`crate::graph`]: her signatures on `b` and `E`, and the claim posted
-//! below them (the hub's statement reads it, `lichen_withdraw::hp`).
+//! The contract output's `request` leaf carries her signatures on `b`
+//! and `E`, and the claim posted below them (the hub's statement reads
+//! it, `lichen_withdraw::hp`). Every transaction has one input: the
+//! value flows through one chain from the contract output, and each
+//! output of the chain has its terminal (a terminal can't pay into a
+//! pre-signed transaction: its broadcaster adds a fee input, which
+//! changes its id).
 
 use anyhow::{ensure, Context, Result};
 use lichen_withdraw::hp::{posted_items, POSTED_ITEM, POSTED_ITEMS};
@@ -41,9 +46,49 @@ use lngap_lamport::winternitz::{WotsExt, WotsParams, WotsPublic, WotsSig};
 use lngap_sessions::session::Terms;
 use lngap_sessions::skeleton::{wots_shape, Core, Presign, POST_CSV};
 
-use crate::graph::{after, drop_digits, drop_n, ok_leaf, Windows, E_DIGITS};
 use crate::reveal::{LamportPub, Preimage};
 use crate::setup::{Hash, DIGITS, VALUES};
+
+/// The dispute's windows: `w_H` for the hub's assertion, `Δ2` for her
+/// challenge, `Δ1` for the hub's answer, relative, in blocks; `t_a` her
+/// request's latest, a height (as `T_close` is).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Windows {
+    pub w_h: u16,
+    pub t_a: u32,
+    pub delta2: u16,
+    pub delta1: u16,
+}
+
+/// `assert`'s arguments: the preimages, π2, π3.
+pub type Asserted<'a> = (&'a [Vec<u8>], &'a [u8], &'a [u8]);
+
+fn ok_leaf(name: &str, b: Builder, timelock: Timelock) -> Leaf {
+    Leaf::new(name, b.push_int(1).into_script(), timelock)
+}
+
+/// `Builder` with a relative lock, and the lock.
+fn after(blocks: u16) -> (Builder, Timelock) {
+    (Builder::new().csv(blocks), Timelock::csv(blocks))
+}
+
+/// Drop a word's 8 digits, which `wots_verify` leaves.
+fn drop_digits(b: Builder) -> Builder {
+    drop_n(b, 8)
+}
+
+/// Drop `n` stack items (`n` even, or one `OP_DROP` more).
+fn drop_n(b: Builder, n: usize) -> Builder {
+    let b = (0..n / 2).fold(b, |b, _| b.push_opcode(OP_2DROP));
+    if n % 2 == 1 {
+        b.push_opcode(OP_DROP)
+    } else {
+        b
+    }
+}
+
+/// `E`'s 64 digits (32 bytes).
+const E_DIGITS: usize = 64;
 
 /// A contract of the swapped game: what both parties build its graph
 /// from.
@@ -227,8 +272,26 @@ impl HubProves {
         let e = WotsSig::from_consumption_order(WotsParams::for_bytes(32), &args[nb..nb + ne])?;
         Ok((b, e, args[nb + ne..].iter().rev().flatten().copied().collect()))
     }
+    /// Her signature on `b` as the payout's leaves take it (bottom first:
+    /// each digit's hash, then the digit).
+    pub fn b_wire(b: &WotsSig) -> Vec<Vec<u8>> {
+        b.consumption_order().into_iter().rev().collect()
+    }
     /// `assert`'s: π1's digits, Lamport-signed, then π2 and π3.
     pub fn assert_wire(preimages: &[Preimage], pi2: &[u8], pi3: &[u8]) -> Vec<Vec<u8>> {
-        crate::graph::Babe::assert_wire(preimages, pi2, pi3)
+        [pi3.to_vec(), pi2.to_vec()].into_iter().chain(preimages.iter().rev().map(|p| p.to_vec())).collect()
+    }
+    /// Read `assert`'s arguments (consumption order, below both
+    /// signatures): the preimages, π2, π3.
+    pub fn read_assert(args: &[Vec<u8>]) -> Option<Asserted<'_>> {
+        (args.len() == DIGITS + 2).then(|| (&args[..DIGITS], &args[DIGITS][..], &args[DIGITS + 1][..]))
+    }
+    /// `challenge_assert`'s: the reveal ([`crate::reveal::reveal_args`]).
+    pub fn challenge_wire(args: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        args.into_iter().rev().collect()
+    }
+    /// `wrongly_challenged`'s: `msg`.
+    pub fn wrongly_wire(msg: &[u8; 32]) -> Vec<Vec<u8>> {
+        vec![msg.to_vec()]
     }
 }

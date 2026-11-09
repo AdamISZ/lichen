@@ -1,27 +1,19 @@
 //! Opt-in (`--ignored`; the prover image, `docker build -f r0/Dockerfile -t
 //! lichen-r0 .` (or another tag, named by LICHEN_R0_IMAGE), or
 //! LICHEN_SPEND_PROVER naming another prover command; a
-//! regtest bitcoind): shielding, a payment and a return with real RISC
-//! Zero receipts, to a sequencer that accepts no native proofs and
+//! regtest bitcoind): shielding, a payment and an unshielding with real
+//! RISC Zero receipts, to a sequencer that accepts no native proofs and
 //! anchors its history on regtest (docs/ANCHOR_PLAN.md); then every height
 //! it recorded proved by the chain prover (r0/chain-prover.sh, in the same
 //! image, or LICHEN_R0 naming lichen-r0), the last receipt ending at the
-//! last sealed root and carrying the return's anchor; then Bob's
-//! withdrawal proved by the withdrawal guest (r0/withdraw-prover.sh),
-//! under the anchored root, the chain receipt first carrying its anchor
-//! (which the sequencer serves) and ten blocks on the anchor (a succinct
-//! receipt: the Groth16 wrap is x86 Linux's, LICHEN_WRAP=1 there).
-//! LICHEN_KEEP=1 keeps the files: the canned claim of crates/proto/tests/data
-//! is `lichen-r0 claim` of the withdrawal's input and chain receipt kept
-//! so, and `claim-60-42.seal` the deployment's genesis seal (the claim's D
-//! commits to it). Bob returns 60 of the canned unit (41,040 sats), the
-//! real-statement tests' `b` in their contracts.
+//! last sealed root and carrying the last anchor. LICHEN_KEEP=1 keeps the
+//! files.
 
 use std::time::{Duration, Instant};
 
 use bitcoin::Amount;
 use lichen_chain::Chain;
-use lichen_ledger::{check, regtest_hub, regtest_sequencer, xonly, Mint, Tx, HUB_KEY};
+use lichen_ledger::{regtest_hub, regtest_sequencer, xonly, Mint, Tx, HUB_KEY};
 use lichen_sequencer::anchor::{genesis_seal, Anchoring};
 use lichen_sequencer::{Options, Sequencer};
 use lichen_wallet::shielded::SpendProver;
@@ -30,7 +22,7 @@ use lngap_btc::regtest::Regtest;
 
 #[test]
 #[ignore]
-fn shield_pay_and_return_with_receipts() {
+fn shield_pay_and_unshield_with_receipts() {
     let dir = std::env::temp_dir().join(format!("lichen-shielded-r0-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let prover = std::env::var("LICHEN_SPEND_PROVER").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../r0/spend-prover.sh"));
@@ -52,25 +44,26 @@ fn shield_pay_and_return_with_receipts() {
     alice.shield(100_000).unwrap();
     println!("LICHEN shielded 100,000 in {:.1?}", t.elapsed());
     let t = std::time::Instant::now();
-    let (unit, ret) = (lichen_proto::canned_unit(), 60 * lichen_proto::canned_unit());
+    let ret = 41_040;
     alice.send_shielded(&bob.shielded_address(), ret).unwrap();
     println!("LICHEN paid Bob {ret} in {:.1?}", t.elapsed());
     assert_eq!((alice.balances().unwrap(), bob.balances().unwrap()), ((0, 100_000 - ret), (0, ret)));
     let t = std::time::Instant::now();
-    bob.return_to_hub(ret, 42).unwrap();
-    println!("LICHEN Bob returned {ret} to the hub in {:.1?}", t.elapsed());
+    let index = bob.unshield(ret).unwrap();
+    println!("LICHEN Bob unshielded {ret} in {:.1?}", t.elapsed());
     bob.sequencer.seal().unwrap();
-    // anchored: blocks until the anchor's record, then its height sealed
-    let index = bob.returned(42).unwrap();
+    // anchored: blocks until an anchor covering it is recorded
     let start = Instant::now();
-    while bob.sequencer.state().unwrap().anchored_input(index, &bob.sequencer.deployment).is_err() {
-        assert!(start.elapsed() < Duration::from_secs(120), "the return anchored");
+    let mut anchored = 0;
+    while anchored == 0 {
+        assert!(start.elapsed() < Duration::from_secs(120), "the unshielding anchored");
         rt.mine(1).unwrap();
         std::thread::sleep(Duration::from_millis(500));
         bob.sequencer.seal().unwrap();
+        let s = bob.sequencer.state().unwrap();
+        let h = s.sealed.iter().find(|x| x.size > index).map_or(u64::MAX, |x| x.height);
+        anchored = s.anchors.iter().find(|a| a.anchor.height >= h).map_or(0, |a| a.anchor.height);
     }
-    let journal = check(&bob.withdraw_input(42).unwrap()).unwrap();
-    assert_eq!((u32::from_le_bytes(journal[..4].try_into().unwrap()), &journal[4..8]), (ret as u32, &[42, 0, 0, 0][..]), "b in sats, a unit of 1");
 
     // the chain: every recorded height proved, each from the last
     let blocks = lichen_sequencer::blocks_dir(&dir.join("ledger.json"));
@@ -94,26 +87,7 @@ fn shield_pay_and_return_with_receipts() {
     println!("LICHEN {line}");
     assert!(line.starts_with(&format!("height {} root {} ", sealed.height, hex::encode(sealed.root()))), "it ends at the last sealed root: {line}");
 
-    assert!(line.contains(&format!("anchored at {}", bob.withdraw_input(42).unwrap().height)), "and carries the return's anchor: {line}");
-
-    // the withdrawal: ln-gap's statement under the anchored root, the
-    // chain receipt first carrying the anchor, ten blocks on it (the
-    // contract's W at regtest's difficulty: a checkpoint here)
-    rt.mine(10).unwrap();
-    let input = bob.withdraw_input(42).unwrap();
-    let anchor = bob.kept(index).and_then(|k| k.anchor).expect("the anchor kept");
-    let checkpoint = lichen_proto::Checkpoint::tip(&chain()).unwrap();
-    let full = lichen_wallet::prover_input(input.clone(), Some(&anchor), Some(&checkpoint), unit, &chain()).unwrap();
-    let (json, chain_file, receipt) = (dir.join("withdraw-input.json"), dir.join("chain.receipt"), dir.join("withdraw.receipt"));
-    std::fs::write(&json, serde_json::to_vec_pretty(&full).unwrap()).unwrap();
-    std::fs::write(&chain_file, bob.chain_receipt(42).unwrap()).unwrap();
-    std::fs::write(dir.join("seal"), lichen_ledger::outpoint::to_string(&seal)).unwrap();
-    assert_eq!(std::fs::read(&chain_file).unwrap(), std::fs::read(blocks.join(format!("{}.chain", anchor.from))).unwrap(), "the sequencer serves its prover's receipt");
-    let t = std::time::Instant::now();
-    let cmd = if std::env::var("LICHEN_WRAP").is_ok() { "claim" } else { "withdraw" };
-    let ok = std::process::Command::new(r0.join("withdraw-prover.sh")).arg(cmd).arg(&json).arg(&chain_file).arg(&receipt).status().unwrap();
-    assert!(ok.success(), "the withdrawal prover");
-    println!("LICHEN proved Bob's withdrawal ({cmd}) under the anchored height {} in {:.1?}", input.height, t.elapsed());
+    assert!(line.contains("anchored at "), "and carries the last anchor: {line}");
     drop(seq);
     match std::env::var("LICHEN_KEEP") {
         Ok(_) => println!("LICHEN kept {}", dir.display()),

@@ -92,12 +92,12 @@ body.solo #ledger { max-height: 55vh; }
     <h2>The hub <span class="tag">issues tokens, holds the contracts</span></h2>
     <div class="stats">
       <div>on chain<b id="hub-onchain"></b></div>
-      <div>returned to it on the L2<b id="hub-returned"></b></div>
+      <div>its own on the L2<b id="hub-returned"></b></div>
       <div>headroom committed<b id="hub-headroom"></b></div>
     </div>
     <div class="row toggles">
       <label><input type="checkbox" id="refuse"> refuse cooperative withdrawals</label>
-      <label><input type="checkbox" id="disputeall"> dispute claims that are true</label>
+      <label><input type="checkbox" id="disputeall"> assert against claims that are true</label>
     </div>
     <table><thead><tr><th>contract</th><th>user</th><th>deposit</th><th>cap</th><th>state</th></tr></thead><tbody id="hub-contracts"></tbody></table>
     <ul class="log" id="hub-log"></ul>
@@ -206,10 +206,10 @@ function render(s) {
     `<li><span class="k btc">bitcoin</span> ${esc(m)}</li>`).join('');
   const h = s.hub;
   document.getElementById('hub-onchain').textContent = sats(h.onchain);
-  document.getElementById('hub-returned').textContent = sats(h.returned);
+  document.getElementById('hub-returned').textContent = sats(h.l2);
   document.getElementById('hub-headroom').textContent = sats(h.headroom);
   document.getElementById('refuse').checked = h.refuse_folds;
-  document.getElementById('disputeall').checked = h.dispute_true_claims;
+  document.getElementById('disputeall').checked = h.forge_assertions;
   document.getElementById('hub-contracts').innerHTML = h.contracts.map(c =>
     `<tr><td>${c.cid}</td><td>${esc(c.user)}</td><td>${Number(c.deposit).toLocaleString('en-US')}</td><td>${Number(c.cap).toLocaleString('en-US')}</td><td>${c.state}${c.dispute ? ' · ' + esc(c.dispute) : ''}</td></tr>`).join('');
   document.getElementById('hub-log').innerHTML = h.log.slice().reverse().map(m => `<li>${esc(m)}</li>`).join('');
@@ -231,7 +231,7 @@ if (solo) {
   document.title = 'lichen · ' + solo.toLowerCase();
 }
 document.getElementById('refuse').onchange = e => post('/switch', { refuse_folds: e.target.checked });
-document.getElementById('disputeall').onchange = e => post('/switch', { dispute_true_claims: e.target.checked });
+document.getElementById('disputeall').onchange = e => post('/switch', { forge_assertions: e.target.checked });
 tick();
 setInterval(tick, 700);
 </script>

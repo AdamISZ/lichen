@@ -1,6 +1,6 @@
 //! The wallet's shielded notes (docs/SHIELDED_PLAN.md): its keys and
 //! address, note encryption, scanning, and the shielded transactions it
-//! builds (shielding, payments, returns to the hub).
+//! builds (shielding, payments, unshielding).
 //!
 //! Keys, from the wallet's secret: `nk` (spends and nullifiers) and an
 //! encryption key `e`, x-only `E`. An address is `owner ‖ E`. A new note's
@@ -254,15 +254,15 @@ impl Wallet {
         self.submit_shielded(&spends, &[], &outputs, &[])
     }
 
-    /// Return `b` to the hub with memo `c` from our shielded notes: the
-    /// return a transparent note, as the withdrawal statement wants; the
-    /// change shielded. The return's index.
-    pub(crate) fn return_shielded(&mut self, b: u64, c: u32) -> Result<u32> {
+    /// Unshield `b` from our shielded notes: a transparent note of ours
+    /// (a claim, a withdrawal's or an exit's, takes transparent notes),
+    /// the change shielded. The new note's index.
+    pub fn unshield(&mut self, b: u64) -> Result<u32> {
         let (spends, total) = self.select_shielded(&self.state()?, b)?;
-        let ret = Note { owner: self.sequencer.deployment.hub, value: b, memo: c, rho: fresh_rho() };
+        let out = Note { owner: self.address(), value: b, memo: 0, rho: fresh_rho() };
         let change = if total > b { vec![(self.shielded_address(), total - b)] } else { vec![] };
-        let idx = self.submit_shielded(&spends, &[], &change, &[ret])?;
-        Ok(*idx.last().context("the return's index")?)
+        let idx = self.submit_shielded(&spends, &[], &change, &[out])?;
+        Ok(*idx.last().context("the new note's index")?)
     }
 }
 

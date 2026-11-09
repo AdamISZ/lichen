@@ -12,7 +12,6 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use lichen_hub::{Config, Hub};
 use lichen_ledger::{fresh_rho, load_or_create_key, regtest_hub, xonly};
-use lichen_proto::bitvmx::Windows;
 use lichen_proto::Statement;
 
 #[derive(Parser)]
@@ -32,11 +31,9 @@ struct Args {
     cookie: Option<PathBuf>,
     #[arg(long, default_value = "hub")]
     chain_wallet: String,
-    /// BABE's: `babe` (the real proof) or `babe-mock`; BitVMX's: `bitvmx`
-    /// (the real proof, on its verifier found in the cargo checkout),
-    /// `bitvmx:<path to the verifier's program definition>` or
-    /// `bitvmx-mock`.
-    #[arg(long, default_value = "babe-mock")]
+    /// The hub's statement: `hub-proves-mock` (a proof of a toy circuit,
+    /// for trials) or `hub-proves` (its guest, not built yet).
+    #[arg(long, default_value = "hub-proves-mock")]
     statement: Statement,
     /// Where the hub keeps its contracts.
     #[arg(long, default_value = "hub-data")]
@@ -61,29 +58,17 @@ struct Args {
     /// Mutinynet).
     #[arg(long)]
     duration: Option<u32>,
-    /// The dispute's windows, in blocks, `<user>,<hub>,<path>`: the user's
-    /// for each of her moves, the hub's for its choices, the hub's for its
-    /// heavy moves (the network's default if not given). Size the heavy
-    /// ones by the contracts the hub will hold.
-    #[arg(long, value_parser = parse_windows)]
-    windows: Option<Windows>,
     /// For trials, on test networks only: refuse every cooperative
-    /// withdrawal and dispute every claim, true ones too, so that each
-    /// withdrawal is played to its end on chain; a valid last step not
-    /// proved in the user's window is taken by the hub's timeout.
+    /// withdrawal and assert a false proof against every exit claim that
+    /// holds, so that each exit is played to its end on chain (the user
+    /// challenges, and `failure` pays her).
     #[arg(long)]
     hostile: bool,
     /// For trials, on test networks only: refuse every cooperative
-    /// withdrawal, so that each is played on chain, but dispute only
-    /// false claims (a true one ends unchallenged).
+    /// withdrawal, so that each is an exit, but assert only against false
+    /// claims (a true one is paid by its timeout).
     #[arg(long)]
     refuse_folds: bool,
-}
-
-fn parse_windows(s: &str) -> Result<Windows, String> {
-    let n: Vec<u16> = s.split(',').map(|x| x.trim().parse::<u16>().map_err(|e| format!("{x}: {e}"))).collect::<Result<_, _>>()?;
-    let [user, hub, path] = n[..] else { return Err("three windows, <user>,<hub>,<path>".into()) };
-    Ok(Windows { user, hub, path })
 }
 
 fn main() -> Result<()> {
@@ -104,10 +89,10 @@ fn main() -> Result<()> {
     }
     if a.hostile {
         anyhow::ensure!(a.network.is_test(), "--hostile is for test networks only, not {}", a.network);
-        println!("hostile: refusing every cooperative withdrawal and disputing every claim");
+        println!("hostile: refusing every cooperative withdrawal and asserting against every exit claim");
     } else if a.refuse_folds {
         anyhow::ensure!(a.network.is_test(), "--refuse-folds is for test networks only, not {}", a.network);
-        println!("refusing every cooperative withdrawal; disputing false claims only");
+        println!("refusing every cooperative withdrawal; asserting against false claims only");
     }
     let hub = Hub::start(Config {
         network: a.network,
@@ -124,9 +109,8 @@ fn main() -> Result<()> {
         fee_ppm: a.fee_ppm,
         max_liquidity: a.max_liquidity,
         duration: a.duration.unwrap_or(lichen_proto::default_duration(a.network)),
-        windows: a.windows,
         refuse_folds: a.hostile || a.refuse_folds,
-        dispute_true_claims: a.hostile,
+        forge_assertions: a.hostile,
         first_cid: 1000,
     })?;
     println!("lichen hub at {}", hub.url);

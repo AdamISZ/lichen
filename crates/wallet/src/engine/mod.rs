@@ -1,13 +1,10 @@
-//! Alice's side of a dispute, from the escalation to the payout, over what
-//! it signs with ([`Signer`]) and where it keeps its state ([`Store`]): the
-//! wallet's own keys and contract (`lichen dispute`), or a tower's package
-//! (`lichen tower`). The play is the contract's gadget's ([`bitvmx`]:
-//! BitVMX's search); what every gadget shares is here: posting her links
-//! and terminals, waiting on the hub's, keeping the claim and the outcome.
-//! A win ends at the payout: sweeping it takes her own key, which only the
-//! wallet holds.
+//! Alice's side of a dispute, from her request to the payout, over what it
+//! signs with ([`Signer`]) and where it keeps its state ([`Store`]): the
+//! wallet's own keys and contract. The play is [`hp`]'s, the exit where
+//! only the hub proves; here what it rests on: posting her links and
+//! terminals, waiting on the hub's, keeping the outcome. A win ends at the
+//! payout: sweeping it takes her own key.
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,91 +12,62 @@ use anyhow::{ensure, Context, Result};
 use bitcoin::key::Keypair;
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use lichen_chain::{Chain, KeyFees};
-use lichen_proto::{anchor_vout, sign_anchor, Gadget, Patience, Record, Stall, Statement};
+use lichen_proto::{anchor_vout, sign_anchor, Patience, Record, Stall, Statement};
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
 
-pub mod babe;
 pub mod hp;
-pub mod bitvmx;
 
 /// How a dispute ended for Alice.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Outcome {
     /// Stopped on request (`pause_after`); run again to resume.
     Paused,
-    /// The hub stopped answering; her timeout paid her (its txid).
+    /// The hub didn't assert her claim false: `request_timeout` paid her
+    /// (its txid).
     HubTimedOut(Txid),
-    /// She showed a hop of the hub's path false (it couldn't reveal it):
-    /// her timeout paid her.
-    PathRefuted(Txid),
-    /// She proved the disputed step; paid (the proof's txid).
-    Proved(Txid),
-        /// Under BABE: the hub didn't challenge her proof; `success` paid her.
-    Unchallenged(Txid),
-    /// Under BABE: she answered the hub's challenge with a kept
-    /// instance's `msg`; `wrongly_challenged` paid her.
-    Answered(Txid),
-    /// With the hub proving: its assertion was false, it couldn't answer
-    /// her challenge, and `failure` paid her.
+    /// The hub's assertion was false, it couldn't answer her challenge,
+    /// and `failure` paid her.
     Refuted(Txid),
-    /// Under BABE, on the real statement: the hub responded, so her proof
-    /// is due, by `T_A` (this block). Its signature on `b`, which the
-    /// proof takes, is written beside the instances (`hub-auth.json`).
-    /// Run again with the proof.
-    ProofDue(u32),
-    /// The hub disproved her claim (or she lost by timeout).
-    Lost,
-    /// Under BABE, an exit's claim countered: the hub showed a note of it
-    /// spent (or claimed through another contract), so no branch of the
-    /// statement holds; `respond_timeout` takes the contract from `T_A`.
+    /// The hub asserted a valid proof that her claim is false: she lets
+    /// it stand, and `success` is the hub's.
     Countered,
+    /// The hub answered her challenge (or took the contract otherwise).
+    Lost,
 }
 
 impl Outcome {
     /// The payout's txid, for a win.
     pub fn payout(&self) -> Option<Txid> {
         match self {
-            Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) | Outcome::Refuted(t) => Some(*t),
-            Outcome::Lost | Outcome::Paused | Outcome::ProofDue(_) | Outcome::Countered => None,
+            Outcome::HubTimedOut(t) | Outcome::Refuted(t) => Some(*t),
+            Outcome::Lost | Outcome::Paused | Outcome::Countered => None,
         }
     }
 }
 
 /// What a dispute signs with: her fee budget, the key of her links'
-/// anchors if she lends it, and her one-time secrets for the contract's
-/// gadget.
+/// anchors, and her contract's secrets (her one-time keys; her challenge
+/// reveals her dealing's).
 pub trait Signer {
     /// The contract's fee budget.
     fn fees(&self) -> KeyFees;
     /// The key of her links' anchors, to bump their fees; none, and each
     /// link is posted at its floor.
     fn anchor(&self) -> Option<Keypair>;
-        /// Her BitVMX secrets, for a BitVMX contract.
-    fn bitvmx(&self) -> Result<&dyn bitvmx::Secrets>;
-    /// Her BABE secrets, for a BABE contract.
-    fn babe(&self) -> Result<&dyn babe::Secrets>;
-    /// Her contract's secrets themselves (a hub-proves dispute's challenge
-    /// reveals her dealing's): the wallet's only.
-    fn contract(&self) -> Result<&ContractSecrets> {
-        anyhow::bail!("a hub-proves challenge needs the contract's secrets, which only the wallet holds")
-    }
+    /// Her contract's secrets.
+    fn contract(&self) -> &ContractSecrets;
 }
 
 /// Where a dispute keeps what must survive a restart.
 pub trait Store {
-    /// The claim (`b` and the statement's input, hex), once made.
-    fn claim(&self) -> Option<(u32, String)>;
-    fn set_claim(&mut self, b: u32, input: &[u8]) -> Result<()>;
     /// The payout, once posted.
     fn payout(&self) -> Option<Outcome>;
     fn set_payout(&mut self, outcome: &Outcome) -> Result<()>;
     /// The claim lost: the contract closed by `txid`.
     fn set_lost(&mut self, txid: Txid) -> Result<()>;
-    /// An exit's claim, if the dispute is an exit's.
-    fn exit(&self) -> Option<crate::exit::ExitPlan> {
-        None
-    }
+    /// The exit's claim, prepared before `request`.
+    fn exit(&self) -> Option<crate::exit::ExitPlan>;
 }
 
 /// The wallet's own Bitcoin key for payouts, derived from its key apart
@@ -152,14 +120,8 @@ impl Signer for WalletSigner {
     fn anchor(&self) -> Option<Keypair> {
         Some(self.secrets.keys().payment)
     }
-    fn bitvmx(&self) -> Result<&dyn bitvmx::Secrets> {
-        Ok(self)
-    }
-    fn babe(&self) -> Result<&dyn babe::Secrets> {
-        Ok(self)
-    }
-    fn contract(&self) -> Result<&ContractSecrets> {
-        Ok(&self.secrets)
+    fn contract(&self) -> &ContractSecrets {
+        &self.secrets
     }
 }
 
@@ -228,15 +190,11 @@ pub(crate) fn wait_link(chain: &Chain, txid: &Txid, ours: &OutPoint, deadline: u
 pub struct Options {
     /// Progress, one line a step.
     pub progress: Option<Arc<dyn Fn(String) + Send + Sync>>,
-    /// For tests: stop after posting this move, the last too, before its
-    /// proof (a resume picks it up). Under BABE, 1 is `request` and 2
-    /// `assert`.
+    /// For tests: stop after posting `request` (1); a resume picks it up.
     pub pause_after: Option<u32>,
-    /// For tests: escalate a claim that breaks a check.
+    /// For tests: challenge the hub's assertion even if its proof is
+    /// valid.
     pub unchecked_claims: bool,
-    /// For tests: lie in the dispute's execution (BitVMX's fault
-    /// injection).
-    pub lie: Option<emulator::executor::utils::FailConfiguration>,
 }
 
 /// One dispute: Alice's side of it.
@@ -298,26 +256,16 @@ impl Engine<'_> {
         Ok(Outcome::Lost)
     }
 
-    /// Enforce a withdrawal of `b` from the contract `record` on Bitcoin,
-    /// the claim's `input` the statement program's (for the mock,
-    /// `(b, c)`; for Groth16, the verifier's input for her proof). Blocks
-    /// until the dispute ends, at the payout for a win.
+    /// Exit through the contract `record` with a claim of `b`, the
+    /// store's ([`Store::exit`]). Blocks until the dispute ends, at the
+    /// payout for a win.
     ///
-    /// Resumable: the claim is kept in the store, and what is already on
-    /// chain is replayed, not posted again.
-    pub fn run(&mut self, chain: &Chain, record: &Record, statement: &Statement, dir: &Path, b: u32, input: &[u8]) -> Result<Outcome> {
+    /// Resumable: what is already on chain is replayed, not posted again.
+    pub fn run(&mut self, chain: &Chain, record: &Record, statement: &Statement, b: u32) -> Result<Outcome> {
         if let Some(o) = self.store.payout() {
             // the payout is posted: nothing left to play
             return Ok(o);
         }
-        // (under BABE the proof may come after the request, its own check)
-        if let (Some((b0, i0)), Gadget::BitVmx) = (self.store.claim(), record.gadget()) {
-            ensure!(b0 == b && i0 == hex::encode(input), "contract {} is already disputed with another claim", record.cid());
-        }
-        match record.gadget() {
-            Gadget::BitVmx => self.run_bitvmx(chain, record, statement, dir, b, input),
-            Gadget::Babe => self.run_babe(chain, record, statement, dir, b, input),
-            Gadget::HubProves => self.run_hp(chain, record, statement, dir, b),
-        }
+        self.run_hp(chain, record, statement, b)
     }
 }

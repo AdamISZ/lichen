@@ -1,11 +1,12 @@
 //! The hub: opens contracts with users, issues their deposits as tokens on
 //! the L2, and (later) pays withdrawals and answers disputes.
 //!
-//! HTTP (JSON): `GET /info`, under BABE `POST /babe/setup` (the
-//! cut-and-choose's commitments) and `GET /babe/instance/<cid>/<i>` (an
-//! instance's bytes), `POST /open` ([`OpenRequest`] to [`OpenOffer`]), `POST /accept` ([`Accept`] to [`Opened`]), `POST /fold`
-//! ([`FoldRequest`] to [`Folded`]: the cooperative withdrawal, once the
-//! hub has seen Alice's return sealed on the L2). An offer mints the
+//! HTTP (JSON): `GET /info`, the opening's cut-and-choose (`POST
+//! /hp/setup`, `POST /hp/commit`, and `POST /hp/instance/<cid>/<i>`, an
+//! instance's bytes: `lichen_proto::hp`), `POST /open` ([`OpenRequest`] to
+//! [`OpenOffer`]), `POST /accept` ([`Accept`] to [`Opened`]), `POST
+//! /withdraw` ([`WithdrawRequest`] to [`Folded`]: the cooperative
+//! withdrawal, Alice's claim recorded on the L2, then the fold). An offer mints the
 //! deposit to a key Alice can spend only once the funding is broadcast
 //! (see `lichen_proto`); a watcher broadcasts, after `T_close`, the
 //! default of any contract still open.
@@ -25,12 +26,11 @@ use lngap_btc::adaptor::{adaptor_complete, adaptor_verify, AdaptorSig};
 use lichen_chain::Chain;
 use lichen_ledger::{files, note, xonly, Mint, Tx};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_proto::bitvmx::Windows;
-use lichen_proto::{broadcast_deadline, check_funding, contributions, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, terms, Accept, DepositOffer, DepositRequest, FoldRequest, Folded, Gadget, Info, Net, OpenOffer, OpenRequest, Opened, Record, RequestKeys, Statement, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{broadcast_deadline, check_funding, contributions, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, terms, Accept, DepositOffer, DepositRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, WithdrawRequest, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
 use lichen_l2::Client;
 use lngap_btc::keys::Seed;
 use lngap_channel::{PartyKeys, Role};
-use lngap_sessions::contract::{sign_all, Program};
+use lngap_sessions::contract::sign_all;
 use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request, Response, Server};
 
@@ -49,8 +49,8 @@ pub struct Config {
     /// The hub's secret seed for its contract keys (a label: keep it
     /// secret; the binary makes a random one).
     pub seed: String,
-    /// The hub's L2 key: it mints, and returns are paid to it. The
-    /// sequencer must name it as the issuer.
+    /// The hub's L2 key: it mints, and records exits. The sequencer must
+    /// name it as the issuer.
     pub l2_key: SigningKey,
     pub reserve_ppm: u64,
     /// Its fee for a contract's liquidity, parts per million of it.
@@ -58,14 +58,10 @@ pub struct Config {
     /// The most liquidity a contract may ask, in sats.
     pub max_liquidity: u64,
     pub duration: u32,
-    /// The dispute's windows it offers (none: the network's,
-    /// `lichen_proto::windows`): longer heavy windows for a hub with many
-    /// contracts (the paper's congestion table).
-    pub windows: Option<Windows>,
     /// Misbehaviour, for tests: refuse every cooperative withdrawal, and
-    /// dispute claims that are true.
+    /// assert a false proof against every exit claim that holds.
     pub refuse_folds: bool,
-    pub dispute_true_claims: bool,
+    pub forge_assertions: bool,
     /// The first contract's number (its memo); then one more each.
     pub first_cid: u32,
 }
@@ -148,10 +144,6 @@ pub(crate) struct Open {
 
 pub(crate) struct Inner {
     cfg: Config,
-    /// The statement's program, under BitVMX.
-    program: Option<Program>,
-    /// Under BABE, the setups made (`babe/<cid>.json`).
-    babe: Mutex<HashMap<u32, dispute::babe::Prepared>>,
     chain: Chain,
     seq: Client,
     /// Every signed root the hub has checked, by height (`seen.json`): a
@@ -166,12 +158,10 @@ pub(crate) struct Inner {
     /// The misbehaviour switches (initially the config's), and a log of
     /// what the hub did.
     refuse_folds: AtomicBool,
-    dispute_true_claims: AtomicBool,
-    /// For tests: forge a hash in every path the hub posts.
-    forge_paths: AtomicBool,
     /// For tests: close a dispute the user won without collecting.
     leave_bits: AtomicBool,
-    /// For tests: counter every exit claim, with a `K` that isn't one.
+    /// For tests: assert a false proof against every exit claim that
+    /// holds.
     forge_assertions: AtomicBool,
     /// For tests: post no defaults (as a hub gone would not).
     hold_defaults: AtomicBool,
@@ -179,9 +169,8 @@ pub(crate) struct Inner {
     opening_fault: Mutex<OpeningFault>,
     log: Mutex<Vec<String>>,
     /// The most the links' floors and anchors take from the hub's reserve
-    /// on a dispute it loses, by gadget (the statement's, found at the
-    /// first opening).
-    floors: Mutex<HashMap<Gadget, u64>>,
+    /// on a dispute it loses (found at the first opening).
+    floors: Mutex<Option<u64>>,
     /// Set when the hub is dropped: a dispute waiting on the chain gives
     /// up, so that dropping a hub never waits for a block.
     stop: AtomicBool,
@@ -197,13 +186,7 @@ pub struct Hub {
 
 impl Hub {
     pub fn start(cfg: Config) -> Result<Hub> {
-        if let Some(w) = cfg.windows {
-            w.check(lichen_proto::params(cfg.network).delta, lngap_sessions::contract::POST_CSV).map_err(|e| anyhow!(e))?;
-            let least = lichen_proto::bitvmx::windows(cfg.network).user;
-            ensure!(w.user >= least, "windows {w:?}: wallets refuse fewer than {least} blocks for each of the user's moves");
-        }
         std::fs::create_dir_all(cfg.dir.join("contracts"))?;
-        let program = cfg.statement.program_if(&cfg.dir)?;
         let chain = Chain::connect_on(&cfg.rpc_url, &cfg.cookie, &cfg.wallet, cfg.network)?;
         // coins locked for offers that didn't survive the restart
         chain.unlock(&[])?;
@@ -234,26 +217,15 @@ impl Hub {
             Err(_) => lichen_l2::Seen::default(),
         };
         let next = open.keys().chain(deposits.keys()).max().map_or(cfg.first_cid, |m| m + 1);
-        let (cfg_refuse, cfg_dispute) = (cfg.refuse_folds, cfg.dispute_true_claims);
-        ensure!(!(cfg_refuse || cfg_dispute) || cfg.network.is_test(), "a hub refuses withdrawals or disputes true claims on test networks only, not {}", cfg.network);
+        let (cfg_refuse, cfg_forge) = (cfg.refuse_folds, cfg.forge_assertions);
+        ensure!(!(cfg_refuse || cfg_forge) || cfg.network.is_test(), "a hub refuses withdrawals or asserts against true claims on test networks only, not {}", cfg.network);
         let server = Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let server = Arc::new(Mutex::new(Arc::new(server)));
-        let inner = Arc::new(Inner { cfg, program, babe: Mutex::new(HashMap::new()), chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), dispute_true_claims: AtomicBool::new(cfg_dispute), forge_paths: AtomicBool::new(false), leave_bits: AtomicBool::new(false), forge_assertions: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(HashMap::new()), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), leave_bits: AtomicBool::new(false), forge_assertions: AtomicBool::new(cfg_forge), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             listen(&srv, &i1.stop, |mut req| {
-                // an instance: bytes, not JSON
-                if *req.method() == Method::Get && req.url().starts_with("/babe/instance/") {
-                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| i1.babe_instance_at(req.url())));
-                    let resp = match r {
-                        Ok(Ok(bytes)) => Response::from_data(bytes).with_header(Header::from_bytes("Content-Type", "application/octet-stream").unwrap()),
-                        Ok(Err(e)) => Response::from_data(format!("{e:#}").into_bytes()).with_status_code(400),
-                        Err(_) => Response::from_data(b"the request failed".to_vec()).with_status_code(500),
-                    };
-                    let _ = req.respond(resp);
-                    return;
-                }
                 // an instance uploaded: bytes, not JSON
                 if *req.method() == Method::Post && req.url().starts_with("/hp/instance/") {
                     let mut bytes = vec![];
@@ -332,16 +304,10 @@ impl Hub {
         assert!(net.is_test(), "a hub misbehaves on test networks only, not {net}");
     }
     /// The misbehaviour switches: refuse every cooperative withdrawal;
-    /// dispute claims that are true.
+    /// assert against claims that are true ([`Hub::set_forge_assertions`]).
     pub fn set_refuse_folds(&self, on: bool) {
         self.misbehave();
         self.inner.refuse_folds.store(on, Ordering::Relaxed);
-    }
-    /// For tests: forge a hash in each path the hub posts (Alice should
-    /// challenge that hop, and the hub fail to reveal it).
-    pub fn set_forge_paths(&self, on: bool) {
-        self.misbehave();
-        self.inner.forge_paths.store(on, Ordering::Relaxed);
     }
     /// For tests: close a dispute the user won without collecting the
     /// hub's bit outputs, as hubs did before they collected them.
@@ -366,12 +332,9 @@ impl Hub {
         self.misbehave();
         self.inner.hold_defaults.store(on, Ordering::Relaxed);
     }
-    pub fn set_dispute_true_claims(&self, on: bool) {
-        self.misbehave();
-        self.inner.dispute_true_claims.store(on, Ordering::Relaxed);
-    }
+    /// The switches: refusing folds, forging assertions.
     pub fn switches(&self) -> (bool, bool) {
-        (self.inner.refuse_folds.load(Ordering::Relaxed), self.inner.dispute_true_claims.load(Ordering::Relaxed))
+        (self.inner.refuse_folds.load(Ordering::Relaxed), self.inner.forge_assertions.load(Ordering::Relaxed))
     }
     /// The hub's on-chain balance.
     pub fn balance(&self) -> Result<Amount> {
@@ -436,12 +399,11 @@ fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String
     Ok(match (method, url) {
         (Method::Get, "/info") => serde_json::to_string(&inner.info())?,
         (Method::Post, "/deposit") => serde_json::to_string(&inner.deposit(serde_json::from_str(body)?)?)?,
-        (Method::Post, "/babe/setup") => serde_json::to_string(&inner.babe_setup(serde_json::from_str(body)?)?)?,
         (Method::Post, "/hp/setup") => serde_json::to_string(&inner.hp_setup(serde_json::from_str(body)?)?)?,
         (Method::Post, "/hp/commit") => serde_json::to_string(&inner.hp_commit(serde_json::from_str(body)?)?)?,
         (Method::Post, "/open") => serde_json::to_string(&inner.open(serde_json::from_str(body)?)?)?,
         (Method::Post, "/accept") => serde_json::to_string(&inner.accept(serde_json::from_str(body)?)?)?,
-        (Method::Post, "/fold") => serde_json::to_string(&inner.fold(serde_json::from_str(body)?)?)?,
+        (Method::Post, "/withdraw") => serde_json::to_string(&inner.withdraw(serde_json::from_str(body)?)?)?,
         _ => bail!("no {method} {url}"),
     })
 }
@@ -462,7 +424,7 @@ impl Inner {
     }
 
     fn info(&self) -> Info {
-        Info { network: self.cfg.network, deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), depths: self.program.as_ref().map_or(0, |p| p.depths()), reserve_ppm: self.cfg.reserve_ppm, fee_ppm: self.cfg.fee_ppm, max_liquidity: self.cfg.max_liquidity, duration: self.cfg.duration, version: lichen_proto::VERSION.to_string(), commit: option_env!("LICHEN_COMMIT").filter(|c| !c.is_empty()).map(str::to_string), guests: Some(lichen_proto::Guests::ours()) }
+        Info { network: self.cfg.network, deployment: self.seq.deployment, statement: self.cfg.statement.id().to_string(), reserve_ppm: self.cfg.reserve_ppm, fee_ppm: self.cfg.fee_ppm, max_liquidity: self.cfg.max_liquidity, duration: self.cfg.duration, version: lichen_proto::VERSION.to_string(), commit: option_env!("LICHEN_COMMIT").filter(|c| !c.is_empty()).map(str::to_string), guests: Some(lichen_proto::Guests::ours()) }
     }
 
     /// A deposit address for a contract to come: its number, and the hub's
@@ -480,7 +442,7 @@ impl Inner {
             ensure!(fee < req.deposit, "a deposit of {} sats doesn't cover the hub's fee of {fee}", req.deposit);
             let (bits, unit) = lichen_proto::scale(req.deposit - fee + req.liquidity)?;
             let v_max = unit * ((1u64 << bits) - 1);
-            let floors = self.floors.lock().unwrap().values().copied().max().unwrap_or(0);
+            let floors = self.floors.lock().unwrap().unwrap_or(0);
             let reserve_hub = (v_max * self.cfg.reserve_ppm / 1_000_000).max(floors);
             let need = Amount::from_sat(v_max.saturating_sub(req.deposit) + reserve_hub) + FEE_SHARE + FUNDING_MARGIN;
             ensure!(self.chain.balance_pending()? >= need, "the hub can't fund a contract with {} sats of liquidity now: ask for less, or try later", req.liquidity);
@@ -537,36 +499,9 @@ impl Inner {
         // the cap and its unit, as the request makes them
         let scaled = terms(cid, &req, t_close, 0)?;
         let v_max = scaled.v_max().to_sat();
-        // the dispute's keys: Alice's, checked, and the hub's, by gadget
-        let gadget = match &req.dispute {
-            RequestKeys::BitVmx(_) => Gadget::BitVmx,
-            RequestKeys::Babe(_) => Gadget::Babe,
-            RequestKeys::HubProves(_) => Gadget::HubProves,
-        };
-        ensure!(gadget == self.cfg.statement.gadget(), "a request for a {gadget:?} contract to a hub running {}", self.cfg.statement.id());
-        let (dispute, offer_keys, fixed) = match &req.dispute {
-            RequestKeys::BitVmx(k) => {
-                let program = self.program.as_ref().context("the statement's program")?;
-                let (d, o) = dispute::bitvmx::open_keys(&self.cfg.seed, cid, program, k, self.cfg.windows.unwrap_or(lichen_proto::bitvmx::windows(self.cfg.network)))?;
-                (d, o, None)
-            }
-            // the statement fixed at the setup, its checkpoint with it
-            RequestKeys::Babe(k) => {
-                let (d, o, c) = self.babe_open_keys(cid, k, t_close, scaled.unit)?;
-                (d, o, Some(c))
-            }
-            RequestKeys::HubProves(k) => {
-                let (d, o, c) = self.hp_open_keys(cid, k, &req.deposit_coin.0, t_close, scaled.unit)?;
-                (d, o, Some(c))
-            }
-        };
-        let mut offer_keys = offer_keys;
-        // an anchored deployment's contract: its checkpoint, the tip now
-        let checkpoint = match (fixed, self.seq.deployment.seal) {
-            (Some(c), _) => c,
-            (None, Some(_)) => Some(lichen_proto::Checkpoint::tip(&self.chain)?),
-            (None, None) => None,
-        };
+        // the dispute's keys: Alice's, checked, and the hub's; the
+        // statement fixed at the setup, its checkpoint with it
+        let (dispute, mut offer_keys, checkpoint) = self.hp_open_keys(cid, &req.dispute, &req.deposit_coin.0, t_close, scaled.unit)?;
         let mut record = Record {
             statement: self.cfg.statement.id().to_string(),
             network: self.cfg.network,
@@ -586,19 +521,18 @@ impl Inner {
         };
         // the hub's reserve: its share of the cap, and at least what the
         // floors of a dispute it loses take from it
-        let known = self.floors.lock().unwrap().get(&record.gadget()).copied();
+        let known = *self.floors.lock().unwrap();
         let floors = match known {
             Some(f) => f,
             None => {
                 // the deepest output any dispute reaches, against the
-                // contract's value (the same for every contract of the
-                // statement and gadget: the links' sizes don't depend on
-                // the amounts)
+                // contract's value (the same for every contract: the
+                // links' sizes don't depend on the amounts)
                 let c = self.built(&record)?;
                 let set = c.presign(OutPoint::null())?;
                 let f = set.iter().map(|p| (c.value() - p.prevout.value).to_sat()).max().unwrap_or(0);
                 self.note(format!("a dispute's floors take up to {f} sats from the reserve of the side that loses"));
-                *self.floors.lock().unwrap().entry(record.gadget()).or_insert(f)
+                *self.floors.lock().unwrap().get_or_insert(f)
             }
         };
         let reserve_hub = (v_max * self.cfg.reserve_ppm / 1_000_000).max(floors);
@@ -620,11 +554,9 @@ impl Inner {
         let set = c.presign(record.funding)?;
         record.hub_sigs = sign_all(&set, &keys.payment)?;
         // with the roles swapped: the hub's pre-signatures on her challenge
-        if record.gadget() == Gadget::HubProves {
-            self.hp_presign(&mut record, &mut offer_keys, &set)?;
-        }
+        self.hp_presign(&mut record, &mut offer_keys, &set)?;
         // what the hub keeps from her stays its own
-        let shown: HashMap<String, Vec<u8>> = record.hub_sigs.iter().filter(|(n, _)| !c.hub_withholds(n)).map(|(n, s)| (n.clone(), s.clone())).collect();
+        let shown: HashMap<String, Vec<u8>> = record.hub_sigs.iter().filter(|(n, _)| !c.withheld(n)).map(|(n, s)| (n.clone(), s.clone())).collect();
         // D, minted now to a key Alice can spend once this funding is out
         let t = mint_adaptor(&self.cfg.seed, cid, &req.l2_address, &record.funding.txid);
         let mint_point = PublicKey::from_secret_key(SECP256K1, &t);
@@ -655,12 +587,7 @@ impl Inner {
     fn fund(&self, a: Accept, p: Pending) -> Result<Opened> {
         let mut record = p.record;
         record.alice_sigs = a.alice_sigs;
-        if record.gadget() == Gadget::Babe {
-            self.babe_accept(&mut record, &a.adaptor)?;
-        }
-        if record.gadget() == Gadget::HubProves {
-            self.hp_accept(&record)?;
-        }
+        self.hp_accept(&record)?;
         let c = self.built(&record)?;
         record.presigned(&c).context("Alice's signatures")?;
         // the deposit input: Alice's signature and the hub's, then the hub's coins
@@ -728,58 +655,67 @@ impl Inner {
         Ok(state)
     }
 
-    /// The cooperative withdrawal: Alice's return must be sealed on the
-    /// L2, owned by the hub, carry this contract's memo and the amount she
-    /// asks for, within the cap; then the hub signs her fold and
-    /// broadcasts it. On the real statement the hub folds only what Alice
-    /// could win by dispute: the withdrawal statement checked natively,
-    /// under the first anchor on Bitcoin that covers the return, with the
-    /// sequencer's chain receipt carrying it (so a valid history, and the
-    /// one the sequencer anchored) and the headers on the anchor's block
-    /// the contract's checkpoint asks for (docs/ANCHOR_PLAN.md).
-    fn fold(&self, f: FoldRequest) -> Result<Folded> {
-        ensure!(!self.refuse_folds.load(Ordering::Relaxed), "this hub refuses cooperative withdrawals");
-        let o = self.open.lock().unwrap().get(&f.cid).cloned().context("no such contract")?;
-        ensure!(o.closed.is_none(), "contract {} is closed", f.cid);
-        if f.b == 0 {
-            // an early close: Alice takes her reserve alone, as the default
-            // would pay her at T_close, so there's no return to check
-            ensure!(o.record.terms.reserve_alice >= CLOSE_DUST, "contract {}: a fold of nothing pays the user nothing (no reserve): the default closes it", f.cid);
-        } else {
-            self.check_return(&o, &f)?;
-        }
+    /// The cooperative withdrawal: Alice's claim of `b` units checked
+    /// against the hub's ledger, recorded on the L2 (retiring its notes),
+    /// then her fold signed and broadcast at once. The record is the hub's
+    /// protection: once it is sequenced the notes are gone, an earlier
+    /// spend of them refused. If the hub then didn't fold, her exit would
+    /// post the same claim, which this contract's own record doesn't
+    /// refute (docs/HUB_PROVES_PLAN.md). At `b` 0, no claim: an early
+    /// close, her reserve alone.
+    fn withdraw(&self, w: WithdrawRequest) -> Result<Folded> {
+        let o = self.open.lock().unwrap().get(&w.cid).cloned().context("no such contract")?;
+        ensure!(o.closed.is_none(), "contract {} is closed", w.cid);
+        let unit = o.record.terms.unit;
+        let paid = unit.checked_mul(u64::from(w.b)).filter(|v| *v <= o.record.terms.v_max()).with_context(|| format!("{} units is above the cap", w.b))?;
         let c = self.built(&o.record)?;
-        let p = c.fold(o.record.funding, Amount::from_sat(f.b), FOLD_FEE)?;
-        p.verify(&o.record.pubs[0].payment, &f.alice_sig).context("Alice's signature on the fold")?;
-        let mine = p.sign(&contract_keys(&self.cfg.seed, f.cid).payment)?;
-        let txid = self.chain.broadcast(&p.finish(vec![], &mine, &f.alice_sig)).context("broadcasting the fold")?;
-        self.close(f.cid, txid)?;
-        self.note(format!("contract {}: folded: {} sats back to the user, with the user's reserve", f.cid, f.b));
+        let p = c.fold(o.record.funding, paid, FOLD_FEE)?;
+        p.verify(&o.record.pubs[0].payment, &w.alice_sig).context("Alice's signature on the fold")?;
+        if w.b == 0 {
+            // an early close: Alice takes her reserve alone, as the default
+            // would pay her at T_close, so there's no claim to record
+            ensure!(o.record.terms.reserve_alice >= CLOSE_DUST, "contract {}: a fold of nothing pays the user nothing (no reserve): the default closes it", w.cid);
+        } else {
+            self.record_claim(&o.record, w.b, &hex::decode(&w.claim).context("the claim's hex")?)?;
+        }
+        // a refusing hub (tests) records the claim first: the user's worst
+        // case, her notes retired and no fold
+        ensure!(!self.refuse_folds.load(Ordering::Relaxed), "this hub refuses cooperative withdrawals");
+        let mine = p.sign(&contract_keys(&self.cfg.seed, w.cid).payment)?;
+        let txid = self.chain.broadcast(&p.finish(vec![], &mine, &w.alice_sig)).context("broadcasting the fold")?;
+        self.close(w.cid, txid)?;
+        self.note(format!("contract {}: folded: {} units ({} sats) back to the user, with the user's reserve", w.cid, w.b, paid.to_sat()));
         Ok(Folded { txid })
     }
 
-    /// A withdrawal's return, note `f.index`: `f.b` to the hub with memo
-    /// `f.cid`, sealed; on the real statement anchored deep enough under a
-    /// height the sequencer has proved, and the withdrawal statement's
-    /// journal this withdrawal's.
-    fn check_return(&self, o: &Open, f: &FoldRequest) -> Result<()> {
+    /// Alice's claim (`posted`, its bytes) of `b` units from contract
+    /// `record`, checked against the ledger now, and its exit record
+    /// sequenced: well formed and of this contract's `E`; each position a
+    /// transparent note, unspent; each owner signed; worth at
+    /// least `b` units.
+    fn record_claim(&self, record: &Record, b: u32, posted: &[u8]) -> Result<()> {
+        use lichen_withdraw::hp::Claim;
+        let cid = record.cid();
+        let claim = Claim::from_bytes(posted).map_err(|e| anyhow!("the claim: {e:?}"))?;
+        ensure!(claim.well_formed(), "the claim isn't well formed");
+        let deposit = lichen_proto::setup::statement_outpoint(&record.hp().deposit);
+        let e = claim.fingerprint(cid, &deposit, b);
         let state = self.state()?;
-        let input = state.withdraw_input(f.index, &self.seq.deployment)?;
-        ensure!(input.note.memo == f.cid && input.note.value == f.b, "note {} is not a return of {} with memo {}", f.index, f.b, f.cid);
-        if self.cfg.statement.is_real() {
-            let checkpoint = o.record.checkpoint.context("the real statement needs an anchored deployment's contract (a checkpoint)")?;
-            let (input, a) = state.anchored_input(f.index, &self.seq.deployment)?;
-            let h = a.from;
-            let chain = self.seq.chain_receipt(h)?.with_context(|| format!("the sequencer hasn't proved height {h} yet, the first to carry the return's anchor (its chain prover proves each height after it seals): try again in a few minutes"))?;
-            let headers = lichen_proto::headers_for(&self.chain, &a.anchor.block, checkpoint.work())?;
-            let j = lichen_ledger::check_withdrawal(&input, &chain, headers, checkpoint.work(), o.record.terms.unit.to_sat()).with_context(|| format!("note {}: the withdrawal statement", f.index))?;
-            // b ‖ c ‖ D, b in the contract's units (it fits a u32: the
-            // statement checked it); the fold pays the return's sats
-            let mut want = ((f.b / o.record.terms.unit.to_sat()) as u32).to_le_bytes().to_vec();
-            want.extend(f.cid.to_le_bytes());
-            want.extend(o.record.deployment);
-            ensure!(j[..] == want[..], "note {}: the statement's journal is not this withdrawal's", f.index);
+        let mut notes = vec![];
+        for &i in &claim.positions {
+            let n = *state.notes.get(i as usize).and_then(|l| l.note()).with_context(|| format!("position {i} isn't a transparent note"))?;
+            let nf = lichen_ledger::nullifier(&n);
+            ensure!(!state.nullifiers.contains(&nf), "the note at {i} is spent");
+            notes.push(n);
         }
+        let total: u64 = notes.iter().map(|n| n.value).sum();
+        ensure!(total / record.terms.unit.to_sat() >= u64::from(b), "the notes are worth {total} sats, less than {b} units");
+        let tnotes: Vec<lichen_ledger::lichen_validity::TNote> = notes.iter().map(|n| lichen_ledger::lichen_validity::TNote { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho }).collect();
+        let (_, sigs) = claim.record(&tnotes, &e).context("a note's owner didn't sign the claim")?;
+        let spends = notes.into_iter().zip(&claim.positions).map(|(note, &index)| lichen_ledger::Spend { note, index }).collect();
+        let tx = Tx::Exit(lichen_ledger::Exit::new(&self.cfg.l2_key, &self.seq.deployment, cid, deposit, b, spends, sigs));
+        self.seq.submit(&tx).context("recording the claim on the L2")?;
+        self.note(format!("contract {cid}: the user's withdrawal claim of {b} units recorded on the L2: its notes are retired"));
         Ok(())
     }
 

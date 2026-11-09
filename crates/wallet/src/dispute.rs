@@ -1,17 +1,14 @@
-//! The wallet's side of a dispute: [`crate::engine`] over the wallet's own
-//! keys and contract record, then, on a win, the sweep of her bit outputs
-//! and the reserves (less the links' floors) to her payout address, which
-//! takes her payment key and so stays here. A tower plays the same engine
-//! from a package (`crate::tower`); the wallet sweeps what it won
-//! ([`Wallet::sweep_dispute`]).
+//! The wallet's side of a dispute, its exit: [`crate::engine`] over the
+//! wallet's own keys and contract record, then, on a win, the sweep of her
+//! bit outputs and the reserves (less the links' floors) to her payout
+//! address.
 
-use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use lichen_chain::{Chain, Fees};
-use lichen_proto::{anchor_vout, Built, Gadget, Statement};
+use lichen_proto::{anchor_vout, Built, Statement};
 use lngap_btc::taptree::TapTree;
 use lngap_sessions::contract::{anchor_tree_for, Presign};
 use lngap_btc::sighash::sign_tapscript;
@@ -38,13 +35,6 @@ struct HeldStore<'a> {
 }
 
 impl Store for HeldStore<'_> {
-    fn claim(&self) -> Option<(u32, String)> {
-        self.w.contracts[self.k].claim.clone()
-    }
-    fn set_claim(&mut self, b: u32, input: &[u8]) -> Result<()> {
-        self.w.contracts[self.k].claim = Some((b, hex::encode(input)));
-        self.w.save()
-    }
     fn payout(&self) -> Option<Outcome> {
         self.w.contracts[self.k].payout.clone()
     }
@@ -80,81 +70,47 @@ impl Wallet {
         }
     }
 
-    /// Enforce a withdrawal of `b` from contract `cid` on Bitcoin, the
-    /// claim's `input` the statement program's (for the mock, `(b, c)`;
-    /// for Groth16, the verifier's input for her proof). Blocks until the
-    /// dispute ends; on a win, sweeps her winnings to her payout address.
+    /// Play contract `cid`'s exit, a claim of `b` (the plan kept with the
+    /// contract, [`Wallet::exit`]). Blocks until the dispute ends; on a
+    /// win, sweeps her winnings to her payout address.
     ///
-    /// Resumable: the claim is kept with the contract, and what is
-    /// already on chain is replayed, not posted again.
-    pub fn dispute(&mut self, chain: &Chain, statement: &Statement, dir: &Path, cid: u32, b: u32, input: &[u8]) -> Result<(Outcome, Swept)> {
+    /// Resumable: what is already on chain is replayed, not posted again.
+    pub(crate) fn play(&mut self, chain: &Chain, statement: &Statement, cid: u32, b: u32) -> Result<(Outcome, Swept)> {
         let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
         self.ensure_open(chain, k)?;
         let held = self.contracts[k].clone();
         let signer = WalletSigner { secrets: self.secrets(&held.nonce), network: held.record.network };
-        let opts = Options { progress: self.progress.clone(), pause_after: self.pause_after, unchecked_claims: self.unchecked_claims, lie: self.lie.clone() };
-        let outcome = Engine { signer: &signer, store: &mut HeldStore { w: self, k }, opts }.run(chain, &held.record, statement, dir, b, input)?;
+        let opts = Options { progress: self.progress.clone(), pause_after: self.pause_after, unchecked_claims: self.unchecked_claims };
+        let outcome = Engine { signer: &signer, store: &mut HeldStore { w: self, k }, opts }.run(chain, &held.record, statement, b)?;
         if outcome.payout().is_none() {
             return Ok((outcome, None));
         }
-        self.won(chain, statement, dir, k, b, outcome)
+        self.won(chain, statement, k, b, outcome)
     }
 
-    /// A tower played contract `cid`'s dispute (the claim of `b`) and was
-    /// paid by `outcome`'s payout: keep it with the contract, and sweep.
-    pub fn sweep_dispute(&mut self, chain: &Chain, statement: &Statement, dir: &Path, cid: u32, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
-        let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
-        self.ensure_open(chain, k)?;
-        let payout = outcome.payout().context("the tower's dispute wasn't won")?;
-        let tx = chain.get_tx(&payout).with_context(|| format!("the payout {payout} is not on chain"))?;
-        // a terminal of this contract's dispute (one of its links' outputs
-        // spent), with the outputs a payout has, checked before it is kept
-        let (_, set) = self.presigned(k, statement, dir)?;
-        let links: std::collections::HashSet<_> = set.iter().map(|p| p.tx.compute_txid()).collect();
-        ensure!(tx.input.first().is_some_and(|i| links.contains(&i.previous_output.txid)), "{payout} is no terminal of contract {cid}'s dispute");
-        let t = &self.contracts[k].record.terms;
-        ensure!(tx.output.len() as u32 > t.bits - t.low_bits, "{payout} hasn't a payout's outputs");
-        self.contracts[k].payout = Some(outcome.clone());
-        self.save()?;
-        self.won(chain, statement, dir, k, b, outcome)
-    }
-
-    /// Contract `k`, built by its gadget, and its pre-signed set (both
-    /// signatures checked).
-    fn presigned(&self, k: usize, statement: &Statement, dir: &Path) -> Result<(Built, Vec<Presign>)> {
+    /// Contract `k`'s graph and its pre-signed set (both signatures
+    /// checked).
+    fn presigned(&self, k: usize, statement: &Statement) -> Result<(Built, Vec<Presign>)> {
         let record = &self.contracts[k].record;
-        let c = record.build(statement, statement.program_if(dir)?.as_ref())?;
+        let c = record.build(statement)?;
         let set = record.presigned(&c)?;
         Ok((c, set))
-    }
-
-    /// Her signature on `b`, as the payout's leaves take it (the gadget's
-    /// key for it).
-    fn b_wire(&self, k: usize, statement: &Statement, b: u32) -> Result<Vec<Vec<u8>>> {
-        let held = &self.contracts[k];
-        match held.record.gadget() {
-            Gadget::BitVmx => crate::engine::bitvmx::b_wire(&self.secrets(&held.nonce), &held.record, statement, b),
-            Gadget::Babe | Gadget::HubProves => crate::engine::babe::b_wire(&self.secrets(&held.nonce), b),
-        }
     }
 
     /// She won: once the payout confirms and her outputs' delay passes,
     /// sweep to her payout address her bit outputs and the reserves, and
     /// what else of the contract's is hers: the anchors of her links (left
     /// unspent where no fee child was needed) and the fee budget's rest.
-    fn won(&mut self, chain: &Chain, statement: &Statement, dir: &Path, k: usize, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
-        let txid = match &outcome {
-            Outcome::HubTimedOut(t) | Outcome::Proved(t) | Outcome::PathRefuted(t) | Outcome::Unchallenged(t) | Outcome::Answered(t) | Outcome::Refuted(t) => *t,
-            Outcome::Lost | Outcome::Paused | Outcome::ProofDue(_) | Outcome::Countered => bail!("not a win"),
-        };
+    fn won(&mut self, chain: &Chain, statement: &Statement, k: usize, b: u32, outcome: Outcome) -> Result<(Outcome, Swept)> {
+        let txid = outcome.payout().context("not a win")?;
         let at = wait_confirmed(chain, &txid)?;
         let payout = chain.get_tx(&txid).context("the payout")?;
         let held = self.contracts[k].clone();
-        let (c, set) = self.presigned(k, statement, dir)?;
+        let (c, set) = self.presigned(k, statement)?;
         let core = c.core();
         let (t, ctx) = (core.terms, core.ctx());
         let b_key = c.b_key().clone();
-        let b_wire = self.b_wire(k, statement, b)?;
+        let b_wire = self.secrets(&held.nonce).b_wire(b)?;
         let kp = self.contract_keys(&held.nonce).payment;
         let delta = core.params.delta;
         let mut ins: Vec<SweepIn> = vec![];

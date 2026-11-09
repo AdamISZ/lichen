@@ -1,14 +1,14 @@
 //! Shielded notes end to end, with native proofs: Alice shields her
-//! deposit, pays Bob, Bob pays her back, she returns to the hub from her
-//! shielded notes, and the withdrawal statement takes the return as ever.
+//! deposit, pays Bob, Bob pays her back, she unshields part of hers (a
+//! claim takes transparent notes).
 //! The sequencer's state shows no shielded value or owner.
 
-use lichen_ledger::{check, regtest_hub, regtest_sequencer, Leaf, Mint, Tx, HUB_KEY};
+use lichen_ledger::{regtest_hub, regtest_sequencer, Leaf, Mint, Tx, HUB_KEY};
 use lichen_sequencer::{Options, Sequencer};
 use lichen_wallet::Wallet;
 
 #[test]
-fn shield_pay_and_return() {
+fn shield_pay_and_unshield() {
     let dir = std::env::temp_dir().join(format!("lichen-shielded-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let seq = Sequencer::start_with("127.0.0.1:0", Some(dir.join("ledger.json")), regtest_sequencer(), HUB_KEY, Options { native_proofs: true, ..Default::default() }).unwrap();
@@ -34,13 +34,12 @@ fn shield_pay_and_return() {
     assert_eq!(state.notes.iter().filter(|l| matches!(l, Leaf::Shielded { .. })).count(), 5);
     assert_eq!(state.transparent().map(|(_, n)| n.value).collect::<Vec<_>>(), vec![100, 30]);
 
-    // Alice returns 28 to the hub with memo 42, from her shielded notes
-    let r = alice.return_to_hub(28, 42).unwrap();
-    assert_eq!(alice.balances().unwrap(), (30, 2));
+    // Alice unshields 28: a transparent note of hers
+    let r = alice.unshield(28).unwrap();
+    assert_eq!(alice.balances().unwrap(), (58, 2));
     alice.sequencer.seal().unwrap();
-    let journal = check(&alice.withdraw_input(42).unwrap()).unwrap();
-    assert_eq!(journal[..8], [28, 0, 0, 0, 42, 0, 0, 0]);
-    assert_eq!(alice.sequencer.state().unwrap().note(r).unwrap().owner, HUB_KEY);
+    let state = alice.sequencer.state().unwrap();
+    assert_eq!((state.note(r).unwrap().owner, state.note(r).unwrap().value), (alice.address(), 28));
 
     // a sequencer that accepts no native proofs refuses them
     drop(seq);

@@ -1,27 +1,21 @@
 # lichen's code
 
-For working on lichen itself. The contracts, the dispute game and the
-BitVMX integration are in [ln-gap](https://github.com/AdamISZ/ln-gap)
-(`crates/apps/sessions` and the crates it uses), checked out beside this
-repository at the revision in `LNGAP_REV`.
+For working on lichen itself. The contract's skeleton (its output with
+the fold and the default, the pre-signed links' floors and anchors, the
+payout) is ln-gap's `sessions::skeleton`
+([ln-gap](https://github.com/AdamISZ/ln-gap), checked out beside this
+repository at the revision in `LNGAP_REV`).
 
-A contract's dispute runs on a verification gadget: BitVMX's search, or
-BABE (its garbled circuits and witness encryption, `crates/babe`;
-docs/BABE_GADGET_PLAN.md). What every gadget shares (the
-contract output with its fold and default, the payout, the pre-signed
-links' floors and anchors) is ln-gap's `sessions::skeleton`; each
-gadget's keys and play are their own modules: `proto::bitvmx` and
-`proto::babe`, the hub's `dispute::bitvmx` and `dispute::babe`, the
-wallet's `engine::bitvmx` and `engine::babe` (docs/GADGET_PLAN.md).
-
-The exit (docs/HUB_PROVES_PLAN.md: a claim against a hostile operator,
-which the hub must prove false; statement `hub-proves-mock`, on the mock
-only for now) is a gadget of its own, BABE with the roles swapped: the
-hub's statement in `withdraw::hp`, its graph in `babe::hp`, its setup
-(Alice garbles and uploads) in `proto::hp`, its record in
-`validity::exit`, and its play in the hub's `dispute::hp` and the
-wallet's `hp`, `engine::hp` and `exit`. Under `babe`, a refused
-withdrawal is a return's dispute.
+A contract's dispute is the exit (docs/HUB_PROVES_PLAN.md: a claim
+against a hostile operator, which the hub must prove false; statement
+`hub-proves-mock`, on the mock only for now), BABE with the roles
+swapped (its garbled circuits and witness encryption, `crates/babe`;
+docs/BABE_GADGET_PLAN.md): the hub's statement in `withdraw::hp`, its
+graph in `babe::hp`, its setup (Alice garbles and uploads) in
+`proto::hp`, its record in `validity::exit`, and its play in the hub's
+`dispute::hp` and the wallet's `hp`, `engine::hp` and `exit`. A
+cooperative withdrawal is the same claim, which the hub records on the
+L2 before it folds (`POST /withdraw`).
 
 ## Crates
 
@@ -30,14 +24,14 @@ withdrawal is a return's dispute.
 | `ledger` | | everyone: notes (transparent and shielded), mints, transfers, the trees, signed roots |
 | `shielded` | | wallet, sequencer, the spend guest: the spend statement (`no_std`) |
 | `validity` | | sequencer, the chain guest: the block and chain statements, the nullifier tree, anchor records and what they read of Bitcoin (`btc`: transactions, witnesses through the coinbase's commitment); an exit record, which retires a claim's notes (`exit`) (`no_std`) |
-| `withdraw` | | hub, the withdrawal guest: the withdrawal statement with the chain receipt, under an anchor with work on it (`no_std`); BABE's fixed statement, with the hub's signature on `b` (`fixed`); the hub's statement that an exit claim is false (`hp`) |
-| `babe` | | hub and wallet: BABE's cryptography (the garbled circuit, the witness encryption, the cut-and-choose setup over VSSS, the reveal by adaptor signatures), its graph and scripts, its statement (RISC Zero's or the mock) |
+| `withdraw` | | hub: the hub's statement that an exit claim is false (`hp`), on an anchored state shown by a chain receipt, under an anchor with work on it (`no_std`) |
+| `babe` | | hub and wallet: BABE's cryptography (the garbled circuit, the witness encryption, the cut-and-choose setup over VSSS, the reveal by adaptor signatures), the swapped graph and its scripts (`hp`), its statement (the mock; a RISC Zero receipt's Groth16 form) |
 | `sequencer` | `lichen-sequencer` | the L2's sequencer: orders transactions, seals and signs heights, records blocks for the chain prover, anchors its history on Bitcoin (`anchor`); serves how a nullifier was spent and its proof at a past height, and holds on claimed notes |
 | `l2` | | wallet and hub: the sequencer's API and its client; the HTTP agents every client uses (`http`: `quick`, timeouts on connect and each read; `slow`, for a call the server works on before answering; neither reuses a connection) |
-| `wallet` | `lichen` | the user; also `lichen tower`, a dispute played from a package, and `lichen exit`, a claim the hub must prove false (`hp`: the opening's garbling and upload, the claim; `exit`: the notes kept as the wallet reads the sequencer, the next step when a withdrawal fails) |
+| `wallet` | `lichen` | the user: `lichen withdraw`, a claim the hub records and folds, and `lichen exit`, a claim the hub must prove false (`hp`: the opening's garbling and upload, the claims; `exit`: the notes kept as the wallet reads the sequencer) |
 | `chain` | | each party: its own bitcoind wallet over RPC, or Esplora |
-| `proto` | | wallet and hub: the opening messages, the contract record, the contract built by its verification gadget (`Built`); BitVMX's keys, statement layout and dispute plumbing (`bitvmx`); BABE's setup exchange and dispute plumbing (`babe`), and with the roles swapped (`hp`); `request` and transactions read from the chain for the hub's statement (`exit`) |
-| `hub` | `lichen-hub` | the hub: opens contracts, issues tokens, folds withdrawals, answers disputes; proves exit claims false, and records the others on the L2 |
+| `proto` | | wallet and hub: the opening messages, the contract record, the contract's graph (`Built`); the hub-proves setup exchange and dispute plumbing (`hp`, the cut-and-choose's shared parts in `setup`); `request` and transactions read from the chain for the hub's statement (`exit`) |
+| `hub` | `lichen-hub` | the hub: opens contracts, issues tokens, records withdrawal claims and folds; proves exit claims false, and records the others on the L2 |
 | `demo` | `lichen-demo` | the local web demo of all of the above |
 
 ## RISC Zero (`r0/`)
@@ -48,16 +42,14 @@ Mac and its Groth16 wrap needs x86 Linux.
 
 | path | what |
 |---|---|
-| `guest/`, `chain-guest/`, `withdraw-guest/`, `babe-guest/` | the spend, chain, withdrawal and BABE (fixed statement) guests |
+| `guest/`, `chain-guest/` | the spend and chain guests |
 | `guests/` | their committed builds (`<g>.bin`) and image ids (`<g>.id`), and how each was built (its README) |
-| `host/` | `lichen-r0`: proves each guest, wraps in Groth16, encodes the BitVMX verifier's input (BABE's claim the same: `babe-claim`) |
+| `host/` | `lichen-r0`: proves each guest |
 | `build-guest.sh` | a guest's reproducible build (x86 Linux), then packing it (anywhere) |
-| `spend-prover.sh`, `chain-prover.sh`, `withdraw-prover.sh` | `lichen-r0` in its image (`LICHEN_R0_IMAGE`, `lichen-r0` by default), for the wallet, the sequencer's operator and the user |
+| `spend-prover.sh`, `chain-prover.sh` | `lichen-r0` in its image (`LICHEN_R0_IMAGE`, `lichen-r0` by default), for the wallet and the sequencer's operator |
 
-The guests hold each other's image ids: chain holds spend's; withdraw
-and BABE hold chain's. So rebuild them in that order. A new withdrawal or BABE guest is a new deployment's
-contracts (`lichen_proto::IMAGE_ID`, `lichen_babe::statement::IMAGE_ID`),
-and a new chain guest is a new deployment. A rebuild invalidates the
+The chain guest holds the spend guest's image id, so rebuild them in
+that order. A new chain guest is a new deployment. A rebuild invalidates the
 committed proof fixtures (r0/guests/README.md says how they were made).
 
 ## Tests
@@ -72,7 +64,4 @@ runs everything that needs nothing outside the tree but bitcoind
 
 | test | needs | time |
 |---|---|---|
-| `lichen-wallet --test shielded_r0` | the prover image | 10 minutes: real spend, chain and withdrawal receipts (`LICHEN_WRAP=1` on x86 for the wrap, `LICHEN_KEEP=1` to keep the files) |
-| `lichen-hub --test groth16` | BitVMX's verifier (fetched by cargo) | half an hour: G1–G3, disputes on the real statement with a canned claim |
-| `lichen-hub --test groth16_read` | as above | half an hour: a read lie on the real statement, disproved |
-| `lichen-hub --test babe_risc0` | nothing more | half a minute: BABE on RISC Zero's statement with a canned claim (proved after the hub's `respond`): unchallenged, challenged and answered, a false proof taken by `failure` |
+| `lichen-wallet --test shielded_r0` | the prover image | 10 minutes: real spend and chain receipts (`LICHEN_KEEP=1` to keep the files) |

@@ -38,15 +38,13 @@ lichen-babe = { path = "crates/babe" }
 # the contract and the dispute (ln-gap)
 lngap-sessions = { path = "../ln-gap/crates/apps/sessions" }
 lngap-zk = { path = "../ln-gap/crates/apps/zk" }
-lngap-ladder = { path = "../ln-gap/crates/apps/ladder" }
 lngap-channel = { path = "../ln-gap/crates/channel" }
 lngap-btc = { path = "../ln-gap/crates/btc" }
 lngap-lamport = { path = "../ln-gap/crates/lamport" }
-emulator = { git = "https://github.com/FairgateLabs/BitVMX-CPU", rev = "299009c65e635327025ee13ffe1e1f1671bd0615" }
 lichen-sequencer = { path = "crates/sequencer" }
 
 # Dependencies (ln-gap's crates among them) optimised even in debug builds:
-# the emulator, the pre-signing and the curve arithmetic are too slow at
+# the pre-signing and the curve arithmetic are too slow at
 # opt-level 0 for a hub to answer within a move's window in the tests. A
 # profile applies only from the top-level workspace, so lichen repeats
 # ln-gap's. Our own crates stay at debug for fast rebuilds.
@@ -58,9 +56,10 @@ opt-level = 2
 [profile.dev.package.lichen-babe]
 opt-level = 2
 
-# BitVMX-CPU as ln-gap builds it: the `lngap` branch of a public fork
-# (upstream 299009c, bug fixes, the opt-in jump list). A [patch] applies
-# only from the top-level workspace, so lichen repeats ln-gap's.
+# BitVMX-CPU as ln-gap builds it (its sessions crate, the contract's
+# skeleton, depends on it): the `lngap` branch of a public fork (upstream
+# 299009c, bug fixes, the opt-in jump list). A [patch] applies only from
+# the top-level workspace, so lichen repeats ln-gap's.
 [patch."https://github.com/FairgateLabs/BitVMX-CPU"]
 emulator = { git = "https://github.com/AdamISZ/BitVMX-CPU", rev = "0b7d285fc5c7795d16fd58d380ff6ef25f2f0423" }
 bitvmx-cpu-definitions = { git = "https://github.com/AdamISZ/BitVMX-CPU", rev = "0b7d285fc5c7795d16fd58d380ff6ef25f2f0423" }

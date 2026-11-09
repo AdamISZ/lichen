@@ -9,11 +9,13 @@ proves, if it can, that her claim is false.
 statement, transparent notes only: the hub's statement natively
 (`lichen_withdraw::hp`), the swapped graph (`lichen_babe::hp`), the
 setup in which Alice garbles and uploads (`lichen_proto::hp`), both
-sides' play, and a regtest test of seven cases (`hp_exit.rs`). Not yet:
-sender acknowledgment (decided, "Data availability"), the leaf's kind,
-the hub's statement as a guest, real proofs, shielded notes. Alongside
-`babe` (a return's dispute), as `hub-proves-mock`; the old exit is
-removed (build order, step 8). Being thought through with the user:
+sides' play, and a regtest test of seven cases (`hp_exit.rs`); the
+leaf's kind and claims by position; the cooperative withdrawal by claim
+(`withdraw.rs`). The only contract kind (`hub-proves-mock`): the old
+exit, the return, and the babe and BitVMX contracts are removed (build
+order, steps 9 and 10). Not yet: sender acknowledgment (decided, "Data
+availability"), the hub's statement as a guest, real proofs, shielded
+notes. Being thought through with the user:
 "Open questions" is the live part; where a question is settled, it moves
 to "Decided".
 
@@ -645,6 +647,22 @@ not.
   user, 2026-11-09).
 - Build the transparent exit first, on a branch, on the mock statement
   (the user, 2026-11-09).
+- Withdraw by claim; no return transaction (the user, 2026-11-09). A
+  cooperative withdrawal is Alice's claim for the contract, the same
+  object her `request` would post: the hub checks it against its ledger,
+  sequences its exit record (hub-signed, so it counts at once: no
+  acknowledgment needed), and folds at once, with no anchor wait. If the
+  hub records it and won't fold, her exit posts the same claim, which
+  this contract's own record doesn't refute (Own); if it never recorded
+  it, the notes are live: either way she is paid, so she needn't know
+  which. Reusing the notes through another contract is a second claim.
+  Whole notes only: a note to size is split off first. Gone with it: the
+  return note with a contract's memo, `smt::returned`, the return
+  exclusion (`Spent::Return`), the withdrawal statement and its guest.
+- babe and BitVMX contracts removed, leaving hub-proves the only
+  contract kind (the user, 2026-11-09): their dispute was over a refused
+  return. With them went BABE's return graph and its keyless tower (a
+  hub-proves exit has no tower), BitVMX's search and the BABE guest.
 
 ## Decided while building (2026-11-09)
 
@@ -708,8 +726,8 @@ Done (2026-11-09), on the mock statement:
    `engine::hp`), and `hp_exit.rs`: an honest exit paid by timeout; a
    stale claim asserted false and conceded; the same challenged and
    answered; a note through two contracts, both asserted false; a lying
-   hub refuted; an exit after a return paid; the operator gone, paid by
-   timeout.
+   hub refuted; an exit after a withdrawal recorded but not folded,
+   paid; the operator gone, paid by timeout.
 
 Next:
 
@@ -737,7 +755,9 @@ Next:
 9. Done (2026-11-09): the old exit removed (the hub's counter,
    `respond`'s countering leaf, the failed-counter branch and its
    in-guest Groth16 check, the counter guest, Alice's claim proof and
-   its exit set's kits and chain receipts). BABE contracts are
-   return-only again, and the BABE guest is rebuilt without the exit.
-   The return's dispute stays, under `babe`, until this runs on real
-   proofs.
+   its exit set's kits and chain receipts).
+10. Done (2026-11-09): withdraw by claim (`POST /withdraw`: the claim,
+    recorded on the L2, then the fold at once; `withdraw.rs`), and the
+    return removed with the babe and BitVMX contracts, their disputes,
+    the tower, the withdrawal and BABE guests. Step 5's guest rebuild is
+    then the spend and chain guests only.

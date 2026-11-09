@@ -437,17 +437,6 @@ impl State<'_> {
     }
 }
 
-/// The leaf a transaction's spends get in the nullifier tree: a return of
-/// `r` with memo `c` if it pays the hub one note, `r` with a contract's
-/// memo (not 0); else an ordinary spend.
-pub fn spend_leaf(hub: &Hash, outputs: &[TNote]) -> Hash {
-    let mut to_hub = outputs.iter().filter(|n| n.owner == *hub);
-    match (to_hub.next(), to_hub.next()) {
-        (Some(n), None) if n.memo != 0 => smt::returned(n.memo, n.value),
-        _ => smt::spent(),
-    }
-}
-
 fn sum(mut ns: impl Iterator<Item = u64>) -> Result<u64, Reject> {
     ns.try_fold(0u64, |a, v| a.checked_add(v)).ok_or(Reject::Unbalanced)
 }
@@ -495,7 +484,7 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                     return Err(Reject::Shape);
                 }
                 let d = transfer_digest(spends, outputs);
-                let leaf = spend_leaf(&input.hub, outputs);
+                let leaf = smt::spent();
                 for ((n, i), sig) in spends.iter().zip(sigs) {
                     st.in_tree(n, *i)?;
                     check_sig(&n.owner, &d, sig)?;
@@ -537,7 +526,7 @@ pub fn check(input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool) ->
                     st.in_tree(n, *i)?;
                     check_sig(&n.owner, &d, sig)?;
                 }
-                let leaf = spend_leaf(&input.hub, t_outputs);
+                let leaf = smt::spent();
                 for n in t_spends.iter().map(|s| s.0.nullifier()).chain(nfs.iter().copied()) {
                     st.spend_nf(&n, &leaf)?;
                 }

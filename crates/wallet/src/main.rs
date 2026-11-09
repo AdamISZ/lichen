@@ -34,11 +34,9 @@ struct Args {
     cookie: Option<PathBuf>,
     #[arg(long, default_value = "alice")]
     chain_wallet: String,
-    /// BABE's: `babe` (the real proof) or `babe-mock`; BitVMX's: `bitvmx`
-    /// (the real proof, on its verifier found in the cargo checkout),
-    /// `bitvmx:<path to the verifier's program definition>` or
-    /// `bitvmx-mock`.
-    #[arg(long, default_value = "babe-mock")]
+    /// The hub's statement: `hub-proves-mock` (a proof of a toy circuit,
+    /// for trials) or `hub-proves` (its guest, not built yet).
+    #[arg(long, default_value = "hub-proves-mock")]
     statement: lichen_proto::Statement,
     /// The prover of shielded spends: a command run as `<cmd> spend <input
     /// file> <receipt file>`. Without it, spends carry native proofs (the
@@ -66,9 +64,9 @@ enum Cmd {
     Send { to: String, amount: u64 },
     /// Move `amount` of transparent notes into a shielded note.
     Shield { amount: u64 },
-    /// Return `amount` to the hub with the contract's memo: a withdrawal's
-    /// first step.
-    Return { amount: u64, memo: u32 },
+    /// Move `amount` of shielded notes into a transparent note of ours (a
+    /// withdrawal's claim, or an exit's, takes transparent notes).
+    Unshield { amount: u64 },
     /// Print every signed root this wallet has checked (JSON), for others
     /// to compare with theirs: a sequencer that signs two histories can't
     /// show both to everyone without being caught.
@@ -82,13 +80,6 @@ enum Cmd {
     /// `equivocation.json`): both roots at one height, both signed by this
     /// wallet's sequencer.
     CheckEquivocation { file: PathBuf },
-    /// Print the withdrawal statement's input for a return (JSON), for the
-    /// prover: in an anchored deployment, under the anchor covering it, with
-    /// the headers on the anchor's block its contract asks.
-    WithdrawInput { memo: u32 },
-    /// Write the sequencer's chain receipt at the height of a return's
-    /// root, which the withdrawal's proof needs.
-    ChainReceipt { memo: u32, out: PathBuf },
     /// Open a contract with the hub: deposit `deposit` sats, with
     /// `liquidity` sats of inbound (what you can receive beyond your
     /// balance), a reserve of `reserve` sats. Prints the hub's fee for the
@@ -136,15 +127,16 @@ enum Cmd {
     ClaimMint { contract: u32 },
     /// The contracts this wallet holds.
     Contracts,
-    /// Withdraw `amount` sats from a contract cooperatively. 0 closes it
-    /// early with nothing withdrawn: your reserve back, as the default
-    /// would pay it at T_close.
+    /// Withdraw `amount` sats from a contract cooperatively (rounded down
+    /// to the contract's unit): a claim of your notes worth exactly that,
+    /// which the hub records on the L2, then the fold. 0 closes it early
+    /// with nothing withdrawn: your reserve back, as the default would pay
+    /// it at T_close.
     Withdraw {
         contract: u32,
         amount: u64,
-        /// If the cooperative withdrawal fails, escalate at once on Bitcoin:
-        /// a dispute of the return if it is provable, else an exit (without
-        /// it, the next step is named).
+        /// If the cooperative withdrawal fails, exit at once on Bitcoin
+        /// (without it, the next step is named).
         #[arg(long)]
         escalate: bool,
     },
@@ -156,68 +148,12 @@ enum Cmd {
     /// Pay from this wallet's payout address: `amount` sats, or everything
     /// (less the fee) without it.
     SendPayout { to: String, amount: Option<u64> },
-    /// Enforce a withdrawal (already returned on the L2) on Bitcoin, when
-    /// the hub won't fold it: escalate and play the dispute to its end.
-    /// Run again to resume (the claim is kept with the contract).
-    Dispute {
-        contract: u32,
-        /// The amount withdrawn, in sats (not needed to resume): a dispute
-        /// pays it in the contract's units, rounded down.
-        amount: Option<u32>,
-        /// The statement program's input for the claim, hex (for Groth16:
-        /// the verifier's 204-byte input for the proof). The mock's is
-        /// built here.
-        #[arg(long)]
-        input: Option<PathBuf>,
-        /// For trials: lie in the dispute's execution, by BitVMX's fault
-        /// configuration (JSON). An honest hub wins against any lie.
-        #[arg(long, hide = true)]
-        lie: Option<PathBuf>,
-        /// For trials, on test networks only, under babe: assert --input,
-        /// a real proof of another claim, unchecked against this
-        /// contract's, so that the hub's challenge is played to `failure`.
-        #[arg(long, hide = true)]
-        false_claim: bool,
-    },
-    /// Exit through a hub-proves contract when the operator won't fold a
-    /// withdrawal, or has gone: claim our notes, and play the dispute to
-    /// its end (the hub proves the claim false or the timeout pays). Run
-    /// again to resume (the claim is kept with the contract).
+    /// Exit through a contract when the operator won't fold a withdrawal,
+    /// or has gone: claim our notes (after a withdrawal not folded, its
+    /// claim), and play the dispute to its end (the hub proves the claim
+    /// false or the timeout pays). Run again to resume (the claim is kept
+    /// with the contract).
     Exit { contract: u32 },
-    /// Write the package a tower needs to play a contract's dispute (once
-    /// the withdrawal is returned on the L2 and the hub has refused it):
-    /// the contract and its one-time secrets, never the wallet's key.
-    ExportDispute {
-        contract: u32,
-        /// Where to write it.
-        #[arg(long)]
-        out: PathBuf,
-        /// The claim's input, hex, if made already (a proof's, for
-        /// bitvmx); the tower builds the mock's. Needed under babe: the
-        /// package carries her signature on it, not her key.
-        #[arg(long)]
-        input: Option<PathBuf>,
-    },
-    /// Play a contract's dispute from a package (`export-dispute`) to its
-    /// end, its state beside the package; needs no wallet. Run again to
-    /// resume. A win ends at the payout: the wallet sweeps it
-    /// (`sweep-dispute`).
-    Tower {
-        #[arg(long)]
-        package: PathBuf,
-        /// The prover, for a package without a claim (`lichen-r0`: `claim
-        /// <input.json> <chain receipt> <out.hex>`, the STARK and the
-        /// Groth16 wrap).
-        #[arg(long, default_value = "lichen-r0")]
-        prover: PathBuf,
-    },
-    /// Sweep what a tower's dispute won (its state file, beside its
-    /// package) to the contract's payout address.
-    SweepDispute {
-        contract: u32,
-        #[arg(long)]
-        tower_state: PathBuf,
-    },
 }
 
 /// The chain: a node if `--rpc-url` is given, else Esplora.
@@ -233,10 +169,9 @@ fn chain(a: &Args) -> Result<lichen_chain::Chain> {
     }
 }
 
-/// What to do once a withdrawal's return is on the L2 and the hub hasn't
-/// folded it: the dispute, before `T_close` (after it the hub may
-/// broadcast the contract's default, her reserve and not `b`).
-/// When an escalation must confirm: by `T_close`, and how long is left.
+/// When an exit must confirm: by `T_close`, and how long is left (after
+/// it the hub may broadcast the contract's default, her reserve and not
+/// `b`).
 fn deadline(a: &Args, t_close: u32, height: Option<u32>) -> String {
     let secs = match a.network {
         lichen_chain::Net::Mutinynet => Some(30),
@@ -254,8 +189,7 @@ fn deadline(a: &Args, t_close: u32, height: Option<u32>) -> String {
     }
 }
 
-/// The next step when a withdrawal fails and an exit is the way out
-/// ([`lichen_wallet::exit::Fallback::Exit`]).
+/// The next step when a withdrawal fails: the exit.
 fn exit_note(a: &Args, cid: u32, t_close: u32, height: Option<u32>) -> String {
     format!(
         "contract {cid}: the withdrawal wasn't folded, so only an exit on Bitcoin gets it out: a claim of your notes, which needs neither the hub nor the sequencer. You prove nothing: the hub must prove the claim false within its window, or its timeout pays you.\n{}\nWith this command's --network, --wallet and --statement:\n    lichen exit {cid}\nor run this withdrawal again with --escalate.",
@@ -263,86 +197,11 @@ fn exit_note(a: &Args, cid: u32, t_close: u32, height: Option<u32>) -> String {
     )
 }
 
-fn escalate_note(a: &Args, cid: u32, b: u64, t_close: u32, height: Option<u32>) -> String {
-    let when = deadline(a, t_close, height);
-    let (proving, yourself) = if matches!(a.statement, lichen_proto::Statement::Babe { mock: false }) {
-        (
-            "The escalation has to confirm; then the hub signs b and you prove (10 to 15 minutes on 4 x86 cores) before T_A",
-            format!("  yourself, then proving on x86 Linux with Docker as it tells you once the hub has signed b:\n    lichen dispute {cid} {b}"),
-        )
-    } else if a.statement.mock_input(0, cid).is_some() || a.statement == (lichen_proto::Statement::Babe { mock: true }) {
-        ("The escalation has to confirm", format!("  yourself:\n    lichen dispute {cid} {b}"))
-    } else {
-        (
-            "Proving takes 10 to 15 minutes on 4 x86 cores, and the escalation has to confirm",
-            format!("  yourself, proving on x86 Linux with Docker (the README, \"Disputes on the real statement\"):\n    lichen withdraw-input {cid} > withdraw-input.json\n    lichen chain-receipt {cid} chain.receipt\n    lichen-r0 claim withdraw-input.json chain.receipt claim.hex\n    lichen dispute {cid} {b} --input claim.hex"),
-        )
-    };
-    let tower = match a.statement {
-        lichen_proto::Statement::Babe { mock: false } => format!("  or, once you have proved, with a tower, which asserts the proof and answers the hub's challenge while you are away (it holds your signatures, none of your keys):\n    lichen export-dispute {cid} --input claim.hex --out package.json"),
-        lichen_proto::Statement::Babe { mock: true } => format!("  or with a tower, which plays it while you are away (it holds your signatures, none of your keys):\n    lichen export-dispute {cid} --out package.json"),
-        _ => format!("  or with a tower, which proves and plays it while you are away (docs/RUN_A_TOWER.md):\n    lichen export-dispute {cid} --out package.json"),
-    };
-    format!(
-        "contract {cid}: your {b} sats are returned to the hub on the L2 and not folded, so only a dispute on Bitcoin gets them back (if the hub was only unreachable, `withdraw` again asks with the same return).\n{when} {proving}: don't leave it to the last blocks.\nWith this command's --network, --wallet and --statement:\n{yourself}\n{tower}\nor run this withdrawal again with --escalate."
-    )
-}
-
-/// `lichen dispute`: a return's dispute, played to its end or to the
-/// proof due.
-fn dispute_cmd(a: &Args, w: &mut Wallet, contract: u32, amount: Option<u32>, input: Option<&PathBuf>, lie: Option<&PathBuf>, false_claim: bool) -> Result<()> {
-    anyhow::ensure!(!false_claim || a.network.is_test(), "--false-claim is for test networks only, not {}", a.network);
-    let chain = chain(a)?;
-    let held = w.contracts.iter().find(|h| h.record.cid() == contract).with_context(|| format!("no contract {contract}"))?;
-    let (kept, unit) = (held.claim.clone(), held.record.terms.unit.to_sat());
-    anyhow::ensure!(held.record.hp().is_err(), "contract {contract} is a hub-proves contract: exit instead (you prove nothing):\n    lichen exit {contract}");
-    let real_babe = matches!(a.statement, lichen_proto::Statement::Babe { mock: false });
-    // the amount in sats, as returned; the dispute's b in the
-    // contract's units, rounded down (what a dispute pays)
-    let amount = amount.map(|sats| (u64::from(sats) / unit) as u32);
-    // under babe, a RISC Zero claim (lichen-r0 babe-claim's) becomes its proof
-    let read = |p: &PathBuf, w: &lichen_wallet::Wallet| -> Result<Vec<u8>> {
-        let data = hex::decode(std::fs::read_to_string(p)?.trim())?;
-        match (real_babe, false_claim) {
-            (true, true) => w.babe_false_input(&data),
-            (true, false) => w.babe_claim_input(contract, &data),
-            _ => Ok(data),
-        }
-    };
-    let (amount, input) = match (kept, amount, input) {
-        // the proof, made once the hub responded
-        (Some((b, i)), _, Some(p)) if i.is_empty() => (b, read(p, w)?),
-        (Some((b, i)), _, _) => (b, hex::decode(i)?),
-        (None, Some(b), Some(p)) => (b, read(p, w)?),
-        (None, Some(b), None) if a.statement == lichen_proto::Statement::Babe { mock: true } => (b, w.babe_mock_input(contract)?),
-        // proved once the hub responds, with its signature on b
-        (None, Some(b), None) if real_babe => (b, vec![]),
-        (None, Some(b), None) => (b, a.statement.mock_input(b, contract).context("--input: the claim's input (a proof's, for groth16 and babe)")?),
-        (None, None, _) => anyhow::bail!("the amount withdrawn"),
-    };
-    if let Some(p) = lie {
-        w.lie = Some(serde_json::from_str(&std::fs::read_to_string(p)?).context("--lie: a FailConfiguration")?);
-    }
-    w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
-    let (outcome, swept) = w.dispute(&chain, &a.statement, &a.wallet.with_extension("d"), contract, amount, &input)?;
-    match outcome {
-        lichen_wallet::dispute::Outcome::ProofDue(t_a) => {
-            let auth = lichen_wallet::engine::babe::data_dir(&a.wallet.with_extension("d"), contract).join("hub-auth.json");
-            println!(
-                "The hub signed b. Your proof is due: assert it before block {t_a} (T_A), after which the hub may take the contract. Prove with lichen-r0, on Linux or a Mac (the README, \"Disputes on the real statement\"), with this command's --network, --wallet and --statement:\n    lichen withdraw-input {contract} > withdraw-input.json\n    lichen chain-receipt {contract} chain.receipt\n    lichen-r0 babe-claim withdraw-input.json {} chain.receipt claim.hex\n    lichen dispute {contract} --input claim.hex\nor, once proved, with a tower: lichen export-dispute {contract} --input claim.hex --out package.json",
-                auth.display()
-            );
-        }
-        _ => println!("{outcome:?}; swept {swept:?}"),
-    }
-    Ok(())
-}
-
-/// `lichen exit`: a hub-proves contract's exit, played to its end.
+/// `lichen exit`: a contract's exit, played to its end.
 fn exit_cmd(a: &Args, w: &mut Wallet, contract: u32) -> Result<()> {
     let chain = chain(a)?;
     w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
-    let (outcome, swept) = w.exit(&chain, &a.statement, &a.wallet.with_extension("d"), contract)?;
+    let (outcome, swept) = w.exit(&chain, &a.statement, contract)?;
     match outcome {
         lichen_wallet::dispute::Outcome::Countered => println!("The hub proved the claim false: a note of it isn't yours, isn't live at the last anchor before the request, or was claimed through another contract too. Its success takes the contract."),
         _ => println!("{outcome:?}; swept {swept:?}"),
@@ -355,23 +214,6 @@ fn main() -> Result<()> {
     if let Cmd::Init = a.cmd {
         let w = Wallet::create(&a.wallet, &a.sequencer)?;
         println!("{}", hex::encode(w.address()));
-        return Ok(());
-    }
-    if let Cmd::Tower { ref package, ref prover } = a.cmd {
-        let chain = chain(&a)?;
-        let progress: std::sync::Arc<dyn Fn(String) + Send + Sync> = std::sync::Arc::new(|m: String| println!("{m}"));
-        let opts = lichen_wallet::engine::Options { progress: Some(progress), ..Default::default() };
-        let outcome = lichen_wallet::tower::run(&chain, &a.statement, package, &lichen_wallet::tower::work_dir(package), prover, opts)?;
-        match outcome.payout() {
-            Some(txid) => {
-                let cid = lichen_wallet::tower::Package::load(package)?.cid();
-                let state = package.with_extension("state.json");
-                let name = state.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                println!("{outcome:?}: the payout is {txid}.");
-                println!("Sweep it on your own device, with the wallet that exported the package: the tower has none of its keys. Copy this tower's state there, {} (on a machine running deploy/tower's compose file, the container's, so root's: `docker compose -f deploy/tower/docker-compose.yml cp tower:/tower/{name} .` makes a copy of your own), then:\n  lichen sweep-dispute {cid} --tower-state {name}", state.display());
-            }
-            None => println!("{outcome:?}"),
-        }
         return Ok(());
     }
     let mut w = Wallet::open(&a.wallet, &a.sequencer)?;
@@ -406,6 +248,7 @@ fn main() -> Result<()> {
             println!("sent: note {}", w.send(to, amount, 0)?[0]);
         }
         Cmd::Shield { amount } => println!("shielded: note {}", w.shield(amount)?[0]),
+        Cmd::Unshield { amount } => println!("unshielded: note {}", w.unshield(amount)?),
         Cmd::Roots => {
             w.state()?;
             println!("{}", serde_json::to_string_pretty(&w.seen().roots.into_values().collect::<Vec<_>>())?);
@@ -425,27 +268,13 @@ fn main() -> Result<()> {
             e.verify(&w.sequencer.deployment.sequencer)?;
             println!("{e}: both signed by sequencer {}", hex::encode(w.sequencer.deployment.sequencer));
         }
-        Cmd::Return { amount, memo } => println!("returned: note {}", w.return_to_hub(amount, memo)?),
-        Cmd::WithdrawInput { memo } => {
-            // in an anchored deployment, with the headers on the anchor
-            let input = match w.sequencer.deployment.seal {
-                Some(_) => serde_json::to_value(w.prover_input(memo, &chain(&a)?)?)?,
-                None => serde_json::to_value(w.withdraw_input(memo)?)?,
-            };
-            println!("{}", serde_json::to_string_pretty(&input)?);
-        }
-        Cmd::ChainReceipt { memo, ref out } => {
-            std::fs::write(out, w.chain_receipt(memo)?)?;
-            println!("{}: the chain receipt for the return with memo {memo}", out.display());
-        }
         Cmd::Open { deposit, liquidity, reserve, ref payout, resume } => {
             let chain = chain(&a)?;
-            let dir = a.wallet.with_extension("d");
             let ask = lichen_wallet::Ask { deposit, liquidity, reserve };
             let q = ask.quote(&lichen_wallet::hub_info(&a.hub)?)?;
             println!("the hub's fee for {liquidity} sats of liquidity: {} sats; you'll be minted {} sats, with a cap of {} sats", q.fee, q.minted, q.cap);
             let h = match resume {
-                Some(cid) => w.resume_open(&a.hub, &chain, &a.statement, &dir, ask, cid)?,
+                Some(cid) => w.resume_open(&a.hub, &chain, &a.statement, ask, cid)?,
                 None => {
                     let payout = match payout.as_deref() {
                         Some(p) => p.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()?.require_network(a.network.bitcoin()).context("--payout")?.script_pubkey(),
@@ -460,7 +289,7 @@ fn main() -> Result<()> {
                         println!("pay {} sats to {addr}\n(waiting for it to confirm)", amount.to_sat());
                         Ok(())
                     };
-                    w.open_contract(&a.hub, &chain, &a.statement, &dir, ask, payout, &pay)?
+                    w.open_contract(&a.hub, &chain, &a.statement, ask, payout, &pay)?
                 }
             };
             let t = &h.record.terms;
@@ -475,24 +304,12 @@ fn main() -> Result<()> {
                 println!("  funding     {}", h.record.funding);
                 println!("  payout      {}", addr(&h.record.pubs[0].payout_spk));
                 println!("  fee budget  {}", addr(&w.fees(&h.nonce, h.record.network).spk()));
-                match &h.record.dispute {
-                    lichen_proto::DisputeKeys::BitVmx(k) => match k.windows {
-                        Some(win) => println!("  windows     {} blocks for each of the user's moves, {} for the hub's choices, {} for its heavy moves", win.user, win.hub, win.path),
-                        None => {
-                            let p = lichen_proto::params(h.record.network);
-                        println!("  windows     {} blocks for every move (a contract from before windows by obligation)", p.delta + p.delta_prime);
-                        }
-                    },
-                    lichen_proto::DisputeKeys::Babe(k) => {
-                        let w = k.windows;
-                        println!("  windows     {} blocks for the hub's response, assert by block {}, {} for its challenge, {} for the answer", w.w_h, w.t_a, w.delta2, w.delta1);
-                        println!("  BABE        {} instances kept of {}", k.kept.len(), k.n);
-                    }
-                    lichen_proto::DisputeKeys::HubProves(k) => {
-                        let w = k.hp_windows;
-                        println!("  windows     {} blocks for the hub's assertion, {} for the user's challenge, {} for its answer", w.w_h, w.delta2, w.delta1);
-                        println!("  hub proves  {} instances of the user's kept of {}, margin {} blocks", k.kept.len(), k.n, k.margin);
-                    }
+                let k = h.record.hp();
+                let win = k.hp_windows;
+                println!("  windows     {} blocks for the hub's assertion, {} for the user's challenge, {} for its answer", win.w_h, win.delta2, win.delta1);
+                println!("  hub proves  {} instances of the user's kept of {}, margin {} blocks", k.kept.len(), k.n, k.margin);
+                if let Some(p) = &h.exit {
+                    println!("  claim       {} units ({} sats), kept for its exit", p.b, u64::from(p.b) * t.unit.to_sat());
                 }
             }
             for d in &w.deposits {
@@ -513,41 +330,9 @@ fn main() -> Result<()> {
             let txid = w.refund(&chain(&a)?, contract, bitcoin::Amount::from_sat(fee))?;
             println!("refunded the deposit for contract {contract}: {txid}");
         }
-        Cmd::Dispute { contract, amount, ref input, ref lie, false_claim } => dispute_cmd(&a, &mut w, contract, amount, input.as_ref(), lie.as_ref(), false_claim)?,
         Cmd::Exit { contract } => exit_cmd(&a, &mut w, contract)?,
-        Cmd::Tower { .. } => unreachable!(),
-        Cmd::ExportDispute { contract, ref out, ref input } => {
-            let dir = a.wallet.with_extension("d");
-            let program = a.statement.program_if(&dir)?;
-            let mut claim = input.as_ref().map(|p| -> Result<Vec<u8>> { Ok(hex::decode(std::fs::read_to_string(p)?.trim())?) }).transpose()?;
-            if let (Some(c), lichen_proto::Statement::Babe { mock: false }) = (&claim, &a.statement) {
-                claim = Some(w.babe_claim_input(contract, c)?);
-            }
-            if claim.is_none() && matches!(a.statement, lichen_proto::Statement::Babe { mock: true }) {
-                claim = Some(w.babe_mock_input(contract)?);
-            }
-            let p = w.export_dispute(&a.statement, program.as_ref(), contract, claim.as_deref())?;
-            // a tower package holds the contract's one-time secrets
-            lichen_ledger::files::write_private(out, &serde_json::to_vec_pretty(&p)?)?;
-            if p.pi1.is_some() {
-                // under BABE: her signatures, no key; the instances beside it
-                let n = w.export_instances(&dir, contract, out)?;
-                let to = lichen_wallet::tower::work_dir(out);
-                println!("wrote {}: contract {contract}'s dispute (a claim of {} sats) for a tower; it holds her signatures, none of her keys. The kept instances, {} MiB, are in {}: copy it with the package", out.display(), u64::from(p.b) * p.record.terms.unit.to_sat(), n >> 20, to.display());
-            } else {
-                println!("wrote {}: contract {contract}'s dispute (a claim of {} sats) for a tower; it holds this contract's one-time secrets", out.display(), u64::from(p.b) * p.record.terms.unit.to_sat());
-            }
-        }
-        Cmd::SweepDispute { contract, ref tower_state } => {
-            let s: lichen_wallet::tower::TowerState = serde_json::from_slice(&std::fs::read(tower_state)?).context("a tower's state")?;
-            let (b, _) = s.claim.context("the tower made no claim")?;
-            let outcome = s.payout.context("the tower's dispute has no payout")?;
-            w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
-            let (outcome, swept) = w.sweep_dispute(&chain(&a)?, &a.statement, &a.wallet.with_extension("d"), contract, b, outcome)?;
-            println!("{outcome:?}; swept {swept:?}");
-        }
         Cmd::PostDefault { contract } => {
-            let txid = w.post_default(&chain(&a)?, &a.statement, &a.wallet.with_extension("d"), contract)?;
+            let txid = w.post_default(&chain(&a)?, &a.statement, contract)?;
             println!("posted contract {contract}'s default: {txid}");
         }
         Cmd::Payout => {
@@ -564,32 +349,21 @@ fn main() -> Result<()> {
         }
         Cmd::Withdraw { contract, amount, escalate } => {
             w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
-            match w.withdraw(&a.hub, &a.statement, &a.wallet.with_extension("d"), contract, amount) {
+            match w.withdraw(&a.hub, &a.statement, contract, amount) {
                 Ok(txid) if amount == 0 => println!("closed contract {contract} with nothing withdrawn, your reserve back: the fold is {txid}"),
                 Ok(txid) => println!("withdrew {amount} sats from contract {contract}: the fold is {txid}"),
                 Err(e) => {
-                    // an open contract with a return, or with the exit: the
-                    // next step on Bitcoin (closing early with nothing
-                    // returned has none: the default pays the reserve)
+                    // an open contract with a claim: the exit is the next
+                    // step (closing early with nothing withdrawn has none:
+                    // the default pays the reserve)
                     let open = w.contracts.iter().find(|h| h.record.cid() == contract && h.closed.is_none()).map(|h| h.record.terms.t_close);
-                    let Some(t_close) = open.filter(|_| amount > 0 || w.returned(contract).is_some()) else { return Err(e) };
-                    let Ok(next) = w.fallback(contract) else { return Err(e) };
+                    let Some(t_close) = open.filter(|_| amount > 0) else { return Err(e) };
                     if escalate {
-                        eprintln!("The cooperative withdrawal failed: {e:#}\nEscalating on Bitcoin: {}", match next {
-                            lichen_wallet::exit::Fallback::Dispute { b } => format!("a dispute of the return, {b} sats"),
-                            lichen_wallet::exit::Fallback::Exit => "an exit".into(),
-                        });
-                        match next {
-                            lichen_wallet::exit::Fallback::Dispute { b } => dispute_cmd(&a, &mut w, contract, Some(u32::try_from(b)?), None, None, false)?,
-                            lichen_wallet::exit::Fallback::Exit => exit_cmd(&a, &mut w, contract)?,
-                        }
+                        eprintln!("The cooperative withdrawal failed: {e:#}\nExiting on Bitcoin");
+                        exit_cmd(&a, &mut w, contract)?;
                     } else {
                         let height = chain(&a).and_then(|c| c.height()).ok();
-                        let note = match next {
-                            lichen_wallet::exit::Fallback::Dispute { b } => escalate_note(&a, contract, b, t_close, height),
-                            lichen_wallet::exit::Fallback::Exit => exit_note(&a, contract, t_close, height),
-                        };
-                        eprintln!("Error: {e:#}\n\n{note}");
+                        eprintln!("Error: {e:#}\n\n{}", exit_note(&a, contract, t_close, height));
                         std::process::exit(1);
                     }
                 }
@@ -602,21 +376,6 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn escalate_note_names_the_deadline_and_both_routes() {
-        let a = Args::parse_from(["lichen", "--network", "mutinynet", "--statement", "bitvmx:v.yaml", "contracts"]);
-        let n = escalate_note(&a, 1006, 22_000, 3_519_000, Some(3_514_050));
-        println!("{n}");
-        assert!(n.contains("by block 3519000") && n.contains("4950 blocks left, about 41.2 hours"));
-        assert!(n.contains("lichen chain-receipt 1006 chain.receipt") && n.contains("lichen-r0 claim withdraw-input.json chain.receipt claim.hex") && n.contains("dispute 1006 22000 --input claim.hex") && n.contains("export-dispute 1006"));
-        let late = escalate_note(&a, 1006, 22_000, 3_519_000, Some(3_519_001));
-        assert!(late.contains("has passed") && late.contains("at once"));
-        let mock = Args::parse_from(["lichen", "--network", "regtest", "contracts"]);
-        let n = escalate_note(&mock, 7, 100, 50, None);
-        println!("{n}");
-        assert!(n.contains("lichen dispute 7 100\n") && !n.contains("--input") && !n.contains("Proving"));
-    }
 
     #[test]
     fn exit_note_names_the_exit_the_deadline_and_escalate() {

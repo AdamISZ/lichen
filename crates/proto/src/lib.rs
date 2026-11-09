@@ -2,9 +2,9 @@
 //! each keeps of it.
 //!
 //! Opening (the wallet asks, the hub answers):
-//! 1. [`OpenRequest`]: Alice's keys (for the dispute, its gadget's: under
-//!    BitVMX her move keys for the odd depths and her input-word keys), her
-//!    deposit `D`, cap and reserve, the coins she funds with and her change;
+//! 1. [`OpenRequest`]: Alice's keys (for the dispute: the instances she
+//!    garbled that the hub doesn't keep, opened, [`hp`]), her deposit `D`,
+//!    cap and reserve, the coins she funds with and her change;
 //! 2. [`OpenOffer`]: the contract's number (its memo `c`), `T_close`, the
 //!    hub's reserve and keys, the funding transaction (unsigned), the
 //!    hub's signatures on the whole pre-signed set, and `D` already minted
@@ -26,13 +26,12 @@
 //! opening that never completes leaves its mint stranded: tokens no one
 //! can spend, which cost the hub nothing. Amounts are in sats.
 //!
-//! A contract's dispute runs on a verification gadget ([`Gadget`]). What
-//! isn't the dispute's (the contract output with its fold and default, the
-//! payout) is every gadget's ([`Built`]); each gadget's keys and play are
-//! its own module's ([`bitvmx`]).
+//! A contract's dispute is the exit where only the hub proves ([`hp`]):
+//! BABE with the roles swapped. Its withdrawal is cooperative, by claim
+//! ([`WithdrawRequest`]): the hub records the claim on the L2 and folds.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+
 
 use anyhow::{bail, ensure, Context, Result};
 use bitcoin::secp256k1::{schnorr, Message, PublicKey, SecretKey, XOnlyPublicKey};
@@ -41,10 +40,10 @@ use lngap_btc::adaptor::AdaptorSig;
 use lngap_channel::{ChannelParams, PartyPubKeys};
 use lngap_lamport::winternitz::WotsPublic;
 use lngap_btc::taptree::TapTree;
-use lngap_sessions::contract::{Contract, Presign, Signed};
+use lngap_sessions::contract::{Presign, Signed};
 use lngap_sessions::session::Terms;
 use lngap_sessions::skeleton::Core;
-pub use lichen_ledger::{Deployment, Hash, JOURNAL_LEN};
+pub use lichen_ledger::{Deployment, Hash};
 use serde::{Deserialize, Serialize};
 
 /// Each party's share of the funding transaction's fee.
@@ -53,9 +52,6 @@ pub const FEE_SHARE: Amount = Amount::from_sat(1_000);
 /// output would be dust. A contract's unit is from this to about twice it
 /// ([`scale`]).
 pub const MIN_UNIT: u64 = 512;
-/// The withdrawal guest's image id, hex (the build committed in
-/// `r0/guests/withdraw.bin`; with the file's newline).
-pub const IMAGE_ID: &str = include_str!("../../../r0/guests/withdraw.id");
 /// lichen's version (the workspace's): what a hub and a wallet report.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -67,8 +63,6 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct Guests {
     pub spend: String,
     pub chain: String,
-    pub withdraw: String,
-    pub babe: String,
 }
 
 impl Guests {
@@ -78,28 +72,23 @@ impl Guests {
         Guests {
             spend: id(lichen_ledger::SPEND_IMAGE_ID),
             chain: id(lichen_ledger::CHAIN_IMAGE_ID),
-            withdraw: id(IMAGE_ID),
-            babe: id(lichen_babe::statement::IMAGE_ID),
         }
     }
 }
 
 pub use lichen_chain::{Net, Patience, Stall};
 
-pub mod babe;
-pub mod bitvmx;
 pub mod exit;
 pub mod hp;
-pub use babe::{BabeKeys, BabeOffer, BabeRequest};
-pub use bitvmx::{BitVmxKeys, BitVmxOffer, BitVmxRequest};
+pub mod setup;
+pub use hp::{HpKeys, HpOffer, HpRequest};
 
-/// The contracts' timing on a network, in blocks: escalating waits
-/// `to_self_delay` after the funding; a disprove waits δ (an equivocation
-/// first). The windows are [`bitvmx::windows`]'; a contract made before them has
-/// one window for every move, δ + δ′, and its races at the end δ′.
-/// Windows leave time for a person, or a restart, at the network's block
-/// time; on testnet4, whose blocks come in bursts, wide in blocks so that
-/// a burst doesn't use one up.
+/// The contracts' timing on a network, in blocks (ln-gap's skeleton): the
+/// dispute's first link waits `to_self_delay` after the funding; a
+/// payout's outputs wait δ. The dispute's own windows are
+/// [`hp::windows`]'. Wide enough for a person, or a restart, at the
+/// network's block time; on testnet4, whose blocks come in bursts, wide
+/// in blocks so that a burst doesn't use one up.
 pub fn params(net: Net) -> ChannelParams {
     let p = ChannelParams::regtest(Amount::from_sat(0));
     match net {
@@ -130,11 +119,10 @@ pub fn deposit_timeout(net: Net) -> u16 {
 /// What a deposit carries beyond the contract's `D + r_A` and the funding
 /// fee's share: Alice's fee budget for a dispute. Where the target
 /// feerate is the links' own floor (1 sat/vB) no child is needed, and
-/// the budget covers the one terminal transaction she posts: on Groth16
-/// her heaviest, a last step's proof, needs 26,793 sats at 1 sat/vB
-/// ([`Built::terminal_need`]; the wallet checks it at opening). Above the floor,
-/// each of her links' children pays about `vsize · (feerate − 1)` too
-/// (her links are ~90 kvB in the deepest Groth16 dispute).
+/// the budget covers the terminal transactions she posts
+/// ([`Built::terminal_need`]; the wallet checks it at opening). Above the
+/// floor, each of her links' children pays about `vsize · (feerate − 1)`
+/// too (her `challenge_assert` is about 21 kvB).
 pub fn fee_budget(net: Net) -> Amount {
     match net {
         Net::Mutinynet | Net::Signet => Amount::from_sat(30_000),
@@ -179,41 +167,24 @@ pub fn default_duration(net: Net) -> u32 {
     }
 }
 
-/// The statement the disputes run, and so their gadget. Under BABE,
-/// `babe`, a Groth16 proof of the BABE guest, or `babe-mock`, one of a toy
-/// circuit anyone can prove ([`babe`]). Under BitVMX, `bitvmx`, BitVMX's
-/// Groth16 verifier over a proof of the withdrawal guest (the real thing;
-/// its program definition should ask for an 8-ary search and a jump list:
-/// 21 depths), or `bitvmx-mock`, ln-gap's small stand-in
-/// (for fast tests; 8-ary, a jump list, 7 depths): a program that accepts
-/// exactly the returns `(b, c)` in its table, for one memo `session`.
-/// Both sides must build the same one.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// The statement the disputes run: the hub's (`lichen_withdraw::hp`),
+/// that a claim posted is false. `hub-proves` a proof of its guest (not
+/// built yet), `hub-proves-mock` a proof of a toy circuit anyone can make,
+/// for tests of the protocol (`lichen_babe::statement`). Both sides must
+/// run the same one.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Statement {
-    /// The program definition (yaml) of BitVMX's Groth16 verifier.
-    BitVmx { pdf: PathBuf },
-    BitVmxMock { session: u32, returns: Vec<(u32, u32)> },
-    Babe { mock: bool },
-    /// The exit where only the hub proves (docs/HUB_PROVES_PLAN.md): BABE
-    /// with the roles swapped, on the hub's statement.
     HubProves { mock: bool },
 }
 
 impl std::str::FromStr for Statement {
     type Err = anyhow::Error;
-    /// `babe`, `babe-mock`, `bitvmx` (BitVMX's verifier found in the cargo
-    /// checkout: [`Statement::bitvmx`]), `bitvmx:<path to the verifier's
-    /// program definition>` or `bitvmx-mock`.
+    /// `hub-proves` or `hub-proves-mock`.
     fn from_str(s: &str) -> Result<Statement> {
-        match s.split_once(':') {
-            None if s == "bitvmx-mock" => Ok(Statement::BitVmxMock { session: 0, returns: vec![] }),
-            None if s == "bitvmx" => Statement::bitvmx(),
-            None if s == "babe" => Ok(Statement::Babe { mock: false }),
-            None if s == "babe-mock" => Ok(Statement::Babe { mock: true }),
-            None if s == "hub-proves" => Ok(Statement::HubProves { mock: false }),
-            None if s == "hub-proves-mock" => Ok(Statement::HubProves { mock: true }),
-            Some(("bitvmx", pdf)) => Ok(Statement::BitVmx { pdf: PathBuf::from(pdf) }),
-            _ => bail!("a statement is `babe`, `babe-mock`, `hub-proves`, `hub-proves-mock`, `bitvmx`, `bitvmx:<pdf>` or `bitvmx-mock`"),
+        match s {
+            "hub-proves" => Ok(Statement::HubProves { mock: false }),
+            "hub-proves-mock" => Ok(Statement::HubProves { mock: true }),
+            _ => bail!("a statement is `hub-proves` or `hub-proves-mock`"),
         }
     }
 }
@@ -221,27 +192,13 @@ impl std::str::FromStr for Statement {
 impl Statement {
     pub fn id(&self) -> &'static str {
         match self {
-            Statement::BitVmx { .. } => "bitvmx",
-            Statement::BitVmxMock { .. } => "bitvmx-mock",
-            Statement::Babe { mock: false } => "babe",
-            Statement::Babe { mock: true } => "babe-mock",
             Statement::HubProves { mock: false } => "hub-proves",
             Statement::HubProves { mock: true } => "hub-proves-mock",
         }
     }
-    /// The gadget its disputes run on.
-    pub fn gadget(&self) -> Gadget {
-        match self {
-            Statement::Babe { .. } => Gadget::Babe,
-            Statement::HubProves { .. } => Gadget::HubProves,
-            _ => Gadget::BitVmx,
-        }
-    }
-    /// Whether it is the real statement, a proof of the withdrawal, rather
-    /// than the mock: the hub then checks a withdrawal natively before
-    /// folding, and the wallet waits for the anchor and the chain receipt.
+    /// Whether it is the real statement rather than the mock.
     pub fn is_real(&self) -> bool {
-        matches!(self, Statement::BitVmx { .. } | Statement::Babe { mock: false } | Statement::HubProves { mock: false })
+        matches!(self, Statement::HubProves { mock: false })
     }
 }
 
@@ -256,8 +213,6 @@ pub struct Info {
     pub deployment: Deployment,
     /// The statement's id ([`Statement::id`]); the wallet must run the same.
     pub statement: String,
-    /// Its depths: how many move keys a contract takes.
-    pub depths: u32,
     /// The hub's reserve for a contract of cap `V_max`: `V_max` times this,
     /// in parts per million.
     pub reserve_ppm: u64,
@@ -295,9 +250,9 @@ pub struct OpenRequest {
     pub fee: u64,
     /// Alice's reserve `r_A`.
     pub reserve: u64,
-    /// Alice's keys for the dispute, its gadget's.
+    /// Alice's keys for the dispute.
     #[serde(flatten)]
-    pub dispute: RequestKeys,
+    pub dispute: HpRequest,
     /// The contract number the hub gave the deposit ([`DepositOffer`]).
     pub cid: u32,
     /// Alice's deposit coin (to [`deposit_tree`]), confirmed: `D + r_A`,
@@ -337,9 +292,9 @@ pub struct OpenOffer {
     pub t_close: u32,
     pub reserve_hub: u64,
     pub hub: PartyPubKeys,
-    /// The hub's keys for the dispute, its gadget's.
+    /// The hub's keys for the dispute.
     #[serde(flatten)]
-    pub dispute: OfferKeys,
+    pub dispute: HpOffer,
     /// Inputs: Alice's coins, then the hub's. Outputs: the contract, then
     /// Alice's change, then the hub's.
     pub funding: Transaction,
@@ -363,10 +318,6 @@ pub struct Accept {
     /// (the `deposit_open` leaf), locked to `T`: the hub completes it with
         /// `t` and adds its own.
     pub deposit_presig: Presig,
-    /// Under BABE, her adaptor pre-signatures on `challenge_assert`, a
-    /// digit and value ([`babe`]).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub adaptor: Vec<[Presig; 4]>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -439,11 +390,18 @@ pub const DEFAULT_FEE: Amount = Amount::from_sat(2_000);
 /// Alice asks the hub to fold contract `cid` for her return at `index`
 /// (a sealed note of `b` sats to the hub with memo `cid`), with her
 /// signature on the fold.
+/// A cooperative withdrawal (`POST /withdraw`): Alice's claim of `b`
+/// units from contract `cid` ([`lichen_withdraw::hp::Claim`]'s bytes, hex:
+/// her notes by position, her signatures on its `E`), which the hub
+/// records on the L2, retiring the notes, and her signature on the fold
+/// paying her `b` units. At `b` 0, no claim: an early close, the fold
+/// paying her reserve alone.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FoldRequest {
+pub struct WithdrawRequest {
     pub cid: u32,
-    pub index: u32,
-    pub b: u64,
+    pub b: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub claim: String,
     pub alice_sig: Vec<u8>,
 }
 
@@ -560,9 +518,9 @@ pub struct Record {
     /// `terms.deposit - fee` ([`Record::minted`]).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub fee: u64,
-    /// The dispute's keys, its gadget's.
+    /// The dispute's keys.
     #[serde(flatten)]
-    pub dispute: DisputeKeys,
+    pub dispute: HpKeys,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -576,96 +534,19 @@ impl Record {
     }
 }
 
-/// The verification gadget a contract's dispute runs on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Gadget {
-    /// BitVMX's search over the statement program ([`bitvmx`]).
-    BitVmx,
-    /// BABE's witness encryption and garbled circuit ([`babe`]).
-    Babe,
-    /// BABE with the roles swapped: the hub proves ([`hp`]).
-    HubProves,
-}
-
-/// A contract's keys for its dispute, by gadget (in [`Record`], flattened:
-/// a BitVMX contract's record is as it was before gadgets). Which gadget
-/// is told by the keys themselves.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum DisputeKeys {
-    BitVmx(BitVmxKeys),
-    Babe(Box<BabeKeys>),
-    HubProves(Box<hp::HpKeys>),
-}
-
-/// Alice's keys for the dispute in an opening request, by gadget.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum RequestKeys {
-    BitVmx(BitVmxRequest),
-    Babe(Box<BabeRequest>),
-    HubProves(Box<hp::HpRequest>),
-}
-
-/// The hub's keys for the dispute in an offer, by gadget.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum OfferKeys {
-    BitVmx(BitVmxOffer),
-    Babe(Box<BabeOffer>),
-    HubProves(Box<hp::HpOffer>),
-}
-
-impl RequestKeys {
-    pub fn bitvmx(&self) -> Result<&BitVmxRequest> {
-        match self {
-            RequestKeys::BitVmx(k) => Ok(k),
-            _ => bail!("not a BitVMX request"),
-        }
-    }
-}
-
-impl OfferKeys {
-    pub fn bitvmx(&self) -> Result<&BitVmxOffer> {
-        match self {
-            OfferKeys::BitVmx(k) => Ok(k),
-            _ => bail!("not a BitVMX offer"),
-        }
-    }
-}
-
 impl Record {
     pub fn cid(&self) -> u32 {
         self.terms.id
     }
-    pub fn gadget(&self) -> Gadget {
-        match self.dispute {
-            DisputeKeys::BitVmx(_) => Gadget::BitVmx,
-            DisputeKeys::Babe(_) => Gadget::Babe,
-            DisputeKeys::HubProves(_) => Gadget::HubProves,
-        }
-    }
-    /// The BitVMX keys, for a BitVMX contract.
-    pub fn bitvmx(&self) -> Result<&BitVmxKeys> {
-        match &self.dispute {
-            DisputeKeys::BitVmx(k) => Ok(k),
-            _ => bail!("contract {} is not a BitVMX contract", self.cid()),
-        }
-    }
-        /// The contract, built by its gadget: for BitVMX, under `statement`
-    /// and its `program` (BABE's statement has none).
-    pub fn build(&self, statement: &Statement, program: Option<&lngap_sessions::contract::Program>) -> Result<Built> {
+    /// The contract's graph, under `statement`, the contract's.
+    pub fn build(&self, statement: &Statement) -> Result<Built> {
         ensure!(statement.id() == self.statement, "the contract runs {}, not {}", self.statement, statement.id());
-        match self.gadget() {
-            Gadget::BitVmx => Ok(Built::BitVmx(self.contract(statement, program.context("a BitVMX contract's program")?)?)),
-            Gadget::Babe => Ok(Built::Babe(Box::new(self.babe_graph()?))),
-            Gadget::HubProves => Ok(Built::HubProves(Box::new(self.hp_graph()?))),
-        }
+        Ok(Built(Box::new(self.hp_graph()?)))
     }
     pub fn signed(&self) -> Signed {
         Signed { hub: self.hub_sigs.clone(), alice: self.alice_sigs.clone() }
     }
-        /// The pre-signed set, both signatures checked (but on what Alice
+    /// The pre-signed set, both signatures checked (but on what Alice
     /// keeps from the hub, [`Built::withheld`]).
     pub fn presigned(&self, c: &Built) -> Result<Vec<Presign>> {
         let set = c.presign(self.funding)?;
@@ -675,30 +556,17 @@ impl Record {
     }
 }
 
-/// A contract built by its gadget. What isn't the dispute's is the same
-/// for every gadget ([`Core`]: the contract output with `fold`, `default`
-/// and the gadget's `escalate`; the fold; the default; the payout).
-#[allow(clippy::large_enum_variant)]
-pub enum Built {
-    BitVmx(Contract),
-    Babe(Box<lichen_babe::graph::Babe>),
-    HubProves(Box<lichen_babe::hp::HubProves>),
-}
+/// A contract's graph ([`lichen_babe::hp::HubProves`]): the contract
+/// output with its fold, default and dispute (ln-gap's skeleton,
+/// [`Core`]), the dispute's links and terminals, the payout.
+pub struct Built(pub Box<lichen_babe::hp::HubProves>);
 
 impl Built {
-    pub fn gadget(&self) -> Gadget {
-        match self {
-            Built::BitVmx(_) => Gadget::BitVmx,
-            Built::Babe(_) => Gadget::Babe,
-            Built::HubProves(_) => Gadget::HubProves,
-        }
+    pub fn graph(&self) -> &lichen_babe::hp::HubProves {
+        &self.0
     }
     pub fn core(&self) -> Core<'_> {
-        match self {
-            Built::BitVmx(c) => c.core(),
-            Built::Babe(c) => c.core(),
-            Built::HubProves(c) => c.core(),
-        }
+        self.0.core()
     }
     /// What the contract output holds: `V_max` and both reserves.
     pub fn value(&self) -> Amount {
@@ -706,11 +574,7 @@ impl Built {
     }
     /// The contract output's tree.
     pub fn tree(&self) -> Result<TapTree> {
-        match self {
-            Built::BitVmx(c) => c.tree(),
-            Built::Babe(c) => c.tree(),
-            Built::HubProves(c) => c.tree(),
-        }
+        self.0.tree()
     }
     /// The cooperative close for a withdrawal of `b` sats.
     pub fn fold(&self, funding: OutPoint, b: Amount, fee: Amount) -> Result<Presign> {
@@ -719,59 +583,22 @@ impl Built {
     /// Every transaction the two parties pre-sign, the contract output at
     /// `funding`: the default and the dispute's.
     pub fn presign(&self, funding: OutPoint) -> Result<Vec<Presign>> {
-        match self {
-            Built::BitVmx(c) => c.presign(funding),
-            Built::Babe(c) => c.presign(funding),
-            Built::HubProves(c) => c.presign(funding),
-        }
+        self.0.presign(funding)
     }
-    /// Whether a party keeps its signature on `name` from the other, so
-    /// that only one side has both ([`Built::alice_withholds`],
-    /// [`Built::hub_withholds`]).
+    /// Whether a party keeps its signature on `name` from the other: the
+    /// hub, on `wrongly_challenged`.
     pub fn withheld(&self, name: &str) -> bool {
-        self.alice_withholds(name) || self.hub_withholds(name)
-    }
-    /// Whether Alice keeps her signature on `name` from the hub (under
-    /// BABE, `wrongly_challenged`'s: for her towers only).
-    pub fn alice_withholds(&self, name: &str) -> bool {
-        matches!(self, Built::Babe(_)) && lichen_babe::graph::Babe::withheld(name)
-    }
-    /// Whether the hub keeps its signature on `name` from Alice (with the
-    /// roles swapped, `wrongly_challenged`'s).
-    pub fn hub_withholds(&self, name: &str) -> bool {
-        matches!(self, Built::HubProves(_)) && lichen_babe::hp::HubProves::withheld(name)
+        lichen_babe::hp::HubProves::withheld(name)
     }
     /// The key Alice signs `b` with in a dispute; the payout's bit outputs
     /// read it.
     pub fn b_key(&self) -> &WotsPublic {
-        match self {
-            Built::BitVmx(c) => c.b_key(),
-            Built::Babe(c) => &c.spec.b_key,
-            Built::HubProves(c) => &c.spec.b_key,
-        }
+        &self.0.spec.b_key
     }
     /// What the heaviest of Alice's terminal transactions (in the
     /// pre-signed `set`) needs from her fee budget on `net`.
     pub fn terminal_need(&self, set: &[Presign], net: Net) -> Result<Amount> {
-        match self {
-            Built::BitVmx(c) => bitvmx::terminal_need(c, set, net),
-            Built::Babe(_) => babe::terminal_need(set, net),
-            Built::HubProves(_) => hp::terminal_need(set, net),
-        }
-    }
-    /// The BitVMX contract, for a BitVMX contract.
-    pub fn bitvmx(&self) -> Result<&Contract> {
-        match self {
-            Built::BitVmx(c) => Ok(c),
-            _ => bail!("not a BitVMX contract"),
-        }
-    }
-    /// The BABE graph, for a BABE contract.
-    pub fn babe(&self) -> Result<&lichen_babe::graph::Babe> {
-        match self {
-            Built::Babe(c) => Ok(c),
-            _ => bail!("not a BABE contract"),
-        }
+        hp::terminal_need(set, net)
     }
 }
 
@@ -882,31 +709,8 @@ pub fn terminal_fee(tx: &Transaction, net: Net) -> Amount {
     Amount::from_sat(((tx.vsize() as u64 + 60) * feerate(net)).max(330))
 }
 
-/// The canned claim's `D` (`tests/data/claim-60-42.*`, the real-receipt
-/// test's): the toy deployment with the genesis seal of the regtest run
-/// that made it, a contract checkpointed at regtest's difficulty, in
-/// [`canned_unit`].
-pub fn canned_d() -> Hash {
-    let d = Deployment { seal: Some(canned_seal()), ..Deployment::toy() };
-    let regtest = Checkpoint { height: 0, hash: <bitcoin::BlockHash as bitcoin::hashes::Hash>::all_zeros(), bits: 0x207fffff };
-    contract_word(&d, Some(&regtest), Amount::from_sat(canned_unit())).unwrap()
-}
-
-/// The canned claim's unit: that of the contracts the real-statement
-/// tests open (400,000 sats deposited, 1,000,000 of liquidity, no fee), 684
-/// sats. Its return is 60 of them (41,040 sats), with memo 42.
-pub fn canned_unit() -> u64 {
-    scale(400_000 + 1_000_000).expect("a cap over the least").1
-}
-
-/// The canned claim's genesis seal.
-pub fn canned_seal() -> lichen_ledger::OutPoint {
-    lichen_ledger::outpoint::parse(include_str!("../tests/data/claim-60-42.seal").trim()).expect("the canned claim's genesis seal")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::bitvmx::*;
     use super::*;
 
     /// A cap's scale: `V_max` the cap or a little more, every bit's output
@@ -915,7 +719,7 @@ mod tests {
     #[test]
     fn the_cap_scaled() {
         assert_eq!(scale(1_000_000).unwrap(), (10, 978));
-        assert_eq!(canned_unit(), 684);
+        assert_eq!(scale(400_000 + 1_000_000).unwrap().1, 684);
         assert_eq!(scale(MIN_UNIT).unwrap(), (1, MIN_UNIT));
         assert!(scale(MIN_UNIT - 1).is_err());
         for cap in [512, 1_000, 1_535, 1_536, 99_999, 1_000_000, 16_777_215, 2_100_000_000_000] {
@@ -930,7 +734,7 @@ mod tests {
             liquidity,
             fee,
             reserve: 20_000,
-            dispute: RequestKeys::BitVmx(bitvmx::BitVmxRequest { moves: vec![], inputs: vec![], hops: vec![] }),
+            dispute: HpRequest { hp_opened: vec![] },
             cid: 1000,
             deposit_coin: (OutPoint::null(), TxOut { value: Amount::ZERO, script_pubkey: bitcoin::ScriptBuf::new() }),
             fee_spk: bitcoin::ScriptBuf::new(),
@@ -943,16 +747,11 @@ mod tests {
         assert!(terms(1000, &req(10_000, 1_000_000, 10_000), 500, 30_000).is_err(), "a fee the deposit doesn't cover");
     }
 
-    /// An opening request's keys of other parameters, or a reserve whose
-    /// sum would overflow, are refused before anything is built on them.
+    /// A reserve whose sum would overflow is refused before anything is
+    /// built on it; the networks' names read back; the windows in blocks.
     #[test]
     fn a_request_checked() {
-        use lngap_lamport::winternitz::{WotsParams, WotsSecret};
-        let dir = std::env::temp_dir().join(format!("lichen-proto-req-{}", std::process::id()));
-        let program = Statement::BitVmxMock { session: 0, returns: vec![] }.program(&dir).unwrap();
-        let input = |j: usize, p: WotsParams| WotsSecret::from_entropy(p, [j as u8; 32]).public();
         let alice = lngap_channel::PartyKeys::from_seed(lngap_channel::Role::User, lngap_btc::keys::Seed::from_label("test/alice")).public();
-        let good = lngap_zk::final_d60::input_key_params();
         let mut req = OpenRequest {
             alice,
             l2_address: [7; 32],
@@ -960,97 +759,24 @@ mod tests {
             liquidity: 1_000_000,
             fee: 10_000,
             reserve: 20_000,
-            dispute: RequestKeys::BitVmx(BitVmxRequest { moves: vec![], inputs: (0..program.info.input_words).map(|j| input(j, good)).collect(), hops: vec![] }),
+            dispute: HpRequest { hp_opened: vec![] },
             cid: 1000,
             deposit_coin: (OutPoint::null(), TxOut { value: Amount::ZERO, script_pubkey: bitcoin::ScriptBuf::new() }),
             fee_spk: bitcoin::ScriptBuf::new(),
         };
-        let RequestKeys::BitVmx(keys) = &mut req.dispute else { unreachable!() };
-        check_request_keys(&program, keys).unwrap();
-        // a key of other parameters panicked in pre-signing
-        keys.inputs[0] = input(0, WotsParams::for_bytes(2));
-        assert!(format!("{:#}", check_request_keys(&program, keys).unwrap_err()).contains("parameters"));
-        keys.inputs.pop();
-        assert!(check_request_keys(&program, keys).is_err(), "a key short");
         terms(1000, &req, 100, 20_000).unwrap();
         // a reserve near u64::MAX overflowed the contract's value
         req.reserve = u64::MAX - 5;
         assert!(format!("{:#}", terms(1000, &req, 100, 20_000).unwrap_err()).contains("21 million"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The hub checks the claim natively on the input it rebuilds from the
-    /// words read off the chain: that round trip keeps a valid proof valid
-    /// (and a tampered one not).
-    #[test]
-    fn the_native_check_on_the_words_read() {
-        let valid = hex::decode(include_str!("../tests/data/claim-60-42.hex").trim()).unwrap();
-        let g16 = Statement::BitVmx { pdf: PathBuf::from("unused.yaml") };
-        let rebuilt = input_from_words(&lngap_zk::final_d60::input_words(&valid));
-        assert_eq!(rebuilt, valid);
-        assert_eq!(g16.accepts(&rebuilt), Some(true));
-        let mut words = lngap_zk::final_d60::input_words(&valid);
-        words[41] = 61;
-        assert_eq!(g16.accepts(&input_from_words(&words)), Some(false), "b tampered");
-        assert_eq!(Statement::BitVmxMock { session: 0, returns: vec![] }.accepts(&valid), None);
-    }
-
-    /// `bitvmx` alone finds the verifier, and its program definition's
-    /// input is the layout's: the journal's length, the image id, the proof,
-    /// the journal.
-    #[test]
-    fn the_groth16_statement_found() {
-        assert!(GROTH16_PDF.contains(&format!("size: {}", 4 + 32 + 128 + JOURNAL_LEN)));
-        let Statement::BitVmx { pdf } = "bitvmx".parse::<Statement>().unwrap() else { panic!("not bitvmx") };
-        assert!(pdf.exists() && pdf.with_file_name("zkverifier.elf").exists());
         for n in ["regtest", "mutinynet", "signet", "testnet4"] {
             assert_eq!(n.parse::<Net>().unwrap().to_string(), n);
         }
+        for s in ["hub-proves", "hub-proves-mock"] {
+            assert_eq!(s.parse::<Statement>().unwrap().id(), s);
+        }
+        assert!("babe".parse::<Statement>().is_err());
         // the windows are in blocks: wider where blocks come faster or in bursts
         assert!(params(Net::Mutinynet).delta > params(Net::Signet).delta);
         assert!(params(Net::Testnet4).delta > params(Net::Signet).delta);
-        // the windows by obligation fit the disprove delay; Alice's moves
-        // keep the window they had, the hub's choices are quicker
-        for net in [Net::Regtest, Net::Mutinynet, Net::Signet, Net::Testnet4] {
-            let (w, p) = (windows(net), params(net));
-            w.check(p.delta, lngap_sessions::contract::POST_CSV).unwrap();
-            assert!(w.user >= p.delta + p.delta_prime && w.hub < w.user, "{net:?}: {w:?}");
-        }
-    }
-
-    /// The Groth16 layout checks the journal `b ‖ c ‖ D`: a claim in this
-    /// contract's deployment passes every check, one in another fails the
-    /// deployment's words.
-    #[test]
-    fn the_groth16_layout_pins_the_deployment() {
-        let g16 = Statement::BitVmx { pdf: PathBuf::from("unused.yaml") };
-        let (ours, theirs) = (Deployment::toy(), Deployment { sequencer: [1; 32], hub: [2; 32], seal: None });
-        let (b_word, checks) = g16.layout(42, &ours.id());
-        assert_eq!(b_word, 41);
-        assert_eq!(checks.len(), 1 + 8 + 1 + 8, "the journal's length, the image id, the memo, the deployment");
-        let claim = |d: &Deployment| {
-            let mut w = vec![(JOURNAL_LEN / 4) as u32];
-            w.extend(lngap_zk::final_d60::input_words(&hex::decode(IMAGE_ID.trim()).unwrap()));
-            w.extend([0; 32]); // the proof
-            w.extend([9, 42]);
-            w.extend(lngap_zk::final_d60::input_words(&d.id()));
-            w
-        };
-        let failing = |w: &[u32]| checks.iter().filter(|c| w[c.word] != c.value).map(|c| c.name.clone()).collect::<Vec<_>>();
-        assert_eq!(claim(&ours).len(), 51);
-        assert!(failing(&claim(&ours)).is_empty());
-        assert_eq!(failing(&claim(&theirs)), (1..=8).map(|j| format!("deployment_{j}")).collect::<Vec<_>>());
-        // the real claim (the committed guest's proof of the toy
-        // deployment's return of 60 units, memo 42, anchored on regtest: D
-        // the contract's, of the run's genesis seal, regtest's W and the
-        // unit) passes every check
-        let real = hex::decode(include_str!("../tests/data/claim-60-42.hex").trim()).unwrap();
-        let words = lngap_zk::final_d60::input_words(&real);
-        assert_eq!(words.len(), 51);
-        let (_, checks) = g16.layout(42, &canned_d());
-        let failing = |w: &[u32]| checks.iter().filter(|c| w[c.word] != c.value).map(|c| c.name.clone()).collect::<Vec<_>>();
-        assert!(failing(&words).is_empty(), "{:?}", failing(&words));
-        assert_eq!(words[b_word], 60);
-        assert_eq!(g16.accepts(&real), Some(true));
     }
 }

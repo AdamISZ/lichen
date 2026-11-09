@@ -79,12 +79,11 @@ services:
     command: ["hub"]
     environment:
       NETWORK: ${NETWORK}
-      STATEMENT: ${STATEMENT:-babe}
+      STATEMENT: ${STATEMENT:-hub-proves-mock}
       RESERVE_PPM: ${RESERVE_PPM:-20000}
       FEE_PPM: ${FEE_PPM:-10000}
       MAX_LIQUIDITY: ${MAX_LIQUIDITY:-10000000}
       DURATION: ${DURATION:-}
-      WINDOWS: ${WINDOWS:-}
       HOSTILE: ${HOSTILE:-}
       REFUSE_FOLDS: ${REFUSE_FOLDS:-}
       # a counter's wrap: its working files, at the same path on the host

@@ -12,15 +12,15 @@
 //! The setup is checked by cut-and-choose ([`setup`]), the instances'
 //! input secrets shared ([`vsss`]) so that one set revealed on chain
 //! opens every kept instance; the hub reveals it in `challenge_assert`
-//! by completing Alice's adaptor pre-signatures ([`reveal`]). The
-//! statement is RISC Zero's ([`risc0`]); the transactions, on ln-gap's
-//! skeleton, are [`graph`]'s.
+//! by completing Alice's adaptor pre-signatures ([`reveal`]). Here the
+//! roles are swapped ([`hp`]): Alice garbles and the hub proves (the
+//! mock statement, [`statement`]; a RISC Zero receipt's Groth16 form,
+//! [`risc0`]); the transactions, on ln-gap's skeleton, are [`hp`]'s.
 
 pub mod circuit;
 pub mod field;
 pub mod gadget;
 pub mod garble;
-pub mod graph;
 pub mod hp;
 pub mod reveal;
 pub mod risc0;

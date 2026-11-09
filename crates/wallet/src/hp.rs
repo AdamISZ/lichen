@@ -1,18 +1,17 @@
 //! The wallet's part of a hub-proves contract (docs/HUB_PROVES_PLAN.md,
 //! `lichen_proto::hp`): its opening, in which she garbles for the hub's
 //! statement, commits to her instances and uploads the ones the hub keeps;
-//! and her exit's claim, definite notes by position and opening, signed
-//! once.
+//! and her claims, definite notes by position, signed once: an exit's,
+//! and a cooperative withdrawal's ([`Wallet::claim_of`]).
 
 use anyhow::{ensure, Context, Result};
 use lichen_babe::hp::HubProves;
 use lichen_babe::setup::{instance, par, VALUES};
-use lichen_proto::babe::{dealing_to_hex, min_soundness, shares_to_hex, soundness, statement_outpoint, Opened};
+use lichen_proto::setup::{dealing_to_hex, min_soundness, shares_to_hex, soundness, statement_outpoint, Opened};
 use lichen_proto::hp::{check_setup, HpCommit, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
-use lichen_proto::{DisputeKeys, Net, Statement};
+use lichen_proto::{Net, Record, Statement};
 use lichen_withdraw::hp::{Claim, MAX_NOTES};
 use lngap_sessions::contract::Presign;
-use std::collections::BTreeSet;
 
 use crate::engine::hp::{dealing, instance_seed};
 use crate::engine::ContractSecrets;
@@ -54,7 +53,7 @@ impl Wallet {
             hex::encode(instance(&instance_seed(s, i), &dealer.shares(u64::from(i)), &vk, &public).0.commitment())
         });
         self.say(format!("garbled in {:.1?}", start.elapsed()));
-        let commit = HpCommit { cid, b_key: s.babe_b().public(), e_key: s.babe_e().public(), commitments, dealing: dealing_to_hex(&dealt) };
+        let commit = HpCommit { cid, b_key: s.hp_b().public(), e_key: s.hp_e().public(), commitments, dealing: dealing_to_hex(&dealt) };
         let kept: HpKept = hub_call(&format!("{hub}/hp/commit"), Some(serde_json::to_string(&commit)?), false)?;
         let mut k = kept.kept.clone();
         k.sort_unstable();
@@ -72,23 +71,23 @@ impl Wallet {
         Ok(HpOpening { request: HpRequest { hp_opened: opened }, setup, kept: k, hmsg })
     }
 
-    /// The contract's keys from her opening and the hub's offer: its
-    /// windows the network's, its pre-signatures on `challenge_assert` (in
-    /// `set`) under its adaptor keys, adapted to her dealing's points.
-    pub(crate) fn hp_record_keys(net: Net, t_close: u32, s: &ContractSecrets, o: &HpOpening, offer: &HpOffer, set: &[Presign]) -> Result<DisputeKeys> {
+    /// The hub's offer checked against her opening: its windows the
+    /// network's, its pre-signatures on `challenge_assert` (in `set`)
+    /// under its adaptor keys, adapted to her dealing's points.
+    pub(crate) fn hp_check_offer(net: Net, t_close: u32, s: &ContractSecrets, o: &HpOpening, offer: &HpOffer, set: &[Presign]) -> Result<()> {
         ensure!(offer.hp_windows == lichen_proto::hp::windows(net, t_close), "the hub's windows {:?}, not the network's", offer.hp_windows);
         let (_, dealt) = dealing(s, o.setup.n, o.setup.m);
         let msg = HubProves::challenge_sighash(set)?;
         let presigs: Vec<[lngap_btc::adaptor::AdaptorSig; VALUES]> = offer.hp_presigs.iter().map(|p| p.each_ref().map(lngap_btc::adaptor::AdaptorSig::from)).collect();
         ensure!(lichen_babe::reveal::check_presigs(&o.setup.adaptor, &msg, &lichen_babe::reveal::points(&dealt), &presigs), "the hub's adaptor pre-signatures on challenge_assert");
-        Ok(DisputeKeys::HubProves(Box::new(Wallet::hp_keys(s, o, offer.hp_windows, offer.hp_presigs.clone()))))
+        Ok(())
     }
 
     /// The record's keys, the pre-signatures as given.
-    pub(crate) fn hp_keys(s: &ContractSecrets, o: &HpOpening, windows: lichen_babe::graph::Windows, presigs: Vec<[lichen_proto::Presig; VALUES]>) -> HpKeys {
+    pub(crate) fn hp_keys(s: &ContractSecrets, o: &HpOpening, windows: lichen_babe::hp::Windows, presigs: Vec<[lichen_proto::Presig; VALUES]>) -> HpKeys {
         HpKeys {
-            b_key: s.babe_b().public(),
-            e_key: s.babe_e().public(),
+            b_key: s.hp_b().public(),
+            e_key: s.hp_e().public(),
             hub_lamport: o.setup.lamport.clone(),
             hub_adaptor: o.setup.adaptor.clone(),
             n: o.setup.n,
@@ -102,12 +101,10 @@ impl Wallet {
     }
 
     /// Contract `cid`'s exit claim where the hub proves: her notes by
-    /// position and opening, signed once. From the sequencer's state, or
-    /// with it gone the exit set kept; notes spent left out (by the state,
-    /// else by the spends this wallet signed). The largest first, as many as
-    /// cover the cap, at most [`MAX_NOTES`], `b` their total up to it.
-    /// After a return to `cid`, the notes it spent first and `b` at most
-    /// its value (her own return isn't a spend against this contract).
+    /// position, signed once. From the sequencer's state, or with it gone
+    /// the exit set kept; notes spent left out (by the state, else by the
+    /// spends this wallet signed). The largest first, as many as cover the
+    /// cap, at most [`MAX_NOTES`], `b` their total up to it.
     ///
     /// A note counts only if it is in `A*`'s tree, the last anchor at
     /// least the margin below her request's block: so the claim waits,
@@ -120,7 +117,7 @@ impl Wallet {
                 return Ok(p);
             }
             if !said {
-                self.say(format!("waiting for our notes' anchor to be {} blocks deep: the claim is judged at the last anchor that deep", self.contracts.iter().find(|h| h.record.cid() == cid).and_then(|h| h.record.hp().ok()).map_or(0, |k| k.margin)));
+                self.say(format!("waiting for our notes' anchor to be {} blocks deep: the claim is judged at the last anchor that deep", self.contracts.iter().find(|h| h.record.cid() == cid).map_or(0, |h| h.record.hp().margin)));
                 said = true;
             }
             ensure!(!stall.stalled(chain.height()?), "the chain stalled before our notes' anchor was deep enough to claim");
@@ -157,12 +154,33 @@ impl Wallet {
         }
     }
 
+    /// Wait until the notes at `positions` are in the tree of the last
+    /// anchor the margin deep (`A*` of a request confirmed next): a claim
+    /// made before, a cooperative withdrawal's, before its exit.
+    pub(crate) fn hp_wait_anchored(&self, chain: &lichen_chain::Chain, cid: u32, positions: &[u32]) -> Result<()> {
+        let margin = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?.record.hp().margin;
+        let last = positions.iter().max().copied().unwrap_or(0);
+        let mut stall = lichen_chain::Stall::new(chain.height()?, chain.network);
+        let mut said = false;
+        loop {
+            let live = self.sequencer.state().ok().map(|s| self.observe(s)).transpose()?;
+            if self.hp_safe_size(chain, margin, live.as_ref())?.is_some_and(|s| last < s) {
+                return Ok(());
+            }
+            if !said {
+                self.say(format!("waiting for the claim's notes' anchor to be {margin} blocks deep: the claim is judged at the last anchor that deep"));
+                said = true;
+            }
+            ensure!(!stall.stalled(chain.height()?), "the chain stalled before the claim's notes' anchor was deep enough to claim");
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+    }
+
     /// [`Wallet::hp_exit_plan`], or none while a note of ours is newer
     /// than the anchor the margin deep.
     fn hp_plan_now(&self, chain: &lichen_chain::Chain, cid: u32) -> Result<Option<ExitPlan>> {
         let h = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
         let record = &h.record;
-        let k = record.hp()?;
         let live = match self.sequencer.state() {
             Ok(s) => Some(self.observe(s)?),
             Err(e) => {
@@ -170,35 +188,22 @@ impl Wallet {
                 None
             }
         };
-        let returns: Vec<&crate::Signed> = self.signed.iter().filter(|s| s.ret.is_some_and(|(c, _)| c == cid)).collect();
-        let own: BTreeSet<_> = returns.iter().flat_map(|s| s.nullifiers.iter().copied()).collect();
-        let returned = returns.last().and_then(|s| s.ret).map(|(_, v)| v);
-        let spent = |nf: &[u8; 32]| !own.contains(nf) && (self.signed.iter().any(|s| s.nullifiers.contains(nf)) || live.as_ref().is_some_and(|s| s.nullifiers.contains(nf)));
-        // her notes: in the state (and spent ones, her return's), else in
-        // the newest exit set kept
+        let spent = |nf: &[u8; 32]| self.signed.iter().any(|s| s.nullifiers.contains(nf)) || live.as_ref().is_some_and(|s| s.nullifiers.contains(nf));
+        // her notes: in the state, else in the newest exit set kept
         let mut mine: Vec<(u32, lichen_ledger::Note)> = match &live {
-            Some(s) => {
-                let mut v: Vec<(u32, lichen_ledger::Note)> = self.notes(s).into_iter().map(|o| (o.index, o.note)).collect();
-                for (i, n) in s.transparent() {
-                    if own.contains(&lichen_ledger::nullifier(n)) && !v.iter().any(|(j, _)| *j == i) {
-                        v.push((i, *n));
-                    }
-                }
-                v
-            }
+            Some(s) => self.notes(s).into_iter().map(|o| (o.index, o.note)).collect(),
             None => self.exit_sets().into_iter().flat_map(|x| x.notes.into_iter().map(|n| (n.index, n.note))).collect(),
         };
         mine.sort_by_key(|(i, _)| *i);
         mine.dedup_by_key(|(i, _)| *i);
         let unit = record.terms.unit.to_sat();
-        let v_max = record.terms.v_max().to_sat();
-        let cap = returned.map_or(v_max, |r| (r / unit * unit).min(v_max));
+        let cap = record.terms.v_max().to_sat();
         let mut notes: Vec<(u32, lichen_ledger::Note)> = mine.into_iter().filter(|(_, n)| !spent(&lichen_ledger::nullifier(n))).collect();
-        let safe = self.hp_safe_size(chain, k.margin, live.as_ref())?;
+        let safe = self.hp_safe_size(chain, record.hp().margin, live.as_ref())?;
         if notes.iter().any(|(i, _)| safe.is_none_or(|s| *i >= s)) {
             return Ok(None);
         }
-        notes.sort_by_key(|(_, n)| (!own.contains(&lichen_ledger::nullifier(n)), std::cmp::Reverse(n.value)));
+        notes.sort_by_key(|(_, n)| std::cmp::Reverse(n.value));
         let (mut chosen, mut total) = (vec![], 0u64);
         for (i, n) in notes {
             if total >= cap || chosen.len() == MAX_NOTES {
@@ -208,13 +213,19 @@ impl Wallet {
             chosen.push(i);
         }
         ensure!(!chosen.is_empty(), "no notes of ours to claim");
-        chosen.sort();
         let b = u32::try_from(total.min(cap) / unit).context("b fits in a u32")?;
         ensure!(b > 0, "the notes claimable come to less than the contract's unit, {unit} sats");
-        let mut claim = Claim { positions: chosen, sigs: vec![] };
-        let e = claim.fingerprint(cid, &statement_outpoint(&k.deposit), b);
+        self.claim_of(record, b, chosen).map(Some)
+    }
+
+    /// A claim of `b` units from contract `record` of the notes at
+    /// `positions`, signed: an exit's, or a cooperative withdrawal's.
+    pub(crate) fn claim_of(&self, record: &Record, b: u32, mut positions: Vec<u32>) -> Result<ExitPlan> {
+        positions.sort_unstable();
+        let mut claim = Claim { positions, sigs: vec![] };
+        let e = claim.fingerprint(record.cid(), &statement_outpoint(&record.hp().deposit), b);
         claim.sigs = vec![self.key.sign_raw(&lichen_withdraw::hp::signed_digest(&e), &[0; 32]).map_err(|e| anyhow::anyhow!("signing the claim: {e}"))?.to_bytes()];
         ensure!(claim.well_formed(), "the claim isn't well formed");
-        Ok(Some(ExitPlan { b, e: hex::encode(e), posted: hex::encode(claim.to_bytes()) }))
+        Ok(ExitPlan { b, e: hex::encode(e), posted: hex::encode(claim.to_bytes()) })
     }
 }

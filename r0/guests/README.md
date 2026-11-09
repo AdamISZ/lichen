@@ -11,22 +11,11 @@ is its image id (`lichen-r0 image-id <g>` recomputes it from the file;
 - `chain`: the chain statement of `crates/validity` (one sealed block,
   and the history before it). It holds `spend.id`, so it is rebuilt
   after the spend guest.
-- `withdraw`: the withdrawal statement of `crates/withdraw` (ln-gap's,
-  plus a chain receipt vouching for the root the withdrawal's path
-  reaches). It holds `chain.id`, so it is rebuilt after the chain guest.
-  The contracts pin `withdraw.id` (`lichen_proto::IMAGE_ID`): a new build
-  is a new deployment's contracts.
-- `counter` (removed 2026-11-09 with the old exit, docs/HUB_PROVES_PLAN.md):
-  the counter of `crates/withdraw` (`counter`), the hub's
-  answer to an exit claim (docs/EXIT_PLAN.md): a spend of a claimed note
-  at a later anchored state, or its owner's signed claim through another
-  contract; its journal `D ‖ E`. Wrapped in Groth16, its points are the
-  `K` the hub signs in `respond`. It holds `chain.id`.
-- `babe`: the fixed statement of `crates/withdraw` (`fixed`), for BABE
-  (docs/BABE_GADGET_PLAN.md, step 1): the withdrawal's, `b` in the
-  witness under the hub's signature, its journal `c ‖ D ‖ H(pk_H)`. It
-  holds `chain.id`, so it is rebuilt after the chain guest. (Its exit
-  mode, with the counter's Groth16 check, was removed 2026-11-09.)
+- `withdraw` and `babe` (removed 2026-11-09, with the return and its
+  disputes, docs/HUB_PROVES_PLAN.md): the withdrawal statement of
+  `crates/withdraw` and BABE's fixed statement, a return's proof. The
+  hub's statement, which replaces them, has no guest yet. (`counter`,
+  the old exit's, went earlier the same day.)
 
 | guest | built by | image id |
 |---|---|---|

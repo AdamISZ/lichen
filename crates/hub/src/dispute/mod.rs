@@ -1,9 +1,9 @@
 //! The hub's side of a dispute, run by its watcher, one step per tick.
 //!
-//! The play is the contract's gadget's ([`bitvmx`]: BitVMX's search). What
-//! every gadget shares is here: the tick that drives each contract, and
-//! the end of a dispute the user won, when the hub collects its bit
-//! outputs of the payout (those of the bits clear in her `b`) and closes.
+//! The play is [`hp`]'s: the exit where only the hub proves. Here the
+//! tick that drives each contract, and the end of a dispute the user won,
+//! when the hub collects its bit outputs of the payout (those of the bits
+//! clear in her `b`) and closes.
 //! Also the chain's plumbing a gadget's play uses: posting the hub's
 //! links, its own spends.
 //!
@@ -13,24 +13,18 @@
 use anyhow::{Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use lichen_chain::NodeWallet;
-use lichen_proto::{anchor_vout, sign_anchor, Built, Gadget, Record};
+use lichen_proto::{anchor_vout, sign_anchor, Built, Record};
 use lngap_btc::sighash::sign_tapscript;
-use lngap_btc::taptree::TapTree;
-use lngap_btc::tx::build_spend;
 use lngap_btc::witness::tapscript_witness;
 use lngap_sessions::session::bit_tree;
 
 use crate::{contract_keys, Inner};
 
-pub(crate) mod babe;
-pub(crate) mod bitvmx;
 pub(crate) mod hp;
 
 /// A dispute's state at the hub.
 pub(crate) enum State {
-    /// In play, the gadget's.
-    BitVmx(bitvmx::State),
-    Babe(babe::State),
+    /// In play.
     Hp(hp::State),
     /// The user won and the payout is posted, spending the output of
     /// `link` (first seen spent at `since`): the hub collects its bit
@@ -76,13 +70,7 @@ impl Inner {
             let cid = record.cid();
             let state = self.disputes.lock().unwrap().remove(&cid);
             let next = match state {
-                None => match record.gadget() {
-                    Gadget::BitVmx => self.bitvmx_start(&record),
-                    Gadget::Babe => self.babe_start(&record),
-                    Gadget::HubProves => self.hp_start(&record),
-                },
-                Some(State::BitVmx(s)) => self.bitvmx_tick(&record, s),
-                Some(State::Babe(s)) => self.babe_tick(&record, s),
+                None => self.hp_start(&record),
                 Some(State::Hp(s)) => self.hp_tick(&record, s),
                 Some(State::Collect { link, since }) => self.collect(&record, link, since),
                 Some(State::Done) => Ok(Some(State::Done)),
@@ -100,9 +88,9 @@ impl Inner {
         Ok(())
     }
 
-    /// The contract, built by its gadget.
+    /// The contract's graph.
     pub(crate) fn built(&self, record: &Record) -> Result<Built> {
-        record.build(&self.cfg.statement, self.program.as_ref())
+        record.build(&self.cfg.statement)
     }
 
     /// The payout of a dispute the user won (spending `link`'s output):
@@ -131,12 +119,7 @@ impl Inner {
     /// once.
     fn collect_closed(&self, record: &Record) -> Result<()> {
         let cid = record.cid();
-        let disputed = match record.gadget() {
-            Gadget::BitVmx => self.bitvmx_escalated(record)?,
-            Gadget::Babe => self.babe_requested(record)?,
-            Gadget::HubProves => self.hp_requested(record)?,
-        };
-        if disputed {
+        if self.hp_requested(record)? {
             if let Bits::Swept(txid, n, value) = self.sweep_bits(record)? {
                 self.note(format!("contract {cid}: collected the hub's {n} bit outputs left from its dispute, {} sats: {txid}", value.to_sat()));
             }
@@ -144,15 +127,6 @@ impl Inner {
         self.set_collected(cid, true)
     }
 
-    /// Alice's signed `b`, as her claim put it on chain: its value and her
-    /// signature as a witness wire (the gadget's).
-    fn claimed_b(&self, record: &Record) -> Result<(u32, Vec<Vec<u8>>)> {
-        match record.gadget() {
-            Gadget::BitVmx => self.bitvmx_claimed_b(record),
-            Gadget::Babe => self.babe_claimed_b(record),
-            Gadget::HubProves => self.hp_claimed_b(record),
-        }
-    }
 
     /// Sweep to the hub's wallet its bit outputs of a payout: for each bit
     /// clear in Alice's signed `b`, the output of `u 2^i`, by its leaf
@@ -160,7 +134,7 @@ impl Inner {
     /// hub's).
     fn sweep_bits(&self, record: &Record) -> Result<Bits> {
         let cid = record.cid();
-        let (b, b_wire) = self.claimed_b(record)?;
+        let (b, b_wire) = self.hp_claimed_b(record)?;
         let built = self.built(record)?;
         let (core, b_key) = (built.core(), built.b_key());
         let (t, ctx) = (core.terms, core.ctx());
@@ -201,24 +175,6 @@ impl Inner {
         Ok(Bits::Swept(txid, ins.len(), total - fee))
     }
 
-    /// The hub's own spend of `(op, out)` under `tree`'s leaf `leaf_name`,
-    /// `wire` below its signature, to its wallet at the network's feerate.
-    pub(crate) fn spend_leaf(&self, cid: u32, tree: &TapTree, leaf_name: &str, op: OutPoint, out: &TxOut, wire: Vec<Vec<u8>>) -> Result<Transaction> {
-        let leaf = tree.leaf(leaf_name)?;
-        let kp = contract_keys(&self.cfg.seed, cid).payment;
-        let to = self.chain.new_spk()?;
-        let build = |fee: Amount| -> Result<Transaction> {
-            let mut spend = build_spend(op, &leaf.timelock, vec![TxOut { value: out.value.checked_sub(fee).context("the output can't pay the fee")?, script_pubkey: to.clone() }]);
-            let mut w = wire.clone();
-            w.push(sign_tapscript(&kp, &spend, 0, std::slice::from_ref(out), &leaf.script)?.as_ref().to_vec());
-            spend.input[0].witness = tapscript_witness(&w, &leaf.script, &tree.control_block(leaf_name)?);
-            Ok(spend)
-        };
-        // sized once at no fee, then paid
-        let vsize = build(Amount::ZERO)?.vsize() as u64;
-        build(Amount::from_sat((vsize + 10) * lichen_proto::feerate(self.cfg.network)))
-    }
-
     /// Post one of the hub's links (unless it is already there: replayed,
     /// checked to be the same), its child paying from the hub's anchor;
     /// its confirmation height.
@@ -254,8 +210,6 @@ impl Inner {
 impl State {
     pub(crate) fn describe(&self) -> String {
         match self {
-            State::BitVmx(s) => s.describe(),
-            State::Babe(s) => s.describe(),
             State::Hp(s) => s.describe(),
             State::Collect { .. } => "the user won: collecting the hub's bit outputs".into(),
             State::Done => "settled".into(),

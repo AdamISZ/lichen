@@ -8,15 +8,16 @@
 //! if the hub can't answer with a kept instance's `msg` within `Δ1`,
 //! `failure` pays her.
 //!
-//! Also her setup's secrets ([`dealing`], [`instance_seed`]): from her
-//! contract's seed, so that nothing of them need be kept.
+//! Also her secrets: her one-time keys for `b` and `E`, her setup's
+//! ([`dealing`], [`instance_seed`]); from her contract's seed, so that
+//! nothing of them need be kept.
 
-use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
 use bitcoin::OutPoint;
 use lichen_babe::reveal::{complete, reveal_args};
+use lichen_babe::hp::HubProves;
 use lichen_babe::setup::DIGITS;
 use lichen_babe::vsss::{deal, Dealer, Dealing};
 use lichen_chain::{Chain, Stall};
@@ -24,6 +25,7 @@ use lichen_proto::hp::HpDisputed;
 use lichen_proto::{Record, Statement};
 use lngap_btc::adaptor::AdaptorSig;
 use lngap_btc::keys::Seed;
+use lngap_lamport::winternitz::{WotsParams, WotsSecret};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 
@@ -32,6 +34,24 @@ use super::{confirmed_at, wait_link, ContractSecrets, Engine, Next, Outcome};
 impl ContractSecrets {
     fn hp_seed(&self) -> Seed {
         Seed::from_label(&format!("{}/hp", self.seed))
+    }
+    /// Her one-time key for `b` (4 bytes): `request` and the payout's bit
+    /// outputs read it.
+    pub fn hp_b(&self) -> WotsSecret {
+        WotsSecret::from_entropy(WotsParams::for_bytes(4), self.wots("hp/b"))
+    }
+    /// Her one-time key for `E`, the claim's fingerprint (32 bytes).
+    pub fn hp_e(&self) -> WotsSecret {
+        WotsSecret::from_entropy(WotsParams::for_bytes(32), self.wots("hp/e"))
+    }
+    /// `request`'s wire: her signatures on `b` and `E`, and the claim
+    /// posted.
+    pub fn request_wire(&self, b: u32, e: &[u8; 32], posted: &[u8]) -> Result<Vec<Vec<u8>>> {
+        HubProves::request_wire(&self.hp_b().sign(&b.to_be_bytes())?, &self.hp_e().sign(e)?, posted)
+    }
+    /// Her signature on `b` as the payout's leaves take it.
+    pub fn b_wire(&self, b: u32) -> Result<Vec<Vec<u8>>> {
+        Ok(HubProves::b_wire(&self.hp_b().sign(&b.to_be_bytes())?))
     }
 }
 
@@ -49,18 +69,17 @@ impl Engine<'_> {
     /// A hub-proves dispute ([`Engine::run`]): the exit's claim of `b`
     /// from contract `record`. Blocks until it ends. Resumable: what is on
     /// chain is replayed, not posted again.
-    pub(super) fn run_hp(&mut self, chain: &Chain, record: &Record, statement: &Statement, _dir: &Path, b: u32) -> Result<Outcome> {
+    pub(super) fn run_hp(&mut self, chain: &Chain, record: &Record, statement: &Statement, b: u32) -> Result<Outcome> {
         let d = HpDisputed::new(record, statement)?;
         let w = d.graph.spec.windows;
         let plan = self.store.exit().context("a hub-proves dispute is an exit: no claim kept")?;
         ensure!(plan.b == b, "the claim kept is of {}, not {b}", plan.b);
-        let secrets = self.signer.babe()?;
         let mut stall = Stall::new(chain.height()?, chain.network);
         while chain.confirmations(&record.funding.txid)? < u32::from(d.graph.spec.params.to_self_delay) {
             ensure!(!stall.stalled(chain.height()?), "the chain stalled before the contract's funding was deep enough to request");
             std::thread::sleep(Duration::from_millis(200));
         }
-        let wire = secrets.exit_wire(b, &plan.e()?, &plan.posted()?)?;
+        let wire = self.signer.contract().request_wire(b, &plan.e()?, &plan.posted()?)?;
         let tx = d.finish("request", wire)?;
         self.step(format!("requesting {b} units ({} sats), {} ({} vB)", u64::from(b) * record.terms.unit.to_sat(), d.txid("request"), tx.vsize()));
         let at = self.post_link(chain, "request", tx)?;
@@ -80,7 +99,7 @@ impl Engine<'_> {
         // its proof, checked natively
         let asserted = d.asserted(&assert)?;
         let kind = statement.hp_kind()?;
-        let journal = record.hp_journal()?;
+        let journal = record.hp_journal();
         let valid = asserted.proof.as_ref().is_some_and(|p| kind.verify(&journal, p));
         if valid && !self.opts.unchecked_claims {
             self.step("the hub asserted a valid proof that the claim is false: success is the hub's".into());
@@ -89,12 +108,12 @@ impl Engine<'_> {
         let asserted_at = confirmed_at(chain, &d.txid("assert"))?.context("the assertion")?;
         self.step(format!("{}: challenging", if valid { "the hub's proof is valid, challenging anyway" } else { "the hub's proof is false" }));
         ensure!(chain.height()? < asserted_at + u32::from(w.delta2) || chain.get_tx(&d.txid("challenge_assert")).is_some(), "the challenge's window has passed");
-        let keys = record.hp()?;
-        let (dealer, _) = dealing(self.signer.contract()?, keys.n, keys.kept.len() as u32);
+        let keys = record.hp();
+        let (dealer, _) = dealing(self.signer.contract(), keys.n, keys.kept.len() as u32);
         let revealed: Vec<_> = asserted.digits.iter().enumerate().map(|(j, v)| dealer.reveal(j, *v)).collect();
         let presigs: Vec<[AdaptorSig; 4]> = keys.hub_presigs.iter().map(|s| s.each_ref().map(AdaptorSig::from)).collect();
         let sigs = complete(&presigs, &asserted.digits, &revealed);
-        let wire = lichen_babe::graph::Babe::challenge_wire(reveal_args(&asserted.preimages, &sigs));
+        let wire = HubProves::challenge_wire(reveal_args(&asserted.preimages, &sigs));
         let tx = d.finish("challenge_assert", wire)?;
         let vsize = tx.vsize();
         let challenged = self.post_link(chain, "challenge_assert", tx)?;
