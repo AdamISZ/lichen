@@ -47,7 +47,7 @@ use lichen_validity::ack::{self, Ack};
 use lichen_validity::{smt, OutPoint, TNote};
 use sha2::{Digest, Sha256};
 
-pub use lichen_validity::exit::{fingerprint, owners, signed_digest};
+pub use lichen_validity::exit::{fingerprint, owners, signed_digest, SClaim, SNoteClaim};
 use crate::{contract_id, deployment_id, root_from_path, work_on, Anchored, Hash, Reject, Request, TREE_DEPTH};
 use lichen_shielded::is_shielded;
 
@@ -108,14 +108,19 @@ pub const MAX_NOTES: usize = lichen_validity::exit::MAX_NOTES;
 /// The journal's length in bytes: `c ‖ D ‖ H(O_D ‖ margin)`.
 pub const JOURNAL_LEN: usize = 68;
 
-/// A claim as `request` posts it: its notes' positions, increasing, the
-/// acknowledgments of the spends whose locked outputs it claims, and one
-/// signature per owner key on [`signed_digest`] of its `E`.
+/// A claim as `request` posts it: its transparent notes' positions,
+/// increasing, the acknowledgments of the spends whose locked outputs it
+/// claims, one signature per owner key on [`signed_digest`] of its `E`
+/// (a shielded owner's by its exit key), and its shielded notes, if any
+/// ([`SClaim`]: one owner's keys and each note's position and opening).
+/// Its notes, as a ground's `which` counts them: the transparent ones,
+/// then the shielded ones.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claim {
     pub positions: Vec<u32>,
     pub acks: Vec<Ack>,
     pub sigs: Vec<[u8; 64]>,
+    pub shielded: Option<SClaim>,
 }
 
 fn verifies(owner: &Hash, digest: &Hash, sig: &[u8; 64]) -> bool {
@@ -126,18 +131,52 @@ fn verifies(owner: &Hash, digest: &Hash, sig: &[u8; 64]) -> bool {
 impl Claim {
     /// `E` for contract `c` of deposit coin `deposit`, claiming `b`.
     pub fn fingerprint(&self, c: u32, deposit: &OutPoint, b: u32) -> Hash {
-        fingerprint(c, deposit, b, &self.positions, &self.acks)
+        fingerprint(c, deposit, b, &self.positions, &self.acks, self.shielded.as_ref())
     }
 
-    /// Whether it is well formed: one to [`MAX_NOTES`] positions,
-    /// increasing and in the tree's range, one to as many signatures as
-    /// notes.
+    /// How many notes it claims, transparent and shielded.
+    pub fn len(&self) -> usize {
+        self.positions.len() + self.shielded.as_ref().map_or(0, |s| s.notes.len())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The position of its `which`th note (the transparent ones first).
+    pub fn position(&self, which: usize) -> Option<u32> {
+        match self.positions.get(which) {
+            Some(i) => Some(*i),
+            None => self.shielded_note(which).map(|n| n.index),
+        }
+    }
+
+    /// Its `which`th note, if a shielded one.
+    pub fn shielded_note(&self, which: usize) -> Option<&SNoteClaim> {
+        self.shielded.as_ref()?.notes.get(which.checked_sub(self.positions.len())?)
+    }
+
+    /// Whether it claims the note at position `index` of the kind
+    /// `shielded`.
+    pub fn claims(&self, index: u32, shielded: bool) -> bool {
+        if shielded {
+            self.shielded.as_ref().is_some_and(|s| s.notes.iter().any(|n| n.index == index))
+        } else {
+            self.positions.contains(&index)
+        }
+    }
+
+    /// Whether it is well formed: one to [`MAX_NOTES`] notes, positions
+    /// increasing in each kind and in the tree's range, one to as many
+    /// signatures as notes.
     pub fn well_formed(&self) -> bool {
-        (1..=MAX_NOTES).contains(&self.positions.len())
+        let n = self.len();
+        (1..=MAX_NOTES).contains(&n)
             && self.positions.windows(2).all(|w| w[0] < w[1])
-            && self.positions.iter().all(|i| i >> TREE_DEPTH == 0)
-            && (1..=self.positions.len()).contains(&self.sigs.len())
-            && self.acks.len() <= self.positions.len()
+            && self.shielded.as_ref().is_none_or(|s| s.well_formed())
+            && (0..n).all(|w| self.position(w).is_some_and(|i| i >> TREE_DEPTH == 0))
+            && (1..=n).contains(&self.sigs.len())
+            && self.acks.len() <= n
             && self.acks.iter().enumerate().all(|(i, a)| !self.acks[..i].iter().any(|b| b.txid == a.txid))
     }
 
@@ -147,8 +186,9 @@ impl Claim {
         self.sigs.iter().find(|s| verifies(owner, &d, s)).copied()
     }
 
-    /// The exit record's notes and signatures (`lichen_validity::Tx::Exit`;
-    /// its acknowledgments are the claim's) from the notes at the claim's
+    /// The exit record's transparent notes and signatures
+    /// (`lichen_validity::Tx::Exit`; its acknowledgments and shielded notes
+    /// are the claim's) from the transparent notes at the claim's
     /// positions, in order: each owner's signature, in [`owners`]' order.
     /// None unless every owner signed `e`.
     #[allow(clippy::type_complexity)]
@@ -157,12 +197,13 @@ impl Claim {
             return None;
         }
         let notes: Vec<(TNote, u32)> = notes.iter().copied().zip(self.positions.iter().copied()).collect();
-        let sigs = owners(&notes).iter().map(|o| self.signed_by(o, e)).collect::<Option<Vec<_>>>()?;
+        let sigs = owners(&notes, self.shielded.as_ref()).iter().map(|o| self.signed_by(o, e)).collect::<Option<Vec<_>>>()?;
         Some((notes, sigs))
     }
 
-    /// `[n] iⁿ [m] ackᵐ [k] sigᵏ`, big-endian: 4 bytes a note, 176 an
-    /// acknowledgment, 64 a signature.
+    /// `[n] iⁿ [m] ackᵐ [k] sigᵏ [s] shielded`, big-endian: 4 bytes a note,
+    /// 176 an acknowledgment, 64 a signature; `s` 1 and the shielded notes
+    /// ([`SClaim::to_bytes`]: 97 bytes, and 76 a note) or 0.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut w = Vec::with_capacity(3 + 4 * self.positions.len() + Ack::LEN * self.acks.len() + 64 * self.sigs.len());
         w.push(self.positions.len() as u8);
@@ -177,6 +218,13 @@ impl Claim {
         for s in &self.sigs {
             w.extend_from_slice(s);
         }
+        match &self.shielded {
+            Some(s) => {
+                w.push(1);
+                w.extend_from_slice(&s.to_bytes());
+            }
+            None => w.push(0),
+        }
         w
     }
 
@@ -188,10 +236,19 @@ impl Claim {
         let acks = (0..m).map(|_| Ok(Ack::from_bytes(&r.take()?))).collect::<Result<Vec<_>, Reject>>()?;
         let [k] = r.take()?;
         let sigs = (0..k).map(|_| r.take()).collect::<Result<Vec<_>, _>>()?;
+        let shielded = match r.take()? {
+            [0] => None,
+            [1] => {
+                let (s, rest) = SClaim::from_bytes(r.0).ok_or(Reject::Encoding)?;
+                r.0 = rest;
+                Some(s)
+            }
+            _ => return Err(Reject::Encoding),
+        };
         if !r.0.is_empty() {
             return Err(Reject::Encoding);
         }
-        Ok(Claim { positions, acks, sigs })
+        Ok(Claim { positions, acks, sigs, shielded })
     }
 }
 /// What `request` carries: `b`, `E` and the claim's bytes.
@@ -281,22 +338,36 @@ pub struct Last {
 }
 
 /// A claimed note's opening in `A*`'s tree: the transparent note at its
-/// position, and the path from its leaf.
+/// position (none for a shielded note: the claim opens it), and the path
+/// from its leaf.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Opening {
-    pub note: TNote,
+    pub note: Option<TNote>,
     pub path: Vec<Hash>,
+}
+
+/// A claimed note, opened at its position: its value, its nullifier, and
+/// the key whose signature on `E` makes it hers (its owner, or a shielded
+/// owner's exit key).
+struct Claimed {
+    index: u32,
+    shielded: bool,
+    value: u64,
+    nf: Hash,
+    key: Hash,
 }
 
 /// Why the claim is false at `A*`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Why {
-    /// The leaf at the `which`th position isn't a transparent note's: a
-    /// shielded note's, or empty (past the tree's end); the leaf and its
-    /// path.
+    /// The leaf at the `which`th note's position isn't it: for a
+    /// transparent note, a shielded note's or empty (past the tree's end);
+    /// for a shielded one, not the leaf of the claim's opening. The leaf
+    /// and its path.
     NotANote { which: u8, leaf: Hash, path: Vec<Hash> },
-    /// The `which`th note's owner signed none of the claim's signatures.
+    /// The `which`th note's owner (a shielded note's exit key) signed none
+    /// of the claim's signatures.
     NotHers { which: u8, opening: Opening },
     /// The notes, all opened, are worth less than `b` units.
     TooMuch { openings: Vec<Opening> },
@@ -441,36 +512,50 @@ pub fn check(input: &HubInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u
     if !is_last(last, &header, input.margin) {
         return Err(Reject::Last);
     }
-    let position = |which: u8| claim.positions.get(which as usize).copied().ok_or(Reject::Encoding);
-    let opened = |which: u8, o: &Opening| -> Result<(), Reject> { at(&last.tree, position(which)?, &o.note.leaf(), &o.path) };
+    let position = |which: u8| claim.position(which as usize).ok_or(Reject::Encoding);
+    // the `which`th note at its position: a transparent one by its
+    // opening, a shielded one by the claim's
+    let opened = |which: u8, o: &Opening| -> Result<Claimed, Reject> {
+        let index = position(which)?;
+        let (c, leaf) = match (claim.shielded_note(which as usize), &o.note, &claim.shielded) {
+            (None, Some(n), _) => (Claimed { index, shielded: false, value: n.value, nf: n.nullifier(), key: n.owner }, n.leaf()),
+            (Some(n), None, Some(sc)) => (Claimed { index, shielded: true, value: n.value, nf: sc.nullifier(n), key: sc.x }, sc.leaf(n)),
+            _ => return Err(Reject::Encoding),
+        };
+        at(&last.tree, index, &leaf, &o.path)?;
+        Ok(c)
+    };
     match why {
         Why::NotANote { which, leaf, path } => {
             at(&last.tree, position(*which)?, leaf, path)?;
-            if *leaf != [0; 32] && !is_shielded(leaf) {
+            let not = match (claim.shielded_note(*which as usize), &claim.shielded) {
+                (Some(n), Some(sc)) => *leaf != sc.leaf(n),
+                _ => *leaf == [0; 32] || is_shielded(leaf),
+            };
+            if !not {
                 return Err(Reject::Holds);
             }
         }
         Why::NotHers { which, opening } => {
-            opened(*which, opening)?;
-            if claim.signed_by(&opening.note.owner, &r.e).is_some() {
+            let c = opened(*which, opening)?;
+            if claim.signed_by(&c.key, &r.e).is_some() {
                 return Err(Reject::Holds);
             }
         }
         Why::TooMuch { openings } => {
-            if openings.len() != claim.positions.len() {
+            if openings.len() != claim.len() {
                 return Err(Reject::Encoding);
             }
+            let mut total = 0u64;
             for (k, o) in openings.iter().enumerate() {
-                opened(k as u8, o)?;
+                total = total.checked_add(opened(k as u8, o)?.value).ok_or(Reject::TooLarge)?;
             }
-            let total = openings.iter().try_fold(0u64, |s, o| s.checked_add(o.note.value)).ok_or(Reject::TooLarge)?;
             if total / t.unit >= u64::from(r.b) {
                 return Err(Reject::Holds);
             }
         }
         Why::Spent { which, opening, leaf, counts } => {
-            opened(*which, opening)?;
-            let spender = shows(&s.nullifiers, &opening.note.nullifier(), leaf)?;
+            let spender = shows(&s.nullifiers, &opened(*which, opening)?.nf, leaf)?;
             if spender == [0; 32] {
                 return Err(Reject::NotSpent);
             }
@@ -525,11 +610,11 @@ pub fn check(input: &HubInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u
             }
         }
         Why::Second { which, opening, other_c, other_deposit, other_b, other } => {
-            opened(*which, opening)?;
-            if *other_c == input.c || !other.well_formed() || !other.positions.contains(&position(*which)?) {
+            let c = opened(*which, opening)?;
+            if *other_c == input.c || !other.well_formed() || !other.claims(c.index, c.shielded) {
                 return Err(Reject::NotSpent);
             }
-            if other.signed_by(&opening.note.owner, &other.fingerprint(*other_c, other_deposit, *other_b)).is_none() {
+            if other.signed_by(&c.key, &other.fingerprint(*other_c, other_deposit, *other_b)).is_none() {
                 return Err(Reject::NotYours);
             }
         }
@@ -540,10 +625,16 @@ pub fn check(input: &HubInput, chain_id: &Hash, verify_chain: &mut dyn FnMut(&[u
 // ----- the encoding, the guest's input (big-endian, as the other statements') -----
 
 fn put_opening(w: &mut crate::W, o: &Opening) {
-    w.put(&o.note.owner);
-    w.put(&o.note.value.to_be_bytes());
-    w.put(&o.note.memo.to_be_bytes());
-    w.put(&o.note.rho);
+    match &o.note {
+        Some(n) => {
+            w.put(&[1]);
+            w.put(&n.owner);
+            w.put(&n.value.to_be_bytes());
+            w.put(&n.memo.to_be_bytes());
+            w.put(&n.rho);
+        }
+        None => w.put(&[0]),
+    }
     w.list(&o.path);
 }
 
@@ -558,7 +649,11 @@ fn read_set(r: &mut crate::R) -> Result<smt::Opening, Reject> {
 }
 
 fn read_opening(r: &mut crate::R) -> Result<Opening, Reject> {
-    let note = TNote { owner: r.take()?, value: u64::from_be_bytes(r.take()?), memo: u32::from_be_bytes(r.take()?), rho: r.take()? };
+    let note = match r.take()? {
+        [0] => None,
+        [1] => Some(TNote { owner: r.take()?, value: u64::from_be_bytes(r.take()?), memo: u32::from_be_bytes(r.take()?), rho: r.take()? }),
+        _ => return Err(Reject::Encoding),
+    };
     Ok(Opening { note, path: r.list()? })
 }
 
@@ -801,7 +896,7 @@ mod tests {
         let (seq, hub, alice) = (key(1), key(2), key(3));
         let deposit = OutPoint { txid: [0xd0; 32], vout: 1 };
         let c = 1007;
-        let mut claim = Claim { positions: vec![0], acks: vec![], sigs: vec![] };
+        let mut claim = Claim { positions: vec![0], acks: vec![], sigs: vec![], shielded: None };
         let e = claim.fingerprint(c, &deposit, b);
         claim.sigs = vec![alice.sign_raw(&signed_digest(&e), &[0; 32]).unwrap().to_bytes()];
         f(&mut claim);
@@ -857,7 +952,7 @@ mod tests {
     }
 
     fn opening(w: &World) -> Opening {
-        Opening { note: w.note, path: empties() }
+        Opening { note: Some(w.note), path: empties() }
     }
 
     fn check_ground(w: &World, ground: Ground) -> Result<[u8; JOURNAL_LEN], Reject> {
@@ -886,14 +981,14 @@ mod tests {
         assert_eq!(claim.signed_by(&xonly(&w.alice), &r.e), Some(claim.sigs[0]));
         let (notes, sigs) = claim.record(&[w.note], &r.e).unwrap();
         assert_eq!((notes, sigs), (vec![(w.note, 0)], claim.sigs.clone()), "the exit record's notes and signatures");
-        assert_eq!(lichen_validity::exit::fingerprint(w.input.c, &w.deposit, 5, &[0], &[]), r.e, "the exit record's E is the claim's");
+        assert_eq!(lichen_validity::exit::fingerprint(w.input.c, &w.deposit, 5, &[0], &[], None), r.e, "the exit record's E is the claim's");
         assert_eq!(Claim::from_bytes(&claim.to_bytes()[1..]), Err(Reject::Encoding));
     }
 
     #[test]
     fn a_claim_is_well_formed() {
         let sig = [0; 64];
-        let c = |positions: Vec<u32>, n: usize| Claim { positions, acks: vec![], sigs: vec![sig; n] };
+        let c = |positions: Vec<u32>, n: usize| Claim { positions, acks: vec![], sigs: vec![sig; n], shielded: None };
         assert!(c(vec![0, 5], 1).well_formed());
         assert!(c((0..MAX_NOTES as u32).collect(), 1).well_formed(), "the most notes");
         assert!(!c((0..=MAX_NOTES as u32).collect(), 1).well_formed(), "too many notes");
@@ -927,7 +1022,7 @@ mod tests {
         let w = world(7, |_| {});
         // another note than the one there
         let mut o = opening(&w);
-        o.note.value = 700;
+        o.note.as_mut().unwrap().value = 700;
         assert_eq!(check_why(&w, Why::TooMuch { openings: vec![o] }), Err(Reject::PathLength));
         // a short path
         let mut o = opening(&w);
@@ -950,7 +1045,7 @@ mod tests {
         assert!(check_why(&w, Why::NotHers { which: 0, opening: opening(&w) }).is_ok());
         // malformed: not hashing to the E signed
         let mut w = world(5, |_| {});
-        let wit = witness(&Claim { positions: vec![], acks: vec![], sigs: vec![] }.to_bytes(), &[0; 32], 5);
+        let wit = witness(&Claim { positions: vec![], acks: vec![], sigs: vec![], shielded: None }.to_bytes(), &[0; 32], 5);
         let items: Vec<&[u8]> = wit.iter().map(Vec::as_slice).collect();
         let prev = Header(w.input.request.header).prev();
         let (rh, req) = request_on(&prev, &w.deposit, &items);
@@ -967,6 +1062,53 @@ mod tests {
         // a transparent leaf with the shielded bit cleared is a note
         let w = world_with(5, lichen_shielded::t_leaf(&[0xd5; 32]), |_| {});
         assert_eq!(check_why(&w, Why::NotANote { which: 0, leaf: lichen_shielded::t_leaf(&[0xd5; 32]), path: empties() }), Err(Reject::Holds));
+    }
+
+    #[test]
+    fn a_shielded_claim() {
+        let xk = key(5);
+        let sc = SClaim { auth: [0xa1; 32], nk: [0xa2; 32], x: xonly(&xk), notes: vec![SNoteClaim { index: 0, value: 600, rho: [0x71; 32], trap: [0x72; 32] }] };
+        let leaf = sc.leaf(&sc.notes[0]);
+        let deposit = OutPoint { txid: [0xd0; 32], vout: 1 };
+        // Alice's claim of the shielded note at 0 alone, signed by `signer`
+        let mk = |b: u32, sc: &SClaim, signer: &SigningKey| {
+            world_with(b, leaf, |c| {
+                c.positions = vec![];
+                c.shielded = Some(sc.clone());
+                let e = c.fingerprint(1007, &deposit, b);
+                c.sigs = vec![signer.sign_raw(&signed_digest(&e), &[0; 32]).unwrap().to_bytes()];
+            })
+        };
+        let so = || Opening { note: None, path: empties() };
+        // true: no ground
+        let w = mk(5, &sc, &xk);
+        let claim = claim_of(&w);
+        assert!(claim.well_formed() && claim.len() == 1 && claim.position(0) == Some(0));
+        assert_eq!(Claim::from_bytes(&claim.to_bytes()).unwrap(), claim);
+        assert_eq!(check_why(&w, Why::NotHers { which: 0, opening: so() }), Err(Reject::Holds));
+        assert_eq!(check_why(&w, Why::TooMuch { openings: vec![so()] }), Err(Reject::Holds));
+        assert_eq!(check_why(&w, Why::NotANote { which: 0, leaf, path: empties() }), Err(Reject::Holds));
+        let absent = |k: &Hash| smt::Opening { leaf: [0; 32], proof: smt::proof(&[], k, smt::empties()) };
+        assert_eq!(check_why(&w, Why::Spent { which: 0, opening: so(), leaf: absent(&sc.nullifier(&sc.notes[0])), counts: Counts::Exit { c: 9 } }), Err(Reject::NotSpent));
+        // a transparent opening for a shielded note: not the claim's
+        assert_eq!(check_why(&w, Why::NotHers { which: 0, opening: Opening { note: Some(alices_note()), path: empties() } }), Err(Reject::Encoding));
+        // too much: 600 is 6 units, not 7
+        assert!(check_why(&mk(7, &sc, &xk), Why::TooMuch { openings: vec![so()] }).is_ok());
+        // not hers: signed by another key than the exit key
+        assert!(check_why(&mk(5, &sc, &key(9)), Why::NotHers { which: 0, opening: so() }).is_ok());
+        // not the note: the claim's opening (another trapdoor) isn't the
+        // leaf there, nor do other keys open it
+        let mut other = sc.clone();
+        other.notes[0].trap = [0x73; 32];
+        let w = mk(5, &other, &xk);
+        assert!(check_why(&w, Why::NotANote { which: 0, leaf, path: empties() }).is_ok());
+        assert_eq!(check_why(&w, Why::NotHers { which: 0, opening: so() }), Err(Reject::PathLength));
+        let mut other = sc.clone();
+        other.nk = [0xa3; 32];
+        assert!(check_why(&mk(5, &other, &xk), Why::NotANote { which: 0, leaf, path: empties() }).is_ok());
+        // how many fit request's witness: 13 shielded notes and a signature
+        let many = |k: u32| Claim { positions: vec![], acks: vec![], sigs: vec![[0; 64]], shielded: Some(SClaim { notes: (0..k).map(|i| SNoteClaim { index: i, ..sc.notes[0] }).collect(), ..sc.clone() }) };
+        assert!(posted_items(&many(13).to_bytes()).is_some() && posted_items(&many(14).to_bytes()).is_none());
     }
 
     #[test]
@@ -1115,7 +1257,7 @@ mod tests {
     fn the_input_round_trips() {
         let w = world(5, |_| {});
         let proof = smt::proof(&[], &[1; 32], smt::empties());
-        let other = Claim { positions: vec![0, 3], acks: vec![ack_of([1; 32], &key(8))], sigs: vec![[5; 64]] };
+        let other = Claim { positions: vec![0, 3], acks: vec![ack_of([1; 32], &key(8))], sigs: vec![[5; 64]], shielded: None };
         for ground in [
             Why::NotANote { which: 0, leaf: [1; 32], path: empties() },
             Why::NotHers { which: 0, opening: opening(&w) },
@@ -1144,7 +1286,7 @@ mod tests {
     fn a_second_claim() {
         let w = world(5, |_| {});
         let other_deposit = OutPoint { txid: [0xd1; 32], vout: 0 };
-        let mut other = Claim { positions: claim_of(&w).positions, acks: vec![], sigs: vec![] };
+        let mut other = Claim { positions: claim_of(&w).positions, acks: vec![], sigs: vec![], shielded: None };
         let e2 = other.fingerprint(1008, &other_deposit, 3);
         other.sigs = vec![w.alice.sign_raw(&signed_digest(&e2), &[0; 32]).unwrap().to_bytes()];
         let g = |c: u32, o: &Claim| Why::Second { which: 0, opening: opening(&w), other_c: c, other_deposit, other_b: 3, other: o.clone() };
@@ -1156,7 +1298,7 @@ mod tests {
         forged.sigs = vec![key(9).sign_raw(&signed_digest(&e2), &[0; 32]).unwrap().to_bytes()];
         assert_eq!(check_why(&w, g(1008, &forged)), Err(Reject::NotYours));
         // of another position
-        let mut elsewhere = Claim { positions: vec![4], acks: vec![], sigs: vec![] };
+        let mut elsewhere = Claim { positions: vec![4], acks: vec![], sigs: vec![], shielded: None };
         let e3 = elsewhere.fingerprint(1008, &other_deposit, 3);
         elsewhere.sigs = vec![w.alice.sign_raw(&signed_digest(&e3), &[0; 32]).unwrap().to_bytes()];
         assert_eq!(check_why(&w, g(1008, &elsewhere)), Err(Reject::NotSpent));

@@ -239,6 +239,18 @@ pub fn cut_and_choose(net: lichen_proto::Net) -> (u32, u32) {
     }
 }
 
+/// A claimed note at `A*`, opened: its position, its opening as a ground
+/// shows it, its value and nullifier, and the key whose signature makes
+/// it hers (a shielded note's: its owner's exit key).
+struct HeldNote {
+    index: u32,
+    shielded: bool,
+    opening: Opening,
+    value: u64,
+    nf: Hash,
+    key: Hash,
+}
+
 /// The hub's decision on a claim.
 enum Decision {
     /// A ground, its input, and why (for the log).
@@ -396,7 +408,10 @@ impl Inner {
         let (_, _, posted) = HpDisputed::requested(&req)?;
         let Ok(claim) = Claim::from_bytes(&posted) else { return Ok(()) };
         let state = self.seq.state()?;
-        let nfs: Vec<Hash> = claim.positions.iter().filter_map(|i| state.note(*i)).map(lichen_ledger::nullifier).collect();
+        let mut nfs: Vec<Hash> = claim.positions.iter().filter_map(|i| state.note(*i)).map(lichen_ledger::nullifier).collect();
+        if let Some(sc) = &claim.shielded {
+            nfs.extend(sc.notes.iter().map(|n| sc.nullifier(n)));
+        }
         if !nfs.is_empty() {
             self.seq.hold(&self.cfg.l2_key, &nfs)?;
         }
@@ -414,14 +429,18 @@ impl Inner {
         self.note(format!("contract {cid}: the user's exit claim of {b} units holds: no assertion; request_timeout will pay her"));
         let state = self.seq.state()?;
         let notes: Vec<TNote> = claim.positions.iter().map(|i| state.notes.get(*i as usize).and_then(|l| l.note()).map(tnote).context("a claimed note isn't transparent")).collect::<Result<_>>()?;
-        if let Err(e) = self.seq.hold(&self.cfg.l2_key, &notes.iter().map(TNote::nullifier).collect::<Vec<_>>()) {
+        let mut nfs: Vec<Hash> = notes.iter().map(TNote::nullifier).collect();
+        if let Some(sc) = &claim.shielded {
+            nfs.extend(sc.notes.iter().map(|n| sc.nullifier(n)));
+        }
+        if let Err(e) = self.seq.hold(&self.cfg.l2_key, &nfs) {
             self.note(format!("contract {cid}: holding the claimed notes: {e:#}"));
         }
         let deposit = statement_outpoint(&d.record.hp().deposit);
         let Some((notes, sigs)) = claim.record(&notes, &e) else { return Ok(()) };
         let notes = notes.into_iter().map(|(n, index)| lichen_ledger::Spend { note: lichen_ledger::Note { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho }, index }).collect();
         let acks = claim.acks.iter().map(lichen_ledger::Ack::of).collect();
-        let tx = lichen_ledger::Tx::Exit(lichen_ledger::Exit::new(&self.cfg.l2_key, &self.seq.deployment, cid, deposit, b, notes, acks, sigs));
+        let tx = lichen_ledger::Tx::Exit(lichen_ledger::Exit::new(&self.cfg.l2_key, &self.seq.deployment, cid, deposit, b, notes, claim.shielded.clone(), acks, sigs));
         match self.seq.submit(&tx) {
             Ok(_) => self.note(format!("contract {cid}: the exit claim recorded on the L2: its notes are retired")),
             Err(e) => self.note(format!("contract {cid}: the exit record: {e:#}")),
@@ -500,30 +519,36 @@ impl Inner {
             seal: SealSpend { tx: spend.tx, at: s_height - a_height - 1, index: spend.index, path: spend.path, coinbase: spend.coinbase, coinbase_path: spend.coinbase_path },
         };
         let at_star = |why: Why| input(Ground::At { last: last.clone(), why });
-        // each position at A*: a transparent note, opened
+        // each claimed note at A*, opened: a transparent note at its
+        // position, or the shielded note the claim opens
         let tree = state.tree();
-        let mut openings = vec![];
-        for (w, &index) in claim.positions.iter().enumerate() {
+        let mut held: Vec<HeldNote> = vec![];
+        for w in 0..claim.len() {
+            let index = claim.position(w).context("a claimed note's position")?;
             let path = tree.path_at(index, s2.size);
             let leaf = state.notes.get(index as usize).filter(|_| index < s2.size);
-            match leaf.and_then(|l| l.note()) {
-                Some(n) => openings.push(Opening { note: tnote(n), path }),
+            let found = match (claim.shielded_note(w), &claim.shielded) {
+                (Some(n), Some(sc)) => (leaf.map(|l| l.leaf()) == Some(sc.leaf(n))).then(|| HeldNote { index, shielded: true, opening: Opening { note: None, path: path.clone() }, value: n.value, nf: sc.nullifier(n), key: sc.x }),
+                _ => leaf.and_then(|l| l.note()).map(|n| HeldNote { index, shielded: false, opening: Opening { note: Some(tnote(n)), path: path.clone() }, value: n.value, nf: lichen_ledger::nullifier(n), key: n.owner }),
+            };
+            match found {
+                Some(h) => held.push(h),
                 None => {
                     let leaf = leaf.map_or(lichen_ledger::lichen_validity::tree_empties()[0], |l| l.leaf());
-                    return Ok(Decision::Assert(at_star(Why::NotANote { which: w as u8, leaf, path }), format!("position {index} isn't a transparent note at A* (height {h2})")));
+                    return Ok(Decision::Assert(at_star(Why::NotANote { which: w as u8, leaf, path }), format!("position {index} isn't the note claimed at A* (height {h2})")));
                 }
             }
         }
-        for (w, o) in openings.iter().enumerate() {
-            if claim.signed_by(&o.note.owner, &e).is_none() {
-                return Ok(Decision::Assert(at_star(Why::NotHers { which: w as u8, opening: o.clone() }), format!("note {} isn't the user's", claim.positions[w])));
+        for (w, h) in held.iter().enumerate() {
+            if claim.signed_by(&h.key, &e).is_none() {
+                return Ok(Decision::Assert(at_star(Why::NotHers { which: w as u8, opening: h.opening.clone() }), format!("note {} isn't the user's", h.index)));
             }
         }
-        let total: u64 = openings.iter().map(|o| o.note.value).sum();
+        let total: u64 = held.iter().map(|h| h.value).sum();
         if total / terms.unit < u64::from(b) {
-            return Ok(Decision::Assert(at_star(Why::TooMuch { openings }), format!("its notes are worth {total} sats, less than {b} units")));
+            return Ok(Decision::Assert(at_star(Why::TooMuch { openings: held.iter().map(|h| h.opening.clone()).collect() }), format!("its notes are worth {total} sats, less than {b} units")));
         }
-        if let Some((why, said)) = self.hp_second(cid, &claim, &openings)? {
+        if let Some((why, said)) = self.hp_second(cid, &held)? {
             return Ok(Decision::Assert(at_star(why), said));
         }
         // once found to hold, only a second claim can still appear
@@ -536,7 +561,8 @@ impl Inner {
         let s_ch = state.sealed.iter().find(|s| s.height == c_h).context("A*'s chain receipt's height isn't sealed")?;
         let chain = ChainSet { tree: s_ch.tree, set: s_ch.nullifiers };
         let open = |k: &Hash, h: u64| self.seq.opening(k, h);
-        for (w, &index) in claim.positions.iter().enumerate() {
+        for (w, h) in held.iter().enumerate() {
+            let index = h.index;
             let lock = open(&ack::lock_key(index), h2)?;
             let t = lock.leaf;
             if t == [0; 32] {
@@ -569,9 +595,8 @@ impl Inner {
         }
         // its spends at A*: each that counts against her
         let known = self.hp_known_acks(cid)?;
-        for (w, o) in openings.iter().enumerate() {
-            let nf = o.note.nullifier();
-            let leaf = open(&nf, h2)?;
+        for (w, h) in held.iter().enumerate() {
+            let leaf = open(&h.nf, h2)?;
             let t = leaf.leaf;
             if t == [0; 32] {
                 continue;
@@ -601,8 +626,8 @@ impl Inner {
                     Counts::Shown { ack: a, pending, void, anchor, chain }
                 }
             };
-            let why = Why::Spent { which: w as u8, opening: o.clone(), leaf, counts };
-            return Ok(Decision::Assert(at_star(why), format!("note {} was spent by A* (height {h2})", claim.positions[w])));
+            let why = Why::Spent { which: w as u8, opening: h.opening.clone(), leaf, counts };
+            return Ok(Decision::Assert(at_star(why), format!("note {} was spent by A* (height {h2})", h.index)));
         }
         Ok(Decision::Holds)
     }
@@ -630,10 +655,10 @@ impl Inner {
         Ok(acks)
     }
 
-    /// A second claim of a note of `claim` (`openings`, its notes)
+    /// A second claim of a note of a claim (`held`, its notes opened)
     /// through another hub-proves contract, its request on chain and
     /// signed by the note's owner.
-    fn hp_second(&self, cid: u32, claim: &Claim, openings: &[Opening]) -> Result<Option<(Why, String)>> {
+    fn hp_second(&self, cid: u32, held: &[HeldNote]) -> Result<Option<(Why, String)>> {
         let records: Vec<Record> = self.open.lock().unwrap().values().map(|o| o.record.clone()).filter(|r| r.cid() != cid).collect();
         for r in records {
             let Ok(d) = HpDisputed::new(&r, &self.cfg.statement) else { continue };
@@ -642,10 +667,10 @@ impl Inner {
             let Ok(other) = Claim::from_bytes(&posted) else { continue };
             let d2 = statement_outpoint(&r.hp().deposit);
             let e2 = other.fingerprint(r.cid(), &d2, b2);
-            for (w, (index, o)) in claim.positions.iter().zip(openings).enumerate() {
-                if other.positions.contains(index) && other.signed_by(&o.note.owner, &e2).is_some() {
-                    let why = Why::Second { which: w as u8, opening: o.clone(), other_c: r.cid(), other_deposit: d2, other_b: b2, other: other.clone() };
-                    return Ok(Some((why, format!("note {index} was claimed through contract {} too", r.cid()))));
+            for (w, h) in held.iter().enumerate() {
+                if other.claims(h.index, h.shielded) && other.signed_by(&h.key, &e2).is_some() {
+                    let why = Why::Second { which: w as u8, opening: h.opening.clone(), other_c: r.cid(), other_deposit: d2, other_b: b2, other: other.clone() };
+                    return Ok(Some((why, format!("note {} was claimed through contract {} too", h.index, r.cid()))));
                 }
             }
         }

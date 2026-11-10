@@ -609,10 +609,12 @@ nf    = H("lichen/snf" ‖ nk ‖ rho ‖ r)
 - **After an exit,** only a note's sender (who knows its `rho` and `r`)
   can then link its spend to her.
 - **`nf` stays unique:** `rho` is still derived in the proof.
-- **The claim, per note:** position, value and `r`, 44 bytes. The hub
-  knows each leaf's transaction, so `rho`. Once per owner: `H(ask)`,
-  `nk`, `X` and a signature, 160 bytes. About 23 notes in today's
-  witness space.
+- **The claim, per note:** position, value, `rho` and `r`, 76 bytes.
+  Once per owner: `H(ask)`, `nk`, `X` and a signature, 160 bytes. 13
+  notes in today's witness space. (Built 2026-11-10 with `rho` in the
+  claim, not the hub's to supply: the statement can't recompute `rho`
+  from the tree, so a hub that chose it could show any claimed note "not
+  a note". One shielded owner a claim: a wallet has one.)
 - **The grounds are as for transparent notes.** "Not hers" is now: the
   owner isn't `H(H(ask) ‖ nk ‖ X)` of what she posted, or `X`'s
   signature doesn't verify.
@@ -838,7 +840,16 @@ Next:
    for a test's heights), so best on Mutinynet, whose chain prover runs
    anyway; that needs a fresh ledger there (this branch's state and
    guests are incompatible with the deployed ones).
-8. Shielded notes ("Shielded notes").
+8. Shielded notes ("Shielded notes"). Natively, done (2026-11-10):
+   the split keys and the trapdoor (`lichen_shielded`: `auth`, `owner`,
+   `cm` and `nf` with `r`, the value and `r` encrypted to the recipient);
+   claims of shielded notes (`lichen_validity::exit::SClaim`, in `E`; the
+   exit record retires them; the hub's grounds over transparent then
+   shielded notes, a shielded note's opening the claim's); the wallet
+   keeps them in its exit sets and claims them, signed by its exit key;
+   `shielded_exit.rs` (an exit of a shielded note paid; a stale one
+   asserted spent). Left: the guests rebuilt; a shielded input's lock is
+   still the wallet's to keep.
 9. Done (2026-11-09): the old exit removed (the hub's counter,
    `respond`'s countering leaf, the failed-counter branch and its
    in-guest Groth16 check, the counter guest, Alice's claim proof and

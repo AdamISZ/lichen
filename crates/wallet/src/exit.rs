@@ -56,14 +56,16 @@ pub struct SetNote {
 }
 
 /// Our notes in an anchored state: the anchor (and the height `from` that
-/// recorded it), the root signed at its height, and each of our
-/// transparent notes in its tree. With the sequencer gone, a claim is
-/// made from it.
+/// recorded it), the root signed at its height, and each of our notes in
+/// its tree a claim may take, transparent and shielded. With the
+/// sequencer gone, a claim is made from it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExitSet {
     pub anchored: lichen_ledger::Anchored,
     pub sealed: SignedRoot,
     pub notes: Vec<SetNote>,
+    #[serde(default)]
+    pub shielded: Vec<crate::shielded::SOwned>,
 }
 
 impl ExitSet {
@@ -72,7 +74,11 @@ impl ExitSet {
         self.anchored.anchor.height
     }
     fn indices(&self) -> BTreeSet<u32> {
-        self.notes.iter().map(|n| n.index).collect()
+        self.notes.iter().map(|n| n.index).chain(self.shielded.iter().map(|n| n.index)).collect()
+    }
+    /// Its notes, as a claim takes them.
+    pub(crate) fn held(&self) -> Vec<(u32, crate::hp::Cand)> {
+        self.notes.iter().map(|n| (n.index, crate::hp::Cand::T(n.note))).chain(self.shielded.iter().map(|o| (o.index, crate::hp::Cand::S(*o)))).collect()
     }
 }
 
@@ -131,13 +137,14 @@ impl Wallet {
         ensure!(s.root() == a.anchor.root, "the anchor isn't of the root signed at height {hs}");
         // what a claim may take: our locked notes too whose acknowledgment
         // we hold, and a note our own unacknowledged spend took
-        let mine: Vec<(u32, Note)> = self.claimable(state).into_iter().filter(|(i, _)| *i < s.size).collect();
+        let mine: Vec<(u32, crate::hp::Cand)> = self.claimable(state).into_iter().filter(|(i, _)| *i < s.size).collect();
         let want: BTreeSet<u32> = mine.iter().map(|(i, _)| *i).collect();
         if want.is_empty() || self.exit_sets.lock().unwrap().last().is_some_and(|n| n.indices() == want || n.height() >= hs) {
             return Ok(None);
         }
-        let notes = mine.iter().map(|(index, note)| SetNote { index: *index, note: *note }).collect();
-        *self.exit_sets.lock().unwrap() = vec![ExitSet { anchored: a, sealed: s.clone(), notes }];
+        let notes = mine.iter().filter_map(|(index, c)| if let crate::hp::Cand::T(note) = c { Some(SetNote { index: *index, note: *note }) } else { None }).collect();
+        let shielded = mine.iter().filter_map(|(_, c)| if let crate::hp::Cand::S(o) = c { Some(*o) } else { None }).collect();
+        *self.exit_sets.lock().unwrap() = vec![ExitSet { anchored: a, sealed: s.clone(), notes, shielded }];
         self.save()?;
         Ok(Some(format!("the exit set kept at L2 height {hs}: {} notes", mine.len())))
     }

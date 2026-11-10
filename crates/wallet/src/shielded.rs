@@ -66,10 +66,12 @@ pub enum SpendProver {
 }
 
 /// An unspent shielded note of ours.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SOwned {
     pub value: u64,
+    #[serde(with = "lichen_ledger::hex32")]
     pub rho: Hash,
+    #[serde(with = "lichen_ledger::hex32")]
     pub trap: Hash,
     pub index: u32,
 }
@@ -130,19 +132,35 @@ impl Wallet {
     }
     /// Our unspent shielded notes, locked or not.
     pub fn shielded_notes_locked_too(&self, state: &State) -> Vec<SOwned> {
-        let (nk, e, me) = (self.nk(), self.enc_key(), self.shielded_address().owner);
         let spent: std::collections::HashSet<&Hash> = state.nullifiers.iter().map(|e| &e.0).collect();
+        self.shielded_scan(state).into_iter().filter(|o| !spent.contains(&self.snullifier(o))).collect()
+    }
+    /// Our shielded notes, spent or not: each shielded leaf that decrypts
+    /// to us and whose commitment checks.
+    pub(crate) fn shielded_scan(&self, state: &State) -> Vec<SOwned> {
+        let (e, me) = (self.enc_key(), self.shielded_address().owner);
         let mut out = vec![];
         for (index, leaf) in state.notes.iter().enumerate() {
             if let Leaf::Shielded { cm, ciphertext, nf0, i } = leaf {
                 let Some((value, trap)) = decrypt(&e, cm, ciphertext) else { continue };
                 let rho = shielded::rho(nf0, *i);
-                if (SNote { value, owner: me, rho, trap }).commitment() == *cm && !spent.contains(&shielded::nullifier(&nk, &rho, &trap)) {
+                if (SNote { value, owner: me, rho, trap }).commitment() == *cm {
                     out.push(SOwned { value, rho, trap, index: index as u32 });
                 }
             }
         }
         out
+    }
+    /// A shielded note of ours' nullifier.
+    pub(crate) fn snullifier(&self, o: &SOwned) -> Hash {
+        shielded::nullifier(&self.nk(), &o.rho, &o.trap)
+    }
+    /// A claim's shielded part ([`lichen_withdraw::hp::SClaim`]) of our
+    /// notes `notes`: our keys but the spend key, and their openings.
+    pub(crate) fn sclaim(&self, notes: &[SOwned]) -> lichen_withdraw::hp::SClaim {
+        let mut notes: Vec<lichen_withdraw::hp::SNoteClaim> = notes.iter().map(|o| lichen_withdraw::hp::SNoteClaim { index: o.index, value: o.value, rho: o.rho, trap: o.trap }).collect();
+        notes.sort_by_key(|n| n.index);
+        lichen_withdraw::hp::SClaim { auth: shielded::auth(&self.ask()), nk: self.nk(), x: xonly(&self.exit_key()), notes }
     }
     /// What we hold, transparent and shielded.
     pub fn balances(&self) -> Result<(u64, u64)> {
@@ -230,7 +248,17 @@ impl Wallet {
         let mut tx = Shielded { anchor: input.anchor, t_spends: t_list, t_sigs: vec![], nfs: j.nfs.clone(), outputs: souts, t_outputs: t_outputs.to_vec(), ak, proof: self.prove(&input)? };
         let d = tx.digest()?;
         tx.t_sigs = tx.t_spends.iter().map(|_| sign(&self.key, &d)).collect();
-        self.record_signed(crate::Signed::new(nfs, t_outputs))?;
+        // our own new shielded notes' nullifiers too: a claim of them made
+        // without the sequencer finds their acknowledgment by them
+        let mut signed = crate::Signed::new(nfs, t_outputs);
+        let me = self.shielded_address().owner;
+        let nf0 = *j.nf0().context("a transaction that spends nothing")?;
+        for (k, o) in input.outputs.iter().enumerate() {
+            if o.owner == me {
+                signed.outputs.push(shielded::nullifier(&nk, &shielded::rho(&nf0, k as u32), &o.trap));
+            }
+        }
+        self.record_signed(signed)?;
         self.sequencer.submit(&Tx::Shielded(tx))
     }
 

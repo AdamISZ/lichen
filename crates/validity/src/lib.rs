@@ -191,9 +191,10 @@ pub enum Tx {
     /// claim of `b`; its notes with their positions (shown in the tree),
     /// the acknowledgments it carries (applied first), its owners'
     /// signatures on `E` ([`exit::owners`]' order) and the hub's
-    /// ([`exit::record_digest`]). Its notes are retired, leaf `exited(c)`;
-    /// one already spent by a spend still pending voids that spend.
-    Exit { c: u32, deposit: OutPoint, b: u32, notes: Vec<(TNote, u32)>, acks: Vec<ack::Ack>, sigs: Vec<[u8; 64]>, sig: [u8; 64] },
+    /// ([`exit::record_digest`]). Its notes, transparent and shielded
+    /// ([`exit::SClaim`]), are retired, leaf `exited(c)`; one already spent
+    /// by a spend still pending voids that spend.
+    Exit { c: u32, deposit: OutPoint, b: u32, notes: Vec<(TNote, u32)>, shielded: Option<exit::SClaim>, acks: Vec<ack::Ack>, sigs: Vec<[u8; 64]>, sig: [u8; 64] },
 }
 
 /// The history hash after `root`: `hist_h = H(hist_{h-1} ‖ root_h)`, from
@@ -475,7 +476,10 @@ impl State<'_> {
     /// A transparent note at `index`: under `T_i` (a path), or made
     /// earlier in this block.
     fn in_tree(&mut self, n: &TNote, index: u32) -> Result<(), Reject> {
-        let cm = n.leaf();
+        self.leaf_in_tree(n.leaf(), index)
+    }
+    /// The leaf `cm` at `index`, as [`State::in_tree`].
+    fn leaf_in_tree(&mut self, cm: Hash, index: u32) -> Result<(), Reject> {
         if index < self.input.tree.size {
             let path = self.w.path(index)?;
             if path.len() != TREE_DEPTH || sh::root_from_path(cm, index, &path) != self.t_i {
@@ -567,12 +571,12 @@ pub fn run(input: &BlockInput, w: &mut dyn Witness, verify_spend: &mut dyn FnMut
                 st.insert(&ack::anchor_key(a), &hist_a, Reject::Seal)?;
             }
             Tx::Ack(a) => st.ack(a)?,
-            Tx::Exit { c, deposit, b, notes, acks, sigs, sig } => {
-                let owners = exit::owners(notes);
-                if !exit::well_formed(notes) || owners.len() != sigs.len() {
+            Tx::Exit { c, deposit, b, notes, shielded, acks, sigs, sig } => {
+                let owners = exit::owners(notes, shielded.as_ref());
+                if !exit::well_formed(notes, shielded.as_ref()) || owners.len() != sigs.len() {
                     return Err(Reject::Shape);
                 }
-                let e = exit::fingerprint(*c, deposit, *b, &notes.iter().map(|n| n.1).collect::<Vec<_>>(), acks);
+                let e = exit::fingerprint(*c, deposit, *b, &notes.iter().map(|n| n.1).collect::<Vec<_>>(), acks, shielded.as_ref());
                 check_sig(&input.hub, &exit::record_digest(&input.anchor.sequencer, &input.hub, &input.anchor.genesis, &e), sig)?;
                 for (o, s) in owners.iter().zip(sigs) {
                     check_sig(o, &exit::signed_digest(&e), s)?;
@@ -583,9 +587,18 @@ pub fn run(input: &BlockInput, w: &mut dyn Witness, verify_spend: &mut dyn FnMut
                         st.ack(a)?;
                     }
                 }
+                let mut retire = Vec::with_capacity(notes.len());
                 for (n, i) in notes {
                     st.in_tree(n, *i)?;
-                    let nf = n.nullifier();
+                    retire.push(n.nullifier());
+                }
+                if let Some(s) = shielded {
+                    for n in &s.notes {
+                        st.leaf_in_tree(s.leaf(n), n.index)?;
+                        retire.push(s.nullifier(n));
+                    }
+                }
+                for nf in retire {
                     let spender = st.read(&nf)?;
                     if spender == [0; 32] {
                         st.insert(&nf, &smt::exited(*c), Reject::Spent)?;
@@ -843,6 +856,18 @@ impl R<'_> {
     fn sigs(&mut self) -> Result<Vec<[u8; 64]>, Reject> {
         self.list(|r| r.take())
     }
+    fn sclaim(&mut self) -> Result<Option<exit::SClaim>, Reject> {
+        let [flag] = self.take()?;
+        match flag {
+            0 => Ok(None),
+            1 => {
+                let (s, rest) = exit::SClaim::from_bytes(self.0).ok_or(Reject::Encoding)?;
+                self.0 = rest;
+                Ok(Some(s))
+            }
+            _ => Err(Reject::Encoding),
+        }
+    }
     fn anchor(&mut self) -> Result<AnchorState, Reject> {
         Ok(AnchorState { genesis: OutPoint::from_bytes(&self.take()?), sequencer: self.take()?, seal: OutPoint::from_bytes(&self.take()?), height: self.u64()?, root: self.take()?, block: self.take()? })
     }
@@ -916,12 +941,19 @@ impl BlockInput {
                     w.0.push(ANCHOR);
                     w.record(a);
                 }
-                Tx::Exit { c, deposit, b, notes, acks, sigs, sig } => {
+                Tx::Exit { c, deposit, b, notes, shielded, acks, sigs, sig } => {
                     w.0.push(EXIT);
                     w.put(&c.to_be_bytes());
                     w.put(&deposit.to_bytes());
                     w.put(&b.to_be_bytes());
                     w.spends(notes);
+                    match shielded {
+                        Some(s) => {
+                            w.0.push(1);
+                            w.put(&s.to_bytes());
+                        }
+                        None => w.0.push(0),
+                    }
                     w.len(acks.len());
                     for a in acks {
                         w.put(&a.to_bytes());
@@ -974,7 +1006,7 @@ impl BlockInput {
                     ak: r.take()?,
                 },
                 ANCHOR => Tx::Anchor(r.record()?),
-                EXIT => Tx::Exit { c: r.u32()?, deposit: OutPoint::from_bytes(&r.take()?), b: r.u32()?, notes: r.spends()?, acks: r.list(|r| Ok(ack::Ack::from_bytes(&r.take()?)))?, sigs: r.sigs()?, sig: r.take()? },
+                EXIT => Tx::Exit { c: r.u32()?, deposit: OutPoint::from_bytes(&r.take()?), b: r.u32()?, notes: r.spends()?, shielded: r.sclaim()?, acks: r.list(|r| Ok(ack::Ack::from_bytes(&r.take()?)))?, sigs: r.sigs()?, sig: r.take()? },
                 _ => return Err(Reject::Encoding),
             })
         })?;

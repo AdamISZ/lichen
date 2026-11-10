@@ -694,8 +694,8 @@ impl Inner {
     /// Alice's claim (`posted`, its bytes) of `b` units from contract
     /// `record`, checked against the ledger now, and its exit record
     /// sequenced: well formed and of this contract's `E`; each position a
-    /// transparent note, unspent; each owner signed; worth at
-    /// least `b` units.
+    /// transparent note, or the shielded note the claim opens, unspent;
+    /// each owner signed; worth at least `b` units.
     fn record_claim(&self, record: &Record, b: u32, posted: &[u8]) -> Result<()> {
         use lichen_withdraw::hp::Claim;
         let cid = record.cid();
@@ -704,24 +704,37 @@ impl Inner {
         let deposit = lichen_proto::setup::statement_outpoint(&record.hp().deposit);
         let e = claim.fingerprint(cid, &deposit, b);
         let state = self.state()?;
-        let mut notes = vec![];
-        for &i in &claim.positions {
-            let n = *state.notes.get(i as usize).and_then(|l| l.note()).with_context(|| format!("position {i} isn't a transparent note"))?;
-            ensure!(!state.is_spent(&n), "the note at {i} is spent");
-            // a locked note only with its spend's acknowledgment, carried
+        // a locked note only with its spend's acknowledgment, carried
+        let unlocked = |i: u32| -> Result<()> {
             if state.locked(i) {
                 let t = state.leaf(&lichen_ledger::lichen_validity::ack::lock_key(i));
                 ensure!(claim.acks.iter().any(|a| a.txid == t), "the note at {i} is locked: its spend isn't acknowledged, and the claim carries no acknowledgment of it");
             }
+            Ok(())
+        };
+        let mut notes = vec![];
+        for &i in &claim.positions {
+            let n = *state.notes.get(i as usize).and_then(|l| l.note()).with_context(|| format!("position {i} isn't a transparent note"))?;
+            ensure!(!state.is_spent(&n), "the note at {i} is spent");
+            unlocked(i)?;
             notes.push(n);
         }
-        let total: u64 = notes.iter().map(|n| n.value).sum();
+        let mut total: u64 = notes.iter().map(|n| n.value).sum();
+        if let Some(sc) = &claim.shielded {
+            for n in &sc.notes {
+                let i = n.index;
+                ensure!(state.notes.get(i as usize).map(|l| l.leaf()) == Some(sc.leaf(n)), "position {i} isn't the shielded note the claim opens");
+                ensure!(!state.spent(&sc.nullifier(n)), "the note at {i} is spent");
+                unlocked(i)?;
+                total += n.value;
+            }
+        }
         ensure!(total / record.terms.unit.to_sat() >= u64::from(b), "the notes are worth {total} sats, less than {b} units");
         let tnotes: Vec<lichen_ledger::lichen_validity::TNote> = notes.iter().map(|n| lichen_ledger::lichen_validity::TNote { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho }).collect();
         let (_, sigs) = claim.record(&tnotes, &e).context("a note's owner didn't sign the claim")?;
         let spends = notes.into_iter().zip(&claim.positions).map(|(note, &index)| lichen_ledger::Spend { note, index }).collect();
         let acks = claim.acks.iter().map(lichen_ledger::Ack::of).collect();
-        let tx = Tx::Exit(lichen_ledger::Exit::new(&self.cfg.l2_key, &self.seq.deployment, cid, deposit, b, spends, acks, sigs));
+        let tx = Tx::Exit(lichen_ledger::Exit::new(&self.cfg.l2_key, &self.seq.deployment, cid, deposit, b, spends, claim.shielded.clone(), acks, sigs));
         self.seq.submit(&tx).context("recording the claim on the L2")?;
         self.note(format!("contract {cid}: the user's withdrawal claim of {b} units recorded on the L2: its notes are retired"));
         Ok(())
