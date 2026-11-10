@@ -420,7 +420,11 @@ impl Client {
             Err(e) => anyhow::bail!("{path}: {e}"),
         };
         let h32 = |s: &serde_json::Value| -> Result<Hash> { hex::decode(s.as_str().context("hex")?)?.try_into().map_err(|_| anyhow!("32 bytes")) };
-        Ok(lichen_ledger::lichen_validity::smt::Proof { bitmap: h32(&v["bitmap"])?, siblings: v["siblings"].as_array().context("siblings")?.iter().map(h32).collect::<Result<_>>()? })
+        let other = match &v["other"] {
+            serde_json::Value::Null => None,
+            o => Some((h32(&o[0])?, h32(&o[1])?)),
+        };
+        Ok(lichen_ledger::lichen_validity::smt::Proof { siblings: v["siblings"].as_array().context("siblings")?.iter().map(h32).collect::<Result<_>>()?, other })
     }
     /// The ledger, its sealed roots checked.
     pub fn state(&self) -> Result<State> {

@@ -363,11 +363,6 @@ mod pairs {
     }
 }
 
-/// The empty subtrees of the nullifier tree.
-fn empties() -> &'static [Hash] {
-    lichen_validity::smt::empties()
-}
-
 impl Nullifiers {
     pub fn contains(&self, key: &Hash) -> bool {
         self.map.contains_key(key)
@@ -404,7 +399,7 @@ impl Nullifiers {
     /// The tree's root at height `h`, and `key`'s path in it.
     pub fn proof_at(&self, key: &Hash, h: u64) -> (Hash, lichen_validity::smt::Proof) {
         let e = self.entries_at(h);
-        (lichen_validity::smt::root(&e, empties()), lichen_validity::smt::proof(&e, key, empties()))
+        (lichen_validity::smt::root(&e), lichen_validity::smt::proof(&e, key))
     }
     /// How `key` was inserted, if it was: its leaf, and the height whose
     /// block inserted it.
@@ -416,12 +411,12 @@ impl Nullifiers {
         self.map.get(key).is_some_and(|e| e.1 <= h)
     }
     pub fn root(&self) -> Hash {
-        *self.root.get_or_init(|| lichen_validity::smt::root(&self.entries(), empties()))
+        *self.root.get_or_init(|| lichen_validity::smt::root(&self.entries()))
     }
     /// The path of `key` in the tree (absent: a proof that it is; else a
     /// proof of its leaf).
     pub fn proof(&self, key: &Hash) -> lichen_validity::smt::Proof {
-        lichen_validity::smt::proof(&self.entries(), key, empties())
+        lichen_validity::smt::proof(&self.entries(), key)
     }
     pub fn iter(&self) -> impl Iterator<Item = &Hash> {
         self.map.keys()
@@ -1582,7 +1577,7 @@ mod tests {
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: Some(genesis_seal) });
         l.native_proofs = true;
         let z = v::tree_empties();
-        let genesis = (v::state_root(0, &z[TREE_DEPTH], &lichen_validity::smt::EMPTIES[lichen_validity::smt::DEPTH]), v::recent_hash(&[]));
+        let genesis = (v::state_root(0, &z[TREE_DEPTH], &lichen_validity::smt::EMPTY), v::recent_hash(&[]));
 
         // block 1: three mints, and a transfer of one of them within the
         // block: its output locked until acknowledged
@@ -1751,7 +1746,7 @@ mod tests {
         let (alice, bob) = (key_from_label("test/alice"), key_from_label("test/bob"));
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: Some(OutPoint { txid: [0x5e; 32], vout: 1 }) });
         let z = v::tree_empties();
-        let genesis = (v::state_root(0, &z[TREE_DEPTH], &v::smt::EMPTIES[v::smt::DEPTH]), v::recent_hash(&[]));
+        let genesis = (v::state_root(0, &z[TREE_DEPTH], &v::smt::EMPTY), v::recent_hash(&[]));
         let (n0, n1, n2) = (note(xonly(&alice), 10, 0), note(xonly(&bob), 5, 0), note(xonly(&alice), 3, 0));
         let idx = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![n0, n1, n2]))).unwrap();
         let j1 = seal_checked(&mut l, &seq, genesis);
@@ -1843,7 +1838,7 @@ mod tests {
         let alice = key_from_label("test/alice");
         let mut l = Ledger::new(Deployment { sequencer: xonly(&seq), hub: xonly(&hub), seal: None });
         let empty = l.nullifiers.root();
-        assert_eq!(empty, lichen_validity::smt::empties()[lichen_validity::smt::DEPTH]);
+        assert_eq!(empty, lichen_validity::smt::EMPTY);
         let n0 = note(xonly(&alice), 10, 0);
         let i0 = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![n0]))).unwrap()[0];
         let nf = nullifier(&n0);
@@ -1853,7 +1848,7 @@ mod tests {
         let txid = Transfer::digest(&t.spends, &t.outputs, &t.ak);
         l.apply(&tx).unwrap();
         // the leaf names the spend (and, unanchored, nothing else is inserted)
-        assert_eq!(lichen_validity::smt::insert(&empty, &nf, &txid, &p, lichen_validity::smt::empties()), Some(l.nullifiers.root()));
+        assert_eq!(lichen_validity::smt::insert(&empty, &nf, &txid, &p), Some(l.nullifiers.root()));
         assert_ne!(l.seal(&seq).nullifiers, empty);
         // a payment to the hub, memo and all, is a spend like any
         let i1 = l.apply(&Tx::Mint(Mint::new(&hub, &l.deployment, vec![note(xonly(&alice), 30, 0)]))).unwrap()[0];
@@ -1918,6 +1913,9 @@ mod tests {
         // the block statement agrees, and refuses another opening
         let good = l.block_input().unwrap();
         assert!(v::check(&good, &mut |_| true).is_ok());
+        if let Ok(d) = std::env::var("LICHEN_DUMP_BLOCKS") {
+            std::fs::write(std::path::Path::new(&d).join("shielded-exit.bin"), good.to_bytes()).unwrap();
+        }
         let mut bad = good.clone();
         if let v::Tx::Exit { shielded: Some(s), .. } = &mut bad.txs[0] {
             s.notes[0].value = 14;

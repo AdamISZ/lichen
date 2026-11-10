@@ -456,7 +456,7 @@ fn is_last(last: &Last, request: &Header, margin: u32) -> bool {
 /// `key`'s leaf in the spent set of root `set`, by its opening (zero:
 /// absent).
 fn shows(set: &Hash, key: &Hash, o: &smt::Opening) -> Result<Hash, Reject> {
-    if !smt::holds(set, key, &o.leaf, &o.proof, smt::empties()) {
+    if !smt::holds(set, key, &o.leaf, &o.proof) {
         return Err(Reject::PathLength);
     }
     Ok(o.leaf)
@@ -639,13 +639,13 @@ fn put_opening(w: &mut crate::W, o: &Opening) {
 }
 
 fn put_set(w: &mut crate::W, o: &smt::Opening) {
-    w.put(&o.leaf);
-    w.put(&o.proof.bitmap);
-    w.list(&o.proof.siblings);
+    w.put(&o.to_bytes());
 }
 
 fn read_set(r: &mut crate::R) -> Result<smt::Opening, Reject> {
-    Ok(smt::Opening { leaf: r.take()?, proof: smt::Proof { bitmap: r.take()?, siblings: r.list()? } })
+    let (o, rest) = smt::Opening::from_bytes(r.0).ok_or(Reject::Encoding)?;
+    r.0 = rest;
+    Ok(o)
 }
 
 fn read_opening(r: &mut crate::R) -> Result<Opening, Reject> {
@@ -902,7 +902,7 @@ mod tests {
         f(&mut claim);
         let e = claim.fingerprint(c, &deposit, b);
         let tree = root_from_path(leaf, 0, &empties());
-        let nullifiers = smt::root(&[], smt::empties());
+        let nullifiers = smt::root(&[]);
         let root = state_root(3, &tree, &nullifiers);
         let signature = seq.sign_raw(&root, &[0; 32]).unwrap().to_bytes();
         let genesis = OutPoint { txid: [3; 32], vout: 1 };
@@ -1012,7 +1012,7 @@ mod tests {
         assert_eq!(check_why(&w, Why::NotANote { which: 0, leaf: w.note.leaf(), path: empties() }), Err(Reject::Holds));
         // unspent, unlocked, not void
         let nf = w.note.nullifier();
-        let absent = |k: &Hash| smt::Opening { leaf: [0; 32], proof: smt::proof(&[], k, smt::empties()) };
+        let absent = |k: &Hash| smt::Opening { leaf: [0; 32], proof: smt::proof(&[], k) };
         assert_eq!(check_why(&w, Why::Spent { which: 0, opening: opening(&w), leaf: absent(&nf), counts: Counts::Exit { c: 9 } }), Err(Reject::NotSpent));
         assert_eq!(check_why(&w, Why::Locked { which: 0, lock: absent(&ack::lock_key(0)), acked: absent(&ack::acked_key(&[0; 32])), bad: None }), Err(Reject::Holds));
     }
@@ -1088,7 +1088,7 @@ mod tests {
         assert_eq!(check_why(&w, Why::NotHers { which: 0, opening: so() }), Err(Reject::Holds));
         assert_eq!(check_why(&w, Why::TooMuch { openings: vec![so()] }), Err(Reject::Holds));
         assert_eq!(check_why(&w, Why::NotANote { which: 0, leaf, path: empties() }), Err(Reject::Holds));
-        let absent = |k: &Hash| smt::Opening { leaf: [0; 32], proof: smt::proof(&[], k, smt::empties()) };
+        let absent = |k: &Hash| smt::Opening { leaf: [0; 32], proof: smt::proof(&[], k) };
         assert_eq!(check_why(&w, Why::Spent { which: 0, opening: so(), leaf: absent(&sc.nullifier(&sc.notes[0])), counts: Counts::Exit { c: 9 } }), Err(Reject::NotSpent));
         // a transparent opening for a shielded note: not the claim's
         assert_eq!(check_why(&w, Why::NotHers { which: 0, opening: Opening { note: Some(alices_note()), path: empties() } }), Err(Reject::Encoding));
@@ -1147,14 +1147,14 @@ mod tests {
     fn with_set(w: &mut World, keys: &[(Hash, Hash)]) -> impl Fn(&Hash) -> smt::Opening {
         let mut keys = keys.to_vec();
         keys.sort();
-        let root = smt::root(&keys, smt::empties());
+        let root = smt::root(&keys);
         let Ground::At { last, .. } = &mut w.input.ground else { unreachable!() };
         let st = &mut last.state;
         st.nullifiers = root;
         let r = state_root(3, &last.tree, &root);
         st.signature = key(1).sign_raw(&r, &[0; 32]).unwrap().to_bytes();
         st.anchor.root = r;
-        move |k: &Hash| smt::Opening { leaf: keys.iter().find(|(x, _)| x == k).map_or([0; 32], |e| e.1), proof: smt::proof(&keys, k, smt::empties()) }
+        move |k: &Hash| smt::Opening { leaf: keys.iter().find(|(x, _)| x == k).map_or([0; 32], |e| e.1), proof: smt::proof(&keys, k) }
     }
 
     /// An acknowledgment of `txid` (sealed at 2) by the key `k`, naming
@@ -1170,11 +1170,11 @@ mod tests {
     fn chain_with(w: &mut World, anchored: bool) -> (ChainSet, smt::Opening) {
         let k = ack::anchor_key(3);
         let keys = if anchored { vec![(k, [10; 32])] } else { vec![] };
-        let set = smt::root(&keys, smt::empties());
+        let set = smt::root(&keys);
         let tree = [0x77; 32];
         let Ground::At { last, .. } = &mut w.input.ground else { unreachable!() };
         last.state.chain_root = state_root(last.state.chain_height, &tree, &set);
-        (ChainSet { tree, set }, smt::Opening { leaf: if anchored { [10; 32] } else { [0; 32] }, proof: smt::proof(&keys, &k, smt::empties()) })
+        (ChainSet { tree, set }, smt::Opening { leaf: if anchored { [10; 32] } else { [0; 32] }, proof: smt::proof(&keys, &k) })
     }
 
     #[test]
@@ -1256,7 +1256,7 @@ mod tests {
     #[test]
     fn the_input_round_trips() {
         let w = world(5, |_| {});
-        let proof = smt::proof(&[], &[1; 32], smt::empties());
+        let proof = smt::proof(&[], &[1; 32]);
         let other = Claim { positions: vec![0, 3], acks: vec![ack_of([1; 32], &key(8))], sigs: vec![[5; 64]], shielded: None };
         for ground in [
             Why::NotANote { which: 0, leaf: [1; 32], path: empties() },

@@ -446,7 +446,6 @@ struct State<'a> {
     input: &'a BlockInput,
     w: &'a mut dyn Witness,
     z: [Hash; TREE_DEPTH + 1],
-    e: &'static [Hash],
     t_i: Hash,
     tree: Frontier,
     set: Hash,
@@ -458,7 +457,7 @@ impl State<'_> {
     /// `key`'s leaf in the spent set (zero: absent).
     fn read(&mut self, key: &Hash) -> Result<Hash, Reject> {
         let o = self.w.open(&self.set, key)?;
-        if !smt::holds(&self.set, key, &o.leaf, &o.proof, self.e) {
+        if !smt::holds(&self.set, key, &o.leaf, &o.proof) {
             return Err(Reject::Opening);
         }
         Ok(o.leaf)
@@ -469,7 +468,7 @@ impl State<'_> {
         if o.leaf != [0; 32] {
             return Err(absent);
         }
-        self.set = smt::insert(&self.set, key, leaf, &o.proof, self.e).ok_or(Reject::Opening)?;
+        self.set = smt::insert(&self.set, key, leaf, &o.proof).ok_or(Reject::Opening)?;
         self.w.inserted(key, leaf);
         Ok(())
     }
@@ -561,7 +560,7 @@ pub fn run(input: &BlockInput, w: &mut dyn Witness, verify_spend: &mut dyn FnMut
     }
     let z = tree_empties();
     let t_i = input.tree.root(&z);
-    let mut st = State { input, w, z, e: smt::empties(), t_i, tree: input.tree.clone(), set: input.nullifiers, made: Vec::new() };
+    let mut st = State { input, w, z, t_i, tree: input.tree.clone(), set: input.nullifiers, made: Vec::new() };
     let mut anchor = input.anchor;
     for tx in &input.txs {
         match tx {
@@ -732,7 +731,7 @@ pub struct ChainJournal {
 pub fn chain(chain_id: &Hash, input: &BlockInput, verify_spend: &mut dyn FnMut(&[u8]) -> bool, verify_chain: &mut dyn FnMut(&[u8]) -> bool) -> Result<ChainJournal, Reject> {
     let j = check(input, verify_spend)?;
     if input.height == 0 {
-        let empty = smt::EMPTIES[smt::DEPTH];
+        let empty = smt::EMPTY;
         if input.tree.size != 0 || input.nullifiers != empty || !input.recent.is_empty() || input.hist != [0; 32] || !input.anchor.is_genesis() {
             return Err(Reject::Genesis);
         }
@@ -965,9 +964,7 @@ impl BlockInput {
         }
         w.len(self.openings.len());
         for o in &self.openings {
-            w.put(&o.leaf);
-            w.put(&o.proof.bitmap);
-            w.hashes(&o.proof.siblings);
+            w.put(&o.to_bytes());
         }
         w.len(self.paths.len());
         for p in &self.paths {
@@ -1010,7 +1007,11 @@ impl BlockInput {
                 _ => return Err(Reject::Encoding),
             })
         })?;
-        let openings = r.list(|r| Ok(smt::Opening { leaf: r.take()?, proof: smt::Proof { bitmap: r.take()?, siblings: r.hashes()? } }))?;
+        let openings = r.list(|r| {
+            let (o, rest) = smt::Opening::from_bytes(r.0).ok_or(Reject::Encoding)?;
+            r.0 = rest;
+            Ok(o)
+        })?;
         let paths = r.list(|r| r.hashes())?;
         r.end()?;
         Ok(BlockInput { hub, height, tree, nullifiers, recent, hist, anchor, txs, openings, paths })

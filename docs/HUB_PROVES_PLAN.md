@@ -412,6 +412,16 @@ need analysis first.
 
 ### What it costs
 
+- **Chain guest, after the compact spent set (2026-11-10, profiled):**
+  the spent set is a compact sparse Merkle tree, a key's path as deep as
+  its keys' common prefixes, so an access is some twenty compressions at
+  a million keys, not 256 levels (512 compressions an insert). The ledger
+  test's block of a transfer and its acknowledgment went from 2.84M user
+  cycles to 0.84M, three segments to one; the spent set from about 70% of
+  it to about 10%. A payment and its acknowledgment now cost about two
+  BIP340 signatures (260k each) and some 0.1M of the spent set: the
+  acknowledgment's own cost about one signature. The trims below no
+  longer matter much. Before it:
 - **Chain guest, measured (2026-11-10):** every spent set access is a
   256-level path, about 300k cycles. A transparent spend now reads each
   input's lock and inserts its pending leaf and a lock per output; its

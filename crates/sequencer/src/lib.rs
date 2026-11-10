@@ -325,7 +325,8 @@ fn handle(sh: &Shared, method: &Method, url: &str, body: &str) -> (u16, String) 
         if root != s.nullifiers {
             return refuse(503, format!("height {h}'s nullifiers can't be rebuilt"));
         }
-        return (200, serde_json::json!({ "bitmap": hex::encode(p.bitmap), "siblings": p.siblings.iter().map(hex::encode).collect::<Vec<_>>() }).to_string());
+        let other = p.other.map(|(k, l)| [hex::encode(k), hex::encode(l)]);
+        return (200, serde_json::json!({ "siblings": p.siblings.iter().map(hex::encode).collect::<Vec<_>>(), "other": other }).to_string());
     }
     match (method, url) {
         (Method::Post, "/hold") => {

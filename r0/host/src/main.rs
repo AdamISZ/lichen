@@ -12,7 +12,8 @@
 //!   receipts and the previous height's chain receipt (none at genesis)
 //!   as assumptions; writes the succinct receipt, which resolves them;
 //! - `exec-chain`, as `chain`, runs the guest without proving: its cycles
-//!   (and, with RISC0_PPROF_OUT, a profile);
+//!   (and, with RISC0_PPROF_OUT, a profile); a receipt not given stands in
+//!   by its claim, unresolved;
 //! - `verify-chain <receipt>`: check a chain receipt; print its journal;
 //! - `hp <hub input> <chain receipt|none> <out>`: prove the hub's statement
 //!   (`lichen_withdraw::hp`, docs/HUB_PROVES_PLAN.md) on its input (its
@@ -93,13 +94,16 @@ fn words(bytes: &[u8]) -> Vec<u32> {
 
 /// The chain guest's input: its image id, then the block's, raw; the
 /// receipts its `env::verify`s need as assumptions.
-fn chain_env(chain_id: &[u8; 32], input: &[u8], assumptions: impl Iterator<Item = Receipt>) -> Result<ExecutorEnv<'static>> {
+fn chain_env(chain_id: &[u8; 32], input: &[u8], assumptions: impl Iterator<Item = Receipt>, claims: Vec<ReceiptClaim>) -> Result<ExecutorEnv<'static>> {
     let mut stream = chain_id.to_vec();
     stream.extend_from_slice(input);
     let mut env = ExecutorEnv::builder();
     env.write(&(stream.len() as u32))?.write_slice(&words(&stream));
     for r in assumptions {
         env.add_assumption(r);
+    }
+    for c in claims {
+        env.add_assumption(c);
     }
     env.build()
 }
@@ -111,9 +115,30 @@ fn prove_chain(input: &[u8], prev: Option<Receipt>, spends: Vec<Receipt>, execut
     let id = image_id(&chain_guest)?;
     let block = lichen_validity::BlockInput::from_bytes(input).map_err(|r| anyhow::anyhow!("the block input: {r:?}"))?;
     let chain_id: [u8; 32] = id.as_bytes().try_into()?;
-    // natively first: a refusal here is cheaper than a failed proof
-    let journal = lichen_validity::chain(&chain_id, &block, &mut |j| spends.iter().any(|r| r.journal.bytes == j), &mut |j| prev.as_ref().is_some_and(|r| r.journal.bytes == j))
-        .map_err(|r| anyhow::anyhow!("the chain statement rejects the block: {r:?}"))?;
+    // natively first: a refusal here is cheaper than a failed proof.
+    // Executing, a receipt not given stands in by its claim, unresolved
+    let (mut asked_spends, mut asked_prev) = (vec![], None);
+    let journal = lichen_validity::chain(
+        &chain_id,
+        &block,
+        &mut |j| {
+            asked_spends.push(j.to_vec());
+            spends.iter().any(|r| r.journal.bytes == j) || execute_only
+        },
+        &mut |j| {
+            asked_prev = Some(j.to_vec());
+            prev.as_ref().is_some_and(|r| r.journal.bytes == j) || execute_only
+        },
+    )
+    .map_err(|r| anyhow::anyhow!("the chain statement rejects the block: {r:?}"))?;
+    let mut claims = vec![];
+    if execute_only {
+        let spend_id = image_id(&guest()?)?;
+        claims.extend(asked_spends.into_iter().filter(|j| !spends.iter().any(|r| r.journal.bytes == *j)).map(|j| ReceiptClaim::ok(spend_id, j)));
+        if prev.is_none() {
+            claims.extend(asked_prev.map(|j| ReceiptClaim::ok(id, j)));
+        }
+    }
     let spend_id = image_id(&guest()?)?;
     for r in &spends {
         r.verify(spend_id).context("a spend receipt")?;
@@ -121,7 +146,7 @@ fn prove_chain(input: &[u8], prev: Option<Receipt>, spends: Vec<Receipt>, execut
     if let Some(p) = &prev {
         p.verify(id).context("the previous chain receipt")?;
     }
-    let env = chain_env(&chain_id, input, spends.into_iter().chain(prev))?;
+    let env = chain_env(&chain_id, input, spends.into_iter().chain(prev), claims)?;
     if execute_only {
         let s = default_executor().execute(env, &chain_guest)?;
         ensure!(s.journal.bytes == journal.to_bytes(), "the execution's journal isn't the statement's");

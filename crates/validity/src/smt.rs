@@ -1,25 +1,43 @@
-//! The nullifier set as a sparse Merkle tree (docs/SHIELDED_PLAN.md,
-//! phase 2), so that a block guest can show a nullifier unspent and add
-//! it. 256 levels, a leaf per nullifier by its bits (most significant
-//! first, from the root); a leaf is zero if unspent, and if spent says
-//! how (the hub's statement reads it, docs/HUB_PROVES_PLAN.md): [`spent`]
-//! by a transaction, [`exited`] by a contract's exit record. Empty subtrees are the precomputed
-//! [`empties`]. Its root is the state root's `N`.
+//! The spent set as a compact sparse Merkle tree (docs/SHIELDED_PLAN.md,
+//! phase 2; compact since 2026-11-10), so that a block guest can show a
+//! key absent and add it, and the hub's statement read a key's leaf. Keys
+//! are 256 bits, read from the most significant (the root's choice) down;
+//! a leaf is zero if absent, and if present says how (the hub's statement
+//! reads it, docs/HUB_PROVES_PLAN.md): a spend's `txid`, [`exited`] by a
+//! contract's exit record, and the acknowledgment state's.
+//!
+//! Compact: a subtree holding no key is zero; one holding a single key is
+//! that key's [`leaf_node`], wherever it sits; one holding more is the
+//! [`node`] of its halves. A key's path is then as deep as its keys'
+//! common prefixes (some log₂ of the set's size), not 256 levels: about
+//! ten times fewer compressions an access than the full tree, which
+//! dominated the chain guest. A leaf node is a tagged SHA-256 of the key
+//! and its leaf, a node one compression of its halves: the two can't be
+//! confused, and a leaf node commits to its whole key.
+//!
+//! An [`Opening`] of a key: its leaf, and the path to its slot (the
+//! subtree its prefix leads to that holds it or would): the siblings from
+//! the slot up and, if the key is absent, the other key whose leaf node
+//! fills the slot, if one does (else the slot is empty).
 
 use super::{sha256, Hash};
 use alloc::vec::Vec;
 
+/// The most levels a path has: a key's bits.
 pub const DEPTH: usize = 256;
+
+/// The empty set's root, and an empty subtree.
+pub const EMPTY: Hash = [0; 32];
 
 /// SHA-256's initial state.
 const IV: [u32; 8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
 
 /// A node: one SHA-256 compression of `left ‖ right` from the initial
-/// state, no padding (every input is 64 bytes): half the commitment
-/// tree's `node`, and in the guest RISC Zero's accelerated compression
-/// alone. The block is word-aligned, so the guest's compression reads it
-/// in place. (`generic-array` 0.14.9 deprecates its own type, which
-/// `sha2` 0.10's `compress256` takes, RISC Zero's fork too.)
+/// state, no padding (every input is 64 bytes): in the guest RISC Zero's
+/// accelerated compression alone. The block is word-aligned, so the
+/// guest's compression reads it in place. (`generic-array` 0.14.9
+/// deprecates its own type, which `sha2` 0.10's `compress256` takes, RISC
+/// Zero's fork too.)
 #[allow(deprecated)]
 pub fn node(left: &Hash, right: &Hash) -> Hash {
     #[repr(C, align(4))]
@@ -29,84 +47,21 @@ pub fn node(left: &Hash, right: &Hash) -> Hash {
     b.0[32..].copy_from_slice(right);
     let mut st = IV;
     sha2::compress256(&mut st, core::slice::from_ref(sha2::digest::generic_array::GenericArray::from_slice(&b.0)));
-    words_be(&st)
-}
-
-const fn words_be(st: &[u32; 8]) -> Hash {
     let mut out = [0u8; 32];
-    let mut i = 0;
-    while i < 8 {
-        let w = st[i].to_be_bytes();
-        out[4 * i] = w[0];
-        out[4 * i + 1] = w[1];
-        out[4 * i + 2] = w[2];
-        out[4 * i + 3] = w[3];
-        i += 1;
+    for (o, w) in out.chunks_exact_mut(4).zip(st) {
+        o.copy_from_slice(&w.to_be_bytes());
     }
     out
+}
+
+/// A subtree holding `key` alone, its leaf `leaf`.
+pub fn leaf_node(key: &Hash, leaf: &Hash) -> Hash {
+    sha256(&[b"lichen/smt-leaf", key, leaf])
 }
 
 /// A nullifier's leaf, retired by contract `c`'s exit record.
 pub fn exited(c: u32) -> Hash {
     sha256(&[b"lichen/nf-exit", &c.to_be_bytes()])
-}
-
-/// `empties()[h]`: the root of an empty subtree of height `h`
-/// (`h = 0`: an unspent leaf). A table built when compiling ([`EMPTIES`]):
-/// in the guest, 256 compressions every block otherwise.
-pub fn empties() -> &'static [Hash] {
-    &EMPTIES
-}
-
-/// The empty subtrees' roots, computed at compile time with
-/// [`const_node`].
-pub static EMPTIES: [Hash; DEPTH + 1] = {
-    let mut e = [[0u8; 32]; DEPTH + 1];
-    let mut h = 0;
-    while h < DEPTH {
-        e[h + 1] = const_node(&e[h], &e[h]);
-        h += 1;
-    }
-    e
-};
-
-/// [`node`], as a `const fn`: SHA-256's compression in plain Rust (FIPS
-/// 180-4), for [`EMPTIES`].
-pub const fn const_node(left: &Hash, right: &Hash) -> Hash {
-    const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-    ];
-    let mut w = [0u32; 64];
-    let mut i = 0;
-    while i < 16 {
-        let b = if i < 8 { left } else { right };
-        let j = (i % 8) * 4;
-        w[i] = u32::from_be_bytes([b[j], b[j + 1], b[j + 2], b[j + 3]]);
-        i += 1;
-    }
-    while i < 64 {
-        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
-        i += 1;
-    }
-    let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = IV;
-    i = 0;
-    while i < 64 {
-        let t1 = h.wrapping_add(e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25)).wrapping_add((e & f) ^ (!e & g)).wrapping_add(K[i]).wrapping_add(w[i]);
-        let t2 = (a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22)).wrapping_add((a & b) ^ (a & c) ^ (b & c));
-        h = g;
-        g = f;
-        f = e;
-        e = d.wrapping_add(t1);
-        d = c;
-        c = b;
-        b = a;
-        a = t1.wrapping_add(t2);
-        i += 1;
-    }
-    let st = [IV[0].wrapping_add(a), IV[1].wrapping_add(b), IV[2].wrapping_add(c), IV[3].wrapping_add(d), IV[4].wrapping_add(e), IV[5].wrapping_add(f), IV[6].wrapping_add(g), IV[7].wrapping_add(h)];
-    words_be(&st)
 }
 
 /// Bit `d` of `key`, counted from the root (the most significant
@@ -115,18 +70,18 @@ pub fn bit(key: &Hash, d: usize) -> bool {
     key[d / 8] >> (7 - d % 8) & 1 == 1
 }
 
-/// A path from a leaf to the root: the sibling at each height from
-/// the leaf up, those not empty listed (`bitmap` bit `h` set).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Proof {
-    pub bitmap: [u8; 32],
-    pub siblings: Vec<Hash>,
+/// The first bit at which `a` and `b` differ, if they do.
+fn split(a: &Hash, b: &Hash) -> Option<usize> {
+    (0..DEPTH).find(|&d| bit(a, d) != bit(b, d))
 }
 
-impl Proof {
-    fn has(&self, h: usize) -> bool {
-        self.bitmap[h / 8] >> (h % 8) & 1 == 1
-    }
+/// A key's path to its slot: the siblings from the slot up (the slot is
+/// as deep as there are), and, for an absent key, the other key and its
+/// leaf whose leaf node fills the slot, if one does.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Proof {
+    pub siblings: Vec<Hash>,
+    pub other: Option<(Hash, Hash)>,
 }
 
 /// A key's leaf in the set (zero: absent) and its path: what the
@@ -137,86 +92,151 @@ pub struct Opening {
     pub proof: Proof,
 }
 
-/// The root after spending `key` (its leaf now `leaf`) in a tree of root
-/// `root`, if `proof` shows it unspent there.
-pub fn insert(root: &Hash, key: &Hash, leaf: &Hash, proof: &Proof, empties: &[Hash]) -> Option<Hash> {
-    let (mut absent, mut with) = (empties[0], *leaf);
-    let mut sibs = proof.siblings.iter();
-    for h in 0..DEPTH {
-        let sib = if proof.has(h) { *sibs.next()? } else { empties[h] };
-        if bit(key, DEPTH - 1 - h) {
-            absent = node(&sib, &absent);
-            with = node(&sib, &with);
-        } else {
-            absent = node(&absent, &sib);
-            with = node(&with, &sib);
-        }
-    }
-    (sibs.next().is_none() && absent == *root).then_some(with)
-}
-
-/// Whether `proof` shows `key` unspent in a tree of root `root`: what
-/// [`insert`] checks before spending it.
-pub fn unspent(root: &Hash, key: &Hash, proof: &Proof, empties: &[Hash]) -> bool {
-    holds(root, key, &empties[0], proof, empties)
-}
-
-/// Whether `proof` shows `key`'s leaf to be `leaf` in a tree of root
-/// `root` (zero: unspent).
-pub fn holds(root: &Hash, key: &Hash, leaf: &Hash, proof: &Proof, empties: &[Hash]) -> bool {
-    let mut absent = *leaf;
-    let mut sibs = proof.siblings.iter();
-    for h in 0..DEPTH {
-        let sib = if proof.has(h) {
-            match sibs.next() {
-                Some(s) => *s,
-                None => return false,
+impl Opening {
+    /// `leaf ‖ flag [‖ key ‖ leaf] ‖ n (2 bytes) ‖ siblings`.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut w = Vec::with_capacity(99 + 32 * self.proof.siblings.len());
+        w.extend_from_slice(&self.leaf);
+        match &self.proof.other {
+            Some((k, l)) => {
+                w.push(1);
+                w.extend_from_slice(k);
+                w.extend_from_slice(l);
             }
-        } else {
-            empties[h]
-        };
-        absent = if bit(key, DEPTH - 1 - h) { node(&sib, &absent) } else { node(&absent, &sib) };
+            None => w.push(0),
+        }
+        w.extend_from_slice(&(self.proof.siblings.len() as u16).to_be_bytes());
+        for s in &self.proof.siblings {
+            w.extend_from_slice(s);
+        }
+        w
     }
-    sibs.next().is_none() && absent == *root
+    /// From the front of `b`; the rest.
+    pub fn from_bytes(b: &[u8]) -> Option<(Opening, &[u8])> {
+        fn take<const N: usize>(b: &mut &[u8]) -> Option<[u8; N]> {
+            let (a, rest) = (b.len() >= N).then(|| b.split_at(N))?;
+            *b = rest;
+            a.try_into().ok()
+        }
+        let mut b = b;
+        let leaf = take::<32>(&mut b)?;
+        let other = match take::<1>(&mut b)? {
+            [0] => None,
+            [1] => Some((take::<32>(&mut b)?, take::<32>(&mut b)?)),
+            _ => return None,
+        };
+        let n = u16::from_be_bytes(take::<2>(&mut b)?) as usize;
+        if n > DEPTH {
+            return None;
+        }
+        let siblings = (0..n).map(|_| take::<32>(&mut b)).collect::<Option<Vec<_>>>()?;
+        Some((Opening { leaf, proof: Proof { siblings, other } }, b))
+    }
+}
+
+/// The root `sub` reaches as `key`'s slot through `siblings` (from the
+/// slot up).
+fn climb(key: &Hash, mut sub: Hash, siblings: &[Hash]) -> Hash {
+    let d = siblings.len();
+    for (i, s) in siblings.iter().enumerate() {
+        sub = if bit(key, d - 1 - i) { node(s, &sub) } else { node(&sub, s) };
+    }
+    sub
+}
+
+/// What fills `key`'s slot by `proof`, its leaf `leaf` (zero: absent):
+/// none if the proof is malformed.
+fn slot(key: &Hash, leaf: &Hash, proof: &Proof) -> Option<Hash> {
+    let d = proof.siblings.len();
+    if d > DEPTH {
+        return None;
+    }
+    match (leaf == &EMPTY, &proof.other) {
+        (false, None) => Some(leaf_node(key, leaf)),
+        (true, None) => Some(EMPTY),
+        // another key in the slot: of the same prefix, present
+        (true, Some((k, l))) => (k != key && *l != EMPTY && split(k, key).is_some_and(|s| s >= d)).then(|| leaf_node(k, l)),
+        (false, Some(_)) => None,
+    }
+}
+
+/// Whether `proof` shows `key`'s leaf to be `leaf` in the set of root
+/// `root` (zero: absent).
+pub fn holds(root: &Hash, key: &Hash, leaf: &Hash, proof: &Proof) -> bool {
+    slot(key, leaf, proof).is_some_and(|s| climb(key, s, &proof.siblings) == *root)
+}
+
+/// Whether `proof` shows `key` absent from the set of root `root`.
+pub fn unspent(root: &Hash, key: &Hash, proof: &Proof) -> bool {
+    holds(root, key, &EMPTY, proof)
+}
+
+/// The root after inserting `key` with leaf `leaf` (not zero) in the set
+/// of root `root`, if `proof` shows it absent there: its slot then holds
+/// it alone, or it and the other key there, split where they differ.
+pub fn insert(root: &Hash, key: &Hash, leaf: &Hash, proof: &Proof) -> Option<Hash> {
+    if *leaf == EMPTY || !unspent(root, key, proof) {
+        return None;
+    }
+    let d = proof.siblings.len();
+    let mine = leaf_node(key, leaf);
+    let sub = match &proof.other {
+        None => mine,
+        Some((k, l)) => {
+            let s = split(k, key)?;
+            let theirs = leaf_node(k, l);
+            let mut sub = if bit(key, s) { node(&theirs, &mine) } else { node(&mine, &theirs) };
+            for e in (d..s).rev() {
+                sub = if bit(key, e) { node(&EMPTY, &sub) } else { node(&sub, &EMPTY) };
+            }
+            sub
+        }
+    };
+    Some(climb(key, sub, &proof.siblings))
 }
 
 /// The root of the subtree at depth `d` holding `keys` (sorted, each
 /// with its leaf, all sharing their first `d` bits).
-pub fn subtree(keys: &[(Hash, Hash)], d: usize, empties: &[Hash]) -> Hash {
-    if keys.is_empty() {
-        return empties[DEPTH - d];
+fn subtree(keys: &[(Hash, Hash)], d: usize) -> Hash {
+    match keys {
+        [] => EMPTY,
+        [(k, l)] => leaf_node(k, l),
+        _ => {
+            let i = keys.partition_point(|k| !bit(&k.0, d));
+            node(&subtree(&keys[..i], d + 1), &subtree(&keys[i..], d + 1))
+        }
     }
-    if d == DEPTH {
-        return keys[0].1;
-    }
-    let i = keys.partition_point(|k| !bit(&k.0, d));
-    node(&subtree(&keys[..i], d + 1, empties), &subtree(&keys[i..], d + 1, empties))
 }
 
-/// The root of the set `keys` (sorted, each with its leaf).
-pub fn root(keys: &[(Hash, Hash)], empties: &[Hash]) -> Hash {
-    subtree(keys, 0, empties)
+/// The root of the set `keys` (sorted, distinct, each with its leaf, none
+/// zero).
+pub fn root(keys: &[(Hash, Hash)]) -> Hash {
+    subtree(keys, 0)
 }
 
 /// The path of `key` in the set `keys` (sorted, each with its leaf).
-pub fn proof(keys: &[(Hash, Hash)], key: &Hash, empties: &[Hash]) -> Proof {
-    let mut top_down = Vec::with_capacity(DEPTH);
+pub fn proof(keys: &[(Hash, Hash)], key: &Hash) -> Proof {
+    let mut top_down = Vec::new();
     let mut here = keys;
-    for d in 0..DEPTH {
-        let i = here.partition_point(|k| !bit(&k.0, d));
-        let (zero, one) = here.split_at(i);
-        let (same, other) = if bit(key, d) { (one, zero) } else { (zero, one) };
-        top_down.push((!other.is_empty()).then(|| subtree(other, d + 1, empties)));
-        here = same;
-    }
-    let mut p = Proof::default();
-    for (h, sib) in top_down.into_iter().rev().enumerate() {
-        if let Some(s) = sib {
-            p.bitmap[h / 8] |= 1 << (h % 8);
-            p.siblings.push(s);
+    let mut d = 0;
+    loop {
+        match here {
+            [] => break,
+            [(k, l)] => {
+                let other = (k != key).then_some((*k, *l));
+                return Proof { siblings: top_down.into_iter().rev().collect(), other };
+            }
+            _ => {
+                let i = here.partition_point(|k| !bit(&k.0, d));
+                let (zero, one) = here.split_at(i);
+                let (same, other) = if bit(key, d) { (one, zero) } else { (zero, one) };
+                top_down.push(subtree(other, d + 1));
+                here = same;
+                d += 1;
+            }
         }
     }
-    p
+    Proof { siblings: top_down.into_iter().rev().collect(), other: None }
 }
 
 #[cfg(test)]
@@ -247,59 +267,77 @@ mod tests {
     }
 
     #[test]
-    fn the_empty_roots_are_the_runtime_nodes() {
-        let mut x = [0u8; 32];
-        for (h, e) in EMPTIES.iter().enumerate() {
-            assert_eq!(*e, x, "height {h}");
-            assert_eq!(const_node(&x, &h_bytes(h)), node(&x, &h_bytes(h)));
-            x = node(&x, &x);
-        }
-    }
-
-    fn h_bytes(h: usize) -> Hash {
-        core::array::from_fn(|i| (h * 31 + i * 7) as u8)
-    }
-
-    #[test]
-    fn the_nullifier_tree() {
-        let e = empties();
+    fn the_spent_set() {
         let mut keys: Vec<(Hash, Hash)> = vec![];
-        let mut root = super::root(&keys, e);
-        assert_eq!(root, e[DEPTH]);
-        // spend them one by one, each shown unspent first, in an order
-        // the sorted set isn't, with each kind of leaf
-        let leaves = [h(0xee), exited(1000), exited(1001), h(0xee), exited(1002), h(0xee)];
-        for (k, leaf) in [h(9), h(1), [0x80; 32], h(2), [0x81; 32], h(0)].into_iter().zip(leaves) {
-            let p = proof(&keys, &k, e);
-            let next = insert(&root, &k, &leaf, &p, e).expect("unspent");
+        let mut root = super::root(&keys);
+        assert_eq!(root, EMPTY);
+        // insert them one by one, each shown absent first, in an order
+        // the sorted set isn't, with each kind of leaf; keys sharing long
+        // prefixes ([0x80; 32] and [0x81; 32] differ at bit 7, h(0) and
+        // [0, .., 1] at bit 255)
+        let mut last = [0u8; 32];
+        last[31] = 1;
+        let leaves = [h(0xee), exited(1000), exited(1001), h(0xee), exited(1002), h(0xee), h(0xef)];
+        for (k, leaf) in [h(9), h(1), [0x80; 32], h(2), [0x81; 32], h(0), last].into_iter().zip(leaves) {
+            let p = proof(&keys, &k);
+            assert!(unspent(&root, &k, &p));
+            let next = insert(&root, &k, &leaf, &p).expect("absent");
             keys.push((k, leaf));
             keys.sort();
-            assert_eq!(next, super::root(&keys, e), "the insert's root is the set's");
+            assert_eq!(next, super::root(&keys), "the insert's root is the set's");
             root = next;
-            // spent now: no proof of it unspent, a proof of its leaf
-            let p = proof(&keys, &k, e);
-            assert_eq!(insert(&root, &k, &h(0xee), &p, e), None);
-            assert!(!unspent(&root, &k, &p, e));
-            assert!(holds(&root, &k, &leaf, &p, e));
+            // present now: no proof of it absent, a proof of its leaf
+            let p = proof(&keys, &k);
+            assert_eq!(insert(&root, &k, &h(0xee), &p), None);
+            assert!(!unspent(&root, &k, &p));
+            assert!(holds(&root, &k, &leaf, &p));
         }
+        // a path is as deep as the keys' prefixes, not 256 levels
+        assert_eq!(proof(&keys, &h(9)).siblings.len(), 5, "0x09 parts from 0x00, 0x01, 0x02 at bit 4");
+        assert_eq!(proof(&keys, &last).siblings.len(), 256);
         // a leaf says how: not another kind, nor another contract
-        let p = proof(&keys, &h(1), e);
-        assert!(holds(&root, &h(1), &exited(1000), &p, e));
-        for other in [h(0xee), exited(1001)] {
-            assert!(!holds(&root, &h(1), &other, &p, e));
+        let p = proof(&keys, &h(1));
+        assert!(holds(&root, &h(1), &exited(1000), &p));
+        for other in [h(0xee), exited(1001), EMPTY] {
+            assert!(!holds(&root, &h(1), &other, &p));
         }
-        // unspent agrees with insert
-        assert!(unspent(&root, &h(5), &proof(&keys, &h(5), e), e));
-        // a proof against another root, or tampered, is refused
+        // absent: an empty slot, or another key's
+        for k in [h(5), h(0x7f), [0x82; 32], h(0x0b)] {
+            let p = proof(&keys, &k);
+            assert!(unspent(&root, &k, &p), "{k:?}");
+        }
+        assert!(proof(&keys, &h(5)).other.is_none(), "0x05's slot is empty");
+        assert_eq!(proof(&keys, &h(0x0b)).other, Some((h(9), h(0xee))), "0x0b's slot holds 0x09 alone");
+        assert!(unspent(&root, &h(0x0b), &proof(&keys, &h(0x0b))));
+        // another key's leaf can't pass for this one's, nor this one's
+        // absence be shown by a key of another prefix, nor by itself
+        let p = proof(&keys, &h(1));
+        let pretend = Proof { siblings: p.siblings.clone(), other: Some((h(1), exited(1000))) };
+        assert!(!unspent(&root, &h(1), &pretend));
+        let pb = proof(&keys, &h(0x0b));
+        assert!(!holds(&root, &h(9), &h(0xee), &Proof { siblings: pb.siblings.clone(), other: Some((h(0x0b), h(1))) }));
+        let mut far = pb.clone();
+        far.other = Some((h(1), h(0xee)));
+        assert!(!unspent(&root, &h(0x0b), &far), "a key of another prefix in the slot");
+        // a proof against another root, tampered, short or long, is refused
         let k = h(5);
-        let p = proof(&keys, &k, e);
-        assert!(insert(&root, &k, &h(0xee), &p, e).is_some());
-        assert_eq!(insert(&e[DEPTH], &k, &h(0xee), &p, e), None);
+        let p = proof(&keys, &k);
+        assert!(insert(&root, &k, &h(0xee), &p).is_some());
+        assert_eq!(insert(&EMPTY, &k, &h(0xee), &p), None);
+        assert_eq!(insert(&root, &k, &EMPTY, &p), None, "a zero leaf");
         let mut bad = p.clone();
         bad.siblings[0][0] ^= 1;
-        assert_eq!(insert(&root, &k, &h(0xee), &bad, e), None);
-        let mut short = p;
+        assert_eq!(insert(&root, &k, &h(0xee), &bad), None);
+        let mut short = p.clone();
         short.siblings.pop();
-        assert_eq!(insert(&root, &k, &h(0xee), &short, e), None);
+        assert_eq!(insert(&root, &k, &h(0xee), &short), None);
+        let mut long = p.clone();
+        long.siblings.insert(0, EMPTY);
+        assert_eq!(insert(&root, &k, &h(0xee), &long), None);
+        // an opening's bytes, and back
+        let o = Opening { leaf: EMPTY, proof: p };
+        let mut b = o.to_bytes();
+        b.push(7);
+        assert_eq!(Opening::from_bytes(&b), Some((o, &[7u8][..])));
     }
 }
