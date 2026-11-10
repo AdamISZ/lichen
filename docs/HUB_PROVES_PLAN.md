@@ -845,11 +845,18 @@ Next:
    chain receipt needed), proved and wrapped on lichen-vps through
    `r0/hp-remote.sh`, asserted (7,725 vB), the proof checked by the
    wallet, which concedes; the exit 442 s on regtest, the proving
-   included. Left: a ground at `A*` for real, which needs every chain
-   height to `A*` proved (on lichen-vps some ten minutes a segment: hours
-   for a test's heights), so best on Mutinynet, whose chain prover runs
-   anyway; that needs a fresh ledger there (this branch's state and
-   guests are incompatible with the deployed ones).
+   included. And (2026-11-10, after the compact spent set) a stale claim
+   proved false at `A*` on the real circuit (`hp_real.rs`, the second
+   case), the chain proved on the Mac as the sequencer recorded heights:
+   twelve heights, each one segment (98k to 505k user cycles), 18 to 62 s
+   each, 380 s in all; the hub's statement (a spent note) 1.02M user
+   cycles, two segments, proved on lichen-vps (4 vCPUs) in 827 s and
+   wrapped in Groth16 in 268 s; the exit, request to the wallet's
+   concession, 1,143 s. Against `w_H`: 2 h on Mutinynet, 6 h on signet,
+   so some 18 minutes of the hub's proving fits with room; a hub proving
+   on a faster box (the Mac proves a segment in some 30 s, but can't
+   wrap) much less. The hub's guest is just over a segment: trimmed under
+   it, its proof would take about half as long.
 8. Shielded notes ("Shielded notes"). Natively, done (2026-11-10):
    the split keys and the trapdoor (`lichen_shielded`: `auth`, `owner`,
    `cm` and `nf` with `r`, the value and `r` encrypted to the recipient);
