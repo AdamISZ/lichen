@@ -171,8 +171,8 @@ pub(crate) struct Inner {
     /// The most the links' floors and anchors take from the hub's reserve
     /// on a dispute it loses (found at the first opening).
     floors: Mutex<Option<u64>>,
-    /// The proofs of the hub's statement being proved, by their files'
-    /// tag (`dispute::hp`).
+    /// The contracts whose hub's statement is being proved
+    /// (`dispute::hp`).
     proving: Arc<Mutex<std::collections::HashSet<String>>>,
     /// Set when the hub is dropped: a dispute waiting on the chain gives
     /// up, so that dropping a hub never waits for a block.
