@@ -856,7 +856,13 @@ Next:
    so some 18 minutes of the hub's proving fits with room; a hub proving
    on a faster box (the Mac proves a segment in some 30 s, but can't
    wrap) much less. The hub's guest is just over a segment: trimmed under
-   it, its proof would take about half as long.
+   it, its proof would take about half as long. On a GPU (2026-11-10,
+   a rented RTX 4090, `lichen-r0` built with `--features cuda`, the same
+   run): a chain height in 1.4 to 2.3 s, the hub's statement in 3.5 s;
+   RISC Zero's GPU Groth16 (rzup's `risc0-groth16` 0.1.0) failed there
+   each time (sppark: "an illegal memory access", 4.5 GB of the card's
+   24 GB in use; driver 615), so the wrap stays on the CPU, some 4.5
+   minutes, nearly all of a GPU hub's proving.
 8. Shielded notes ("Shielded notes"). Natively, done (2026-11-10):
    the split keys and the trapdoor (`lichen_shielded`: `auth`, `owner`,
    `cm` and `nf` with `r`, the value and `r` encrypted to the recipient);
