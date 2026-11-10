@@ -183,10 +183,7 @@ impl Anchorer {
             // something new since the last anchor's height, not only the
             // record of an anchor (else each record would be anchored in
             // turn, for ever)
-            let news = match l.anchor.height {
-                0 => true,
-                h => l.sealed.get(h as usize - 1).is_some_and(|a| a.height < last.height && (a.size, a.nullifiers) != (last.size, last.nullifiers)),
-            };
+            let news = l.anchor.height == 0 || l.news_at > l.anchor.height;
             (l.anchor.seal, last.height, l.hist_at(last.height), news)
         };
         ensure!(seal.txid != [0; 32], "this deployment has no genesis seal: it can't be anchored");

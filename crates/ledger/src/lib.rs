@@ -753,6 +753,11 @@ pub struct Ledger {
     /// signatures, for the hub's statement to show.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub acks: BTreeMap<String, Ack>,
+    /// The last sealed height whose block held more than anchor records:
+    /// the anchorer anchors a height only past it (a record changes the
+    /// spent set, its `anchor_key`, so it can't be told by the roots).
+    #[serde(default)]
+    pub news_at: u64,
 }
 
 /// An anchoring state, from the height whose seal first carried it.
@@ -1026,6 +1031,9 @@ impl Ledger {
         let changed = self.anchor_sealed != self.anchor;
         self.anchor_sealed = self.anchor;
         let s = self.seal_root(sequencer);
+        if block.iter().any(|t| !matches!(t, Tx::Anchor(_))) {
+            self.news_at = s.height;
+        }
         if changed {
             self.anchors.push(Anchored { from: s.height, anchor: self.anchor });
         }
