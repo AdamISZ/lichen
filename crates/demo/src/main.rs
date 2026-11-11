@@ -334,7 +334,7 @@ fn state(d: &Demo) -> Result<Value> {
                 }
             }
             let notes = u.notes.lock().unwrap().clone();
-            let finality = u.finality.lock().unwrap().map(|f| json!({ "final": f.fin, "anchored": f.anchored, "sealed": f.sealed, "last": f.last.map(|c| json!({ "height": c.height, "confirmations": c.confirmations })) }));
+            let finality = u.finality.lock().unwrap().map(|f| json!({ "final": f.firm, "anchored": f.anchored, "sealed": f.sealed, "locked": f.locked, "last": f.last.map(|c| json!({ "height": c.height, "confirmations": c.confirmations })) }));
             json!({
                 "name": u.name,
                 "address": u.saddr.to_string(),

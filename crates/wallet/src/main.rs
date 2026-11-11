@@ -258,8 +258,8 @@ fn main() -> Result<()> {
             // Bitcoin
             if w.sequencer.deployment.seal.is_some() {
                 let f = w.finality(&chain(&a)?)?;
-                let depth = lichen_proto::ANCHOR_DEPTH;
-                println!("  final (anchored, {depth}+ blocks deep): {}; anchored, not yet {depth} deep: {}; sealed, not yet anchored: {}", f.fin, f.anchored, f.sealed);
+                let depth = lichen_proto::hp::margin(a.network);
+                println!("  firm (anchored, {depth}+ blocks deep): {}; anchored, not yet {depth} deep: {}; sealed, not yet anchored: {}; locked, its spend not yet acknowledged: {}", f.firm, f.anchored, f.sealed, f.locked);
                 match f.last {
                     Some(c) => println!("  the last anchor: height {}, {} confirmations", c.height, c.confirmations),
                     None => println!("  no anchor yet"),
