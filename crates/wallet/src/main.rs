@@ -394,7 +394,11 @@ fn main() -> Result<()> {
             w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
             match w.withdraw(&chain(&a)?, &a.hub, &a.statement, contract, amount) {
                 Ok(txid) if amount == 0 => println!("closed contract {contract} with nothing withdrawn, your reserve back: the fold is {txid}"),
-                Ok(txid) => println!("withdrew {amount} sats from contract {contract}: the fold is {txid}"),
+                Ok(txid) => {
+                    // the claim is in whole units: the amount rounded down
+                    let unit = w.contracts.iter().find(|h| h.record.cid() == contract).map_or(1, |h| h.record.terms.unit.to_sat());
+                    println!("withdrew {} sats ({} units) from contract {contract}: the fold is {txid}", amount / unit * unit, amount / unit);
+                }
                 Err(e) => {
                     // an open contract with a claim: the exit is the next
                     // step (closing early with nothing withdrawn has none:
