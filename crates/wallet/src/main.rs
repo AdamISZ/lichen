@@ -313,6 +313,9 @@ fn main() -> Result<()> {
             let ask = lichen_wallet::Ask { deposit, liquidity, reserve };
             let q = ask.quote(&lichen_wallet::hub_info(&a.hub)?)?;
             println!("the hub's fee for {liquidity} sats of liquidity: {} sats; you'll be minted {} sats, with a cap of {} sats", q.fee, q.minted, q.cap);
+            // the setup's steps (garbling, the upload of the kept instances)
+            // take minutes on a slow uplink: say each
+            w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
             let h = match resume {
                 Some(cid) => w.resume_open(&a.hub, &chain, &a.statement, ask, cid)?,
                 None => {
