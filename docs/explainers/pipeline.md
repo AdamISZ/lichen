@@ -336,7 +336,7 @@ interpolates every kept instance's labels.
 | a true claim | request, request_timeout | 2.7 kvB: 2.1 and 0.6 |
 | a false claim, conceded | request, assert, success | 9.9 kvB, and `success` a day later |
 | a false claim, challenged anyway | request, assert, challenge_assert, wrongly_challenged | 30.8 kvB: 2.1, 7.7, 20.7 and 0.3 |
-| a true claim, a lying hub | request, assert, challenge_assert, failure | 30.6 kvB, and `failure` |
+| a true claim, a lying hub | request, assert, challenge_assert, failure | 31.2 kvB: 2.1, 7.7, 20.7 and 0.6 |
 
 The runs are in [exit.md](exit.md).
 

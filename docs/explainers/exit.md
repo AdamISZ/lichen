@@ -116,7 +116,7 @@ of 781. Five exited:
 | Sara | 1005 | true, of a shielded note and a transparent one | the same | 2.8 kvB |
 | Sam | 1003 | stale: its note paid away and acknowledged | the hub proved it false on its server and asserted 54 minutes after `request`; his wallet conceded | 9.9 kvB, then `success` a day later |
 | Cleo | 1001 | stale, as Sam's | the hub asserted; she challenged anyway; the hub answered in two blocks | 30.8 kvB |
-| Kim | 1004 | true, against a hub restarted hostile | the hub asserted a forged proof; she challenged; no instance opened; `failure` pays her | 30.6 kvB, and `failure` |
+| Kim | 1004 | true, against a hub restarted hostile | the hub asserted a forged proof; she challenged; no instance opened; `failure` paid her | 31.2 kvB |
 
 The other two, Alice's and Olga's, were withdrawn cooperatively
 ([cooperative.md](cooperative.md)).
@@ -213,12 +213,16 @@ too. Kim's claim of her 99,000 note was true.
 | 3,580,268 | 04:03 | [request](https://mutinynet.com/tx/57083622707a73f4fa01398f26514af6c3c86ec0c6f0e0d3976e79aa34dc93dc): 126 units, 2,144 vB |
 | 3,580,299 | 04:19 | the hub [asserts](https://mutinynet.com/tx/687df0a23e154bda71747c2d3abe32860bb29cc6858e21a104f47f8a5e7dcf03) a forged proof, 7,725 vB. Her wallet checks it natively: it doesn't verify |
 | 3,580,301 | 04:21 | [challenge_assert](https://mutinynet.com/tx/09002f935223a51d7c217b43282e4ccd7916c02b1133fa436978f7371a3c7a76), 20,717 vB: her secrets for the digits of the point the hub signed. The hub evaluates its ten kept instances on them: none opens, as none can on a false proof |
-| 3,580,541 | | from here, after `Δ1` (240 blocks), `failure` pays Kim `b` and both reserves, less the floors |
+| 3,580,542 | 06:26 | after `Δ1` (240 blocks), [failure](https://mutinynet.com/tx/9f0116e969c65b75cc3fba6ff8c364037a78ec30891b6cc0de44a05afc06a629) pays Kim: her 126 units in bit outputs, and the reserves less the three links' floors and anchors, 20,000 (589 vB) |
+| 3,580,582 | 06:46 | her [sweep](https://mutinynet.com/tx/c13aff401e5979b219ffca443f1a153b23cddb870bf9887fbffcabe4f7a8f9cb): 145,955 sats, 2,357 vB |
 
 The hub lost the contract for asserting a proof it couldn't stand
-behind. The links' floors, 2,384 + 7,725 + 20,717 sats and their
-anchors, come out of the reserves Kim is paid, which is to say out of
-the hub's: she gets her `b` and her own reserve whole.
+behind. The links' floors, 2,384 + 7,725 + 20,717 sats, and their three
+330-sat anchors came out of the reserves Kim was paid, which is to say
+out of the hub's: `r_A + r_H` is 51,816, less 31,816, left exactly her
+own 20,000. She got her 98,406 and her reserve whole, and her sweep
+added her links' two anchors and her fee budget's rest. From request to
+payout: 274 blocks, 2 hours and 23 minutes.
 
 ### Sara: a shielded note
 
