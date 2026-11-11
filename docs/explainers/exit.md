@@ -106,8 +106,9 @@ records the exit on the L2, which retires them.
 
 ## The runs, on Mutinynet
 
-Six contracts opened on one deployment (2026-11-11), each with a deposit
-of 100,000 and 100,000 of liquidity: a cap of 199,155, 255 units of 781.
+Seven contracts opened on one deployment (2026-11-11), each with a
+deposit of 100,000 and 100,000 of liquidity: a cap of 199,155, 255 units
+of 781. Five exited:
 
 | wallet | contract | the claim | how it ended | on chain |
 |---|---|---|---|---|
@@ -117,7 +118,8 @@ of 100,000 and 100,000 of liquidity: a cap of 199,155, 255 units of 781.
 | Cleo | 1001 | stale, as Sam's | the hub asserted; she challenged anyway; the hub answered in two blocks | 30.8 kvB |
 | Kim | 1004 | true, against a hub restarted hostile | the hub asserted a forged proof; she challenged; no instance opened; `failure` pays her | 30.6 kvB, and `failure` |
 
-Alice and Olga withdrew cooperatively instead ([cooperative.md](cooperative.md)).
+The other two, Alice's and Olga's, were withdrawn cooperatively
+([cooperative.md](cooperative.md)).
 
 ### Erin: a true claim, paid
 
@@ -190,9 +192,9 @@ The three links paid their floors out of the contract, 30,826 sats,
 and carried a 330-sat anchor output each: 31,816 in all, exactly `r_H`,
 the reserve the hub sized for the deepest dispute. The rest, 219,155,
 is `V_max + r_A`: the hub took the contract, Cleo's deposit and reserve
-with it. Her claim was false: she had already paid its note to Bob. A wallet doesn't
-challenge a valid proof: this one did only because the trial told it
-to.
+with it. Her claim was false: she had already paid its note to Bob. A
+wallet doesn't challenge a valid proof: this one did only because the
+trial told it to.
 
 **Where the time went:** 31 minutes waiting for the sequencer's chain
 prover to reach the height the proof needs, and 11 minutes proving and
