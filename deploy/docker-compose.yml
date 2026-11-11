@@ -49,7 +49,9 @@ services:
       SEAL_EVERY: ${SEAL_EVERY:-5}
       ANCHOR: ${ANCHOR:-on}
       ANCHOR_WALLET: ${ANCHOR_WALLET:-sequencer}
-      ANCHOR_CONFIRMATIONS: ${ANCHOR_CONFIRMATIONS:-1}
+      # empty: the network's margin (deploy/entry.sh), which an acknowledgment
+      # waits for; set it only to anchor deeper
+      ANCHOR_CONFIRMATIONS: ${ANCHOR_CONFIRMATIONS:-}
       ANCHOR_FEERATE: ${ANCHOR_FEERATE:-2}
     volumes:
       - ./state/${NETWORK}/sequencer:/seq
