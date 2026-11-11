@@ -250,48 +250,4 @@ Each network has its own data directory and compose project
 ENV_FILE=deploy/regtest.env deploy/lichen.sh up
 ```
 
-## Moving from the two-project layout
-
-Until 2026-10-31 the hub (`deploy/hub/`) and the sequencer
-(`deploy/sequencer/`) were two compose projects, with their data in
-`deploy/hub/data/<network>/` and `deploy/sequencer/data/<network>/`.
-The data moves unchanged, so the deployment keeps its keys, its ledger,
-its contracts and the node's wallets. For `NETWORK=mutinynet`:
-
-```sh
-# 1. stop the two projects (their compose files are gone; by name), and
-#    a chain prover run by hand (r0/chain-prover.sh). The hub's down warns
-#    its network is still in use: the anchoring sequencer had joined it
-docker compose -p lichen-hub-mutinynet down
-docker compose -p lichen-sequencer-mutinynet down
-docker network rm lichen-hub-mutinynet_default
-# 2. back up the secrets, with the node stopped
-mkdir -p ~/lichen-backup
-cp -a deploy/hub/data/mutinynet/hub ~/lichen-backup/hub
-cp -a deploy/hub/data/mutinynet/bitcoind/signet/wallets ~/lichen-backup/wallets
-cp -a deploy/sequencer/data/mutinynet/sequencer.key deploy/sequencer/data/mutinynet/ledger.json ~/lichen-backup/
-# 3. move the data
-mkdir -p deploy/state/mutinynet
-mv deploy/hub/data/mutinynet/bitcoind deploy/hub/data/mutinynet/hub deploy/state/mutinynet/
-mv deploy/sequencer/data/mutinynet deploy/state/mutinynet/sequencer
-# 4. one settings file
-cp deploy/.env.example deploy/.env
-```
-
-In `deploy/.env`, set `NETWORK` and copy the hub's settings from
-`deploy/hub/.env` (`RESERVE_PPM`, `DURATION`, `HUB_PORT`; `STATEMENT`
-is `hub-proves` now) and the sequencer's from `deploy/sequencer/.env`
-(`SEAL_EVERY`, `SEQUENCER_PORT`). Leave `R0WORK` empty. Anchoring is on,
-through the same node and its wallet `sequencer`, as `anchor.yml` had
-it. Then:
-
-```sh
-deploy/build.sh && deploy/lichen.sh up && deploy/lichen.sh info
-```
-
-The ports are as they were, so wallets need no change. The chain prover
-carries on from the last height it proved. Anything else in the old
-data directories (a trial wallet's files, the old `r0work`) stays where
-it was.
-
 Not here yet: TLS (test coins only); more than one hub per L2.
