@@ -178,22 +178,44 @@ pub struct Endpoints {
     clients: Vec<(String, BlockingClient)>,
 }
 
+/// `f` until it answers, asked again after 2, 4, 8, 16 and 30 s (about a
+/// minute in all): a public Esplora server drops a request now and then,
+/// and a dispute played over hours shouldn't end on one (on Mutinynet, two
+/// exits stopped so, each on one failed read).
+fn retrying<T>(what: &str, mut f: impl FnMut() -> Result<T>) -> Result<T> {
+    for secs in [2, 4, 8, 16, 30] {
+        match f() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                eprintln!("chain: {what}: {e:#}; asking again in {secs} s");
+                std::thread::sleep(std::time::Duration::from_secs(secs));
+            }
+        }
+    }
+    f()
+}
+
 impl Endpoints {
     fn alarm(&self, what: String) {
         eprintln!("chain: ALARM: the Esplora servers disagree: {what}");
     }
     /// The first server's answer that isn't an error (or the last error).
     fn first<T>(&self, f: impl Fn(&BlockingClient) -> Result<T>) -> Result<T> {
-        let mut err = None;
-        for (_, c) in &self.clients {
-            match f(c) {
-                Ok(v) => return Ok(v),
-                Err(e) => err = Some(e),
+        retrying("Esplora", || {
+            let mut err = None;
+            for (_, c) in &self.clients {
+                match f(c) {
+                    Ok(v) => return Ok(v),
+                    Err(e) => err = Some(e),
+                }
             }
-        }
-        Err(err.expect("at least one server"))
+            Err(err.expect("at least one server"))
+        })
     }
     fn height(&self) -> Result<u32> {
+        retrying("the height", || self.height_once())
+    }
+    fn height_once(&self) -> Result<u32> {
         let hs: Vec<u32> = self.clients.iter().filter_map(|(_, c)| c.get_height().ok()).collect();
         let (lo, hi) = (hs.iter().min().copied(), hs.iter().max().copied());
         match (lo, hi) {
@@ -224,6 +246,9 @@ impl Endpoints {
     /// The block every server confirms `txid` in (its height), or none if
     /// any hasn't; an error if they name different blocks.
     fn confirmed_in(&self, txid: &Txid) -> Result<Option<u32>> {
+        retrying("a transaction's status", || self.confirmed_in_once(txid))
+    }
+    fn confirmed_in_once(&self, txid: &Txid) -> Result<Option<u32>> {
         let mut at: Option<(bitcoin::BlockHash, u32)> = None;
         for (url, c) in &self.clients {
             match c.get_tx_status(txid)? {
@@ -261,15 +286,14 @@ impl Endpoints {
         ensure!(tx.is_some_and(|t| t.output.len() > op.vout as usize), "no output {op}");
         let ask = || -> Vec<bool> { self.clients.iter().filter_map(|(_, c)| c.get_output_status(&op.txid, u64::from(op.vout)).ok().map(|s| s.is_some_and(|s| s.spent))).collect() };
         let split = |s: &[bool]| s.iter().any(|s| *s) && !s.iter().all(|s| *s);
-        let mut spent = ask();
-        ensure!(!spent.is_empty(), "no Esplora server answers");
+        let ask_some = || retrying("an output's status", || Some(ask()).filter(|s| !s.is_empty()).context("no Esplora server answers"));
+        let mut spent = ask_some()?;
         if split(&spent) {
             // the servers are asked in turn, and a spend counts from the
             // mempool: one reaching it between two answers splits them
             // (seen on Mutinynet, one server named twice). Ask again.
             std::thread::sleep(std::time::Duration::from_secs(3));
-            spent = ask();
-            ensure!(!spent.is_empty(), "no Esplora server answers");
+            spent = ask_some()?;
             if split(&spent) {
                 self.alarm(format!("{op} spent by some, not by others"));
             }
