@@ -420,8 +420,12 @@ impl Inner {
 
     /// A note not already the last one logged (an error repeated each
     /// tick is logged once).
+    /// `note`, unless the same line is among the last 64: a
+    /// waiting dispute says why once, while other contracts' lines
+    /// interleave (with only the last line compared, two contracts waiting
+    /// at once logged twice a second each).
     pub(crate) fn note_once(&self, msg: String) {
-        if self.log.lock().unwrap().last() != Some(&msg) {
+        if !self.log.lock().unwrap().iter().rev().take(64).any(|l| *l == msg) {
             self.note(msg);
         }
     }
