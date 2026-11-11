@@ -6,13 +6,13 @@ writes docs/explainers/img/minting-*.svg."""
 import sys
 
 sys.dont_write_bytecode = True  # no __pycache__ beside the diagrams
-import hub_absent  # noqa: E402
-from hub_absent import ALICE, ALICE_L, HUB, HUB_L, CON, FEE, FEE_L, INK, INK2, LINE  # noqa: E402
+import svg  # noqa: E402
+from svg import ALICE, ALICE_L, HUB, HUB_L, CON, FEE, FEE_L, INK, INK2, LINE  # noqa: E402
 
 CAR, CAR_L = "#0f766e", "#ccfbf1"
 
 
-class Svg(hub_absent.Svg):
+class Svg(svg.Svg):
     PREFIX = "minting"
 
 

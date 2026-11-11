@@ -1,40 +1,42 @@
 # From a Rust program to a check on Bitcoin
 
-How a withdrawal is proved, wrapped and, if the hub refuses it, checked
-on Bitcoin. For engineers with a basic familiarity with zero-knowledge
-proofs. The figures are from lichen's guests and the Mutinynet trials of
-October 2026.
+How lichen's proofs are made, and how one of them is checked on
+Bitcoin. For engineers with a basic familiarity with zero-knowledge
+proofs. The figures are from lichen's guests (2026-11-10), the
+Mutinynet runs of 2026-11-11, and the real-circuit runs on regtest of
+2026-11-10.
 
-A withdrawal that Alice enforces is a claim that a program, run on some
-input, produced some output. Bitcoin can't run programs, so the claim
-goes through these steps:
+Three programs are proved, by three different parties:
 
-1. RISC Zero proves the program's execution with a STARK.
-2. RISC Zero and gnark compress that STARK into a 128-byte Groth16 proof.
-3. Bitcoin checks the Groth16 proof through a *verification gadget*.
-   lichen's is BABE. Alice posts the proof's first point on chain, signed.
-   If the hub challenges, it must reveal secrets that let Alice run a
-   garbled circuit made when the contract opened. With a valid proof, that
-   circuit unlocks a message, and posting the message pays her.
+| statement | its guest | who proves it | when |
+|---|---|---|---|
+| a shielded spend is valid | `spend` | the sender's wallet | every shielded payment |
+| a sealed L2 block is valid, and the history before it | `chain` | the sequencer's chain prover | every height it seals |
+| an exit claim is false | `hp` | the hub | only when a user's exit claim is false |
+
+The first two stay off Bitcoin: the sequencer checks every spend proof,
+and the chain receipts are what the third proof stands on. Only the
+hub's statement reaches Bitcoin, and only in a dispute:
+
+1. RISC Zero proves the hub's statement with a STARK, composing the
+   sequencer's chain receipt for the state the claim is judged at.
+2. RISC Zero and gnark compress that STARK into a Groth16 proof.
+3. Bitcoin checks the Groth16 proof through BABE, with the roles of the
+   BABE paper swapped: the hub proves, and Alice garbled the circuits
+   when her contract opened. The hub posts the proof's first point,
+   signed. If Alice challenges it, she reveals secrets that let the hub
+   run one of her garbled circuits, which, on a valid proof, unlocks a
+   message whose posting wins the hub the contract.
 
 ![the pipeline](img/pipeline-overview.svg)
 
-Steps 1 and 2 are the same whichever gadget checks the proof. lichen's
-first gadget, BitVMX, is still built (`--statement bitvmx`). It checks the
-same Groth16 proof another way: a fixed RISC-V program verifies the proof
-in about 478 million steps, and if Alice and the hub disagree about that
-run, they search it on chain until one instruction is left for Bitcoin
-Script to check. Section 5 covers it.
-
-Most withdrawals never touch any of this. In the normal case the hub sees
-Alice's return on the L2 and signs the fold
-([cooperative.md](cooperative.md)), and Alice proves nothing. On the real
-statement the hub first checks the withdrawal statement itself, natively
-and in milliseconds, against the sequencer's chain receipt (below), so it
-folds only what Alice could win by dispute. If the hub refuses, Alice
-proves and posts her proof. The hub checks the proof natively, and if the
-claim is true it lets it stand. A challenge is only for a claim the hub
-believes false.
+**A user never proves a withdrawal.** Her cooperative withdrawal is a
+claim the hub checks against its own ledger
+([cooperative.md](cooperative.md)), and her exit is the same claim
+posted on Bitcoin ([exit.md](exit.md)). If the claim is true, nothing is
+proved: the hub lets her timeout pay her. Only a false claim brings the
+pipeline below into play, and it is the hub that runs it. A user proves
+only her own shielded spends, on her device.
 
 ## Background: STARKs and SNARKs
 
@@ -42,8 +44,9 @@ A proof system convinces a verifier of a statement of one form: "program
 P, run on some input w, halts and outputs J". The output J is public, the
 *journal*. The input w is the prover's *witness* and may stay private. We
 need *soundness* (a false statement can't be proved) and *succinctness*
-(the proof is small and quick to check). Zero knowledge is a bonus here:
-the withdrawal doesn't need it.
+(the proof is small and quick to check). Zero knowledge matters for the
+spend proof, which hides who pays whom; the hub's statement doesn't need
+it.
 
 Two families are used, for opposite strengths:
 
@@ -60,15 +63,16 @@ what you hand a constrained verifier: tiny, with a fixed check. So the
 STARK comes first, and then a fixed Groth16 circuit proves the one
 statement "this STARK verifies". That circuit is the same for every
 program, so one trusted setup, RISC Zero's public ceremony, serves
-everyone. Changing our guest needs no new ceremony.
+everyone. Changing a guest needs no new ceremony.
 
-## 1. The guest
+## 1. The guests
 
-The statement is an ordinary Rust program compiled for RISC Zero's zkVM,
-a 32-bit RISC-V machine (RV32IM). Lichen's withdrawal statement
-(`lichen_withdraw`, in `crates/withdraw`) is the same check the hub runs
-natively. BABE's guest (`r0/babe-guest`) reads its input as raw bytes
-and runs it:
+Each statement is an ordinary Rust program compiled for RISC Zero's
+zkVM, a 32-bit RISC-V machine (RV32IM). The statements live in lichen's
+crates (`crates/shielded`, `crates/validity`, `crates/withdraw`), and the
+sequencer and the hub run the same code natively, so they know a proof's
+outcome before they make it. Each guest reads its input as raw bytes and
+runs the check. The hub's (`r0/hp-guest`):
 
 ```rust
 const CHAIN_ID: &str = include_str!("../../guests/chain.id"); // the chain guest's image id
@@ -78,89 +82,94 @@ fn main() {
     let mut words = vec![0u32; (n as usize).div_ceil(4)];      // then its bytes
     env::read_slice(&mut words);
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).take(n as usize).collect();
-    let input = FixedInput::from_bytes(&bytes).expect("the statement's input");
     let chain_id = hex32(CHAIN_ID);
-    let journal = check(&input, &chain_id, &mut |j| env::verify(Digest::from_bytes(chain_id), j).is_ok())
-        .expect("the fixed statement");
+    let verify_chain = &mut |j: &[u8]| env::verify(Digest::from_bytes(chain_id), j).is_ok();
+    let input = HubInput::from_bytes(&bytes).expect("the statement's input");
+    let journal = check(&input, &chain_id, verify_chain).expect("the hub's statement");
     env::commit_slice(&journal);                               // public output
 }
 ```
 
-The withdrawal check takes the return note, its Merkle path, the state
-root's height and nullifier root, the sequencer's signature, the
-deployment's two keys, the rest of the chain receipt's journal (its
-anchoring state among it), the Bitcoin headers on top of the anchor's
-block, and the work W the contract asks. It accepts if:
+### The hub's statement: "the claim posted in `request` is false"
 
-- the note is owned by the hub's key;
-- the path has the tree's depth (16);
-- the note's value fits in 32 bits;
-- the root rebuilt from the note and its path is the one the sequencer
-  signed (BIP340);
-- that root is the last one anchored on Bitcoin: the anchoring state's
-  last anchor committed it, at its height, under the same sequencer key;
-- a chain receipt with that journal verifies under the chain guest's
-  image id;
-- the headers follow the anchor's block, each within its own target,
-  and their work sums to at least W.
+Its input:
 
-It yields the amount `b`, the memo `c` (the contract's number) and the
-contract identifier D = SHA256("lichen/contract" ‖ deployment id ‖
-genesis seal ‖ W). The deployment id is SHA256("lngap/deployment" ‖
-sequencer key ‖ hub key), and the genesis seal is the Bitcoin output the
-sequencer's anchors descend from. If any check fails, the guest panics
-and nothing can be proved.
+- **`request`, from Bitcoin:** the transaction, its path to its block's
+  Merkle root, and the headers on top, whose work must reach the `W` the
+  contract fixed. `request` is the spend of the contract's output, and
+  its witness carries the claim (her notes, by position, and their
+  openings) and her one-time signatures on `b` and on the claim's
+  fingerprint `E`. The guest doesn't check those signatures: Bitcoin did,
+  in `request`'s script. It reads their digits. So `b` needs no
+  signature of the hub's: Bitcoin authenticated it.
+- **`A*`, the state the claim is judged at:** the last anchor confirmed
+  at least the margin (20 blocks on Mutinynet) before `request`'s block.
+  The hub shows it is the last by the first spend of its seal output,
+  confirmed after that cutoff. Anchors spend the seal one after another,
+  and Bitcoin allows one spend, so no later anchor came before the
+  cutoff.
+- **The chain state at `A*`:** the journal of the sequencer's chain
+  receipt at that height, and openings of the commitment tree and the
+  spent set for the notes the ground needs.
 
-**Why `b` is not in BABE's journal.** BABE fixes the proof's public
-input when the contract opens, and Alice chooses `b` only when she
-withdraws. So BABE's guest (the *fixed statement*, `fixed::check`) also
-takes the hub's one-time signature on `b`, which the hub gives on chain
-when Alice requests her withdrawal, and checks it: a Winternitz
-signature over SHA-256 chains, 10 digits of 4 bits. It commits
-**`c ‖ D ‖ H(pk_H)`**, 68 bytes, the same for every amount: `pk_H` is the
-hub's one-time key for `b`, fixed at opening. A proof for an amount the
-hub didn't sign doesn't exist, and the hub signs only the `b` Alice
-asserted on chain ([the companion](../../papers/lichen-built-v0.1.1.pdf),
-section 5). BitVMX's guest (`r0/withdraw-guest`) skips the signature and
-commits **`b ‖ c ‖ D`**, 40 bytes, since BitVMX reads `b` from the proof's
-input on chain.
+It accepts if the claim is false on any ground:
 
-The keys, the genesis seal and W are input, not constants, so one guest
-serves every deployment and every contract. A contract pins its own D,
-just as it pins its memo: the claim is bound to that deployment, its
-anchored history, and the depth the contract asked for.
+| ground | shown by |
+|---|---|
+| malformed | the claim doesn't parse, doesn't hash to `E`, repeats a note, or `b` exceeds the cap |
+| not hers | a note's owner (for a shielded note, its exit key) signed none of the claim's signatures |
+| too much | the notes are worth less than `b` |
+| not a note | at `A*`, the leaf at a note's position isn't its commitment |
+| spent | at `A*`, its nullifier is spent by a spend that counts: the hub's, or one its sender acknowledged |
+| locked | at `A*`, it's an output of a spend its sender hasn't acknowledged, and the claim carries no acknowledgment |
+| voided | at `A*`, it's an output of a spend an exit record voided |
+| a second claim | the owner's signature on a claim of the note through another contract |
 
-**The chain receipt.** The guest doesn't take the signed root on trust.
-The sequencer's chain prover proves each sealed height with the chain
-guest: the block is valid, each shielded transaction's own proof checked
-inside it, and so was the history before it, back to genesis, each
-receipt verifying the last. Its journal carries the height, the roots, a
-hash of the history and the anchoring state: the last anchor recorded on
-the L2 and the Bitcoin block it is in. The guest's `env::verify` of that
-journal is an *assumption*: its own proof holds only given a chain
-receipt with that journal, and the prover resolves it with the
-sequencer's receipt at the first height that carries the return's anchor
-(section 2). The chain guest's image id is built into the guest, and the
-spend guest's into the chain guest, so the guest's image id pins all
-three. The spend and chain proofs, and anchoring, are in
-[SHIELDED.md](../SHIELDED.md).
+Acknowledgments are how a spend comes to count: [payments.md](payments.md).
+If no ground holds, the guest panics, and nothing can be proved.
+
+**Its journal is fixed at opening:** `c ‖ D ‖ H(O_D ‖ margin)`, 68
+bytes: the contract's number `c`; its identifier `D`, a hash of the
+deployment's keys, its genesis seal, the work `W` and the contract's
+unit; and a hash of the contract's deposit coin and the margin. Neither
+`b` nor the claim is in it: they are read from `request`, which the
+journal pins through the coin it spends. BABE needs the public input
+fixed when the contract opens (section 4), and this one is.
+
+**The chain receipt is an assumption.** The guest doesn't take the
+state at `A*` on trust. The sequencer's chain prover proves each sealed
+height with the chain guest: the block is valid (each shielded spend's
+own receipt checked inside it, each transparent spend's signatures, the
+acknowledgments, exit records and anchors), and so was the history
+before it, each receipt verifying the last. Its journal carries the
+height, the roots, a hash of the history and the anchoring state. The
+hub's guest's `env::verify` of that journal is an *assumption*: its own
+proof holds only given a chain receipt with that journal, and the hub's
+prover resolves it with the sequencer's receipt (section 2).
 
 **The image id.** A compiled guest is identified by its *image id*, a
-hash of its memory image. A proof is always about one image id: "the
-program with image id X output J". So the contract binds X to the
-guest's. Otherwise Alice could prove the output of any program she
-liked. The image id changes with any change to the code or the
-toolchain, so the guest is built reproducibly, in RISC Zero's pinned
-builder image (`r0/build-guest.sh`), and committed (`r0/guests/`):
-BABE's is `74b95bb4…ed8a`, BitVMX's `11a9f930…4e67`. A new build is a
-new deployment's contracts.
+hash of its memory image, and a proof is always about one: "the program
+with image id X output J". The chain guest's id is built into the hub's
+guest, and the spend guest's into the chain guest, so the hub's guest's
+id pins all three. They are built reproducibly in RISC Zero's pinned
+builder image (`r0/build-guest.sh`) and committed (`r0/guests/`): spend
+`9fd630b2…`, chain `f06d2420…`, hp `f424a509…`. A contract's statement
+names the hub's guest's id when it opens; a new build is a new
+deployment's contracts.
 
-**Its size.** The guest uses RISC Zero's accelerated `sha2`, `k256` and
-`crypto-bigint`, which hand the hashing and the curve arithmetic to
-built-in circuits. BABE's guest ran in about 480k user cycles on the
-Mutinynet returns, BitVMX's in about 393k with ten headers on the
-anchor; both grow with the number of headers. The guest only records the
-chain receipt's claim; checking that receipt is left to the recursion.
+**Their sizes,** in user cycles (one segment holds about a million):
+
+| guest | what | cycles |
+|---|---|---|
+| spend | a shield of one transparent note | 14.6k |
+| spend | two inputs and two outputs | 2^17 to 2^20 |
+| chain | a block of an empty seal | 98k |
+| chain | a block of a payment and its acknowledgment | 0.84M |
+| hp | a stale claim, its note spent at `A*` | 1.02M (2 segments) |
+
+A BIP340 signature costs about 260k cycles, and is most of a chain
+block's work. The spent set, a compact sparse Merkle tree, costs some
+twenty compressions an access.
 
 ## 2. The STARK
 
@@ -176,8 +185,7 @@ in a smaller circuit made for checking STARKs (*recursion*):
 ![segments, recursion and the shrink-wrap](img/pipeline-wrap.svg)
 
 The result is a *succinct receipt*: one STARK of about 220 kB, the same
-size however long the execution. Our guests are a single segment, so
-it's one lift and no joins. One more recursion step, the *resolve*,
+size however long the execution. One more recursion step, the *resolve*,
 takes the sequencer's chain receipt (itself a succinct receipt) and
 discharges the guest's assumption, so the receipt that comes out holds
 unconditionally.
@@ -187,10 +195,14 @@ allowed ones is committed to by a Merkle root, the *control root*, which
 is fixed per RISC Zero release. That's why the version is pinned:
 lichen uses RISC Zero 3.0.6.
 
-**Where and how long.** On any machine, on its CPU. On a 4-vCPU x86
-server BABE's guest proved in 640 to 660 s, BitVMX's in 361 s. On a Mac
-in Docker with 8 cores BitVMX's took about 75 s (RISC Zero 3.x has no
-Metal prover for segments; its GPU prover is CUDA only).
+**Where and how long.** RISC Zero 3.x proves on the CPU, or on an
+NVIDIA GPU with CUDA (`lichen-r0` built with `--features cuda`); it has
+no Metal prover for Apple's GPUs.
+
+| proof | a Mac's CPU | a 4-vCPU x86 server | lichen-hub, 16 x86 vCPUs | an RTX 4090 |
+|---|---|---|---|---|
+| a chain height (98k to 820k cycles) | 18 to 62 s | | 38 to 157 s | 1.4 to 2.3 s |
+| the hub's statement (1.0M to 1.65M cycles, 2 segments) | | 827 s | 521 to 526 s | 3.5 s |
 
 ## 3. The shrink-wrap into Groth16
 
@@ -214,25 +226,31 @@ or 128 compressed. Its public inputs are:
 
 A verifier recomputes the claim digest from the image id and the journal
 it is given, so the proof is bound to exactly that program and that
-output. Under BABE the image id and the journal are both fixed when the
-contract opens, so all of the public input is.
+output. Both are fixed when the contract opens, so all of the public
+input is.
 
 Every step outputs the same claim, "image id X ran and output J". Only
 how it is proved changes, so that the next step can take it.
 
 **Where and how long.** RISC Zero runs the Groth16 prover (gnark) in a
-Docker image built for x86 only, so this step needs x86 Linux. On a
-4-vCPU x86 server the wrap takes about 255 s and about 8 GB of memory.
+Docker image built for x86 only, so this step needs x86 Linux: about
+268 s on a 4-vCPU server, with about 8 GB of memory, and 119 to 128 s on
+lichen-hub. With CUDA, RISC Zero can run it natively on the GPU instead
+(its `risc0-groth16` component, from `rzup`); on the rented 4090 that
+failed each time, with an illegal memory access, so the wrap stays on
+the CPU. With the rest on a GPU, it is nearly all of the hub's proving.
 
 ## 4. The check on Bitcoin, under BABE
 
 BABE (Garg, Kolonelos, Sergeevitch, Sridhar and Tse, ePrint 2026/065)
 checks a Groth16 proof on Bitcoin without running the verifier there.
-Its idea is *witness encryption*: the hub encrypts a message, `msg`, so
-that only someone holding a valid proof can decrypt it, and posting
-`msg` on chain is what wins Alice her payout.
+Its idea is *witness encryption*: one party encrypts a message, `msg`,
+so that only someone holding a valid proof can decrypt it, and posting
+`msg` on chain is what wins the prover the dispute. In the paper the
+prover is the depositor. In lichen it is the hub, proving a claim false,
+and Alice, the user, is the one who garbles.
 
-### At opening: the garbled circuits
+### At opening: Alice's garbled circuits
 
 Groth16's check, written additively in the pairing's target group (the
 sign convention BABE's paper uses), is
@@ -245,304 +263,125 @@ Multiplied through by a secret scalar r:
 
 > e(r·A, B) + e(C, r·δ) = r·T
 
-T is fixed once the public input is, and under BABE it is. So the hub
-can publish r·δ and `msg` masked by a hash of r·T: the *ciphertext*,
-480 bytes. Anyone with B, C and r·A could compute r·T and unmask `msg`.
-B and C are in Alice's proof, and r·A is the hard part: A arrives only
-at proving time, and r must stay secret. BABE's answer is a *garbled
-circuit*: the hub garbles a small circuit that computes r·A from the
-bits of A, with r inside it. Someone holding the circuit's *labels* for
-the bits of one A, one label per bit, can evaluate it on that A, and
-learns r·A and nothing else.
+T is fixed once the public input is, and it is: the journal is fixed at
+opening. So Alice can publish r·δ and `msg` masked by a hash of r·T:
+the *ciphertext*. Anyone with B, C and r·A could compute r·T and unmask
+`msg`. B and C are in the hub's proof, and r·A is the hard part: A
+arrives only at proving time, and r must stay secret. BABE's answer is a
+*garbled circuit*: Alice garbles a small circuit that computes r·A from
+the bits of A, with r inside it. Someone holding the circuit's *labels*
+for the bits of one A, one label per bit, can evaluate it on that A,
+and learns r·A and nothing else.
 
-![what a challenge hands Alice](img/pipeline-babe.svg)
+![what a challenge hands the hub](img/pipeline-babe.svg)
 
-A hub could garble wrongly, so that no proof ever decrypts. Alice checks
-by *cut-and-choose*:
-- **Commit.** The hub makes 78 instances, each with its own r and `msg`,
-  and commits to them.
-- **Open.** Alice picks 68 to open, and checks each was made right.
-- **Keep.** She keeps the other 10, about 240 MiB on Mutinynet, without
-  seeing inside them.
+Alice could garble wrongly, so that no proof ever decrypts and the hub
+could never win, however false her claim. The hub checks by
+*cut-and-choose*:
+- **Commit.** Alice's wallet makes 78 instances, each with its own r and
+  `msg`, and commits to them.
+- **Keep.** The hub picks 10 to keep, and she uploads them: 23.9 MiB
+  each, 239 MiB in all.
+- **Open.** She opens the other 68 by their seeds, and the hub rebuilds
+  and checks each: 20 to 36 s on lichen-hub.
 
-A cheating hub must make every kept instance bad and every opened one
+A cheating Alice must make every kept instance bad and every opened one
 good, at odds of 1 in C(78, 10), about 2^-40. One honest kept instance
-is enough for Alice.
+is enough for the hub.
 
-An instance is 23.8 MiB: 528k AND gates and the encoding's tables.
-Garbling takes 1.2 s and evaluating 0.6 s, on one thread. The whole
-setup at (78, 10) takes about 19 s on one laptop.
+An instance is 528k AND gates and the encoding's tables. Garbling takes
+about 1.2 s and evaluating 0.6 s, on one thread; her wallet garbled the
+78 in 9.3 s on a Mac. The upload is the slow part on a home
+connection: 65 s at some 30 Mbit/s, and half an hour when six
+wallets uploaded at once over one home uplink.
 
 The input labels are not posted on chain directly. Each digit's label
-comes from a secret the hub has *shared* across the 78 instances
-(Shamir's scheme, with commitments Alice checks for the opened ones).
-Alice gives the hub, for each digit of A and each of its four values, an
-*adaptor pre-signature* on `challenge_assert`, locked to that secret.
-The hub can complete a pre-signature only by revealing the secret it is
-locked to, and the script lets it complete only the value Alice signed.
-So a challenge reveals exactly the secrets of the A Alice signed. From
-those and the opened instances' shares, Alice interpolates every kept
-instance's labels.
+comes from a secret Alice has *shared* across the 78 instances (Shamir's
+scheme, with commitments the hub checks against the opened ones). The
+hub gives Alice, for each digit of A and each of its four values, an
+*adaptor pre-signature* on `challenge_assert`, locked to that digit's
+secret. Alice can complete a pre-signature only by revealing the secret
+it is locked to, and the script lets her complete only the value the
+hub signed. So a challenge reveals exactly the secrets of the A the hub
+asserted. From those and the opened instances' shares, the hub
+interpolates every kept instance's labels.
 
 ### In the dispute
 
-1. **`request`.** Alice signs `b` on chain (one Winternitz word).
-2. **`respond`.** The hub signs the same `b` under `pk_H`, within its
-   window, or Alice's timeout pays her. Her wallet writes the hub's
-   signature out for the prover, and her proof is due by `T_A`, shortly
-   before the contract closes.
-3. **`assert`.** Alice posts A, its 508 bits Lamport-signed in 254 2-bit
-   digits (one of four preimages a digit), with B and C beside: 7.7 kvB.
-4. **The hub's check.** The hub verifies the proof natively against the
-   contract's journal, in about 1.5 ms. If it's valid, the hub does
-   nothing, and `success` pays Alice after `Δ2`.
-5. **`challenge_assert`.** For a false proof, the hub reveals the
-   secrets for A's digits by completing Alice's pre-signatures: 20.7 kvB.
-6. **The answer.** Alice reads the secrets from the challenge,
+1. **`request`.** Alice posts her claim, `b` and `E`, signed with her
+   one-time keys (2.1 kvB for one note). The hub has `w_H` to answer (2
+   hours on Mutinynet), or `request_timeout` pays her `b`.
+2. **The hub's proof.** The hub decides its statement natively, in
+   milliseconds. If a ground holds, it proves and wraps, with the
+   sequencer's chain receipt at `A*`'s height.
+3. **`assert`.** The hub posts A, its 508 bits Lamport-signed in 254
+   2-bit digits (one of four preimages a digit), with B and C beside:
+   7.7 kvB.
+4. **Alice's check.** Her wallet verifies the proof natively against the
+   contract's journal, in about 1.5 ms. If it's valid, it concedes: after
+   `Δ2` (a day on Mutinynet) `success` takes the contract.
+5. **`challenge_assert`.** For a false proof, Alice completes the hub's
+   pre-signatures for A's digits, revealing their secrets: 20.7 kvB,
+   paid out of the contract.
+6. **The answer.** The hub reads the secrets from the challenge,
    interpolates each kept instance's labels, and evaluates each circuit
-   to its r·A. With B and C she computes r·T, and unmasks that instance's
-   `msg`. If the proof is valid, at least the honest instances open, and
-   she posts `wrongly_challenged` with one `msg`, which pays her (0.8 kvB).
-   If it isn't, none opens, and after `Δ1` `failure` pays the hub.
+   to its r·A. With B and C it computes r·T and unmasks that instance's
+   `msg`. If its proof is valid, at least the honest instances open, and
+   it posts `wrongly_challenged_k` with one `msg`, which takes the
+   contract. If it isn't, none opens, and after `Δ1` (2 hours)
+   `failure` pays Alice `b` and the hub's reserve.
 
-| ending | transactions | size, on Mutinynet |
+| ending | transactions | on Mutinynet |
 |---|---|---|
-| a true claim, unchallenged | request, respond, assert, success | 9.7 kvB |
-| a true claim, challenged and answered | request, respond, assert, challenge, wrongly_challenged | 30.5 kvB |
-| a false claim | request, respond, assert, challenge, failure | 29.9 kvB |
+| a true claim | request, request_timeout | 2.7 kvB: 2.1 and 0.6 |
+| a false claim, conceded | request, assert, success | 9.9 kvB, and `success` a day later |
+| a false claim, challenged anyway | request, assert, challenge_assert, wrongly_challenged | 30.8 kvB: 2.1, 7.7, 20.7 and 0.3 |
+| a true claim, a lying hub | request, assert, challenge_assert, failure | 30.6 kvB, and `failure` |
 
-Each link pays a fee floor of 1 sat/vB out of the contract, and the
-loser's reserve covers the floors: at most 30,981 sats. The walkthroughs
-are [babe-challenged.md](babe-challenged.md) and
-[babe-endings.md](babe-endings.md). The transaction graph and the
-measurements are in the
-[companion](../../papers/lichen-built-v0.1.1.pdf), Part I.
+The runs are in [exit.md](exit.md).
 
-**A tower needs none of Alice's keys.** Her signatures, on `b` and on A,
-are made before anything she must answer. Her one answer is a hash
-preimage, `msg`, posted in a transaction she signed at opening. So a
-machine she rents can play the rest of the dispute for her holding only
-signatures ([RUN_A_TOWER.md](../RUN_A_TOWER.md)).
-
-## 5. The check on Bitcoin, under BitVMX
-
-BitVMX checks the same Groth16 proof by running a verifier program and
-searching its execution on chain. Here the claim passes through two more
-machines:
-
-1. A fixed RISC-V program, BitVMX's Groth16 verifier, checks the proof in
-   about 478 million steps.
-2. If Alice and the hub disagree about that check, they search its
-   execution on chain until a single RISC-V instruction is left, which
-   Bitcoin Script can check.
-
-> **There are two RISC-V programs here, run by two different machines.**
-> The withdrawal statement (the *guest*) runs only in RISC Zero's zkVM, on
-> Alice's machine. BitVMX never sees it. BitVMX's emulator runs only the
-> Groth16 verifier, and the verifier's execution is what gets searched.
-> The verifier is the same program for every withdrawal and every
-> deployment.
-
-### The verifier's input
-
-BitVMX's Groth16 verifier takes its input as a flat byte string, with the
-points compressed (an x coordinate and a sign bit). For lichen it's
-**204 bytes, 51 words of 4 bytes**:
-
-![the verifier's input](img/pipeline-input.svg)
-
-The journal is part of the input, so `b`, `c` and `D` sit in fixed
-words. That's what lets the contract read them. In a dispute Alice signs
-every word with a one-time key, in two transactions:
-- **`escalate`** carries 11 words: the journal's length, the image id,
-  `b` and `c`. It also carries move 1 of the search.
-- **`inputs`** carries the other 40: the proof and `D`. They don't fit in
-  escalate's witness, which is limited by Script's 1,000-item stack.
-
-The contract treats the words in three ways:
-- **18 words are checked.** The journal's length, the image id, `c` and
-  `D` must equal the contract's values. If any differs, the hub takes the
-  contract at once with that word's check leaf.
-- **`b` is the payout.** The payout's scripts read its bits from Alice's
-  signature on word 41 ([hub-absent.md](hub-absent.md)).
-- **The proof's 32 words are not checked by the contract.** Checking
-  them is the verifier's job.
-
-### The verifier program
-
-The verifier is a C program (FairgateLabs' `bitvmx-zk-verifier`)
-compiled to RISC-V for BitVMX's emulator, and used unpatched. It's fixed:
-the same binary checks every withdrawal. Its constants are baked in: the
-Groth16 verifying key of RISC Zero's circuit, the control root and the
-BN254 control id, all from RISC Zero 3.0. Given the 204 bytes, it:
-
-1. decompresses the three points;
-2. recomputes the claim digest from the image id and the journal;
-3. combines the verifying key's points, weighted by the public inputs;
-4. checks the pairing equation e(A, B) = e(α, β) · e(L, γ) · e(C, δ);
-5. halts with exit code 0 if it holds, and otherwise non-zero.
-
-Pairings on a 32-bit machine without big-number instructions are slow.
-Test C's claim took **477,810,565 steps** and halted with code 0. With
-`b` tampered, the same proof halts with code 1: the proof is bound to the
-journal.
-
-**The hub's shortcut.** The hub makes the same check natively with
-lngap-zk's Groth16 verifier, the same equation over the same constants,
-in about 1.5 ms. It emulates the 478M steps (about 2 minutes) only to
-play a search, that is, for a claim it means to dispute. If the native
-check and the program ever disagreed, only the hub could lose
-([hub-returns.md](hub-returns.md)).
-
-### The search, on Bitcoin
-
-Suppose Alice claims "the verifier, run on these 204 bytes, halts with
-code 0" and the hub disagrees. Each can run the verifier locally, and
-both are bound to the same input, since Alice has signed it. Instead of
-asking Bitcoin to run 478 million steps, they search for the first step
-on which they disagree. This is BitVMX's search, played with BitVMX's
-emulator and scripts, in a fork with two bug fixes and an authenticated
-jump list (AdamISZ/BitVMX-CPU, branch `lngap`).
-
-**Step hashes.** The emulator sums up the machine after step i as a
-20-byte hash h(i), chained so that h(i) depends on h(i − 1) and on what
-step i wrote. Agreeing on h(i) means agreeing on the whole execution up
-to step i.
-
-**The search is 8-ary.** In each round, Alice posts the hashes at the 7
-points that split the disputed interval into 8, and the hub names the
-eighth it disputes: it agrees with her hash at the start of that eighth,
-not at the end. Ten rounds cover the verifier's 2^29 steps, since
-8^10 = 2^30. They end agreeing on h(t) and disagreeing on h(t + 1).
-
-![the 8-ary search](img/pipeline-search.svg)
-
-**21 moves, one transaction each.**
-- **Odd moves are Alice's.** Move 1, in `escalate`, is her claim and her
-  first seven hashes. Each later round of hashes is about 7.5 kvB.
-- **Even moves are the hub's.** Each is its choice of one interval in
-  eight, about 0.3 kvB.
-- **Move 21 is Alice's record of step t + 1,** about 6.8 kvB: the
-  instruction, the values it read (and the step that last wrote each),
-  what it wrote, and the hashes either side.
-
-A move is its mover's one-time signatures on what it posts, one key per
-field, and nothing else. A rule that needs a posted value re-reveals the
-signatures, which are public once posted. Each link also has a timeout:
-a party that fails to move within its window loses.
-
-**The last step.** Bitcoin judges one RISC-V instruction:
-- **Alice's proof:** one pre-signed leaf per class of instruction runs
-  BitVMX's verification script for that instruction on her record, and
-  checks the hashes.
-- **The hub's disproves** are BitVMX's challenges:
-  - the agreed step must be the hub's choices put together;
-  - her record's hashes must be those she posted in the search, with an
-    *equivocation* challenge for each round and index;
-  - the record must agree with the program: the opcode at its pc, the
-    entry point, the pc the previous step wrote, the memory sections;
-  - reads of never-written memory must match the input or the initial
-    data;
-  - a claimed success must end in a success exit (`halt_exit`).
-
-  A disprove of `halt_exit` is about 5.1 kvB.
-
-### Reads, by the jump list
-
-A step hash covers what a step writes, not what it reads; a read's value
-is whatever was last written to its address. So Alice could claim a false
-value for a read, name a plausible step as its last write, and execute
-the instruction faithfully on it. The search would end at that step, and
-her proof would pass. BitVMX catches this with a second search, as long
-again as the first. Lichen hashes the trace as an **authenticated jump
-list** (Lerner), which needs only a few more transactions:
-
-![a read checked by the jump list](img/pipeline-jumps.svg)
-
-1. Each step's hash also covers the hash of an earlier step, its *long
-   jump*, chosen by the step number alone. So a short path, at most 86
-   hops over 2^29 steps and about 52 on average, leads from h(t) back to
-   any earlier step.
-2. To show a false read, the hub posts the path from h(t) back to the
-   write, and the write itself.
-3. Alice, holding the true history, may challenge any hop she finds
-   false. The hub must then reveal that step's preimage, so a forged
-   path loses at its first false hop.
-4. If the path stands, the verdict compares the write it found with
-   Alice's read.
-
-The same path settles one more lie that a jump list makes possible: a
-false long-jump hash in her record.
-
-### What a search costs
-
-| | transactions | size |
-|---|---|---|
-| a whole search, no read disputed | 22 | about 123 kvB |
-| with a read disputed (one measured case: a 58-hop path) | 25 | about 187 kvB |
-| the Mutinynet trials (the hub absent, or conceding) | 2 links, then the timeout | 21.5 kvB of links |
-
-Each link pays a fee floor of 1 sat/vB out of the contract, and the
-loser's reserve covers the floors. The deepest BitVMX dispute's floors
-come to 197,356 sats, six times BABE's.
-
-**Honesty is enough.** An honest Alice can always answer, because her
-hashes come from the true execution. An honest hub can always find a
-disagreement with a false claim, because the true execution ends
-differently. Whoever is wrong runs out of moves, or loses at the last
-step.
+**No tower.** Her challenge completes the hub's pre-signatures with her
+secrets, one digit at a time, for whatever A the hub asserted. A tower
+playing it for her would have to hold all of them, and all of them are
+every input label: enough for the hub, colluding with it, to answer any
+challenge. So she challenges herself. She has to challenge only a lying
+hub, and her window for it, `Δ2`, is a day on Mutinynet.
 
 ## Who does what, where, and how long
 
 | step | who | where | measured |
 |---|---|---|---|
-| build the guest | anyone (the image id is the contract's) | x86 Docker, RISC Zero's builder image | reproducible |
-| prove each height (the chain receipt) | the sequencer's prover | any machine | 1 to 2.5 min a small block on a Mac ([SHIELDED.md](../SHIELDED.md)) |
-| BABE's setup, at opening | the hub garbles; Alice checks and keeps | any machine | about 19 s at (78, 10) on a laptop; 240 MiB kept |
-| prove (STARK) | Alice, only if the hub refuses | any machine | BABE: about 480k user cycles, 640 to 660 s on 4 x86 vCPUs. BitVMX: about 393k, 361 s there, 75 s on a Mac |
-| wrap (identity_p254 + Groth16) | Alice | x86 Linux, Docker | about 255 s on 4 vCPUs, about 8 GB |
-| check the proof | the hub | any machine | about 1.5 ms |
-| BABE: assert, challenge, answer | Alice, the hub, Alice (or her tower) | Bitcoin | 7.7, 20.7 and 0.8 kvB; the answer after evaluating the kept instances, 0.6 s each |
-| BitVMX: emulate the verifier | both, only to play the search | any machine | 477.8M steps, about 2 minutes |
-| BitVMX: the search | both | Bitcoin, one link per move | 21 moves; on regtest, both engines, 725 s |
+| build the guests | anyone (their image ids are the contract's) | x86 Docker, RISC Zero's builder image | reproducible |
+| a shielded spend's proof | the sender | her device's CPU | 3 s for a shield; 23 to 110 s for two inputs and two outputs, on a Mac |
+| prove each height (the chain receipt) | the sequencer's prover | any machine | see section 2 |
+| BABE's setup, at opening | Alice garbles and uploads; the hub checks and keeps | Alice's device, the hub | 9.3 s of garbling and 239 MiB uploaded; 20 to 36 s of checking |
+| decide the statement | the hub | natively | milliseconds |
+| prove it (STARK) | the hub, only for a false claim | any machine | see section 2 |
+| wrap (identity_p254 + Groth16) | the hub | x86 Linux, Docker | 268 s on 4 vCPUs, 119 to 128 s on lichen-hub |
+| check the proof | Alice's wallet | natively | about 1.5 ms |
+| assert, challenge, answer | the hub, Alice, the hub | Bitcoin | 7.7, 20.7 and 0.3 kvB |
 
 ## Practical notes
 
 - **Pin RISC Zero** to the release whose constants the verifiers carry:
   3.0.x (lichen uses 3.0.6). The image id depends on the toolchain too,
-  so build the guest in the builder image (`r0/build-guest.sh`).
-- **The claim needs the chain receipt.** The wallet prints the
-  withdrawal input, with the headers on the anchor, and fetches the
-  sequencer's chain receipt:
-
-  ```sh
-  lichen --wallet alice.json withdraw-input <contract> > withdraw-input.json
-  lichen --wallet alice.json chain-receipt <contract> chain.receipt
-  ```
-
-  They refuse, saying what is missing, until the return's root is
-  anchored, the anchor has the work W on top (`withdraw-input`), and the
-  sequencer has proved the height that carries the anchor
-  (`chain-receipt`).
-- **Under BABE, prove after the hub responds.** `lichen dispute
-  <contract> <amount>` requests, waits for `respond`, writes the hub's
-  signature (`<wallet>.d/babe-<contract>/hub-auth.json`) and stops. Then,
-  on x86 Linux, `lichen-r0 babe-claim withdraw-input.json hub-auth.json
-  chain.receipt claim.hex` proves, wraps and writes the claim, and
-  `lichen dispute <contract> --input claim.hex` asserts it
-  ([README](../../README.md#under-babe)).
-- **Under BitVMX, prove first.** On x86 Linux, `lichen-r0 claim
-  withdraw-input.json chain.receipt claim.hex` proves, wraps and writes
-  the 204-byte input as hex (`r0/host`, or the prover image with
-  `r0/withdraw-prover.sh claim …`). On a Mac,
-  `r0/withdraw-prover.sh withdraw withdraw-input.json chain.receipt <out>`
-  makes the STARK only; `lichen-r0 wrap` and `lichen-r0 bitvmx-input`
-  finish it on Linux.
+  so build the guests in the builder image (`r0/build-guest.sh`).
+- **The hub's prover** is `r0/hp-prover.sh` (`LICHEN_HP_PROVER`; the
+  deployment's image carries it): `lichen-r0 hp-proof` proves the
+  statement, resolving the chain receipt, and wraps it. `r0/hp-remote.sh`
+  runs it on another machine over ssh, such as an x86 box with Docker
+  for a hub on a Mac. The hub proves once a contract, and keeps the seal
+  (`hp/<cid>/proof.seal`).
+- **`w_H` must cover the hub's proving,** with the chain receipt at
+  `A*` if its prover is behind. On Mutinynet it is 2 hours; the hub's
+  proving took about 11 minutes, once its chain
+  prover had caught up with the claim's state (31 to 35 minutes after
+  a burst of heights).
 - **Snap-installed Docker can't see `/tmp`**, where RISC Zero hands the
   Groth16 step its files. Point RISC Zero's work directory
-  (`RISC0_WORK_DIR`) at a directory under your home.
-- **Memory:** budget about 8 GB for the wrap; a 16 GB machine is
-  comfortable. It was killed on a 2 GB Docker VM.
+  (`RISC0_WORK_DIR`) at a directory under your home; the deployment
+  does.
+- **Memory:** budget about 8 GB for the wrap.
 
 ## Glossary
 
@@ -555,9 +394,6 @@ step.
 - **BabyBear:** the 31-bit prime field 15 · 2^27 + 1 that RISC Zero's
   STARKs compute in.
 - **BN254:** the pairing-friendly curve that the Groth16 proof lives on.
-- **BitVMX:** a protocol and RISC-V emulator for disputing a program's
-  execution on Bitcoin by searching it, by FairgateLabs; lichen's first
-  verification gadget.
 - **chain receipt:** the sequencer's proof, made for each sealed height,
   that the L2's history up to it is valid; it carries the anchoring
   state.
@@ -573,10 +409,8 @@ step.
 - **identity_p254:** the recursion step that re-proves a STARK with a
   BN254-friendly hash, so that Groth16 can check it.
 - **image id:** the hash of a guest's compiled memory image.
-- **journal:** the guest's public output: `c ‖ D ‖ H(pk_H)` under BABE,
-  `b ‖ c ‖ D` under BitVMX.
-- **jump list:** a hash chain in which each step also commits to an
-  earlier step's hash, so that any earlier step is a short path away.
+- **journal:** the guest's public output: for the hub's statement,
+  `c ‖ D ‖ H(O_D ‖ margin)`.
 - **Lamport signature:** a one-time signature that reveals one of several
   preimages per digit signed.
 - **receipt:** RISC Zero's proof object (a journal plus a seal):

@@ -26,8 +26,9 @@ and $100,000 to the hub.
 **3. The hub buys the car.** It pays Alice the 100,000 tokens, and she
 now has 100,100.
 
-**4. Alice withdraws.** She hands back all 100,100 tokens, and the
-contract pays her **$100,100** in bitcoin. The hub's $100,000 is gone:
+**4. Alice withdraws.** She claims all 100,100 tokens through her
+contract: the hub retires them on the L2, and the contract pays her
+**$100,100** in bitcoin. The hub's $100,000 is gone:
 it went to Alice.
 
 ![the contract through the story](img/minting-car.svg)
@@ -61,11 +62,11 @@ $100,100 worth less.
 - **Reserves and fees.** A contract also holds a reserve from each side
   (`r_A`, `r_H`), and its transactions pay fees. A cooperative
   withdrawal pays each side its reserve back. The hub's reserve is what
-  it loses if it refuses a valid withdrawal and Alice enforces it by
-  dispute ([hub-absent.md](hub-absent.md)).
+  it loses if it won't pay a true claim and Alice exits
+  ([exit.md](exit.md)).
 - **One withdrawal per contract.** A withdrawal closes the contract. The
-  cap limits how much can be withdrawn, not which tokens: Alice can hand
-  back tokens she received from anyone, as she did in the story.
+  cap limits how much can be withdrawn, not which tokens: Alice can
+  claim tokens she received from anyone, as she did in the story.
 
 In the real terms, Alice's deposit is `D`, her cap is `V_max`, and the
 hub puts in `V_max − D` plus its reserve. In the story, `D` = $100 and
@@ -74,13 +75,13 @@ hub puts in `V_max − D` plus its reserve. In the story, `D` = $100 and
 ### Why printing can't touch a covered balance
 
 Alice can always take out the smaller of her balance and her cap, once
-the sequencer has anchored and proved the tokens she hands back.[^final] Her
-contract output pays it, and that output is on Bitcoin, out of reach of
-anything that happens on the L2. It can be spent in only three ways:
+the tokens she claims are anchored on Bitcoin.[^final] Her contract
+output pays it, and that output is on Bitcoin, out of reach of anything
+that happens on the L2. It can be spent in only three ways:
 
 - **a withdrawal both sides sign** (the fold);
-- **a dispute,** if the hub refuses: Alice proves the tokens she handed
-  back;
+- **an exit,** if the hub refuses: Alice claims her tokens on Bitcoin,
+  and the hub must prove the claim false or pay it;
 - **the default,** after the contract's end date, `T_close`.
 
 Printing appears in none of them. The hub could mint a billion tokens,
@@ -94,7 +95,7 @@ pays it to Carol, it is backed by Carol's contract, if Carol has room.
 ### The hub's side: bounded, and no shared pool
 
 In each contract the hub can lose at most what it put in, `V_max − D`
-(and its reserve, if it loses a dispute). Across all its contracts, its
+(and its reserve, if it loses an exit). Across all its contracts, its
 exposure is the sum of those amounts, however many tokens it prints.
 Printing is only a way of spending collateral it has already locked.
 
@@ -138,8 +139,9 @@ Here it is the same. To give Alice room for $100,000, the hub locks
 $100,000 of its own bitcoin, plus a reserve, for the contract's life. A
 merchant who deposits little but wants to receive a lot is asking for
 that capital, so in a working market it would have a price, set by how
-much and for how long. Lichen doesn't price it yet: a hub only limits
-the size of the caps it offers.
+much and for how long. Lichen's hub charges a flat rate for it, 1% of
+the liquidity by default, kept out of the tokens it mints at opening,
+and limits how much it offers a contract.
 
 The story is also what happens on Lightning. If the provider buys
 Alice's car by paying across her channel, the payment moves its side of
@@ -151,13 +153,11 @@ two differences:
   Lightning. It goes through, and the excess is simply not covered.
   That is why it's the holder's job to watch their room.
 
-[^final]: Two qualifications. Her tokens are only as final as the L2's
-    history: a payment is final once the sequencer has anchored its
-    height on Bitcoin and that anchor is buried, about 10 blocks deep
-    (`lichen balance` shows how much of a balance is). And a withdrawal
-    needs her return to be sealed, anchored and proved. A sequencer that
-    censors the return, or stops anchoring or proving, leaves her
-    without a dispute to make, and at `T_close` the default pays the hub.
-    A planned exit, not yet implemented, closes that gap: Alice claims
-    from any anchored state she can prove from, and the operator can
-    answer only by showing that one of her notes was spent later.
+[^final]: One qualification: her tokens are only as final as the L2's
+    history. A payment counts once its sender has acknowledged it and
+    the acknowledgment is sequenced, which the sequencer does once the
+    anchor it names is the margin deep on Bitcoin (20 blocks on
+    Mutinynet): see [payments.md](payments.md). Nothing else is needed
+    to withdraw. A sequencer that censors her, or stops anchoring, or
+    vanishes, doesn't stop her exit: she claims what was anchored, and
+    proves nothing.

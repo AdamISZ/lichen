@@ -1,305 +1,287 @@
 # Opening a contract
 
-> On BitVMX, lichen's first verification gadget, kept as the record of
-> Test B. A BABE contract pre-signs 19 transactions, not 141, after a
-> cut-and-choose of garbled circuits ([its opening](babe-challenged.md#opening-the-cut-and-choose));
-> the terms, the deposit and the mint are the same under either.
-
-A walkthrough of how Alice opened contract 1001 on Mutinynet
-(2026-10-12). That's the contract of Test B, whose dispute is in
-[hub-absent.md](hub-absent.md). Opening takes four requests to the hub
-and two Bitcoin transactions. Between them, Alice and the hub sign every
-transaction any ending of the contract could need, before the contract
-holds a single sat.
-
-The figures are the run's. Openings have changed since in a few ways,
-noted where they come up. The largest: the hub now mints Alice's tokens
-with its offer, locked to the funding (see [the mint](#the-mint)), and
-the diagram shows that order.
+How Alice opened contract 1000 on Mutinynet (2026-11-11), on the
+hub-proves deployment. Opening takes seven kinds of request to the hub and two
+Bitcoin transactions. Between them, Alice garbles the circuits that will
+check the hub's proof if it ever says her claim is false, and the two
+sides sign every transaction any ending of the contract could need,
+before the contract holds a single sat.
 
 | transaction | block | size | fee | paid by |
 |---|---|---|---|---|
-| [deposit](https://mutinynet.com/tx/dc089a531e9a9eb785a6c6cd91c32334ef991d1975e7907092f3d0723543e757) | 3,500,811 | 154 vB | 342 | Alice's payer wallet |
-| [funding](https://mutinynet.com/tx/418b42cc4111e06a970d08afef94121f0a9e73cdf7bd8cd2f5e3e19fd6d4f7b6) | 3,500,812 | 305 vB | 2,000 | 1,000 each |
+| [deposit](https://mutinynet.com/tx/9749619ec83f9afd8c1be3b9be99ae1175c59929b8a940a5d66828440ef5f01f) | 3,580,029 | 212 vB | 227 | Alice's payer wallet |
+| [funding](https://mutinynet.com/tx/59f181a9e2a21958628c9685d26ad3c1c3803fbb3558e97fc77ff583da1bfa2b) | 3,580,038 | 305 vB | 2,000 | 1,000 each |
 
-![the opening of contract 1001](img/opening-sequence.svg)
+![the opening of contract 1000](img/opening-sequence.svg)
 
 ## The terms
 
-Alice asks for three things. The hub sets the other three.
+Alice asks for three things. The hub sets the rest.
 
 | term | value | set by | meaning |
 |---|---|---|---|
-| `D` | 30,000 | Alice | her deposit, minted to her as tokens on the L2 |
-| `V_max` | 65,535 = 2^16 − 1 | Alice, within the hub's limit | the cap: the most any withdrawal can be |
+| `D` | 100,000 | Alice | her deposit |
+| liquidity | 100,000 | Alice | what she can receive beyond her balance |
 | `r_A` | 20,000 | Alice | her reserve: back to her in every honest ending |
-| contract number | 1001 | the hub | also the memo `c` her returns must carry |
-| `T_close` | 3,520,971 | the hub | a week of blocks: after it, with no claim, the contract closes by default |
-| `r_H` | 197,356 | the hub | its reserve: what the loser of the deepest dispute pays in fees |
+| the hub's fee | 1,000 | the hub | 1% of the liquidity, kept out of the mint: she is minted 99,000 |
+| `V_max` | 199,155 | the hub, from her ask | the cap: `D` less the fee, plus the liquidity, rounded up to the unit |
+| unit `u`, bits `K` | 781 sats, 8 | the hub | `V_max = u (2^K − 1)`: an exit pays in units ([payout.md](payout.md)) |
+| contract number | 1000 | the hub | `c` in the hub's statement's journal |
+| `T_close` | 3,600,195 | the hub | a week of blocks: after it, the default closes the contract |
+| `r_H` | 31,816 | the hub | its reserve: what a dispute's links can take in fees from the side that loses |
+| windows | `w_H` 240, `Δ2` 2,880, `Δ1` 240 | the network | the hub's to assert (2 hours), hers to challenge (a day), the hub's to answer (2 hours) |
+| margin | 20 blocks | the network | a claim is judged at the last anchor at least this deep before her `request` |
+| checkpoint | block 3,580,029 | the hub | its difficulty fixes the work `W` the hub's statement asks on top of `request` |
 
-Contracts opened since carry two more terms, both the hub's. The
-dispute's **windows**, in blocks: one for each of Alice's moves, one
-for the hub's choices, and one for its heavy moves (its path, at the
-last step). On Mutinynet they are 80, 20 and 80 (40, 10 and 40
-minutes); contract 1001 has one window of 80 for every move. And in a
-deployment that anchors the L2's history on Bitcoin, a **checkpoint**:
-the block the contract opened at, whose difficulty fixes the work a
-withdrawal must show on top of its anchor.
+Alice also gives two addresses: her **payout address**, of any wallet she
+likes, where every ending pays her (by default the lichen wallet's own),
+and her **L2 address**, where the hub mints her tokens.
 
-Alice also gives two addresses. Her **payout address**, of any wallet she
-likes, is where every ending pays her. Her **L2 address** is where the
-hub mints her tokens.
-
-`r_H` looks large next to a cap of 65,535. It is the most that a dispute's
-links can peel off the contract as fees: the links pay their own way, at
-a fixed floor, out of the contract. The hub measures it from the
-pre-signed set itself, and takes the larger of that and a share of the cap
-(2%, here 1,310). The amount is the same for every contract on the
-statement, because the links' sizes don't depend on the amounts. At this
-cap, it dominates.
+`r_H` is the most a dispute's links can peel off the contract as fees:
+each link pays its own way, at a floor of 1 sat/vB, out of the contract,
+and the loser's reserve covers it. The hub measures it from the
+pre-signed set and takes the larger of that and 2% of the cap (here
+3,983). It is the same for every contract on the network, because the
+links' sizes don't depend on the amounts.
 
 ## 1 and 2. Checking the hub; the deposit address
 
-**`/info`.** Before anything else, Alice's wallet checks that the hub is
-the one it means to deal with:
-
-- the same network;
-- the same deployment, which the wallet pinned at `init`: the
-  sequencer's key, the hub's L2 key and, in a deployment that anchors,
-  the genesis seal its first anchor spends;
-- the same statement, here Groth16, with the same 21 search depths.
+**`/info`.** Alice's wallet checks that the hub is the one it means to
+deal with: the network; the deployment, which the wallet pinned at
+`init` (the sequencer's key, the hub's L2 key, and the genesis seal the
+first anchor spends); and the statement, `hub-proves` with the guests'
+image ids, which must be the wallet's own.
 
 **`/deposit`.** Alice sends a fresh deposit key. The hub answers with the
-contract's number, its own key, and a timeout: 2,880 blocks on
-Mutinynet, a day. The wallet takes no other timeout than the network's:
-a longer one would lock the deposit up for as long. Together these make
-the deposit address, a taproot
-output with two leaves:
+contract's number, its own key, and a timeout: 2,880 blocks on Mutinynet,
+a day. Together they make the deposit address, a taproot output with two
+leaves:
 
 - **`deposit_open`:** the hub's signature and Alice's. Only the funding
-  transaction spends it this way.
+  spends it this way.
 - **`deposit_refund`:** Alice alone, after the timeout. If the hub
   disappears, or the opening fails part-way, she takes her deposit back
   (`lichen refund`).
 
-Thanks to the deposit address, the lichen wallet holds no bitcoin of
-Alice's: she pays the address from anywhere, an exchange or a faucet.
+So the lichen wallet holds no bitcoin of Alice's: she pays the address
+from anywhere, an exchange or a faucet.
 
 ## 3. The deposit
 
-Alice paid **71,000** sats to the deposit address
-([dc089a53…](https://mutinynet.com/tx/dc089a531e9a9eb785a6c6cd91c32334ef991d1975e7907092f3d0723543e757)):
+Alice paid **151,000** sats to the deposit address
+([9749619e…](https://mutinynet.com/tx/9749619ec83f9afd8c1be3b9be99ae1175c59929b8a940a5d66828440ef5f01f)):
 
 | | sats |
 |---|---|
-| `D`, the deposit | 30,000 |
+| `D` | 100,000 |
 | `r_A`, her reserve | 20,000 |
 | her share of the funding's fee | 1,000 |
-| her fee budget, for a dispute's terminal transactions | 20,000 |
+| her fee budget, for a dispute's terminal transactions | 30,000 |
 
-The wallet waits for it to confirm, then asks to open.
+The wallet checks that the budget covers the heaviest transaction a
+dispute may need of her, at 1 sat/vB: her challenge, about 20.7 kvB.
+Then it waits for the deposit to confirm.
 
-Since this run (2026-10-18), the fee budget on Mutinynet is 30,000, so
-the same terms ask 81,000. The wallet checks at opening that the budget
-covers the heaviest transaction a dispute may need of her: on Groth16,
-a last step's proof, 26,793 sats at 1 sat/vB. Test B's 20,000 would now
-be refused.
+## 4. The cut-and-choose: Alice garbles
 
-## 4. The offer
+The hub proves, if it ever proves anything: that her exit claim is
+false ([exit.md](exit.md)). Bitcoin checks its proof through BABE
+([pipeline.md](pipeline.md#4-the-check-on-bitcoin-under-babe)), and BABE
+needs the circuits that check it garbled now, by the side the proof
+would be used against. That is Alice.
 
-**`/open`.** Alice's request carries the terms she asks for, her
-addresses, the deposit's coin, and her public keys. Besides her ordinary
-signing key, these are **one-time (Winternitz) keys**, generated from
-her wallet's seed and a fresh nonce:
+**`/hp/setup`.** The hub fixes its statement for this contract: the
+checkpoint, the unit and the margin, which with the deployment make the
+statement's journal, `c ‖ D ‖ H(O_D ‖ margin)`. It gives its keys as the
+prover: a Lamport key for the proof's first point (254 two-bit digits)
+and an adaptor key for each digit's four values.
 
-- 51 for the claim's input words, one per word. In a dispute she signs
-  her claim with these: `b`, the memo, the proof, the deployment. In a
-  deployment that anchors, that last word is the contract's own: the
-  deployment, its genesis seal and the checkpoint's work, hashed.
-- one per field of each of her moves in the search: depths 1, 3, 5,
-  …, 21;
-- 8 for the read challenge: one per hop she might challenge.
+**Garbling.** Alice's wallet deals a secret for each digit of the
+proof's point, shared across 78 instances by Shamir's scheme, and
+garbles the 78 instances of the circuit, each with its own scalar and
+its own `msg`: **9.3 s** on a Mac.
 
-The hub checks the request against its limits (a cap of at most 2^24
-by default), and that the deposit is on chain, confirmed, unspent and
-paid to the right address. It also refuses a deposit whose refund
-matures too soon ([the mint](#the-mint) says why), and a second offer
-for one contract within a minute of the first. Then it builds the
+**`/hp/commit`.** She commits: her one-time Winternitz keys for `b` (a
+4-byte word) and `E` (32 bytes), each instance's hash, and the dealing's
+commitments. The hub answers with the 10 instances it keeps, chosen
+after her commitment, so she can't know which to make well.
+
+**`/hp/instance/1000/<i>`.** She uploads the 10: **23.9 MiB each**, 239
+MiB in all. In Olga's opening, alone on a home connection, that took
+65 s, about 6.4 s an instance (some 30 Mbit/s). The six contracts opened
+at once in this run shared the uplink, and took about half an hour.
+
+**`/open`.** Her request carries the terms she asks for, her addresses,
+the deposit's coin, her keys, and the other **68 instances opened**: each
+one's seed and its shares of the dealing. The hub rebuilds each from its
+seed and checks it against her commitment, and the shares against the
+dealing: **20 to 36 s** on lichen-hub for each of the seven contracts.
+A cheating Alice, who garbled some instances wrong, is caught unless
+every one she garbled wrong is among the 10 kept: 1 in C(78, 10), about
+2^-40.
+
+## 5. The offer
+
+The hub checks the request against its limits (here at most 200,000 of
+liquidity), and that the deposit is confirmed, unspent and paid to the
+right address, with its refund far enough off. Then it builds the
 contract and returns an **offer**:
 
-- `T_close` and `r_H`, the windows and, in a deployment that anchors,
-  the checkpoint;
-- its own keys: its signing key, and one-time keys for its moves (depths
-  2, 4, …, 20) and for the read challenge's path;
+- `T_close`, `r_H`, the windows and the checkpoint;
 - the funding transaction, unsigned;
-- **its signatures on all 141 pre-signed transactions;**
+- **its signatures on 7 of the pre-signed transactions**;
+- **its 1,016 adaptor pre-signatures on `challenge_assert`,** one for
+  each of the 254 digits and four values, each locked to the point of
+  that digit's secret in her dealing;
 - the point `T` and the note it has minted to Alice, locked to the
   funding ([the mint](#the-mint)).
 
 ### What is pre-signed
 
 Every transaction that spends an output the two of them share is signed
-by both, now. Later, neither side needs the other's cooperation to use
-any of them. 141 transactions, with 169 inputs, so 169 signatures from
-each side:
+by both, now. Later, neither needs the other's cooperation to use any of
+them. 17 transactions:
 
-| transactions | how many | what they do |
+| transaction | how many | what it does |
 |---|---|---|
-| `escalate` | 1 | Alice's claim and move 1: spends the contract output |
-| `inputs` | 1 | the rest of the claim's input words |
-| `move_2` … `move_21` | 20 | the search's moves, the hub's at even depths and Alice's at odd |
-| `timeout_1` … `timeout_21`, `timeout_inputs` | 22 | if a side doesn't move in its window, the other wins: Alice by the payout of her claim, the hub by taking everything |
-| `prove_<op>` | 62 | Alice's proof of the disputed last step: one for each instruction variant the verifier runs |
-| `path_split`, `combine_1` … `combine_8` | 9 | the hub's read-challenge path, posted in up to 8 chunks then combined |
-| `hop_1` … `hop_8` | 8 | Alice challenging one hop of that path |
-| `timeout_path_split`, `timeout_combine_*`, `timeout_hop_*` | 17 | the read challenge's windows |
+| `request` | 1 | Alice's claim: `b`, `E` and her notes; spends the contract output |
+| `request_timeout` | 1 | after `w_H` with no assertion: pays Alice `b`, in units, and both reserves |
+| `assert` | 1 | the hub's proof that her claim is false: its first point, Lamport-signed |
+| `success` | 1 | after `Δ2` with no challenge: the contract is the hub's |
+| `challenge_assert` | 1 | Alice's challenge: completes the hub's pre-signatures for the point it asserted |
+| `wrongly_challenged_0` … `_9` | 10 | the hub's answer: one kept instance's `msg`, which only a valid proof unlocks; the contract is the hub's |
+| `failure` | 1 | after `Δ1` with no answer: pays Alice `b` and both reserves |
 | `default` | 1 | after `T_close` with no claim: Alice's reserve back, the rest to the hub |
 
-`combine_K` has `K` inputs, one per chunk, which is where the extra 28
-signatures come from.
+Alice signs all 17. The hub signs 7: the `wrongly_challenged` answers are
+its own moves, so it keeps its signatures on them and needs only hers.
+(She knows every `msg`, having garbled the instances: with the hub's
+signature she could post an answer herself, large and at a low fee rate,
+and pin the hub's own.)
 
-Some transactions aren't in the set: those that pay one side everything.
-Examples are the hub's disproves, its input-word checks, and its
-equivocation leaves. Each needs only the winner's key and the evidence
-in its witness, so nobody has to pre-sign it.
+The contract output itself has three leaves: `fold`, the 2-of-2 signed
+when they agree; `default`, after `T_close`; and `request`. Each link
+after it (`request`, `assert`, `challenge_assert`) pays its own fee, at a
+floor of 1 sat/vB, out of the value it carries; each terminal
+(`request_timeout`, `success`, `failure`) and each answer is paid for by
+whoever broadcasts it, with a coin of their own, which for Alice is her
+fee budget.
 
-67 of each side's signatures are 64 bytes: SIGHASH_DEFAULT, committing to
-the whole transaction. The other 102, on every timeout, every
-`prove_<op>` and `default`, are 65 bytes: ALL|ANYONECANPAY. These carry no fee of their own,
-so whoever broadcasts one adds a coin to pay for it. That's the fee
-budget's job.
-
-## 5. Alice checks, then signs
+## 6. Alice checks, then signs
 
 Alice's wallet checks, in order:
 
-- the offer is for her deposit's contract number;
-- the terms are hers, and `T_close` is at least a day away (2,880
-  blocks on Mutinynet; in this run, only that it was in the future);
-- the windows give each of her moves at least the network's (80 blocks
-  on Mutinynet), and in a deployment that anchors, the checkpoint is a
-  recent block of the best chain as she sees it;
+- the offer is for her deposit's contract, on the quoted terms, and
+  `T_close` is at least a day away;
+- the windows are the network's, and the checkpoint is a recent block of
+  the best chain as she sees it;
 - the funding: output 0 is exactly the contract the terms make, it
   spends her deposit, and it pays her fee budget;
-- **every one of the hub's 169 signatures**, against the transactions
-  she rebuilds herself from the terms and both sides' keys;
+- **each of the hub's 7 signatures**, against the transactions she
+  rebuilds herself from the terms and both sides' keys;
+- **each of its 1,016 pre-signatures**, against her own dealing's points;
 - the fee budget covers her heaviest terminal transaction.
 
-Then she signs the 141 transactions, and sends nothing yet. She waits
-for the hub's mint to be sealed on the L2: `D`, to the locked key, memo
-0. Only then does she sign her deposit's input to the funding, as an
-adaptor pre-signature locked to `T` ([the mint](#the-mint)). Taproot
-signatures commit to every input's coin, so hers fixes the hub's coins
-as well as her own: the hub can't swap the funding for another.
+Then she signs the 17, and sends nothing yet. She waits for the hub's
+mint to be sealed on the L2: 99,000, to the locked key. Only then does
+she sign her deposit's input to the funding, as an adaptor
+pre-signature locked to `T`. Taproot signatures commit to every input's
+coin, so hers fixes the hub's coin as well as her own: the hub can't swap
+the funding for another.
 
-**`/accept`.** She sends her 169 signatures and the pre-signature. The
-hub checks them all, and completes her pre-signature with `t`. If the
-deposit's refund is still far enough off, it adds its own signature on
-the deposit input and on its coin, keeps the contract's record, and
-broadcasts the funding. It answers with the funding's txid and `t`. (In
-this run, before the swap, she sent a plain signature on the deposit
-input, and the hub minted once the funding confirmed.)
+**`/accept`.** She sends her 17 signatures and the pre-signature. The hub
+checks them, completes her pre-signature with `t`, adds its own
+signatures on the deposit input and its coin, keeps the contract's
+record, and broadcasts the funding. It answers with the funding's txid
+and `t`.
 
 ## The funding
 
-[418b42cc…](https://mutinynet.com/tx/418b42cc4111e06a970d08afef94121f0a9e73cdf7bd8cd2f5e3e19fd6d4f7b6)
-· 305 vB · fee 2,000 · block 3,500,812
+[59f181a9…](https://mutinynet.com/tx/59f181a9e2a21958628c9685d26ad3c1c3803fbb3558e97fc77ff583da1bfa2b)
+· 305 vB · fee 2,000 · block 3,580,038
 
-![the funding of contract 1001](img/opening-funding.svg)
+![the funding of contract 1000](img/opening-funding.svg)
 
 | | sats | |
 |---|---|---|
-| **in:** Alice's deposit | 71,000 | by `deposit_open`: 4 witness items, the two signatures, a 68-byte script, its control block |
-| **in:** a coin of the hub's | 465,964 | by key |
-| **out 0:** the contract | 282,891 | `V_max + r_A + r_H` |
-| **out 1:** Alice's fee budget | 20,000 | her key |
-| **out 2:** the hub's change | 232,073 | its wallet |
+| **in:** Alice's deposit | 151,000 | by `deposit_open`: 4 witness items, the two signatures, a 68-byte script, its control block |
+| **in:** a coin of the hub's | 1,519,842 | by key |
+| **out 0:** the contract | 250,971 | `V_max + r_A + r_H` |
+| **out 1:** Alice's fee budget | 30,000 | her key |
+| **out 2:** the hub's change | 1,387,871 | its wallet |
 
-Into the contract, Alice put `D + r_A` = 50,000, and the hub
-`V_max − D + r_H` = 35,535 + 197,356 = 232,891. The hub covers the rest
-of the cap, the part above Alice's deposit. That is what lets her
-receive more on the L2 than she deposited, and still withdraw it.
+Into the contract Alice put `D + r_A` = 120,000, and the hub `V_max − D
++ r_H` = 99,155 + 31,816 = 130,971. The hub covers the cap above Alice's
+deposit: that is the liquidity she paid 1,000 for, which lets her
+receive more on the L2 than she deposited and still withdraw it.
 
 ## The mint
 
-When the funding confirmed, the hub issued `D` = 30,000 tokens to
-Alice's L2 address, through the sequencer. For 1001 and 1002 that took
-about a minute from the deposit's confirmation.
-
-**That order had a hole, since closed.** Nothing made the hub mint. A
-hub that took the funding and never minted left Alice with no tokens to
-return, so no way to withdraw, and at `T_close` the default paid the hub
-everything but her reserve, her `D` included. Minting first doesn't fix
-it: Alice could then refuse to sign the funding, refund her deposit, and
-keep tokens no contract of hers backs. It is an exchange, and either
-side going first could be cheated.
-
-Openings now make the funding and the mint one swap:
+The funding and the mint are one swap, so that neither side can be
+cheated by going first:
 
 1. **The offer mints first, locked.** The hub picks a secret `t` for this
-   funding transaction (it derives it from its seed, the contract, Alice's
-   L2 key and the funding's txid, so every offer has its own) and mints
-   `D` to the key `P = H(A ‖ T)·A + T`, where `A` is Alice's L2 key and
-   `T = t·G`. Spending it takes Alice's secret and `t`. The offer carries
-   `T` and where the note is.
-2. **Alice checks the mint, sealed,** before she signs the deposit
-   input or sends any signature: `D`, to `P`, memo 0.
-3. **Alice's deposit signature is an adaptor pre-signature,** locked to
-   `T`. It is not yet a valid signature; adding `t` makes it one.
+   funding (from its seed, the contract, Alice's L2 key and the funding's
+   txid) and mints `D` less its fee to the key `P = H(A ‖ T)·A + T`,
+   where `A` is Alice's L2 key and `T = t·G`. Spending it takes Alice's
+   secret and `t`.
+2. **Alice checks the mint, sealed,** before she signs the deposit input
+   or sends any signature.
+3. **Her deposit signature is an adaptor pre-signature,** locked to `T`:
+   adding `t` makes it a valid one.
 4. **The hub completes it to broadcast the funding.** It can't spend the
-   deposit any other way: `deposit_open` needs Alice's signature, and
-   only `t` makes one from her pre-signature. The completed signature
-   is in the funding's witness, and it, less her pre-signature, is `t`.
-   The hub also sends `t` in its answer.
+   deposit any other way. The completed signature is in the funding's
+   witness, and it, less her pre-signature, is `t`. The hub also sends
+   `t` in its answer.
 5. **Alice spends the locked note to her own key** with her secret and
-   `t`.
+   `t`. That is her first L2 spend, and like every spend it counts once
+   she acknowledges it against an anchor ([payments.md](payments.md)).
 
-If the hub never broadcasts, Alice refunds her deposit after the
-timeout, and the locked note stays where it is: tokens that no one can
-spend, which cost the hub nothing to print. That is what makes this
-simpler than a usual swap: the hub's side needs no refund and no
-timeout. If its answer is lost, Alice's wallet reads `t` from the
-funding on chain (`lichen claim-mint`).
-
-The hub carries the one timing risk. `t` is public once the funding
-reaches the mempool, and if the funding were still unconfirmed when the
-deposit's refund matures, Alice could take both. So the hub broadcasts
-only in the first half of the timeout: it checks at `/open`, and again
-at `/accept`. Its change output would let it bump the funding's fee
-without Alice, but fee-bumping is not yet implemented, so that deadline
-is the only guard.
+If the hub never broadcasts, Alice refunds her deposit after the timeout,
+and the locked note stays where it is: tokens no one can spend, which
+cost the hub nothing to print. If its answer is lost, her wallet reads
+`t` from the funding on chain (`lichen claim-mint`). The hub broadcasts
+only in the first half of the deposit's timeout, so that the funding
+confirms long before Alice could refund the deposit with `t` in hand.
 
 Once the funding is out, the contract is open. Its endings are:
 
-- a cooperative fold ([cooperative.md](cooperative.md));
-- a dispute ([hub-absent.md](hub-absent.md),
-  [hub-returns.md](hub-returns.md)), paid out as in
+- a cooperative withdrawal, the claim recorded and the contract folded
+  ([cooperative.md](cooperative.md));
+- an exit, if the hub won't fold: her claim on Bitcoin, which the hub
+  must prove false or pay ([exit.md](exit.md)), paid out as in
   [payout.md](payout.md);
 - `default`, after `T_close`, if Alice never claims.
 
 ## Why the order is safe
 
 - **Before the funding, Alice risks only a delay.** Until she signs the
-  deposit input, the hub can't spend her deposit. If the hub stalls at
-  any point, she refunds after the timeout.
+  deposit input, the hub can't spend her deposit. If the hub stalls, she
+  refunds after the timeout.
 - **Alice signs nothing until she holds the hub's signatures on
-  everything.** Her signatures and the funding go last, so the contract
-  can't exist without all its exits already signed.
-- **The hub broadcasts, but can't change what it broadcasts.** Alice's
-  signature on the deposit input commits to the whole funding: its
-  outputs, and every coin it spends.
-- **The hub risks nothing before it broadcasts.** It checks all 169 of
-  Alice's signatures before adding its own to the funding. The tokens it
-  minted with its offer are locked until it does.
+  everything it must sign,** and its pre-signatures on `challenge_assert`:
+  the contract can't exist without every exit already signed.
+- **The hub can't change what it broadcasts.** Alice's signature on the
+  deposit input commits to the whole funding.
+- **The hub checks her garbling before it offers.** A contract whose
+  circuits it couldn't use, against a false claim, never opens.
+- **The hub risks nothing before it broadcasts.** It checks her
+  signatures before adding its own, and the tokens it minted are locked
+  until it does.
 - **The funding and Alice's tokens come together.** Broadcasting the
-  funding reveals `t`, which unlocks her `D`; without the funding, no one
-  can spend it.
+  funding reveals `t`, which unlocks her tokens; without it, no one can
+  spend them.
 
 ## What it costs
 
-On chain, 459 vB: the deposit (154 vB, from Alice's payer wallet) and the
-funding (305 vB, 2,000 sats split between the two sides). Off chain,
-the offer and the acceptance carry the one-time public keys and 338
-signatures. The hub keeps them all in the contract's record, its only
-memory of the contract: everything else about a dispute it reads from the
-chain ([hub-returns.md](hub-returns.md)).
+| | |
+|---|---|
+| on chain | 517 vB: the deposit (212 vB, from Alice's payer wallet) and the funding (305 vB, 2,000 sats split) |
+| Alice's device | 9.3 s of garbling; 239 MiB uploaded; a seed for her secrets kept |
+| the hub | 20 to 36 s checking the 68 opened; 239 MiB stored for the contract's life |
+| signatures | Alice's 17, the hub's 7 and its 1,016 adaptor pre-signatures |
+
+The upload is the cost the swapped roles bring: under the earlier design
+the hub garbled and Alice downloaded the instances. It is two to three
+minutes on a 10 to 20 Mbit/s uplink, poor on mobile data. Fewer instances,
+by VSSS or soldering, would shrink it (docs/BABE_DISPUTE_PLAN.md).

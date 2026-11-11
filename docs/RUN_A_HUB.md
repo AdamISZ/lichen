@@ -1,7 +1,8 @@
 # Running a lichen hub
 
 The hub issues the L2's tokens, opens a contract on Bitcoin with each
-user, pays withdrawals cooperatively (the fold), and answers disputes.
+user, pays withdrawals cooperatively (the fold), and proves false exit
+claims false.
 In lichen the hub also runs the L2 itself: one operator, one deployment
 (`deploy/`), in one Docker Compose project per network:
 
@@ -10,7 +11,7 @@ In lichen the hub also runs the L2 itself: one operator, one deployment
 | `bitcoind` | the node, with the hub's wallet (`hub`) and the one that pays the anchors (`sequencer`) |
 | `sequencer` | orders the L2's transactions, and every few seconds seals a height: it signs the state root. Wallets and the hub talk to it over HTTP. It anchors its history on Bitcoin through the node |
 | `chain-prover` | proves each sealed height valid from genesis, in order (a RISC Zero receipt per height) |
-| `hub` | the contracts, folds and disputes; it checks a withdrawal against the chain prover's receipt before it folds |
+| `hub` | the contracts, folds and exits; it checks a withdrawal's claim against the ledger before it folds, and proves its statement against a false exit claim |
 | `miner` | regtest only: a block every few seconds |
 
 Users run only the `lichen` wallet, with no node:
@@ -21,8 +22,8 @@ Users run only the `lichen` wallet, with no node:
 Linux or macOS, x86-64 or arm64, with Docker (Compose v2):
 
 - **Memory:** 16 GB. Building the image compiles the whole Rust tree;
-  the chain prover proves each height on the CPU, and the hub's proof of
-  a counter to an exit claim, with its Groth16 wrap, takes about 10 GB
+  the chain prover proves each height on the CPU, and the hub's proof
+  that an exit claim is false, with its Groth16 wrap, takes about 10 GB
   at peak.
 - **Disk:** a few GB for Mutinynet, more for signet or testnet4 (the
   node keeps a `txindex`).
@@ -41,13 +42,13 @@ deploy/build.sh
 and ln-gap at the commit in `LNGAP_REV`.
 
 - **`lichen`:** the hub, the sequencer, the chain prover (`lichen-r0`,
-  which also proves the hub's counters), BitVMX's Groth16 verifier ELF,
-  and the `lichen` wallet, for the smoke test.
+  which also proves the hub's statement, through `lichen-hp-prover`), and
+  the `lichen` wallet, for the smoke test.
 - **`lichen-bitcoind:<network>`:** the node.
   - For regtest, signet and testnet4: stock Bitcoin Core 31.1.
   - For Mutinynet: benthecarman's patched build, the one Mutinynet's
     own node runs, with 30-second signet blocks. It relays TRUC, which
-    BABE's `wrongly_challenged` is.
+    the hub's `wrongly_challenged` answers are.
   - Each release tarball is pinned by SHA-256.
 
 ## 2. Configure
@@ -58,15 +59,15 @@ In `deploy/.env`:
 |---|---|
 | `NETWORK` | `regtest`, `mutinynet`, `signet` or `testnet4` |
 | `COMPOSE_PROFILES` | `regtest` on regtest, for the miner (a block every `MINE_EVERY` seconds); empty otherwise |
-| `STATEMENT` | what disputes run: `babe` (the real statement, on BABE) or `babe-mock`; `bitvmx` (the real statement, on BitVMX) or `bitvmx-mock` |
-| `R0WORK` | where the Groth16 wrap of a counter keeps its files: an absolute path, mounted at the same path in the hub's container (the wrap runs RISC Zero's prover image on the host's Docker). Empty: `deploy/state/<network>/r0work` |
+| `STATEMENT` | what an exit's dispute runs: `hub-proves` (the hub's statement, a real Groth16 proof checked by BABE) or `hub-proves-mock` (a toy circuit's proof, for trials) |
+| `R0WORK` | where the Groth16 wrap of the hub's proof keeps its files: an absolute path, mounted at the same path in the hub's container (the wrap runs RISC Zero's prover image on the host's Docker). Empty: `deploy/state/<network>/r0work` |
 | `RESERVE_PPM`, `DURATION` | the hub's reserve (ppm of the cap), and a contract's life in blocks (empty: the network's default) |
 | `FEE_PPM`, `MAX_LIQUIDITY` | what the hub charges for the liquidity a user asks (inbound: what she can receive beyond her deposit), in ppm of it, 1% by default; and the most a contract may ask, in sats. The fee is kept out of the deposit the hub mints her, so it is paid whatever happens later; the hub puts in the liquidity less the fee |
-| `WINDOWS` | the dispute's windows in blocks, `<user>,<hub>,<path>` (empty: the network's default; wallets refuse a user window under it). The heavy ones bound how many contracts the hub can hold safely when blocks are full |
 | `SEAL_EVERY` | seconds between sealed heights (default 5) |
 | `ANCHOR`, `ANCHOR_WALLET`, `ANCHOR_FEERATE` | anchoring (below): `on` by default, paid from the node's wallet `sequencer`, at 2 sat/vB. `off` runs the L2 unanchored, and a ledger started so can never be anchored |
-| `HOSTILE` | trials on test networks only: the hub refuses every cooperative withdrawal and disputes every claim, true ones too, so each is played on chain to its end |
-| `REFUSE_FOLDS` | trials on test networks only: the hub refuses every cooperative withdrawal but disputes only false claims |
+| `ANCHOR_CONFIRMATIONS` | how deep an anchor is before the sequencer records it on the L2. Empty (the default): the network's margin, 20 on Mutinynet, 6 on mainnet, which an acknowledgment waits for; set it only to anchor deeper |
+| `HOSTILE` | trials on test networks only: the hub refuses every cooperative withdrawal and asserts a forged proof against every exit claim, true ones too, so that users challenge and win |
+| `REFUSE_FOLDS` | trials on test networks only: the hub refuses every cooperative withdrawal but asserts only against false claims |
 | `HUB_PORT`, `SEQUENCER_PORT` | the published ports (18310, 18300) |
 
 ## 3. Start
@@ -145,32 +146,37 @@ sequencer commits its history to Bitcoin:
   flight, it sends an anchor: a transaction spending the seal, making
   the next, and committing the history to the last sealed height (about
   270 vB);
-- once the anchor confirms, it records it on the L2, in the next
-  height's block, for the chain prover.
+- once the anchor is the margin deep (20 blocks on Mutinynet), it
+  records it on the L2, in the next height's block, for the chain
+  prover.
 
-A withdrawal needs its return anchored, with ten blocks' work on the
-anchor, so keep the `sequencer` wallet funded: a few thousand sats a day
-at most on a test network. The anchor in flight is kept beside the
-ledger, so a restart carries on.
+Every user's spend counts only once its sender acknowledges it against
+a recorded anchor ([payments](explainers/payments.md)), so payments wait
+for anchoring: keep the `sequencer` wallet funded, a few thousand sats
+a day at most on a test network. The anchor in flight is kept beside
+the ledger, so a restart carries on.
 
 **The chain prover** proves each height the sequencer records
 (`ledger.json.blocks/<h>.input`), each from the last, to
 `<h>.chain`, which the sequencer serves at `GET /chain/<h>` (and the
-last height proved, at `GET /chain`: wallets show it while they wait). Every
-withdrawal needs the receipt at its return's height: a disputed one's
-proof checks its root ends a valid history, and the hub checks the same
-before it folds. A small height takes under a minute on a laptop; the
-prover runs behind the seals, so a withdrawal waits for it.
+last height proved, at `GET /chain`). The hub's proof against a false
+exit claim stands on the receipt at the claim's state, so the prover
+must not fall far behind: a small height takes under a minute on a
+laptop's CPU, and a couple of seconds on a GPU.
 
-**Exits.** Under `--statement hub-proves-mock`, a user whose
-withdrawal the hub won't fold exits instead (`lichen exit`; [the
+**Exits.** A user whose withdrawal the hub won't fold, or whose
+operator has gone, exits (`lichen exit`; [the
 explainer](explainers/exit.md)): she claims her notes, and the hub must
 prove the claim false within `w_H` (two hours on Mutinynet), or her
-timeout pays her. It decides natively, from the L2's state and the
-chain, and asserts on its own; a claim that holds it lets stand, holding
-the claimed notes and recording the exit on the L2. The mock only, for
-now: the hub's statement has no guest yet. Under `babe`, a refused
-withdrawal is disputed, as before.
+timeout pays her. The hub decides natively, from the L2's state and the
+chain; a claim that holds it lets stand, holding the claimed notes and
+recording the exit on the L2. A false one it proves false, in the
+background (`lichen-hp-prover`: the STARK, then its Groth16 wrap in
+RISC Zero's prover image on the host's Docker), and asserts; its files
+are in `state/<network>/hub/hp/<contract>/`. Keep the machine able to
+prove within `w_H`: on a 16-vCPU server a proof took about 9
+minutes and its wrap 2, after its chain prover had caught up with the
+claim's state.
 
 ## Keeping it
 
@@ -178,13 +184,14 @@ Everything is in `deploy/state/<network>/`:
 
 | directory | what |
 |---|---|
-| `hub/` | the hub's keys (`l2.key`, `seed`, the seed every contract's keys come from); `deployment.json`; a record per contract and per deposit; the disputes' working state |
+| `hub/` | the hub's keys (`l2.key`, `seed`, the seed every contract's keys come from); `deployment.json`; a record per contract and per deposit; the kept garbled instances (`hp/<contract>/`, about 240 MB a contract) and the prover's files |
 | `sequencer/` | `sequencer.key`, the sequencer's key, which also spends the seal; `ledger.json`, the L2's state; `ledger.json.blocks/`, the heights' blocks and the chain prover's receipts |
 | `bitcoind/` | the node, and its wallets `hub` and `sequencer` |
 
 Back up `hub/`, `sequencer/sequencer.key`, `sequencer/ledger.json` and
 the node's two wallets. **All hold secrets.** Losing the contract
-records leaves the hub unable to answer disputes. Losing the sequencer's
+records, or a contract's kept instances, leaves the hub unable to
+answer a challenge of its proof. Losing the sequencer's
 key ends the deployment: a new key is a new deployment, which every
 wallet and the hub refuse, and the seal can no longer be spent. Losing
 the ledger loses the L2's state: it has a single copy, and anchoring
@@ -208,10 +215,10 @@ its log repeated `seal: … Connection refused`. Restarting the service
 recovers it.
 
 An update that changes a guest (`r0/guests/`) is different. A contract's
-dispute statement pins the guests it opened with, and the chain guest
-proves the whole history under its own image id, so a contract open
-across the change could no longer prove its withdrawal, nor the hub its
-counters. Users' wallets must also change version to open new contracts.
+statement pins the guests it opened with, and the chain guest proves the
+whole history under its own image id, so the hub could no longer prove a
+false claim false for a contract open across the change. Users' wallets
+must also change version to open new contracts.
 So, with contracts open:
 
 - stop opening contracts (lichen has no switch for it yet) and tell
@@ -272,8 +279,8 @@ cp deploy/.env.example deploy/.env
 ```
 
 In `deploy/.env`, set `NETWORK` and copy the hub's settings from
-`deploy/hub/.env` (`STATEMENT`, `RESERVE_PPM`, `DURATION`,
-`WINDOWS`, `HUB_PORT`) and the sequencer's from `deploy/sequencer/.env`
+`deploy/hub/.env` (`RESERVE_PPM`, `DURATION`, `HUB_PORT`; `STATEMENT`
+is `hub-proves` now) and the sequencer's from `deploy/sequencer/.env`
 (`SEAL_EVERY`, `SEQUENCER_PORT`). Leave `R0WORK` empty. Anchoring is on,
 through the same node and its wallet `sequencer`, as `anchor.yml` had
 it. Then:

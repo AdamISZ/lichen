@@ -8,7 +8,7 @@ repository at the revision in `LNGAP_REV`).
 
 A contract's dispute is the exit (docs/HUB_PROVES_PLAN.md: a claim
 against a hostile operator, which the hub must prove false; statement
-`hub-proves-mock`, on the mock only for now), BABE with the roles
+`hub-proves`, or `hub-proves-mock` for trials), BABE with the roles
 swapped (its garbled circuits and witness encryption, `crates/babe`;
 docs/BABE_GADGET_PLAN.md): the hub's statement in `withdraw::hp`, its
 graph in `babe::hp`, its setup (Alice garbles and uploads) in
@@ -36,21 +36,23 @@ L2 before it folds (`POST /withdraw`).
 
 ## RISC Zero (`r0/`)
 
-A separate workspace, built in Docker (`r0/Dockerfile`, the image
-`lichen-r0`), since RISC Zero's prover needs Xcode's Metal compiler on a
-Mac and its Groth16 wrap needs x86 Linux.
+A separate workspace, built natively (on a Mac, with Xcode's Metal
+compiler; `--features cuda` for an NVIDIA GPU) or in Docker
+(`r0/Dockerfile`, the image `lichen-r0`). Its Groth16 wrap needs x86
+Linux (RISC Zero's prover image, on Docker).
 
 | path | what |
 |---|---|
-| `guest/`, `chain-guest/` | the spend and chain guests |
+| `guest/`, `chain-guest/`, `hp-guest/` | the spend, chain and hub's statement guests |
 | `guests/` | their committed builds (`<g>.bin`) and image ids (`<g>.id`), and how each was built (its README) |
-| `host/` | `lichen-r0`: proves each guest |
+| `host/` | `lichen-r0`: proves each guest, and wraps the hub's in Groth16 (`hp-proof`) |
 | `build-guest.sh` | a guest's reproducible build (x86 Linux), then packing it (anywhere) |
-| `spend-prover.sh`, `chain-prover.sh` | `lichen-r0` in its image (`LICHEN_R0_IMAGE`, `lichen-r0` by default), for the wallet and the sequencer's operator |
+| `spend-prover.sh`, `chain-prover.sh`, `hp-prover.sh` | `lichen-r0` in its image (`LICHEN_R0_IMAGE`, `lichen-r0` by default), or itself (`LICHEN_R0`), for the wallet, the sequencer's operator and the hub |
+| `hp-remote.sh` | `hp-prover.sh` on another machine over ssh (`LICHEN_R0_HOST`), for a hub on a Mac |
 
-The chain guest holds the spend guest's image id, so rebuild them in
-that order. A new chain guest is a new deployment. A rebuild invalidates the
-committed proof fixtures (r0/guests/README.md says how they were made).
+The chain guest holds the spend guest's image id, and the hub's guest
+the chain guest's, so rebuild them in that order. A new guest is a new
+deployment (r0/guests/README.md says how each was built).
 
 ## Tests
 
@@ -65,3 +67,4 @@ runs everything that needs nothing outside the tree but bitcoind
 | test | needs | time |
 |---|---|---|
 | `lichen-wallet --test shielded_r0` | the prover image | 10 minutes: real spend and chain receipts (`LICHEN_KEEP=1` to keep the files) |
+| `lichen-hub --test hp_real` | `LICHEN_HP_PROVER` (`r0/hp-prover.sh`, or `r0/hp-remote.sh` from a Mac), and `LICHEN_R0` for the stale-claim case's chain prover | the hub's statement proved and wrapped for real: a malformed claim, 7 minutes; a stale claim, 20 to 25 minutes on a Mac and a 4-vCPU x86 server |

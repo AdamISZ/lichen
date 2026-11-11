@@ -302,7 +302,7 @@ the deposit's confirmation to the mint took about a minute (1001, 1002).
 
 - **A** ([cooperative.md](explainers/cooperative.md)): the fold confirmed
   25 blocks after the funding, most of it time at the keyboard.
-- **B** ([hub-absent.md](explainers/hub-absent.md)): escalation to sweep
+- **B** (`docs/explainers/hub-absent.md`, removed; in commit `40159b6`): escalation to sweep
   took 67 minutes: a block between the links, then two windows (80 + 40
   blocks). It found three tidy-ups, fixed in 75ba18a and seen in C:
   - the timeout's fee coin was a fixed 2,000; it is now sized to the
@@ -311,7 +311,7 @@ the deposit's confirmation to the mint took about a minute (1001, 1002).
   - the fee budget's rest needed `sweep-fees`.
 
   The sweep now takes the last two.
-- **C** ([hub-returns.md](explainers/hub-returns.md)): the hub was
+- **C** (`docs/explainers/hub-returns.md`, removed; in commit `40159b6`): the hub was
   started after `inputs` confirmed.
   - It read the claim from the chain, checked it natively, and conceded
     2.4 s after starting.
@@ -322,7 +322,7 @@ the deposit's confirmation to the mint took about a minute (1001, 1002).
 
   Starting the hub before C also caught it up on 1001.
 
-- **D and E** ([lie-caught.md](explainers/lie-caught.md), 2026-10-14):
+- **D and E** (`docs/explainers/lie-caught.md`, removed; in commit `40159b6`, 2026-10-14):
   the hub disputed both and won, each search landing on the lie.
   - D: `disprove_halt_exit` (5,143 vB) on the final step.
   - E: a 66-hop path (`path_split`, then `combine_7` of 81 kvB), then

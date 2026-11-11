@@ -1,15 +1,11 @@
-# How a dispute pays out
+# How an exit pays out
 
-When Alice wins a dispute, by proving her claim or because the hub didn't
-answer, one transaction splits the contract between her and the hub. It
-has to pay her exactly `b`, her withdrawal, but it was signed when the
-contract opened, before anyone knew `b`. This note explains how that
-works: first with a toy example, then traced through a real payout on
-Mutinynet (Test B, contract 1001, 2026-10-12).
-
-The toy uses a base of 2^10, which we expect to move to. Today's code,
-and Test B, use 2^9 (`LOW_BITS` in `crates/proto`). The toy also leaves
-out fees, fee floors and anchors.
+When Alice wins an exit, because the hub didn't assert her claim false
+or couldn't answer her challenge, one transaction splits the contract
+between her and the hub. It has to pay her exactly `b`, her claim, but it
+was signed when the contract opened, before anyone knew `b`. This note
+explains how: first with a toy example, then traced through a real
+payout on Mutinynet (contract 1002, Erin's exit, 2026-11-11).
 
 ## Part 1: a toy payout
 
@@ -17,28 +13,35 @@ out fees, fee floors and anchors.
 
 Bitcoin Script can't build an output. A transaction's outputs, and their
 amounts, are fixed when it is signed. So the payout's 2-of-2 signatures,
-made at opening, fix its outputs before `b` exists. There is no
-covenant to say "pay Alice `b`, and the hub the rest".
+made at opening, fix its outputs before `b` exists. There is no covenant
+to say "pay Alice `b`, and the hub the rest".
 
 What a script *can* do is check a signature on a number and test one of
 its bits. So the payout has one output for each power of two, every one
 of them, whatever `b` turns out to be. Alice's signature on `b` then
 decides who may spend each one.
 
-### The contract
+### Units
+
+A contract counts in a **unit** `u` of its own, with `K` bits: its cap
+is `V_max = u (2^K − 1)`, and Alice claims `b` units, a number below
+`2^K`. The hub picks the largest `K` (at most 32) for which every bit's
+output, `u 2^i`, is at least 512 sats, so none is dust, and `u` the
+smallest that reaches the cap Alice asked for. Contract 1000's cap of
+199,155 is 255 units of 781: `K` = 8.
 
 | term | toy value |
 |---|---|
-| cap `V_max` | 16,383 = 2^14 − 1: a withdrawal is at most 14 bits |
-| base | 2^10: bits 10 to 13 get an output each; bits 0 to 9 get none |
+| unit `u`, bits `K` | 1,000 sats, 4 |
+| cap `V_max` | 15 units: 15,000 |
 | reserves `r_A + r_H` | 10,000 + 20,000 = 30,000 |
-| the contract output | `V_max + r_A + r_H` = 46,383 |
-| Alice's claim `b` | 5,120 = 4,096 + 1,024: bits 12 and 10 |
+| the contract output | `V_max + r_A + r_H` = 45,000 |
+| Alice's claim `b` | 9 units = 8 + 1: bits 3 and 0 |
 
-Alice signed `b` when she escalated, with a one-time (Winternitz) key
-fixed in the contract. That signature is the claim the dispute was
-about. When she wins, the same signature, already public, now does a
-second job: dividing the payout.
+Alice signed `b` in her `request`, with a one-time (Winternitz) key
+fixed in the contract. That signature is the claim the exit is about.
+When she wins, the same signature, already public, does a second job:
+dividing the payout.
 
 ![a toy payout](img/payout-toy.svg)
 
@@ -46,25 +49,26 @@ second job: dividing the payout.
 
 | output | sats | whose |
 |---|---|---|
-| bit 10 | 1,024 | bit 10 of `b` is 1: **Alice's**, after δ |
-| bit 11 | 2,048 | bit 11 is 0: **the hub's** |
-| bit 12 | 4,096 | bit 12 is 1: **Alice's**, after δ |
-| bit 13 | 8,192 | bit 13 is 0: **the hub's** |
+| bit 0 | 1,000 | bit 0 of `b` is 1: **Alice's**, after δ |
+| bit 1 | 2,000 | bit 1 is 0: **the hub's** |
+| bit 2 | 4,000 | bit 2 is 0: **the hub's** |
+| bit 3 | 8,000 | bit 3 is 1: **Alice's**, after δ |
 | the reserves | 30,000 | **Alice's**, after δ: the winner takes both |
-| the low part | 1,023 | bits 0 to 9 of `V_max`: **the hub's**, to its address |
 
 The arithmetic:
 
-- **Alice:** 4,096 + 1,024 = 5,120 of `b`, plus 30,000 of reserves:
-  35,120.
-- **The hub:** 8,192 + 2,048 + 1,023 = 11,263, which is `V_max − b`.
-  It loses its reserve, but keeps the part of the cap Alice didn't
-  withdraw.
+- **Alice:** 8,000 + 1,000 = 9,000, her `b` exactly, plus 30,000 of
+  reserves: 39,000.
+- **The hub:** 2,000 + 4,000 = 6,000, which is `V_max − b`. It loses its
+  reserve, but keeps the part of the cap Alice didn't claim.
 
-So the hub does get the complement, but not as one output. The amount
-is spread across the bit outputs whose bit is 0, plus the low part.
+So the hub gets the complement, spread across the bit outputs whose bit
+is 0. A claim is in whole units, so nothing is rounded away: Alice asks
+for a number of units, and her wallet claims notes worth at least that
+much. What her notes hold above it stays with the hub (and is retired
+with them).
 
-### The leaves of a bit output
+### The leaves
 
 Every bit output has the same three leaves:
 
@@ -75,176 +79,136 @@ Every bit output has the same three leaves:
 
 Each leaf checks the whole signature on `b`, then reads its one bit.
 Nobody can make the signature say anything else: the hub can't forge
-it, and if Alice signed a second value, that is an equivocation. Her
-leaves wait δ so that the hub has time to take every output with
-`equiv_b` first.
+it, and a second value Alice signed would be an equivocation. Her leaves
+wait δ so that the hub has time to take every output with `equiv_b`
+first. The reserve output has two: `alice_reserve`, hers after δ, and
+`equiv_b` again.
 
-### Rounding
+### Fees
 
-Bits below the base get no output. They would be too small to be worth
-spending, and an output under the dust limit is non-standard. So the
-dispute path pays `b` rounded down to a multiple of the base. Had Alice
-claimed 5,500, she would get the same two bit outputs, 5,120, and the
-380 left over would stay with the hub. A cooperative fold has no
-such rounding: it pays her exactly.
+The links before the payout (`request`, and `assert` and
+`challenge_assert` in a disputed exit) each paid a floor of 1 sat/vB out
+of the contract. The winner's payout carries the reserves less those
+floors: the loser's reserve pays for the dispute. The payout itself
+carries no fee: whoever broadcasts it adds a coin of their own, Alice
+from her fee budget.
 
-### Choosing the base
+### Spending a bit output
 
-Spending a bit output costs about **320 vB**: the signature on `b`,
-revealed again, and the script that checks it (measured in Part 2). An
-output of 2^i sats is worth spending only if it is worth more than
-that:
+Spending one costs about **330 vB**: the signature on `b`, revealed
+again, and the script that checks it (Part 2 measures it). So a bit's
+output must be worth more than that at the feerates the contract will
+see, which is why no unit is under 512 sats. Whatever the cap, the
+unit is between 512 and about 1,024 sats, and `K` grows with the cap:
+8 bits for contract 1000's, 23 for a cap of 43 BTC.
 
-| feerate | cost of spending one bit output | smallest bit worth an output |
-|---|---|---|
-| 1 sat/vB | ~320 sats | 2^9 (512) |
-| 2 sat/vB | ~640 sats | 2^10 (1,024) |
-| 5 sat/vB | ~1,600 sats | 2^11 (2,048) |
-| 20 sat/vB | ~6,400 sats | 2^13 (8,192) |
+## Part 2: Erin's exit, traced
 
-The base is fixed when the contract opens, so it has to suit the fees of
-the contract's whole life. Raising it costs little: Alice loses at most
-`base − 1` sats, and only when she has to dispute. It also saves outputs:
-with a cap of 2^32 (about 43 BTC) and a base of 2^10, the payout has 22
-bit outputs (about 0.95 kvB of them), rather than 23.
+Erin's exit ([exit.md](exit.md#erin-a-true-claim-paid)): a true claim
+the hub didn't assert against, so after `w_H` her timeout paid her.
 
-## Part 2: Test B, traced
-
-Test B is the dispute in [hub-absent.md](hub-absent.md): the hub was
-switched off, and Alice withdrew 35,000 sats from contract 1001 by
-timeout. That note walks through the whole dispute. This part follows
-only the payout, down to the witness bytes.
-
-| term | Test B |
+| term | contract 1002 |
 |---|---|
-| cap `V_max` | 65,535 = 2^16 − 1 |
-| base | 2^9: bits 9 to 15 get an output each |
-| reserves | `r_A` 20,000, `r_H` 197,356 |
-| `b` | 35,000 = 0x88B8: bits 15 and 11, plus some below 2^9 |
+| unit `u`, bits `K` | 781 sats, 8 |
+| cap `V_max` | 255 units: 199,155 |
+| reserves | `r_A` 20,000, `r_H` 31,816 |
+| `b` | 126 units = 98,406 sats = `0111 1110`: bits 1 to 6 |
 
 ### The payout transaction
 
-The payout here is the **timeout**,
-[d6bf7b34…](https://mutinynet.com/tx/d6bf7b34e0e3d64377069252bbec4bd5aabb5e7cf85519ea40e3d96802275306)
-(589 vB, block 3,500,949). Had the hub played and lost, Alice's proving
-transaction would have carried the same outputs.
+The payout is `request_timeout`,
+[2eb4200a…](https://mutinynet.com/tx/2eb4200a19ec65b82b024b787df44a0843511adb4a9ec28b8e636c988d4579d3)
+(565 vB, block 3,580,314, 241 blocks after `request`).
 
-**In:** the ladder output after move 1 (260,688 sats), spent by its
-`split_UserWins` leaf with the two pre-signed signatures; and a
-2,000-sat coin from Alice's fee budget, all of it the fee.
+**In:** `request`'s output (248,257 sats), spent by its `request_timeout`
+leaf with the two pre-signed signatures; and a 568-sat coin from Erin's
+fee budget, all of it the fee. The pre-signed transaction carries no fee
+of its own, so whoever broadcasts it adds one.
 
-**Out**, as read from Mutinynet's Esplora on 2026-10-14, and what spent
-them later:
+**Out:**
 
-| # | sats | bit of `b` | whose | on chain, 2026-10-14 | later |
-|---|---|---|---|---|---|
-| 0 | 512 | bit 9 = 0 | the hub's | unspent | the hub's sweep, block 3,513,196 |
-| 1 | 1,024 | bit 10 = 0 | the hub's | unspent | the hub's sweep |
-| 2 | 2,048 | bit 11 = 1 | Alice's | spent by her sweep | |
-| 3 | 4,096 | bit 12 = 0 | the hub's | unspent | the hub's sweep |
-| 4 | 8,192 | bit 13 = 0 | the hub's | unspent | the hub's sweep |
-| 5 | 16,384 | bit 14 = 0 | the hub's | unspent | the hub's sweep |
-| 6 | 32,768 | bit 15 = 1 | Alice's | spent by her sweep | |
-| 7 | 195,153 | the reserves, less the links' floors and anchors | Alice's | spent by her sweep | |
-| 8 | 511 | bits 0 to 8 of `V_max` | the hub's address | unspent | the hub's wallet, block 3,519,232 |
+| # | sats | bit of `b` | whose |
+|---|---|---|---|
+| 0 | 781 | bit 0 = 0 | the hub's |
+| 1 | 1,562 | bit 1 = 1 | Erin's |
+| 2 | 3,124 | bit 2 = 1 | Erin's |
+| 3 | 6,248 | bit 3 = 1 | Erin's |
+| 4 | 12,496 | bit 4 = 1 | Erin's |
+| 5 | 24,992 | bit 5 = 1 | Erin's |
+| 6 | 49,984 | bit 6 = 1 | Erin's |
+| 7 | 99,968 | bit 7 = 0 | the hub's |
+| 8 | 49,102 | the reserves, less the floor | Erin's |
 
-![the timeout's payout](img/hub-absent-payout.svg)
+- **Erin's bits:** 1,562 + 3,124 + 6,248 + 12,496 + 24,992 + 49,984 =
+  98,406, her 126 units exactly.
+- **The hub's:** 781 + 99,968 = 100,749 = 199,155 − 98,406.
+- **The reserves:** `r_A + r_H` = 51,816, less what `request` took on
+  its way, its floor (2,384) and its anchor output (330): 49,102.
 
-The outputs add up to the whole input: 65,024 in bit outputs, plus 511,
-is `V_max`; with the reserves, 260,688. Nine P2TR outputs are 387 bytes,
-about two-thirds of the transaction.
-
-- **Alice's bits:** 2,048 + 32,768 = 34,816. Bits 7, 5, 4 and 3 of
-  35,000 are also set, but fall below the base: she loses the low 184
-  sats.
-- **The hub's:** 512 + 1,024 + 4,096 + 8,192 + 16,384 = 30,208, plus the
-  511: 30,719 = 65,535 − 34,816.
+The outputs add up to the whole input: 199,155 in bit outputs and
+49,102 of reserves are 248,257.
 
 ### Reading `b` off the chain
 
-Alice's signature on `b` first appeared in `escalate`. Each bit leaf
-checks it again, so it is in the sweep's witness too. Input 0 of the
-sweep, the one spending bit 11, has 23 witness items:
-
-- ten pairs of (a 20-byte hash, a digit): the signature;
-- Alice's key signature, 64 bytes;
-- the leaf script (787 bytes) and its control block.
-
-The digits are `0 0 0 0 8 8 B 8` and then `5 5`:
+Erin's signature on `b` first appeared in `request`'s witness: the claim
+in its first 15 items, then her signature on `E`, then her signature on
+`b`, ten pairs of a 20-byte hash and a digit, then the two pre-signed
+signatures, the 5,765-byte leaf script and its control block. The
+digits of `b` are `0 0 0 0 0 0 7 E` and then `6 3`:
 
 ![reading b from the witness](img/payout-read.svg)
 
 - **The eight message digits** are `b`'s nibbles, most significant
-  first: 0x000088B8 = 35,000.
-- **The two checksum digits** are 0x55 = 85 = Σ (15 − d) over the eight:
-  4 × 15 for the zeros, plus 7 + 7 + 4 + 7.
+  first: 0x0000007E = 126.
+- **The two checksum digits** are 0x63 = 99 = Σ (15 − d) over the eight:
+  6 × 15 for the zeros, plus 8 and 1.
 
 Each hash is the digit's secret hashed `d` times. The script hashes it
 another `15 − d` times and compares the result with the public key in
 the contract. So anyone can raise a digit, by hashing further, but no
 one can lower one. Raising any message digit lowers the checksum, which
-would mean lowering a checksum digit. That is why nobody but Alice can
+would mean lowering a checksum digit. That is why nobody but Erin can
 produce a signature on any other value.
 
 ### How a leaf reads one bit
 
 After checking the signature, a bit leaf picks the nibble holding its
 bit and tests that one bit. Bit `i` is bit `i mod 4` of the nibble
-covering bits `4⌊i/4⌋` to `4⌊i/4⌋ + 3`. The leaf reduces the nibble
-modulo 2^(j+1), then compares it with 2^j, where `j = i mod 4`:
+covering bits `4⌊i/4⌋` to `4⌊i/4⌋ + 3`:
 
-- **`alice_bit_11`:** bit 11 is bit 3 of the nibble for bits 8–11,
-  which is 8 (`1000`). The test is 8 ≥ 8: true, so Alice's leaf passes.
-  Its script also carries `δ` (40 blocks) as a CSV, and her key.
-- **`hub_bit_9`:** bit 9 is bit 1 of the same nibble. Reduced mod 4,
-  8 becomes 0, and 0 ≥ 2 is false. The hub's leaf ends with `OP_NOT`, so
-  for it a 0 passes. There is no timelock: the hub could take the output
-  at once.
+- **`alice_bit_6`:** bit 6 is bit 2 of the nibble for bits 4 to 7,
+  which is 7 (`0111`). Reduced modulo 2^3 it is 7, and 7 ≥ 4: true, so
+  Erin's leaf passes. Its script also carries `δ` (40 blocks) as a CSV,
+  and her key.
+- **`hub_bit_7`:** bit 7 is bit 3 of the same nibble. Reduced modulo
+  2^4, 7 is 7, and 7 ≥ 8 is false. The hub's leaf ends with `OP_NOT`,
+  so for it a 0 passes, at once.
 
-Alice's leaf can't spend bit 9's output, and the hub's can't spend bit
-11's. The `equiv_b` leaf, needing two different signed values, can't
-spend either: Alice signed only one.
+### The sweeps
 
-### The sweep
+Erin's outputs wait `δ`, 40 blocks, the hub's chance to show an
+equivocation; then her wallet swept them, with the leftovers of her
+side, to her payout address in one transaction:
+[6136d1d2…](https://mutinynet.com/tx/6136d1d26f545c3719ca7174b87e99098d00a57032f3f7df9960e21ad49c9b41)
+· 2,275 vB · fee 2,277 · block 3,580,355
 
-[21ee8b9f…](https://mutinynet.com/tx/21ee8b9fa01320928301915245d776f4f58bef0a41e653ed8e8311ada3fd0267)
-· 790 vB · fee 1,200 · block 3,500,990, 41 blocks after the timeout
+| input | sats | leaf | witness |
+|---|---|---|---|
+| bits 1 to 6 | 98,406 | `alice_bit_1` … `alice_bit_6` | 1,127 to 1,173 B each: the ten pairs, her key's signature, a script of 787 to 808 B |
+| the reserves | 49,102 | `alice_reserve` | 167 B |
+| `request`'s anchor output | 330 | hers, as its poster | 131 B |
+| her fee budget's rest | 29,272 | by key | 64 B |
+| **out** | **174,833** | to her payout address | |
 
-| input | sats | leaf | witness | about |
-|---|---|---|---|---|
-| bit 11 | 2,048 | `alice_bit_11` | 1,122 B | 322 vB |
-| bit 15 | 32,768 | `alice_bit_15` | 1,154 B | 330 vB |
-| the reserves | 195,153 | `alice_reserve` | 167 B | 83 vB |
-| **out** | **228,769** | to her payout address | | |
+Each bit input costs about 330 vB, most of it the script that checks the
+signature on `b`, and the ten pairs it consumes: that's the figure Part
+1's dust limit rests on.
 
-Each bit input costs about 320 vB: that is the figure Part 1's table of
-bases uses. Most of it is the 787-byte script, mostly the signature
-check, and the ten pairs it consumes. The reserve input is cheap: just a
-key signature after `δ`.
+**The hub's outputs.** The zero-bit leaves have no timelock, and the hub
+collects its outputs itself once an exit settles: here bits 0 and 7,
+100,749 sats, in
+[69fa312f…](https://mutinynet.com/tx/69fa312f732e2e5dc50d8f4e812b777929ba2e53b683b2868923630b2c8f9815)
+(721 vB, fee 723, block 3,580,315, the block after the payout).
 
-### The hub's outputs
-
-The hub's six outputs, 30,719 sats, were still unspent on 2026-10-14:
-the zero-bit leaves have no timelock, but the hub had no code to collect
-them. Since 2026-10-17 it sweeps its bit outputs itself once a dispute
-settles, and on upgrading it collected those its earlier disputes had
-left. For 1001 that was
-[032413dc…](https://mutinynet.com/tx/032413dc31861b05d69bcb8192416819de92de5386f6ad14bc0a6297c3fae4b1)
-(block 3,513,196): the five bit outputs, 30,208 sats, in one
-transaction of 1,722 vB, fee 1,724, about 344 vB an input. The 511 was
-already at its address, and its wallet spent it as an ordinary coin in
-[fb2fb609…](https://mutinynet.com/tx/fb2fb609cc7b754f7d38cfd6225a351f87a4e7295adbe8646323129db47cf3e7)
-(block 3,519,232).
-
-The 512-sat output shows the case for a higher base. Spending it costs
-about 320 vB, so above 1.6 sat/vB it is worth less than its fee. With a
-base of 2^10, bits 9 and below would have been one output of 1,023 to the
-hub. Alice would have been paid the same 34,816: bit 9 of 35,000 is 0,
-so she lost the same 184. And the hub would have had one bit output fewer
-to collect.
-
-**Test C**, contract 1002 ([hub-returns.md](hub-returns.md)), is the same
-check with `b` = 30,000 = 0x7530. Bits 14, 13, 12 and 10 are Alice's,
-29,696. Bits 15, 11 and 9 are the hub's, 35,328, plus the 511. Here too
-Alice loses the same 304 sats under either base, since bit 9 of 30,000
-is 0.
+Sara's exit, of a shielded note ([exit.md](exit.md#sara-a-shielded-note)),
+claimed the same 126 units, and paid out the same way.
