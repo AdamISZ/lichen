@@ -7,6 +7,7 @@
 //! sequencer's state; it checks every sealed root's signature.
 
 mod ack;
+pub use ack::ACK_PATIENCE;
 mod hp;
 pub mod dispute;
 pub mod engine;
@@ -861,7 +862,7 @@ impl Wallet {
         let record = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?.record.clone();
         let want = u64::from(units) * record.terms.unit.to_sat();
         // our own spends acknowledged first: their change unlocked
-        self.acknowledge_all(chain, 600)?;
+        self.acknowledge_all(chain, ack::ACK_PATIENCE)?;
         let mine = self.notes(&self.state()?);
         let total: u64 = mine.iter().map(|o| o.note.value).sum();
         ensure!(total >= want, "the transparent balance is {total} sats, short of {want}");
@@ -873,7 +874,7 @@ impl Wallet {
             self.say(format!("splitting off a note of {want} sats to claim"));
             let i = self.send(self.address(), want, 0)?[0];
             self.say("waiting for the split to be anchored and acknowledged: until then its note is locked".into());
-            self.acknowledge_all(chain, 600)?;
+            self.acknowledge_all(chain, ack::ACK_PATIENCE)?;
             ensure!(!self.state()?.locked(i), "the note split off is still locked");
             vec![i]
         };

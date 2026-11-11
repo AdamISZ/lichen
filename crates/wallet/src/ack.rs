@@ -13,6 +13,12 @@ use lichen_ledger::{xonly, Ack, Tx};
 
 use crate::Wallet;
 
+/// How long a wallet waits for its spends to be acknowledged before it
+/// gives up (s): an acknowledgment waits for an anchor at or above the
+/// spend, recorded once it is the margin deep (20 blocks on Mutinynet,
+/// some minutes; 6 on mainnet, an hour or more).
+pub const ACK_PATIENCE: u64 = 6 * 3600;
+
 impl Wallet {
     /// Acknowledge each spend of ours the sequencer has sealed and an
     /// anchor checked on `chain` holds; how many are still waiting (not

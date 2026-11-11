@@ -278,7 +278,7 @@ fn main() -> Result<()> {
         Cmd::Ack { wait } => {
             let chain = chain(&a)?;
             if wait {
-                w.acknowledge_all(&chain, 6 * 3600)?;
+                w.acknowledge_all(&chain, lichen_wallet::ACK_PATIENCE)?;
                 println!("every spend acknowledged");
             } else {
                 match w.acknowledge(&chain)? {
