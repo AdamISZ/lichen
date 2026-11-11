@@ -71,7 +71,7 @@ impl Shared {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Options {
     /// Accept native proofs of shielded spends: the sender's private input
-    /// in the clear (tests and demos).
+    /// in the clear (tests).
     pub native_proofs: bool,
     /// The genesis seal of a new ledger that will be anchored
     /// ([`anchor::genesis_seal`]); a ledger kept from before has its own.

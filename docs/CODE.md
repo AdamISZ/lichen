@@ -32,7 +32,6 @@ L2 before it folds (`POST /withdraw`).
 | `chain` | | each party: its own bitcoind wallet over RPC, or Esplora |
 | `proto` | | wallet and hub: the opening messages, the contract record, the contract's graph (`Built`); the hub-proves setup exchange and dispute plumbing (`hp`, the cut-and-choose's shared parts in `setup`); `request` and transactions read from the chain for the hub's statement (`exit`) |
 | `hub` | `lichen-hub` | the hub: opens contracts, issues tokens, records withdrawal claims and folds; proves exit claims false, and records the others on the L2 |
-| `demo` | `lichen-demo` | the local web demo of all of the above |
 
 ## RISC Zero (`r0/`)
 

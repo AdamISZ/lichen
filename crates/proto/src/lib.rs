@@ -111,7 +111,7 @@ pub fn params(net: Net) -> ChannelParams {
 /// contract costs her that wait, never the coins. The hub broadcasts the
 /// funding only in the first half of it ([`broadcast_deadline`]); on
 /// regtest, 1,000 blocks leave time to open with blocks every 150 ms (the
-/// dispute tests) or every second (the demo).
+/// dispute tests).
 pub fn deposit_timeout(net: Net) -> u16 {
     match net {
         Net::Regtest => 1_000,

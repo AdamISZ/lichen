@@ -3,7 +3,7 @@
 //! Its key is made on first start and kept in `--key`; the hub that mints
 //! is named by its key (`--issuer`, as `lichen-hub --print-key` prints it).
 //! `--toy` runs the toy deployment instead (keys anyone can derive: tests
-//! and regtest demos only).
+//! only).
 
 use std::path::PathBuf;
 
@@ -35,7 +35,7 @@ struct Args {
     #[arg(long, default_value_t = 5)]
     seal_every: u64,
     /// Accept native proofs of shielded spends, which carry the sender's
-    /// private input in the clear: tests and demos only.
+    /// private input in the clear: tests only.
     #[arg(long)]
     native_proofs: bool,
     /// Anchor the history on Bitcoin (docs/RUN_A_HUB.md) through this

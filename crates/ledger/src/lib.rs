@@ -53,12 +53,12 @@ pub fn key_from_label(label: &str) -> SigningKey {
     SigningKey::from_bytes(&sha256(&[label.as_bytes()])).expect("a valid scalar")
 }
 
-/// The toy deployment's sequencer key (`SEQUENCER_KEY`): tests, the demo.
+/// The toy deployment's sequencer key (`SEQUENCER_KEY`): tests.
 pub fn regtest_sequencer() -> SigningKey {
     key_from_label("lngap-toy/sequencer")
 }
 
-/// The toy deployment's hub key (`HUB_KEY`): tests, the demo.
+/// The toy deployment's hub key (`HUB_KEY`): tests.
 pub fn regtest_hub() -> SigningKey {
     key_from_label("lngap-toy/hub")
 }
@@ -206,7 +206,7 @@ pub mod sclaim_hex {
 }
 
 impl Deployment {
-    /// The toy deployment's (tests, the demo): keys anyone can derive.
+    /// The toy deployment's (tests): keys anyone can derive.
     pub fn toy() -> Deployment {
         Deployment { sequencer: SEQUENCER_KEY, hub: HUB_KEY, seal: None }
     }

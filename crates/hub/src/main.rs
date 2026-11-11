@@ -4,7 +4,7 @@
 //! (`l2.key`: it mints; the sequencer names it with `--issuer`, as
 //! `--print-key` prints it) and the seed of its contract keys (`seed`).
 //! `--toy` uses the toy deployment's keys instead (anyone can derive
-//! them: tests and regtest demos only).
+//! them: tests only).
 
 use std::path::PathBuf;
 
