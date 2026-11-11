@@ -163,13 +163,19 @@ impl Wallet {
                 }
                 p
             }
-            None => {
-                let p = self.hp_exit_plan(chain, cid)?;
-                self.contracts[k].exit = Some(p.clone());
-                self.save()?;
-                p
-            }
+            None => self.keep_exit_claim(chain, cid)?,
         };
         self.play(chain, statement, cid, plan.b)
+    }
+
+    /// Contract `cid`'s exit claim prepared now and kept with it, not
+    /// posted: [`Wallet::exit`] posts the claim kept. For trials, a stale
+    /// claim: kept, then its notes spent.
+    pub fn keep_exit_claim(&mut self, chain: &lichen_chain::Chain, cid: u32) -> Result<ExitPlan> {
+        let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
+        let p = self.hp_exit_plan(chain, cid)?;
+        self.contracts[k].exit = Some(p.clone());
+        self.save()?;
+        Ok(p)
     }
 }

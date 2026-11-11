@@ -34,8 +34,9 @@ struct Args {
     cookie: Option<PathBuf>,
     #[arg(long, default_value = "alice")]
     chain_wallet: String,
-    /// The hub's statement: `hub-proves-mock` (a proof of a toy circuit,
-    /// for trials) or `hub-proves` (its guest, not built yet).
+    /// The hub's statement: `hub-proves` (its guest's proof, wrapped in
+    /// Groth16) or `hub-proves-mock` (a proof of a toy circuit, for
+    /// trials).
     #[arg(long, default_value = "hub-proves-mock")]
     statement: lichen_proto::Statement,
     /// The prover of shielded spends: a command run as `<cmd> spend <input
@@ -162,7 +163,18 @@ enum Cmd {
     /// claim), and play the dispute to its end (the hub proves the claim
     /// false or the timeout pays). Run again to resume (the claim is kept
     /// with the contract).
-    Exit { contract: u32 },
+    Exit {
+        contract: u32,
+        /// For trials: prepare the claim and keep it, without posting it
+        /// (`exit` later posts the claim kept, its notes since spent or
+        /// not).
+        #[arg(long, hide = true)]
+        claim_only: bool,
+        /// For trials: challenge the hub's assertion even if its proof is
+        /// valid (the hub answers, and takes the contract).
+        #[arg(long, hide = true)]
+        challenge_anyway: bool,
+    },
 }
 
 /// The chain: a node if `--rpc-url` is given, else Esplora.
@@ -207,9 +219,15 @@ fn exit_note(a: &Args, cid: u32, t_close: u32, height: Option<u32>) -> String {
 }
 
 /// `lichen exit`: a contract's exit, played to its end.
-fn exit_cmd(a: &Args, w: &mut Wallet, contract: u32) -> Result<()> {
+fn exit_cmd(a: &Args, w: &mut Wallet, contract: u32, claim_only: bool, challenge_anyway: bool) -> Result<()> {
     let chain = chain(a)?;
     w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
+    if claim_only {
+        let p = w.keep_exit_claim(&chain, contract)?;
+        println!("contract {contract}: a claim of {} units kept, not posted (`lichen exit {contract}` posts it)", p.b);
+        return Ok(());
+    }
+    w.unchecked_claims = challenge_anyway;
     let (outcome, swept) = w.exit(&chain, &a.statement, contract)?;
     match outcome {
         lichen_wallet::dispute::Outcome::Countered => println!("The hub proved the claim false: a note of it isn't yours, isn't live at the last anchor before the request, or was claimed through another contract too. Its success takes the contract."),
@@ -352,7 +370,7 @@ fn main() -> Result<()> {
             let txid = w.refund(&chain(&a)?, contract, bitcoin::Amount::from_sat(fee))?;
             println!("refunded the deposit for contract {contract}: {txid}");
         }
-        Cmd::Exit { contract } => exit_cmd(&a, &mut w, contract)?,
+        Cmd::Exit { contract, claim_only, challenge_anyway } => exit_cmd(&a, &mut w, contract, claim_only, challenge_anyway)?,
         Cmd::PostDefault { contract } => {
             let txid = w.post_default(&chain(&a)?, &a.statement, contract)?;
             println!("posted contract {contract}'s default: {txid}");
@@ -382,7 +400,7 @@ fn main() -> Result<()> {
                     let Some(t_close) = open.filter(|_| amount > 0) else { return Err(e) };
                     if escalate {
                         eprintln!("The cooperative withdrawal failed: {e:#}\nExiting on Bitcoin");
-                        exit_cmd(&a, &mut w, contract)?;
+                        exit_cmd(&a, &mut w, contract, false, false)?;
                     } else {
                         let height = chain(&a).and_then(|c| c.height()).ok();
                         eprintln!("Error: {e:#}\n\n{}", exit_note(&a, contract, t_close, height));
