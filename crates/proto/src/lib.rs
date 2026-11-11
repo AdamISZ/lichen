@@ -200,10 +200,6 @@ impl Statement {
             Statement::HubProves { mock: true } => "hub-proves-mock",
         }
     }
-    /// Whether it is the real statement rather than the mock.
-    pub fn is_real(&self) -> bool {
-        matches!(self, Statement::HubProves { mock: false })
-    }
 }
 
 /// What the hub offers (`GET /info`).

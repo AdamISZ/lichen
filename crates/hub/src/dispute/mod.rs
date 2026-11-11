@@ -53,18 +53,6 @@ impl Inner {
     /// Advance every dispute by what the chain shows now.
     pub(crate) fn disputes_tick(&self) -> Result<()> {
         self.check_closings()?;
-        // contracts closed before the hub collected its bit outputs, once
-        let leave = self.leave_bits.load(std::sync::atomic::Ordering::Relaxed);
-        let uncollected: Vec<_> = self.open.lock().unwrap().values().filter(|o| o.closed.is_some() && !o.collected && !leave).map(|o| o.record.clone()).collect();
-        for record in uncollected {
-            // (never at the expense of the disputes in play: tried again next tick)
-            if let Err(e) = self.collect_closed(&record) {
-                let once = format!("contract {}: collecting what its dispute left failed: {e:#}", record.cid());
-                if !self.log.lock().unwrap().contains(&once) {
-                    self.note(once);
-                }
-            }
-        }
         let open: Vec<_> = self.open.lock().unwrap().values().filter(|o| o.closed.is_none()).map(|o| o.record.clone()).collect();
         for record in open {
             let cid = record.cid();
@@ -99,11 +87,6 @@ impl Inner {
     /// with nothing collected.
     fn collect(&self, record: &Record, link: Txid, since: u32) -> Result<Option<State>> {
         let cid = record.cid();
-        if self.leave_bits.load(std::sync::atomic::Ordering::Relaxed) {
-            self.close(cid, link)?;
-            self.set_collected(cid, false)?;
-            return Ok(Some(State::Done));
-        }
         match self.sweep_bits(record)? {
             Bits::None => self.note(format!("contract {cid}: no bit outputs of the hub's (every bit of the claim is set)")),
             Bits::Swept(txid, n, value) => self.note(format!("contract {cid}: collected the hub's {n} bit outputs, {} sats: {txid}", value.to_sat())),
@@ -112,19 +95,6 @@ impl Inner {
         }
         self.close(cid, link)?;
         Ok(Some(State::Done))
-    }
-
-    /// A contract closed before the hub collected its bit outputs: if a
-    /// dispute the user won is what closed it, sweep them now. Looked at
-    /// once.
-    fn collect_closed(&self, record: &Record) -> Result<()> {
-        let cid = record.cid();
-        if self.hp_requested(record)? {
-            if let Bits::Swept(txid, n, value) = self.sweep_bits(record)? {
-                self.note(format!("contract {cid}: collected the hub's {n} bit outputs left from its dispute, {} sats: {txid}", value.to_sat()));
-            }
-        }
-        self.set_collected(cid, true)
     }
 
 

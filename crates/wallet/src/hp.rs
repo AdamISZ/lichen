@@ -305,7 +305,7 @@ impl Wallet {
         self.signed.iter().any(|s| s.nullifiers.contains(nf) && s.ack.is_some())
             || state.is_some_and(|s| {
                 let t = s.leaf(nf);
-                t != [0; 32] && !(unacked && !s.spent(&ack::acked_key(&t)))
+                t != [0; 32] && (!unacked || s.spent(&ack::acked_key(&t)))
             })
     }
 

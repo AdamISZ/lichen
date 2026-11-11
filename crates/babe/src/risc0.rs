@@ -53,13 +53,13 @@ mod tests {
     /// ln-gap's vector: a receipt of its placeholder guest on (9, 42), the
     /// seal as RISC Zero writes it.
     const SEAL: &str = "1c6a455ff5b8f2d3c0ca9eb31802250955c88065d11fec7b691f18b8210d9855128d7fd898e6113182af26563e6efd40445a16a4bd3cdaa51c24647c933edb4c1d187c8d5467a0feb82a85d379f644065673cd0bf743bf1dfe790a4f5fa4cc9f103f6ec5c6a9f044d4d13c7929af31348ad0958d809a5a57b71f1cb1808283d02a926437b087dedb1c0a27ceab343029468584c20edee5954ba81aa0846e2c5806044b9bfbbc563a93d941cf9b21a482d734cf625ea31aff8a6f92d13c8cecdb1034347d87372b0e061ae70beb1707bb523574a4fc5757b0a560a7592dd83b520e14d5bc1097c394158e0158ca467e750c46bb93b6c9f7e1aa4d6ed0025860d2";
-    /// The same proof as BitVMX's verifier takes it (FairgateLabs'
-    /// compression), its image id, its journal.
+    /// The same proof decoded independently, from ln-gap's compressed
+    /// points (FairgateLabs' encoding); its image id, its journal.
     const POINTS: &str = "55980d21b8181f697bec1fd16580c85509250218b39ecac0d3f2b8f55f456a1cd0838280b11c1fb7575a9a808d95d08a3431af29793cd1d444f0a9c6c56e3f109fcca45f4f0a79fe1dbf43f70bcd73560644f679d3852ab8fea067548d7c189d523bd82d59a760a5b05757fca4743552bb0717eb0be71a060e2b37877d343410";
     const ID: &str = "c2bf393e7d9cbb53a5b6f0c1bc9767d42c04f632a9824a572eb7a5d6d77cd250";
 
     #[test]
-    fn a_seal_is_the_proof_bitvmx_reads_and_verifies() {
+    fn a_seal_decodes_to_the_same_points_and_verifies() {
         let p = proof_from_seal(&hex::decode(SEAL).unwrap()).unwrap();
         let q = groth16::decode(&hex::decode(POINTS).unwrap()).unwrap();
         assert_eq!((p.a, p.b, p.c), (q.a, q.b, q.c));

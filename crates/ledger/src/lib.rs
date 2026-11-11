@@ -392,10 +392,6 @@ impl Nullifiers {
     fn before(&self, h: u64) -> Nullifiers {
         Nullifiers { map: self.map.iter().filter(|(_, e)| e.1 < h).map(|(k, e)| (*k, *e)).collect(), root: Default::default() }
     }
-    /// `key`'s leaf at height `h` (zero: absent then).
-    pub fn leaf_at(&self, key: &Hash, h: u64) -> Hash {
-        self.map.get(key).filter(|e| e.1 <= h).map_or([0; 32], |e| e.0)
-    }
     /// The tree's root at height `h`, and `key`'s path in it.
     pub fn proof_at(&self, key: &Hash, h: u64) -> (Hash, lichen_validity::smt::Proof) {
         let e = self.entries_at(h);
@@ -405,10 +401,6 @@ impl Nullifiers {
     /// block inserted it.
     pub fn spent(&self, key: &Hash) -> Option<(Hash, u64)> {
         self.map.get(key).copied()
-    }
-    /// Whether `key` was inserted by height `h`.
-    pub fn spent_by(&self, key: &Hash, h: u64) -> bool {
-        self.map.get(key).is_some_and(|e| e.1 <= h)
     }
     pub fn root(&self) -> Hash {
         *self.root.get_or_init(|| lichen_validity::smt::root(&self.entries()))
@@ -1129,11 +1121,6 @@ impl Ledger {
         verify(&self.deployment.hub, &hold_digest(&self.deployment, nfs), sig).context("a hold not signed by the hub")?;
         self.held.extend(nfs);
         Ok(())
-    }
-
-    /// The first sealed height that includes note `index`.
-    pub fn sealed_with(&self, index: u32) -> Option<&SignedRoot> {
-        self.sealed.iter().find(|s| s.size > index)
     }
 
     /// The chain journal's `recent` at height `h`: the hash of the last

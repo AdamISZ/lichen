@@ -283,12 +283,6 @@ impl Inner {
         self.chain.post_terminal(&tx, &d.set[name].prevout, lichen_proto::terminal_fee(&tx, self.cfg.network), &NodeWallet)
     }
 
-    /// Whether the contract was disputed (`request` posted).
-    pub(super) fn hp_requested(&self, record: &Record) -> Result<bool> {
-        let d = HpDisputed::new(record, &self.cfg.statement)?;
-        Ok(self.chain.get_tx(&d.txid("request")).is_some())
-    }
-
     /// Alice's `b` and her signature on it, from `request`.
     pub(super) fn hp_claimed_b(&self, record: &Record) -> Result<(u32, Vec<Vec<u8>>)> {
         let d = HpDisputed::new(record, &self.cfg.statement)?;
@@ -808,7 +802,7 @@ impl Inner {
             let r_pi1 = evaluate(&inst.gc, &asserted.bits, &inst.labels(&asserted.bits, &secrets));
             let msg = decrypt(&inst.ct, &r_pi1, &proof);
             if inst.is_msg(&msg) {
-                return self.hp_terminal(d, &format!("wrongly_challenged_{k}"), vec![msg.to_vec()]).map(Some);
+                return self.hp_terminal(d, &format!("wrongly_challenged_{k}"), HubProves::wrongly_wire(&msg)).map(Some);
             }
         }
         Ok(None)

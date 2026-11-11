@@ -129,12 +129,6 @@ pub(crate) struct Open {
     /// How it ended: the fold's or the default's txid.
     #[serde(default)]
     pub(crate) closed: Option<bitcoin::Txid>,
-    /// Whether anything of a closed contract is left for the hub to
-    /// collect has been settled: always, for contracts closed since the hub
-    /// collects its bit outputs; contracts closed before that are looked
-    /// at once.
-    #[serde(default)]
-    pub(crate) collected: bool,
     /// Whether the closing transaction confirmed: until then the hub keeps
     /// looking, and watches the contract again if it vanishes (replaced by
     /// a conflicting spend: the user's escalation, mined instead).
@@ -159,7 +153,6 @@ pub(crate) struct Inner {
     /// what the hub did.
     refuse_folds: AtomicBool,
     /// For tests: close a dispute the user won without collecting.
-    leave_bits: AtomicBool,
     /// For tests: assert a false proof against every exit claim that
     /// holds.
     forge_assertions: AtomicBool,
@@ -225,7 +218,7 @@ impl Hub {
         let server = Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let server = Arc::new(Mutex::new(Arc::new(server)));
-        let inner = Arc::new(Inner { cfg, chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), leave_bits: AtomicBool::new(false), forge_assertions: AtomicBool::new(cfg_forge), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), proving: Arc::new(Mutex::new(Default::default())), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), proving: Arc::new(Mutex::new(Default::default())), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             listen(&srv, &i1.stop, |mut req| {
@@ -311,12 +304,6 @@ impl Hub {
     pub fn set_refuse_folds(&self, on: bool) {
         self.misbehave();
         self.inner.refuse_folds.store(on, Ordering::Relaxed);
-    }
-    /// For tests: close a dispute the user won without collecting the
-    /// hub's bit outputs, as hubs did before they collected them.
-    pub fn set_leave_bits(&self, on: bool) {
-        self.misbehave();
-        self.inner.leave_bits.store(on, Ordering::Relaxed);
     }
     /// For tests: a fault in each opening from now on.
     pub fn set_opening_fault(&self, f: OpeningFault) {
@@ -621,7 +608,7 @@ impl Inner {
         let signed = self.chain.sign_mine(&funding, &prevouts)?;
         // kept before the funding goes out: a contract the hub funded and
         // forgot (a crash between) would never be defaulted or disputed
-        let o = Open { record, closed: None, collected: false, confirmed: false };
+        let o = Open { record, closed: None, confirmed: false };
         self.save(&o)?;
         let txid = match self.chain.broadcast(&signed) {
             Ok(t) => t,
@@ -750,7 +737,6 @@ impl Inner {
         let mut open = self.open.lock().unwrap();
         let o = open.get_mut(&cid).context("no such contract")?;
         o.closed = Some(txid);
-        o.collected = true;
         o.confirmed = false;
         let o = o.clone();
         drop(open);
@@ -786,7 +772,6 @@ impl Inner {
                 let mut open = self.open.lock().unwrap();
                 let Some(o) = open.get_mut(&cid) else { continue };
                 o.closed = None;
-                o.collected = false;
                 let o = o.clone();
                 drop(open);
                 self.save(&o)?;
@@ -795,16 +780,6 @@ impl Inner {
             }
         }
         Ok(())
-    }
-
-    /// Record whether what a closed contract left is collected.
-    pub(crate) fn set_collected(&self, cid: u32, collected: bool) -> Result<()> {
-        let mut open = self.open.lock().unwrap();
-        let o = open.get_mut(&cid).context("no such contract")?;
-        o.collected = collected;
-        let o = o.clone();
-        drop(open);
-        self.save(&o)
     }
 
     /// After `T_close`, the default of every contract still open: the
