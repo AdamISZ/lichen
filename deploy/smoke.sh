@@ -3,8 +3,8 @@
 # a user's wallet, as a one-off container on the deployment's compose
 # network, opens a contract with inbound liquidity (its deposit paid from
 # the miner's coins), waits for the deposit less the hub's fee to be
-# minted on the L2, withdraws cooperatively, and checks the payout address
-# received it.
+# minted on the L2, withdraws cooperatively (in the contract's units), and
+# checks the payout address received it.
 #   deploy/smoke.sh              (deploy/.env, or ENV_FILE)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -48,7 +48,7 @@ payout="$(cli -rpcwallet=miner getnewaddress)"
 
 echo "== open, with 200000 of liquidity: pay the deposit when it is asked for"
 log="$(mktemp)"
-wallet open 400000 --liquidity 200000 --payout "$payout" > "$log" 2>&1 &
+wallet open 400000 --liquidity 200000 --reserve 20000 --payout "$payout" > "$log" 2>&1 &
 opener=$!
 until grep -q "^pay " "$log"; do
     kill -0 "$opener" 2>/dev/null || { cat "$log"; exit 1; }
@@ -70,10 +70,14 @@ done
 wallet balance
 [ "$(wallet balance | awk 'NR == 1 {print $1}')" = "$minted" ] || { echo "FAIL: not $minted minted" >&2; exit 1; }
 
-echo "== withdraw 300000 cooperatively"
-wallet withdraw "$cid" 300000
+echo "== withdraw 300000 cooperatively (rounded down to the contract's unit)"
+wlog="$(mktemp)"
+wallet withdraw "$cid" 300000 | tee "$wlog"
+withdrawn="$(grep -o '^withdrew [0-9]*' "$wlog" | cut -d' ' -f2)"
+[ -n "$withdrawn" ] || { echo "FAIL: no withdrawal" >&2; exit 1; }
 sleep "$((MINE_EVERY + 3))"
 got="$(cli -rpcwallet=miner listreceivedbyaddress 0 | grep -A3 "\"$payout\"" | grep amount | tr -dc '0-9.')"
-echo "the payout address received $got BTC (300000 sats and the reserve)"
-[ "$got" = "0.00320000" ] || { echo "FAIL" >&2; exit 1; }
+want="$(printf '0.%08d' $((withdrawn + 20000)))"
+echo "the payout address received $got BTC ($withdrawn sats and the reserve)"
+[ "$got" = "$want" ] || { echo "FAIL: expected $want" >&2; exit 1; }
 echo "OK"
