@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 exclude = ["r0"]
-members = ["crates/ledger", "crates/shielded", "crates/validity", "crates/withdraw", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/babe"]
+members = ["crates/notes", "crates/ledger", "crates/shielded", "crates/validity", "crates/withdraw", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/babe"]
 
 [workspace.package]
 version = "0.4.5"
@@ -30,6 +30,7 @@ lichen-shielded = { path = "crates/shielded" }
 lichen-validity = { path = "crates/validity" }
 lichen-withdraw = { path = "crates/withdraw" }
 lichen-l2 = { path = "crates/l2" }
+lichen-notes = { path = "crates/notes" }
 lichen-chain = { path = "crates/chain" }
 lichen-proto = { path = "crates/proto" }
 lichen-hub = { path = "crates/hub" }

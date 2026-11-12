@@ -1865,6 +1865,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "lichen-notes"
+version = "0.4.5"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "hex",
+ "lichen-ledger",
+ "lngap-btc",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "lichen-proto"
 version = "0.4.5"
 dependencies = [
