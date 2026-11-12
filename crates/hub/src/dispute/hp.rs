@@ -50,6 +50,11 @@ fn hub_adaptor(seed: &str, cid: u32) -> AdaptorKeys {
     AdaptorKeys::new(&contract_seed(seed, cid), DIGITS)
 }
 
+/// The hub's one-time key for `b_corr` in contract `cid` (`correct`).
+pub(crate) fn hub_bc(seed: &str, cid: u32) -> lngap_lamport::winternitz::WotsSecret {
+    lngap_lamport::winternitz::WotsSecret::from_entropy(lngap_lamport::winternitz::WotsParams::for_bytes(4), contract_seed(seed, cid).derive_bytes("hp/bc"))
+}
+
 /// What the hub keeps of a setup.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Prepared {
@@ -104,8 +109,9 @@ impl Inner {
             n,
             m,
             margin: lichen_proto::hp::margin(self.cfg.network),
-            // the grants L2 anchors nothing: no checkpoint on its work
-            checkpoint: None,
+            // the work the statement asks on request's block: ten blocks'
+            // at this difficulty
+            checkpoint: Some(Checkpoint::tip(&self.chain)?),
             unit: req.unit,
             deposit: req.deposit,
             lamport: hub_lamport(&self.cfg.seed, cid).public(),
@@ -182,6 +188,7 @@ impl Inner {
         let keys = HpKeys {
             b_key: commit.b_key,
             e_key: commit.e_key,
+            bc_key: hub_bc(&self.cfg.seed, cid).public(),
             hub_lamport: s.lamport,
             hub_adaptor: s.adaptor,
             n: s.n,
@@ -192,7 +199,7 @@ impl Inner {
             deposit: s.deposit,
             hub_presigs: vec![],
         };
-        Ok((keys, HpOffer { hp_windows: windows, hp_presigs: vec![] }, s.checkpoint))
+        Ok((keys, HpOffer { hp_windows: windows, hp_presigs: vec![], bc_key: hub_bc(&self.cfg.seed, cid).public() }, s.checkpoint))
     }
 
     /// The hub's adaptor pre-signatures on `challenge_assert`, adapted to

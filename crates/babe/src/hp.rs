@@ -5,12 +5,21 @@
 //! ```text
 //! request (Alice: b, E, the claim)
 //!  ├─ request_timeout (after w_H)      → Alice: b
-//!  └─ assert (the hub: π1, Lamport)
-//!      ├─ success (after Δ2)           → the hub: the contract
-//!      └─ challenge_assert (Alice)
-//!          ├─ wrongly_challenged_k     → the hub (its proof was valid)
-//!          └─ failure (after Δ1)       → Alice: b
+//!  └─ correct (the hub: b_corr, its one-time key bc)
+//!      ├─ correct_timeout (after w_H)  → Alice: b
+//!      └─ assert (the hub: π1, Lamport)
+//!          ├─ success (after Δ2)       → Alice: b_corr (by bc's
+//!          │                              signature) and her reserve;
+//!          │                              the rest the hub's
+//!          └─ challenge_assert (Alice)
+//!              ├─ wrongly_challenged_k → the hub (its proof was valid)
+//!              └─ failure (after Δ1)   → Alice: b
 //! ```
+//!
+//! The statement (the grants L2's, `lichen_withdraw::grants`) is that the
+//! claim is owed at most `b_corr`: `success` pays it, bit by bit, read
+//! from the hub's one-time signature in `correct`; two signatures under
+//! `bc` give Alice every bit output (`equiv_corr`).
 //!
 //! `success` and `failure` are the prover's, as in BABE: the prover is
 //! the hub here. Alice garbled the kept instances (`hmsg` their
@@ -102,6 +111,9 @@ pub struct Spec {
     /// and for `E`.
     pub b_key: WotsPublic,
     pub e_key: WotsPublic,
+    /// The hub's one-time key for `b_corr` (`correct`; `success`'s bit
+    /// outputs read it).
+    pub bc_key: WotsPublic,
     /// The hub's Lamport key for π1, in 2-bit digits, and its one-time
     /// adaptor keys, a digit and value.
     pub lamport: LamportPub,
@@ -122,6 +134,7 @@ impl HubProves {
     pub fn new(spec: Spec) -> Result<HubProves> {
         ensure!(spec.b_key.params == WotsParams::for_bytes(4), "the key for b signs a 4-byte word");
         ensure!(spec.e_key.params == WotsParams::for_bytes(32), "the key for E signs 32 bytes");
+        ensure!(spec.bc_key.params == WotsParams::for_bytes(4), "the key for b_corr signs a 4-byte word");
         ensure!(spec.lamport.0.len() == DIGITS && spec.adaptor.len() == DIGITS, "a Lamport and an adaptor key set per digit of π1");
         ensure!(!spec.hmsg.is_empty(), "a kept instance at least");
         let w = spec.windows;
@@ -151,14 +164,22 @@ impl HubProves {
         let b = drop_n(drop_n(b.wots_verify(&self.spec.e_key), E_DIGITS), POSTED_ITEMS);
         self.core().tree(ok_leaf("request", b, tl))
     }
-    /// `request`'s output: the hub's `assert`, π1's digits under its
-    /// Lamport key, π2 and π3 beside them (so that Alice can check the
-    /// whole proof from the chain); or, after `w_H`, `request_timeout`.
+    /// `request`'s output: the hub's `correct`, its one-time signature on
+    /// `b_corr`; or, after `w_H`, `request_timeout`.
     pub fn requested(&self) -> Result<TapTree> {
+        let (b, tl) = self.signed(after(POST_CSV));
+        let correct = drop_digits(b.wots_verify(&self.spec.bc_key));
+        let (t, ttl) = self.signed(after(self.spec.windows.w_h));
+        TapTree::new(vec![ok_leaf("correct", correct, tl), ok_leaf("request_timeout", t, ttl)])
+    }
+    /// `correct`'s output: the hub's `assert`, π1's digits under its
+    /// Lamport key, π2 and π3 beside them (so that Alice can check the
+    /// whole proof from the chain); or, after `w_H`, `correct_timeout`.
+    pub fn corrected(&self) -> Result<TapTree> {
         let (b, tl) = self.signed(after(POST_CSV));
         let assert = self.spec.lamport.verify(b).push_opcode(OP_2DROP);
         let (t, ttl) = self.signed(after(self.spec.windows.w_h));
-        TapTree::new(vec![ok_leaf("assert", assert, tl), ok_leaf("request_timeout", t, ttl)])
+        TapTree::new(vec![ok_leaf("assert", assert, tl), ok_leaf("correct_timeout", t, ttl)])
     }
     /// `assert`'s output: Alice's `challenge_assert`, the reveal; or,
     /// after `Δ2`, `success`, the hub's.
@@ -189,6 +210,22 @@ impl HubProves {
     pub fn pay_alice(&self, available: Amount) -> Result<Vec<TxOut>> {
         self.core().pay_alice(&self.spec.b_key, available)
     }
+    /// `success`'s outputs: for each bit `i` an output of `u 2^i`, Alice's
+    /// iff bit `i` of the hub's signed `b_corr` is set ([`corr_bit_tree`]);
+    /// Alice's reserve back to her payout address; the rest the hub's
+    /// (it bears the dispute's floors).
+    pub fn pay_corrected(&self, available: Amount) -> Result<Vec<TxOut>> {
+        let core = self.core();
+        let (t, ctx) = (core.terms, core.ctx());
+        let mut outs: Vec<TxOut> = (t.low_bits..t.bits).map(|i| Ok(TxOut { value: t.unit * (1u64 << i), script_pubkey: corr_bit_tree(&ctx, i, &self.spec.bc_key)?.script_pubkey() })).collect::<Result<_>>()?;
+        let paid: Amount = outs.iter().map(|o| o.value).sum();
+        outs.push(TxOut { value: t.reserve_alice, script_pubkey: self.spec.pubs[0].payout_spk.clone() });
+        let rest = available.checked_sub(paid + t.reserve_alice).context("success can't pay V_max and Alice's reserve")?;
+        if rest >= ctx.params.dust {
+            outs.push(TxOut { value: rest, script_pubkey: self.spec.pubs[1].payout_spk.clone() });
+        }
+        Ok(outs)
+    }
     /// Who posts link `name`.
     pub fn poster(name: &str) -> Role {
         match name {
@@ -204,6 +241,7 @@ impl HubProves {
                 let posted = vec![0u8; POSTED_ITEMS * POSTED_ITEM];
                 posted_items(&posted).expect("fits").into_iter().map(<[u8]>::to_vec).chain(wots_shape([&self.spec.e_key, &self.spec.b_key])).collect()
             }
+            "correct" => wots_shape([&self.spec.bc_key]),
             "assert" => vec![vec![0u8; 20]; DIGITS].into_iter().chain([vec![0u8; 64], vec![0u8; 32]]).collect(),
             _ => (0..DIGITS).flat_map(|_| [vec![0u8; 20], vec![0u8; 64]]).collect(),
         }
@@ -219,10 +257,11 @@ impl HubProves {
         let (mut prev, mut op, mut prev_out) = (tree, funding, c_out);
         type Terminal<'a> = &'a dyn Fn(&HubProves, Amount) -> Result<Vec<TxOut>>;
         let alice: Terminal = &|g, v| g.pay_alice(v);
-        let hub: Terminal = &|g, v| Ok(g.core().pay_hub(v));
-        let chain: [(&str, TapTree, &str, Terminal); 3] = [
+        let corrected: Terminal = &|g, v| g.pay_corrected(v);
+        let chain: [(&str, TapTree, &str, Terminal); 4] = [
             ("request", self.requested()?, "request_timeout", alice),
-            ("assert", self.asserted()?, "success", hub),
+            ("correct", self.corrected()?, "correct_timeout", alice),
+            ("assert", self.asserted()?, "success", corrected),
             ("challenge_assert", self.challenged()?, "failure", alice),
         ];
         for (name, next, terminal, pay) in chain {
@@ -273,9 +312,17 @@ impl HubProves {
         Ok((b, e, args[nb + ne..].iter().rev().flatten().copied().collect()))
     }
     /// Her signature on `b` as the payout's leaves take it (bottom first:
-    /// each digit's hash, then the digit).
+    /// each digit's hash, then the digit); the hub's on `b_corr` likewise,
+    /// as `correct` and `success`'s bit outputs take it.
     pub fn b_wire(b: &WotsSig) -> Vec<Vec<u8>> {
         b.consumption_order().into_iter().rev().collect()
+    }
+    /// Read `correct`'s arguments (consumption order, below both
+    /// signatures): the hub's signature on `b_corr`.
+    pub fn read_correct(args: &[Vec<u8>]) -> Result<WotsSig> {
+        let n = 2 * WotsParams::for_bytes(4).total_digits() as usize;
+        ensure!(args.len() == n, "a correct of {} arguments", args.len());
+        WotsSig::from_consumption_order(WotsParams::for_bytes(4), args)
     }
     /// `assert`'s: π1's digits, Lamport-signed, then π2 and π3.
     pub fn assert_wire(preimages: &[Preimage], pi2: &[u8], pi3: &[u8]) -> Vec<Vec<u8>> {
@@ -294,4 +341,58 @@ impl HubProves {
     pub fn wrongly_wire(msg: &[u8; 32]) -> Vec<Vec<u8>> {
         vec![msg.to_vec()]
     }
+}
+
+/// The digits of a word's one-time signature, as `wots_verify` leaves
+/// them: whether bit `i` of the word is `want`, the digits dropped.
+fn bit_check(b: Builder, i: u32, key: &WotsPublic, want: bool) -> Builder {
+    let m = key.params.message_digits as usize;
+    // digit k (0 the most significant nibble) sits at depth m - 1 - k
+    let (nibble, j) = (7 - i / 4, i % 4);
+    let mut b = b.wots_verify(key).push_int((m - 1 - nibble as usize) as i64).push_opcode(OP_PICK);
+    // reduce the nibble mod 2^(j+1), then compare with 2^j
+    for h in (j + 1..4).rev() {
+        b = b.push_opcode(OP_DUP).push_int(1 << h).push_opcode(OP_GREATERTHANOREQUAL).push_opcode(OP_IF).push_int(1 << h).push_opcode(OP_SUB).push_opcode(OP_ENDIF);
+    }
+    b = b.push_int(1 << j).push_opcode(OP_GREATERTHANOREQUAL);
+    if !want {
+        b = b.push_opcode(OP_NOT);
+    }
+    b = b.push_opcode(OP_VERIFY);
+    drop_n(b, m)
+}
+
+/// `success`'s output for bit `i` of `b_corr`, signed under the hub's
+/// `key`: `alice_corr_bit_i` (her signature, the bit set), `hub_corr_bit_i`
+/// (after `delta`, its signature, the bit clear: time for her to show an
+/// equivocation), and `equiv_corr_i` (her signature and two different
+/// signatures under `key`: the hub signed two values).
+pub fn corr_bit_tree(ctx: &CommitCtx, i: u32, key: &WotsPublic) -> Result<TapTree> {
+    assert_eq!(key.params.message_digits, 8, "a word's key signs 4 bytes");
+    let alice = bit_check(Builder::new().checksigverify(&ctx.key(Role::User).payment), i, key, true);
+    let delta = ctx.params.delta;
+    let hub = bit_check(Builder::new().csv(delta).checksigverify(&ctx.key(Role::Hub).payment), i, key, false);
+    let m = key.params.message_digits as usize;
+    let mut e = Builder::new().push_int(i64::from(i)).push_opcode(OP_DROP).checksigverify(&ctx.key(Role::User).payment).wots_verify(key);
+    for _ in 0..m {
+        e = e.push_opcode(OP_TOALTSTACK);
+    }
+    e = e.wots_verify(key);
+    for _ in 0..m {
+        e = e.push_opcode(OP_FROMALTSTACK);
+    }
+    // count the digits that differ; at least one must
+    e = e.push_int(0);
+    for j in 0..m {
+        e = e.push_int((m - j) as i64).push_opcode(OP_PICK).push_int((2 * m - j + 1) as i64).push_opcode(OP_PICK).push_opcode(OP_SUB).push_opcode(OP_0NOTEQUAL).push_opcode(OP_ADD);
+    }
+    e = e.push_opcode(OP_VERIFY);
+    for _ in 0..m {
+        e = e.push_opcode(OP_2DROP);
+    }
+    TapTree::new(vec![
+        ok_leaf(&format!("alice_corr_bit_{i}"), alice, Timelock::NONE),
+        ok_leaf(&format!("hub_corr_bit_{i}"), hub, Timelock::csv(delta)),
+        ok_leaf(&format!("equiv_corr_{i}"), e, Timelock::NONE),
+    ])
 }

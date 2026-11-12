@@ -89,10 +89,12 @@ impl Wallet {
     }
 
     /// The record's keys, the pre-signatures as given.
-    pub(crate) fn hp_keys(s: &ContractSecrets, o: &HpOpening, windows: lichen_babe::hp::Windows, presigs: Vec<[lichen_proto::Presig; VALUES]>) -> HpKeys {
+    pub(crate) fn hp_keys(s: &ContractSecrets, o: &HpOpening, offer: &HpOffer) -> HpKeys {
+        let (windows, presigs) = (offer.hp_windows, offer.hp_presigs.clone());
         HpKeys {
             b_key: s.hp_b().public(),
             e_key: s.hp_e().public(),
+            bc_key: offer.bc_key.clone(),
             hub_lamport: o.setup.lamport.clone(),
             hub_adaptor: o.setup.adaptor.clone(),
             n: o.setup.n,

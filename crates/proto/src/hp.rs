@@ -91,6 +91,8 @@ pub struct HpRequest {
 pub struct HpOffer {
     pub hp_windows: Windows,
     pub hp_presigs: Vec<[Presig; VALUES]>,
+    /// The hub's one-time key for `b_corr` (`correct`).
+    pub bc_key: WotsPublic,
 }
 
 /// The keys a contract keeps (in its [`Record`]).
@@ -99,6 +101,8 @@ pub struct HpKeys {
     /// Alice's one-time keys for `b` and `E`.
     pub b_key: WotsPublic,
     pub e_key: WotsPublic,
+    /// The hub's one-time key for `b_corr`.
+    pub bc_key: WotsPublic,
     /// The hub's Lamport key for π1 and its adaptor keys.
     pub hub_lamport: LamportPub,
     pub hub_adaptor: Vec<[XOnlyPublicKey; VALUES]>,
@@ -168,6 +172,7 @@ impl Record {
             pubs: self.pubs.clone(),
             b_key: k.b_key.clone(),
             e_key: k.e_key.clone(),
+            bc_key: k.bc_key.clone(),
             lamport: k.hub_lamport.clone(),
             adaptor: k.hub_adaptor.clone(),
             hmsg: k.hmsg.clone(),

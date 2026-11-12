@@ -445,14 +445,12 @@ impl Wallet {
         ensure!(offer.t_close >= least, "the hub's T_close, block {}, is too soon (at least block {least})", offer.t_close);
         // the contract's keys for the dispute: ours and the hub's (its
         // pre-signatures checked once the set is built, below)
-        let dispute = Wallet::hp_keys(&secrets, &hp_open, offer.dispute.hp_windows, offer.dispute.hp_presigs.clone());
+        let dispute = Wallet::hp_keys(&secrets, &hp_open, &offer.dispute);
         ensure!(offer.checkpoint == hp_open.setup.checkpoint, "the offer's checkpoint is not the setup's");
         // an anchored deployment's contract: a checkpoint on our own view of
         // the chain (a stale or forked one could ask work no withdrawal
         // shows)
-        if d.seal.is_some() {
-            offer.checkpoint.context("the hub's offer has no checkpoint, in an anchored deployment")?.check(chain, 2016)?;
-        }
+        offer.checkpoint.context("the hub's offer has no checkpoint")?.check(chain, 2016)?;
         let mut record = Record {
             statement: statement.id().to_string(),
             network: net,

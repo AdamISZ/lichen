@@ -21,6 +21,7 @@ lichen-proto.workspace = true
 lngap-sessions.workspace = true
 lngap-channel.workspace = true
 lngap-btc.workspace = true
+lngap-lamport.workspace = true
 lichen-babe.workspace = true
 lichen-withdraw.workspace = true
 rand_chacha = "0.3"

@@ -1824,6 +1824,7 @@ dependencies = [
  "lichen-withdraw",
  "lngap-btc",
  "lngap-channel",
+ "lngap-lamport",
  "lngap-sessions",
  "rand_chacha",
  "rand_core 0.6.4",

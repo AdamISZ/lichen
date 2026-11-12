@@ -491,7 +491,8 @@ pub fn contract_word(d: &Deployment, checkpoint: Option<&Checkpoint>, unit: Amou
         (None, None) => Ok(d.id()),
         (Some(seal), Some(c)) => Ok(lichen_ledger::lichen_withdraw_contract_id(&d.id(), &seal, c.work(), unit.to_sat())),
         (Some(_), None) => bail!("an anchored deployment's contract needs a checkpoint"),
-        (None, Some(_)) => bail!("a checkpoint in a deployment that doesn't anchor"),
+        // the grants L2: no seal, the checkpoint's work all the same
+        (None, Some(c)) => Ok(lichen_ledger::lichen_withdraw_contract_id(&d.id(), &lichen_ledger::OutPoint { txid: [0; 32], vout: 0 }, c.work(), unit.to_sat())),
     }
 }
 
