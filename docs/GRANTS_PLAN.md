@@ -58,11 +58,11 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
    book and doesn't contest it, so `request_timeout` pays. Tests on
    regtest: payments (final in ~40 ms), the mint's faults, withdrawals
    and defaults, a user on Esplora with an exit.
-2. **Exits contested** (design, 2026-11-12): a claim may carry
-   fallbacks; the hub answers a claim it can correct with `b_corr`, and
-   proves "she is owed at most `b_corr`". BABE fixes the statement's public
-   inputs at the opening, so `b_corr` can't be one: the statement reads it
-   from the chain, from a new link.
+2. **Exits contested** (done 2026-11-12, on the mock statement): a claim may
+   carry fallbacks; the hub answers a claim it can correct with `b_corr`,
+   and proves "she is owed at most `b_corr`". BABE fixes the statement's
+   public inputs at the opening, so `b_corr` can't be one: the statement
+   reads it from the chain, from a new link.
 
    ```text
    request (Alice: b, E, the claim)
@@ -73,36 +73,62 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
         ├─ correct_timeout (after w_H)    → Alice: b (it never proved)
         └─ assert (the hub: π)
             ├─ success (after Δ2)         → Alice: b_corr's bits (read from the
-            │                                hub's signature), her reserve if
-            │                                b_corr > 0; the rest the hub's
+            │                                hub's signature) and her reserve;
+            │                                the rest the hub's
             └─ challenge_assert (Alice)
                 ├─ wrongly_challenged_k   → the hub
                 └─ failure (after Δ1)     → Alice: b, and both reserves
    ```
 
-   - **The claim**: settled notes; fallbacks `(sid, change)`, the
-     claimant's change of a spend in flight whose inputs are among the
-     notes; `b` in units. All her signature covers (`E`).
-   - **The statement** ("owed ≤ b_corr", the journal still `c ‖ D ‖
-     H(O_D ‖ margin)`): `request` and `correct` from the chain (spends of
-     the contract output and of `request`'s, with the contract's work on
-     `request`'s block), the fee child's unlocks, the spends the hub cites.
-     `owed` is 0 for a malformed claim (its bytes, `E` or `b` not as
-     signed; a note not settled under the issuer, or not the contract
-     owner's; the owner's signature; `b` above the notes); else the notes
-     less those killed, plus the fallbacks revived, in units, at most `b`.
-     A note is killed by a spend she signed (her signature on the spend
-     and its grant's commitment) whose `t` is in the fee child (`t·G =
-     T`), or by another claim of hers on chain naming it; a killing
-     spend's change is revived if the claim names it a fallback.
+   - **The claim** (`lichen_withdraw::grants::Claim`, shared by wallet,
+     hub and statement): settled notes (at most 8), fallbacks (at most 4:
+     the ids of her spends in flight whose inputs are among the notes),
+     `b` in units; her signature on its fingerprint `E`.
+   - **Owed** (`grants::owed`): 0 for a malformed claim (not as posted
+     under her one-time signatures, a note not settled under the issuer
+     or not the owner's, her signature, `b` above the notes). Else the
+     candidates not killed, in units, at most `b`. The candidates start as
+     the notes; a cited spend she signed (with its grant's commitment)
+     whose unlock is in the fee child (`t·G = T`) kills those among its
+     inputs, and if the claim names it a fallback its outputs to her join
+     the candidates (a later spend may kill them in turn). Her claims on
+     other contracts kill the notes they name; one on the same contract
+     never does (only the posted claim is paid; a hub taking a cooperative
+     claim and refusing the fold can't cite it).
+   - **The statement** (`grants::check`, journal still `c ‖ D ‖ H(O_D ‖
+     margin)`): `request` (spending the contract output, in a block with
+     the contract's work `W` on it), `correct` (spending `request`'s
+     output) and the fee child (spending an anchor of `correct`), each in a
+     block of the headers given; `owed ≤ b_corr`. The contract keeps a
+     checkpoint again for `W`; `D` is the issuer's deployment, no seal.
+   - **The hub** (`assess`): the book's evidence against the claim (the
+     spend or claim that took each note, through fallbacks to their
+     change), at most two spends (two unlocks fill the `OP_RETURN`). Owed
+     in full: the claim taken into the book, `request_timeout` pays.
+     Otherwise `correct` with `b_corr` = owed, the claim taken at that,
+     then, once `W` is on `request`'s block, the statement checked
+     natively and proved. After `success` it sweeps its bit outputs
+     (`hub_corr_bit_i`, after `Δ`). A cooperative claim is taken only if
+     owed in full.
    - **Why the fee child**: data in a witness can be swapped by anyone
      (the request's hole); an output under the hub's `SIGHASH_ALL` can't.
      83 bytes of `OP_RETURN` (Core 29's limit): two unlocks.
    - **`b_corr` binds the payout**: `success`'s bit outputs read the
      hub's one-time signature (from `correct`); two different signatures
-     under `bc` (an equivocation) give Alice every bit output.
-   - **Mock first**: the hub checks the statement natively and asserts the
-     mock's proof; the tests play every branch.
+     under `bc` (an equivocation) give Alice every bit output
+     (`equiv_corr_i`).
+   - **No penalty**: `success` returns her reserve whatever `b_corr`. A
+     false claim gains her nothing (she's paid what she's owed) and costs
+     the hub one dispute per contract; a penalty would also strike honest
+     mistakes (a stale backup, the malleable posted bytes until
+     milestone 4).
+   - **The wallet**: a spend stays a fallback of any claim of its inputs
+     until a spend we hold `t` for consumes them, whatever the hub says (a
+     hub that recorded it and said otherwise could cite it). A claim goes
+     without a sync if the hub won't answer.
+   - **Tests** (regtest, `crates/hub/tests/contested.rs`): corrected to
+     her change and paid by `success`; a forged correction to 0, refuted;
+     a correction never proved, paid by `correct_timeout`.
 3. **The real guest**: the statement in RISC Zero, its Groth16 wrap.
 4. **Hardening**: the claim signed in full in `request` (its posted bytes
    are malleable today: anyone may swap them, and a claim not matching

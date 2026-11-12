@@ -16,6 +16,10 @@ use lichen_chain::NodeWallet;
 use lichen_proto::{anchor_vout, sign_anchor, Built, Record};
 use lngap_btc::sighash::sign_tapscript;
 use lngap_btc::witness::tapscript_witness;
+use lichen_babe::hp::{corr_bit_tree, HubProves};
+use lichen_proto::hp::HpDisputed;
+use lichen_proto::setup::link_args;
+use lngap_btc::taptree::TapTree;
 use lngap_sessions::session::bit_tree;
 
 use crate::{contract_keys, Inner};
@@ -26,10 +30,12 @@ pub(crate) mod hp;
 pub(crate) enum State {
     /// In play.
     Hp(hp::State),
-    /// The user won and the payout is posted, spending the output of
-    /// `link` (first seen spent at `since`): the hub collects its bit
-    /// outputs, those of the bits clear in `b`, then closes.
-    Collect { link: Txid, since: u32 },
+    /// A payout is posted, spending the output of `link` (first seen
+    /// spent at `since`): the hub collects its bit outputs, then closes.
+    /// The user won (a timeout, `failure`): those of the bits clear in her
+    /// `b`; `corrected` (`success`): those clear in the hub's `b_corr`,
+    /// after `Δ`.
+    Collect { link: Txid, since: u32, corrected: bool },
     Done,
 }
 
@@ -60,7 +66,7 @@ impl Inner {
             let next = match state {
                 None => self.hp_start(&record),
                 Some(State::Hp(s)) => self.hp_tick(&record, s),
-                Some(State::Collect { link, since }) => self.collect(&record, link, since),
+                Some(State::Collect { link, since, corrected }) => self.collect(&record, link, since, corrected),
                 Some(State::Done) => Ok(Some(State::Done)),
             };
             // one contract's error never stops the others: its dispute is
@@ -85,12 +91,14 @@ impl Inner {
     /// sweep the hub's bit outputs once it confirms. They appear only
     /// then, so until they do the hub waits, for a while, before closing
     /// with nothing collected.
-    fn collect(&self, record: &Record, link: Txid, since: u32) -> Result<Option<State>> {
+    fn collect(&self, record: &Record, link: Txid, since: u32, corrected: bool) -> Result<Option<State>> {
         let cid = record.cid();
-        match self.sweep_bits(record)? {
-            Bits::None => self.note(format!("contract {cid}: no bit outputs of the hub's (every bit of the claim is set)")),
+        let swept = if corrected { self.sweep_corr_bits(record)? } else { self.sweep_bits(record)? };
+        let delta = if corrected { u32::from(self.built(record)?.core().ctx().params.delta) } else { 0 };
+        match swept {
+            Bits::None => self.note(format!("contract {cid}: no bit outputs of the hub's (every bit of the payout is set)")),
             Bits::Swept(txid, n, value) => self.note(format!("contract {cid}: collected the hub's {n} bit outputs, {} sats: {txid}", value.to_sat())),
-            Bits::NotYet if self.chain.height()? < since + 4 * self.cfg.network.patience_blocks() => return Ok(Some(State::Collect { link, since })),
+            Bits::NotYet if self.chain.height()? < since + delta + 4 * self.cfg.network.patience_blocks() => return Ok(Some(State::Collect { link, since, corrected })),
             Bits::NotYet => self.note(format!("contract {cid}: no bit outputs of the hub's appeared; closed without collecting")),
         }
         self.close(cid, link)?;
@@ -98,12 +106,11 @@ impl Inner {
     }
 
 
-    /// Sweep to the hub's wallet its bit outputs of a payout: for each bit
-    /// clear in Alice's signed `b`, the output of `u 2^i`, by its leaf
-    /// `hub_bit_i` (her signature on `b`, as her claim posted it, and the
-    /// hub's).
+    /// Sweep to the hub's wallet its bit outputs of a payout the user won:
+    /// for each bit clear in Alice's signed `b`, the output of `u 2^i`, by
+    /// its leaf `hub_bit_i` (her signature on `b`, as her claim posted it,
+    /// and the hub's).
     fn sweep_bits(&self, record: &Record) -> Result<Bits> {
-        let cid = record.cid();
         let (b, b_wire) = self.hp_claimed_b(record)?;
         let built = self.built(record)?;
         let (core, b_key) = (built.core(), built.b_key());
@@ -113,6 +120,40 @@ impl Inner {
             let tree = bit_tree(&ctx, i, b_key)?;
             trees.push((tree.script_pubkey(), tree, format!("hub_bit_{i}")));
         }
+        self.sweep(record, trees, &b_wire, Sequence::ENABLE_RBF_NO_LOCKTIME)
+    }
+
+    /// Sweep its bit outputs of `success`: for each bit clear in the hub's
+    /// signed `b_corr` (in `correct`), by its leaf `hub_corr_bit_i`, after
+    /// `Δ` (until then, not yet).
+    fn sweep_corr_bits(&self, record: &Record) -> Result<Bits> {
+        let d = HpDisputed::new(record, &self.cfg.statement)?;
+        let correct = self.chain.get_tx(&d.txid("correct")).context("correct")?;
+        let sig = HubProves::read_correct(&link_args(&correct))?;
+        let b_corr = u32::from_be_bytes(sig.message().try_into().map_err(|_| anyhow::anyhow!("b_corr's signature signs 4 bytes"))?);
+        let built = self.built(record)?;
+        let core = built.core();
+        let (t, ctx) = (core.terms, core.ctx());
+        let delta = ctx.params.delta;
+        // success's txid is known once posted with its fee coin
+        let a_op = OutPoint { txid: d.txid("assert"), vout: 0 };
+        let from = confirmed_at(self, &a_op.txid)?.context("the assertion")?;
+        let Some(success) = self.chain.spender(&a_op, from)? else { return Ok(Bits::NotYet) };
+        if self.chain.confirmations(&success)? <= u32::from(delta) {
+            return Ok(Bits::NotYet);
+        }
+        let mut trees = vec![];
+        for i in (t.low_bits..t.bits).filter(|i| (b_corr >> i) & 1 == 0) {
+            let tree = corr_bit_tree(&ctx, i, &d.graph.spec.bc_key)?;
+            trees.push((tree.script_pubkey(), tree, format!("hub_corr_bit_{i}")));
+        }
+        self.sweep(record, trees, &HubProves::b_wire(&sig), Sequence::from_height(delta))
+    }
+
+    /// Sweep to the hub's wallet the outputs of `trees` on chain, each by
+    /// its named leaf: `wire`, then the hub's signature.
+    fn sweep(&self, record: &Record, trees: Vec<(bitcoin::ScriptBuf, TapTree, String)>, wire: &[Vec<u8>], sequence: Sequence) -> Result<Bits> {
+        let cid = record.cid();
         if trees.is_empty() {
             return Ok(Bits::None);
         }
@@ -126,13 +167,14 @@ impl Inner {
         let to = self.chain.new_spk()?;
         let total: Amount = ins.iter().map(|i| i.1.value).sum();
         let prevouts: Vec<TxOut> = ins.iter().map(|i| i.1.clone()).collect();
-        let seqs: Vec<(OutPoint, Sequence)> = ins.iter().map(|i| (i.0, Sequence::ENABLE_RBF_NO_LOCKTIME)).collect();
+        let seqs: Vec<(OutPoint, Sequence)> = ins.iter().map(|i| (i.0, sequence)).collect();
         let build = |fee: Amount| -> Result<Transaction> {
             let out = TxOut { value: total.checked_sub(fee).context("the bit outputs can't pay the sweep's fee")?, script_pubkey: to.clone() };
             let mut sweep = lngap_btc::tx::build_tx(&seqs, vec![out], bitcoin::absolute::LockTime::ZERO);
+            sweep.version = bitcoin::transaction::Version::TWO;
             for (n, (_, _, (_, tree, name))) in ins.iter().enumerate() {
                 let leaf = tree.leaf(name)?;
-                let mut w = b_wire.clone();
+                let mut w = wire.to_vec();
                 w.push(sign_tapscript(&kp, &sweep, n, &prevouts, &leaf.script)?.as_ref().to_vec());
                 sweep.input[n].witness = tapscript_witness(&w, &leaf.script, &tree.control_block(name)?);
             }
@@ -148,6 +190,13 @@ impl Inner {
     /// Post one of the hub's links (unless it is already there: replayed,
     /// checked to be the same), its child paying from the hub's anchor;
     /// its confirmation height.
+    pub(crate) fn post(&self, cid: u32, tx: &Transaction) -> Result<u32> {
+        self.post_with(cid, tx, &[]).map(|(h, _)| h)
+    }
+
+    /// Post one of the hub's links (unless it is already there: replayed,
+    /// checked to be the same), its child paying from the hub's anchor;
+    /// its confirmation height.
     /// An error once the hub is being dropped, for a wait on the chain to
     /// give up on (its dispute is read again from the chain on restart).
     pub(crate) fn stopping(&self) -> Result<()> {
@@ -155,20 +204,25 @@ impl Inner {
         Ok(())
     }
 
-    pub(crate) fn post(&self, cid: u32, tx: &Transaction) -> Result<u32> {
+    /// [`Inner::post`], its fee child carrying `extra` outputs (posted
+    /// whatever the feerate): its confirmation height and the child.
+    pub(crate) fn post_with(&self, cid: u32, tx: &Transaction, extra: &[TxOut]) -> Result<(u32, Option<Txid>)> {
         let txid = tx.compute_txid();
-        match self.chain.get_tx(&txid) {
+        let child = match self.chain.get_tx(&txid) {
             None => {
                 let kp = contract_keys(&self.cfg.seed, cid).payment;
                 let anchor = anchor_vout(tx, &kp.x_only_public_key().0)?;
-                self.chain.post_link(tx, anchor, lichen_proto::feerate(self.cfg.network), &|c, p| sign_anchor(&kp, c, p), &NodeWallet)?;
+                self.chain.post_link_with(tx, anchor, lichen_proto::feerate(self.cfg.network), &|c, p| sign_anchor(&kp, c, p), &NodeWallet, extra)?
             }
-            Some(posted) => anyhow::ensure!(posted.input.iter().zip(&tx.input).all(|(a, b)| a.witness == b.witness), "{txid} on chain is not the link replayed"),
-        }
+            Some(posted) => {
+                anyhow::ensure!(posted.input.iter().zip(&tx.input).all(|(a, b)| a.witness == b.witness), "{txid} on chain is not the link replayed");
+                None
+            }
+        };
         let patience = lichen_proto::Patience::new(self.chain.height()?, self.cfg.network);
         loop {
             if let Some(h) = confirmed_at(self, &txid)? {
-                return Ok(h);
+                return Ok((h, child));
             }
             anyhow::ensure!(!patience.expired(self.chain.height()?), "{txid} never confirmed");
             self.stopping()?;

@@ -160,6 +160,8 @@ pub(crate) struct Inner {
     /// For tests: assert a false proof against every exit claim that
     /// holds.
     forge_assertions: AtomicBool,
+    withhold_unlocks: AtomicBool,
+    abandon_corrections: AtomicBool,
     /// For tests: post no defaults (as a hub gone would not).
     hold_defaults: AtomicBool,
     /// For tests: a fault in each opening.
@@ -207,7 +209,7 @@ impl Hub {
         let server = Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let server = Arc::new(Mutex::new(Arc::new(server)));
-        let inner = Arc::new(Inner { cfg, chain, book, deployment, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, chain, book, deployment, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), withhold_unlocks: AtomicBool::new(false), abandon_corrections: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             listen(&srv, &i1.stop, |mut req| {
@@ -305,6 +307,18 @@ impl Hub {
         self.misbehave();
         self.inner.forge_assertions.store(on, Ordering::Relaxed);
     }
+    /// For tests: record spends but answer none (`POST /spend`): the
+    /// payer's spend stays in flight, recorded, its unlock unknown to her.
+    pub fn set_withhold_unlocks(&self, on: bool) {
+        self.misbehave();
+        self.inner.withhold_unlocks.store(on, Ordering::Relaxed);
+    }
+    /// For tests: correct a claim and never prove it (`correct_timeout`
+    /// pays her).
+    pub fn set_abandon_corrections(&self, on: bool) {
+        self.misbehave();
+        self.inner.abandon_corrections.store(on, Ordering::Relaxed);
+    }
     /// For tests: post no defaults after `T_close`, as a hub gone would
     /// not (the user posts hers).
     pub fn set_hold_defaults(&self, on: bool) {
@@ -389,6 +403,8 @@ fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String
         (Method::Post, "/spend") => {
             let a: lichen_notes::Authorized = serde_json::from_str(body)?;
             let t = inner.book.record(&a.sid, &a.sigs)?;
+            // a hub that withholds unlocks (tests): recorded, the answer lost
+            ensure!(!inner.withhold_unlocks.load(Ordering::Relaxed), "the hub withholds its answer");
             serde_json::json!({ "t": hex::encode(t.secret_bytes()) }).to_string()
         }
         (Method::Get, "/info") => serde_json::to_string(&inner.info())?,
@@ -670,15 +686,18 @@ impl Inner {
 
     /// Alice's claim (`posted`, its bytes) of `b` units from contract
     /// `record`, checked and taken into the book: of this contract, hers,
-    /// its notes settled and unspent, worth at least `b` units. The change
-    /// beyond `b` goes to her mailbox.
+    /// its notes settled, owed `b` units in full (by the book: its notes,
+    /// or a fallback's change, unspent). The change beyond `b` goes to her
+    /// mailbox.
     fn take_claim(&self, record: &Record, b: u32, posted: &[u8]) -> Result<()> {
         let cid = record.cid();
         let claim = lichen_notes::Claim::from_bytes(posted)?;
         ensure!(claim.b == b, "the claim is of {} units, the withdrawal {b}", claim.b);
         let unit = record.terms.unit.to_sat();
         let total = claim.check(&self.book.issuer(), cid, &record.hp().deposit, &record.l2_address, unit)?;
-        let change = self.book.take_claim(&claim, total, u64::from(b) * unit)?;
+        let owed = self.assess(record, Some(&claim)).owed;
+        ensure!(owed == b, "the claim is owed {owed} units, not {b}: its notes are spent");
+        let change = self.book.take_claim(&claim, u64::from(b) * unit)?;
         self.note(format!("contract {cid}: the user's withdrawal claim of {b} units taken ({total} sats of notes{})", change.map_or(String::new(), |c| format!(", {} sats of change back to her", c.note.value))));
         Ok(())
     }

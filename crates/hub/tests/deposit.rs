@@ -6,8 +6,8 @@
 //! - E1: open and withdraw cooperatively: the payout address receives
 //!   `b + r_A`.
 //! - E2: a hub that refuses folds: the exit played through Esplora
-//!   (blocks every second), fees from the budget; the hub takes the claim
-//!   (milestone 1 contests none) and `request_timeout` pays Bob; his sweep
+//!   (blocks every second), fees from the budget; the hub takes the claim,
+//!   owed in full, and `request_timeout` pays Bob; his sweep
 //!   takes the budget's rest to his payout address too.
 //! - P: a hub short of coins refuses the ask at the deposit request,
 //!   before any address is given or paid.

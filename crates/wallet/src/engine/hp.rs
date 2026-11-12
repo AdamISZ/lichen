@@ -22,6 +22,7 @@ use lichen_babe::setup::DIGITS;
 use lichen_babe::vsss::{deal, Dealer, Dealing};
 use lichen_chain::{Chain, Stall};
 use lichen_proto::hp::HpDisputed;
+use lichen_proto::setup::link_args;
 use lichen_proto::{Record, Statement};
 use lngap_btc::adaptor::AdaptorSig;
 use lngap_btc::keys::Seed;
@@ -86,26 +87,39 @@ impl Engine<'_> {
         if self.opts.pause_after == Some(1) {
             return Ok(Outcome::Paused);
         }
-        self.step(format!("the hub may assert the claim false until block {}", at + u32::from(w.w_h)));
-        let assert = match wait_link(chain, &d.txid("assert"), &OutPoint { txid: d.txid("request"), vout: 0 }, at + u32::from(w.w_h))? {
+        self.step(format!("the hub may correct the claim until block {}", at + u32::from(w.w_h)));
+        let correct = match wait_link(chain, &d.txid("correct"), &OutPoint { txid: d.txid("request"), vout: 0 }, at + u32::from(w.w_h))? {
             Next::Link(tx) => tx,
             Next::Deadline => {
-                self.step("the hub didn't assert: request_timeout pays the user".into());
+                self.step("the hub didn't correct the claim: request_timeout pays the user".into());
                 let txid = self.post_terminal(chain, &d.finish("request_timeout", vec![])?, &d.set["request_timeout"].prevout)?;
                 return self.paid(Outcome::HubTimedOut(txid));
             }
             Next::Taken => return self.lost(d.txid("request")),
+        };
+        let b_corr = u32::from_be_bytes(HubProves::read_correct(&link_args(&correct))?.message().try_into().map_err(|_| anyhow::anyhow!("b_corr's signature signs 4 bytes"))?);
+        let corrected_at = confirmed_at(chain, &d.txid("correct"))?.context("correct")?;
+        self.step(format!("the hub corrected the claim to {b_corr} units; it may prove so until block {}", corrected_at + u32::from(w.w_h)));
+        let assert = match wait_link(chain, &d.txid("assert"), &OutPoint { txid: d.txid("correct"), vout: 0 }, corrected_at + u32::from(w.w_h))? {
+            Next::Link(tx) => tx,
+            Next::Deadline => {
+                self.step("the hub didn't prove its correction: correct_timeout pays the user".into());
+                let txid = self.post_terminal(chain, &d.finish("correct_timeout", vec![])?, &d.set["correct_timeout"].prevout)?;
+                return self.paid(Outcome::HubTimedOut(txid));
+            }
+            Next::Taken => return self.lost(d.txid("correct")),
         };
         // its proof, checked natively
         let asserted = d.asserted(&assert)?;
         let kind = statement.hp_kind()?;
         let journal = record.hp_journal();
         let valid = asserted.proof.as_ref().is_some_and(|p| kind.verify(&journal, p));
-        if valid && !self.opts.unchecked_claims {
-            self.step("the hub asserted a valid proof that the claim is false: success is the hub's".into());
-            return Ok(Outcome::Countered);
-        }
         let asserted_at = confirmed_at(chain, &d.txid("assert"))?.context("the assertion")?;
+        if valid && !self.opts.unchecked_claims {
+            self.step(format!("the hub proved the claim is owed at most {b_corr} units: success pays that from block {}", asserted_at + u32::from(w.delta2)));
+            let success = self.await_success(chain, &d, asserted_at)?;
+            return self.paid(Outcome::Corrected { success, b_corr });
+        }
         self.step(format!("{}: challenging", if valid { "the hub's proof is valid, challenging anyway" } else { "the hub's proof is false" }));
         ensure!(chain.height()? < asserted_at + u32::from(w.delta2) || chain.get_tx(&d.txid("challenge_assert")).is_some(), "the challenge's window has passed");
         let keys = record.hp();
@@ -137,6 +151,31 @@ impl Engine<'_> {
             }
             ensure!(!stall.stalled(h), "the chain stalled");
             std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// `success`, once `Δ2` has passed on the assertion (confirmed at
+    /// `asserted_at`): the hub's to post, or hers if it doesn't. Its txid,
+    /// confirmed.
+    fn await_success(&self, chain: &Chain, d: &HpDisputed, asserted_at: u32) -> Result<bitcoin::Txid> {
+        let a_op = OutPoint { txid: d.txid("assert"), vout: 0 };
+        let due = asserted_at + u32::from(d.graph.spec.windows.delta2);
+        let mut stall = Stall::new(chain.height()?, chain.network);
+        let mut posted = false;
+        loop {
+            if let Some(t) = chain.spender(&a_op, asserted_at)? {
+                return Ok(t);
+            }
+            let h = chain.height()?;
+            if h >= due + 2 && !posted && chain.unspent(&a_op)? {
+                // the hub hasn't: hers to post (it pays her b_corr)
+                if let Err(e) = self.post_terminal(chain, &d.finish("success", vec![])?, &d.set["success"].prevout) {
+                    self.step(format!("posting success: {e:#}"));
+                }
+                posted = true;
+            }
+            ensure!(!stall.stalled(h), "the chain stalled");
+            std::thread::sleep(Duration::from_millis(200));
         }
     }
 }

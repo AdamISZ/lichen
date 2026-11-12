@@ -298,7 +298,7 @@ pub fn outpoint(o: &bitcoin::OutPoint) -> lichen_ledger::OutPoint {
 }
 
 impl Claim {
-    fn g_unsigned(&self) -> g::Claim {
+    pub fn g(&self) -> g::Claim {
         g::Claim {
             cid: self.cid,
             deposit: outpoint(&self.deposit),
@@ -318,11 +318,11 @@ impl Claim {
     }
     /// `E`: what the owner signs, and an exit's one-time key signs.
     pub fn e(&self) -> Hash {
-        self.g_unsigned().fingerprint()
+        self.g().fingerprint()
     }
     /// The fallbacks' ids.
     pub fn fallback_ids(&self) -> Vec<Hash> {
-        self.g_unsigned().fallbacks
+        self.g().fallbacks
     }
     /// The claim holds as far as it shows itself: of contract `cid` and
     /// `deposit`, by `owner`; its notes distinct, settled under `issuer`,
@@ -332,11 +332,11 @@ impl Claim {
         ensure!(self.cid == cid && self.deposit == *deposit, "a claim on another contract");
         ensure!(self.notes.len() <= MAX_CLAIM_NOTES && self.fallbacks.len() <= MAX_FALLBACKS, "a claim of {} notes and {} fallbacks (at most {MAX_CLAIM_NOTES} and {MAX_FALLBACKS})", self.notes.len(), self.fallbacks.len());
         ensure!(self.notes.iter().all(|s| s.note.owner == self.owner), "a note of the claim isn't the owner's");
-        self.g_unsigned().holds(issuer, owner, unit).with_context(|| format!("the claim doesn't hold: by another owner, a note not settled or named twice, its signature, or worth less than {} units of {unit}", self.b))
+        self.g().holds(issuer, owner, unit).with_context(|| format!("the claim doesn't hold: by another owner, a note not settled or named twice, its signature, or worth less than {} units of {unit}", self.b))
     }
     /// Its bytes, as an exit posts them.
     pub fn to_bytes(&self) -> Vec<u8> {
-        self.g_unsigned().to_bytes()
+        self.g().to_bytes()
     }
     pub fn from_bytes(b: &[u8]) -> Result<Claim> {
         use bitcoin::hashes::Hash as _;

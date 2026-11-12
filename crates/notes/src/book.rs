@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use bitcoin::key::Keypair;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use lngap_btc::adaptor::adaptor_sign;
@@ -42,11 +42,26 @@ pub struct Recorded {
     pub t: SecretKey,
 }
 
-/// A claim the hub took (a withdrawal's), and the change it issued.
+/// A claim the hub took (a withdrawal's, an exit's), and the change it
+/// issued.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Taken {
     cid: u32,
     change: Option<Settled>,
+    /// The claim itself: evidence against another of hers.
+    #[serde(default)]
+    claim: Option<Claim>,
+}
+
+/// What the book holds against a claim (the statement's evidence): the
+/// spends that consumed its notes, or its fallbacks' change to her, and
+/// her claims on other contracts that took them; and its notes still live
+/// (unspent, or taken by a claim on the same contract, never paid).
+#[derive(Clone, Debug, Default)]
+pub struct Evidence {
+    pub cited: Vec<Recorded>,
+    pub others: Vec<Claim>,
+    pub live: Vec<Note>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -212,26 +227,63 @@ impl Book {
         self.s.lock().unwrap().recorded.get(&hex::encode(sid)).cloned()
     }
 
-    /// Take a claim (`claim`, checked by the caller against its contract,
-    /// worth `total` sats, `paid` of them paid out): its notes spent, and
+    /// The evidence against `claim`: from its notes, the spend or claim
+    /// that took each, and through a spend it names a fallback, that
+    /// spend's outputs to her in turn.
+    pub fn evidence(&self, claim: &Claim) -> Evidence {
+        let s = self.s.lock().unwrap();
+        Book::evidence_in(&s, claim)
+    }
+
+    fn evidence_in(s: &St, claim: &Claim) -> Evidence {
+        let fallbacks = claim.fallback_ids();
+        let mut cands: Vec<Note> = claim.notes.iter().map(|x| x.note).collect();
+        let mut ev = Evidence::default();
+        let mut k = 0;
+        while k < cands.len() {
+            let n = cands[k];
+            k += 1;
+            let Some(entry) = s.notes.get(&hex::encode(n.id)).filter(|e| e.note == n) else { continue };
+            match &entry.spent {
+                None => ev.live.push(n),
+                Some(Spent::Claim { cid, .. }) if *cid == claim.cid => ev.live.push(n),
+                Some(Spent::Claim { e, .. }) => {
+                    if let Some(c) = s.claims.get(e).and_then(|t| t.claim.clone()) {
+                        if !ev.others.contains(&c) {
+                            ev.others.push(c);
+                        }
+                    }
+                }
+                Some(Spent::Spend(sid)) => {
+                    let Some(r) = s.recorded.get(sid) else { continue };
+                    if ev.cited.iter().any(|c| c.grant.sid == r.grant.sid) {
+                        continue;
+                    }
+                    if fallbacks.contains(&r.grant.sid) {
+                        cands.extend(r.spend.notes().into_iter().filter(|o| o.owner == claim.owner));
+                    }
+                    ev.cited.push(r.clone());
+                }
+            }
+        }
+        ev
+    }
+
+    /// Take a claim (checked by the caller against its contract), `paid`
+    /// sats of it paid out: its live notes ([`Book::evidence`]) spent, and
     /// what they hold beyond `paid` issued back to the owner as change.
     /// Taken again, the same change.
-    pub fn take_claim(&self, claim: &Claim, total: u64, paid: u64) -> Result<Option<Settled>> {
+    pub fn take_claim(&self, claim: &Claim, paid: u64) -> Result<Option<Settled>> {
         let e = claim.e();
         let mut s = self.s.lock().unwrap();
         if let Some(t) = s.claims.get(&hex::encode(e)) {
             ensure!(t.cid == claim.cid, "that claim was taken on contract {}", t.cid);
             return Ok(t.change.clone());
         }
-        for n in &claim.notes {
-            let entry = s.notes.get(&hex::encode(n.note.id)).with_context(|| format!("no note {}", hex::encode(n.note.id)))?;
-            ensure!(entry.note == n.note, "note {} isn't as the claim says", hex::encode(n.note.id));
-            if let Some(sp) = &entry.spent {
-                bail!("note {} is spent ({sp:?})", hex::encode(n.note.id));
-            }
-        }
-        for n in &claim.notes {
-            s.notes.get_mut(&hex::encode(n.note.id)).expect("checked").spent = Some(Spent::Claim { cid: claim.cid, e: hex::encode(e) });
+        let live = Book::evidence_in(&s, claim).live;
+        let total: u64 = live.iter().map(|n| n.value).sum();
+        for n in &live {
+            s.notes.get_mut(&hex::encode(n.id)).expect("live").spent = Some(Spent::Claim { cid: claim.cid, e: hex::encode(e) });
         }
         let change = (total > paid).then(|| {
             let note = Note { id: tagged("lichen/notes/change", &[&e]), owner: claim.owner, value: total - paid };
@@ -240,7 +292,7 @@ impl Book {
             Book::deliver(&mut s, &settled, e);
             settled
         });
-        s.claims.insert(hex::encode(e), Taken { cid: claim.cid, change: change.clone() });
+        s.claims.insert(hex::encode(e), Taken { cid: claim.cid, change: change.clone(), claim: Some(claim.clone()) });
         self.save(&s)?;
         Ok(change)
     }

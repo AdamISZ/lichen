@@ -668,6 +668,29 @@ impl Chain {
         }
         Ok(out)
     }
+    /// The confirmed transaction spending `op`, if any (on RPC, searched
+    /// in the blocks from height `from` on): a pre-signed terminal's txid
+    /// is known only once its poster has added a fee coin.
+    pub fn spender(&self, op: &OutPoint, from: u32) -> Result<Option<Txid>> {
+        match &self.backend {
+            Backend::Rpc { rpc, .. } => {
+                for height in from..=self.height()? {
+                    let block = rpc.get_block(&self.block_hash(height)?)?;
+                    if let Some(t) = block.txdata.iter().find(|t| t.input.iter().any(|i| i.previous_output == *op)) {
+                        return Ok(Some(t.compute_txid()));
+                    }
+                }
+                Ok(None)
+            }
+            Backend::Esplora(e) => {
+                let txid = e.first(|c| Ok(c.get_output_status(&op.txid, u64::from(op.vout))?.and_then(|s| s.txid)))?;
+                match txid {
+                    Some(t) if self.confirmations(&t)? > 0 => Ok(Some(t)),
+                    _ => Ok(None),
+                }
+            }
+        }
+    }
     /// Whether an outpoint is still unspent (in the chain or the mempool).
     pub fn unspent(&self, op: &OutPoint) -> Result<bool> {
         match &self.backend {
@@ -847,13 +870,22 @@ impl Chain {
     /// floor), and returns the change to `fees`. At `feerate` 1 there is no
     /// child.
     pub fn post_link(&self, link: &Transaction, anchor: u32, feerate: u64, sign_anchor: &dyn Fn(&Transaction, &[TxOut]) -> Result<bitcoin::Witness>, fees: &dyn Fees) -> Result<()> {
+        self.post_link_with(link, anchor, feerate, sign_anchor, fees, &[]).map(|_| ())
+    }
+    /// [`Chain::post_link`], its fee child carrying `extra` outputs too
+    /// (data a statement reads, in an `OP_RETURN` under the poster's
+    /// `SIGHASH_ALL`): then the child goes whatever the feerate. Its txid,
+    /// if posted.
+    pub fn post_link_with(&self, link: &Transaction, anchor: u32, feerate: u64, sign_anchor: &dyn Fn(&Transaction, &[TxOut]) -> Result<bitcoin::Witness>, fees: &dyn Fees, extra: &[TxOut]) -> Result<Option<Txid>> {
         if self.get_tx(&link.compute_txid()).is_none() {
             self.broadcast(link).context("the link, at its floor")?;
         }
-        if feerate <= 1 {
-            return Ok(());
+        if feerate <= 1 && extra.is_empty() {
+            return Ok(None);
         }
-        let fee = Amount::from_sat((link.vsize() as u64 + 220) * feerate - link.vsize() as u64);
+        let feerate = feerate.max(1);
+        let extra_vb: u64 = extra.iter().map(|o| bitcoin::consensus::serialize(o).len() as u64).sum();
+        let fee = Amount::from_sat((link.vsize() as u64 + 220 + extra_vb) * feerate - link.vsize() as u64);
         let coin = fees.coin(self, fee + Amount::from_sat(1_000))?;
         let a_op = OutPoint { txid: link.compute_txid(), vout: anchor };
         let a_out = link.output[anchor as usize].clone();
@@ -865,12 +897,12 @@ impl Chain {
                 bitcoin::TxIn { previous_output: a_op, sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME, ..Default::default() },
                 bitcoin::TxIn { previous_output: coin.0, sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME, ..Default::default() },
             ],
-            output: vec![change],
+            output: std::iter::once(change).chain(extra.iter().cloned()).collect(),
         };
         child = fees.sign(self, &child, &[(a_op, a_out.clone()), coin.clone()])?;
         child.input[0].witness = sign_anchor(&child, &[a_out, coin.1])?;
         self.broadcast(&child).context("the link's fee child")?;
-        Ok(())
+        Ok(Some(child.compute_txid()))
     }
         /// Broadcast a transaction that ends a chain (pre-signed
     /// ALL|ANYONECANPAY at zero fee, its input 0 spending `prevout`), adding

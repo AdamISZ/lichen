@@ -27,6 +27,7 @@ use lichen_chain::NodeWallet;
 use lichen_proto::setup::{dealing_from_hex, link_args, shares_from_hex, Opened};
 use lichen_proto::hp::{check_commit, HpCommit, HpDisputed, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
 use lichen_proto::{Checkpoint, Presig, Record};
+use lichen_withdraw::grants;
 use lngap_btc::adaptor::AdaptorSig;
 use lngap_btc::keys::Seed;
 use rand_chacha::ChaCha20Rng;
@@ -69,6 +70,9 @@ pub(crate) struct Prepared {
     /// The instances not kept, opened (at the opening).
     #[serde(default)]
     opened: Vec<Opened>,
+    /// A dispute's `correct`: its fee child carrying the unlocks.
+    #[serde(default)]
+    correct_child: Option<bitcoin::Txid>,
 }
 
 impl Inner {
@@ -117,7 +121,7 @@ impl Inner {
             lamport: hub_lamport(&self.cfg.seed, cid).public(),
             adaptor: hub_adaptor(&self.cfg.seed, cid).public(),
         };
-        self.hp_save(cid, &Prepared { setup: setup.clone(), commit: None, kept: vec![], uploaded: Default::default(), opened: vec![] })?;
+        self.hp_save(cid, &Prepared { setup: setup.clone(), commit: None, kept: vec![], uploaded: Default::default(), opened: vec![], correct_child: None })?;
         Ok(setup)
     }
 
@@ -240,14 +244,34 @@ pub fn cut_and_choose(net: lichen_proto::Net) -> (u32, u32) {
 
 /// A dispute's state at the hub, in play.
 pub(crate) enum State {
-    /// `request` confirmed at `at`; `recorded` once the claim was found to
-    /// hold and its exit recorded.
+    /// `request` confirmed at `at`; `recorded` once the claim was taken
+    /// into the book, found owed in full (`request_timeout` pays her).
     Requested(Box<HpDisputed>, u32, bool),
+    /// `correct` posted, confirmed at `at` (0: not yet): the statement is
+    /// proved and asserted once `request`'s block has the contract's work
+    /// on it; `done` once asserted, or given up.
+    Corrected(Box<HpDisputed>, u32, bool),
     /// `assert` confirmed at `at`: her challenge is due within `Δ2`.
     Asserted(Box<HpDisputed>, u32),
     /// Challenged: the hub's answer is due within `Δ1` of `at`; `tried`
     /// once its kept instances were evaluated and none opened.
     Challenged(Box<HpDisputed>, u32, bool),
+}
+
+/// What the hub holds against a claim ([`Inner::assess`]).
+#[derive(Default)]
+pub(crate) struct Assessed {
+    pub owed: u32,
+    pub cited: Vec<grants::Cited>,
+    pub unlocks: Vec<[u8; 32]>,
+    pub others: Vec<Vec<u8>>,
+}
+
+/// An `OP_RETURN` pushing `data` (at most 75 bytes).
+fn op_return(data: &[u8]) -> bitcoin::ScriptBuf {
+    let mut v = vec![0x6a, data.len() as u8];
+    v.extend(data);
+    bitcoin::ScriptBuf::from_bytes(v)
 }
 
 fn bb(s: State) -> Option<Outer> {
@@ -277,6 +301,9 @@ impl Inner {
         if let Some(a) = confirmed_at(self, &d.txid("assert"))? {
             return Ok(bb(State::Asserted(Box::new(d), a)));
         }
+        if let Some(c) = confirmed_at(self, &d.txid("correct"))? {
+            return Ok(bb(State::Corrected(Box::new(d), c, false)));
+        }
         Ok(bb(State::Requested(Box::new(d), at, false)))
     }
 
@@ -288,26 +315,53 @@ impl Inner {
                 if let Some(a) = confirmed_at(self, &d.txid("assert"))? {
                     return Ok(bb(State::Asserted(d, a)));
                 }
+                if let Some(c) = confirmed_at(self, &d.txid("correct"))? {
+                    return Ok(bb(State::Corrected(d, c, false)));
+                }
                 let r_op = OutPoint { txid: d.txid("request"), vout: 0 };
-                if !self.chain.unspent(&r_op)? && self.chain.get_tx(&d.txid("assert")).is_none() {
+                if !self.chain.unspent(&r_op)? && self.chain.get_tx(&d.txid("correct")).is_none() {
                     self.note(format!("contract {cid}: the user's request timed out; she is paid her claim"));
-                    return Ok(Some(Outer::Collect { link: r_op.txid, since: self.chain.height()? }));
+                    return Ok(Some(Outer::Collect { link: r_op.txid, since: self.chain.height()?, corrected: false }));
                 }
-                if !recorded {
-                    self.grants_take_exit(&d)?;
-                }
-                let w = d.graph.spec.windows;
-                // the assertion must confirm before her timeout
-                let last_chance = at + u32::from(w.w_h) - (u32::from(w.w_h) / 4).max(2);
-                if self.chain.height()? >= last_chance {
-                    self.note_once(format!("contract {cid}: too late to assert; request_timeout will pay the user"));
+                if recorded {
                     return Ok(bb(State::Requested(d, at, true)));
                 }
-                // for tests: a lying hub asserts against a claim that holds
-                if self.forge_assertions.load(std::sync::atomic::Ordering::Relaxed) {
-                    self.hp_assert(&d)?;
+                let w = d.graph.spec.windows;
+                // correct must confirm before her timeout
+                let last_chance = at + u32::from(w.w_h) - (u32::from(w.w_h) / 4).max(2);
+                if self.chain.height()? >= last_chance {
+                    self.note_once(format!("contract {cid}: too late to correct the claim; request_timeout will pay the user"));
+                    return Ok(bb(State::Requested(d, at, true)));
                 }
-                Ok(bb(State::Requested(d, at, true)))
+                match self.grants_correct(&d)? {
+                    None => Ok(bb(State::Requested(d, at, true))),
+                    Some(c) => Ok(bb(State::Corrected(d, c, false))),
+                }
+            }
+            State::Corrected(d, at, done) => {
+                if let Some(a) = confirmed_at(self, &d.txid("assert"))? {
+                    return Ok(bb(State::Asserted(d, a)));
+                }
+                let c_op = OutPoint { txid: d.txid("correct"), vout: 0 };
+                if !self.chain.unspent(&c_op)? && self.chain.get_tx(&d.txid("assert")).is_none() {
+                    self.note(format!("contract {cid}: the hub corrected and never proved: correct_timeout pays the user her claim"));
+                    return Ok(Some(Outer::Collect { link: c_op.txid, since: self.chain.height()?, corrected: false }));
+                }
+                if done {
+                    return Ok(bb(State::Corrected(d, at, true)));
+                }
+                let w = d.graph.spec.windows;
+                let last_chance = at + u32::from(w.w_h) - (u32::from(w.w_h) / 4).max(2);
+                if self.chain.height()? >= last_chance {
+                    self.note_once(format!("contract {cid}: too late to assert; correct_timeout will pay the user"));
+                    return Ok(bb(State::Corrected(d, at, true)));
+                }
+                if self.abandon_corrections.load(std::sync::atomic::Ordering::Relaxed) {
+                    self.note_once(format!("contract {cid}: abandoning the correction (tests): correct_timeout will pay the user"));
+                    return Ok(bb(State::Corrected(d, at, true)));
+                }
+                let done = self.grants_assert(&d)?;
+                Ok(bb(State::Corrected(d, at, done)))
             }
             State::Asserted(d, at) => {
                 if let Some(c) = confirmed_at(self, &d.txid("challenge_assert"))? {
@@ -315,14 +369,12 @@ impl Inner {
                 }
                 let a_op = OutPoint { txid: d.txid("assert"), vout: 0 };
                 if !self.chain.unspent(&a_op)? && self.chain.get_tx(&d.txid("challenge_assert")).is_none() {
-                    self.close_settled(cid, d.txid("success"))?;
-                    return Ok(Some(Outer::Done));
+                    return Ok(Some(Outer::Collect { link: a_op.txid, since: self.chain.height()?, corrected: true }));
                 }
                 if self.chain.height()? >= at + u32::from(d.graph.spec.windows.delta2) {
                     let txid = self.hp_terminal(&d, "success", vec![])?;
-                    self.note(format!("contract {cid}: no challenge to the assertion; success {txid}: the contract is the hub's"));
-                    self.close(cid, txid)?;
-                    return Ok(Some(Outer::Done));
+                    self.note(format!("contract {cid}: no challenge to the assertion; success {txid} pays the user b_corr"));
+                    return Ok(Some(Outer::Collect { link: a_op.txid, since: self.chain.height()?, corrected: true }));
                 }
                 Ok(bb(State::Asserted(d, at)))
             }
@@ -331,7 +383,7 @@ impl Inner {
                 if !self.chain.unspent(&c_op)? {
                     if self.chain.get_tx(&d.txid("failure")).is_some() {
                         self.note(format!("contract {cid}: no answer to the user's challenge: failure paid her"));
-                        return Ok(Some(Outer::Collect { link: c_op.txid, since: self.chain.height()? }));
+                        return Ok(Some(Outer::Collect { link: c_op.txid, since: self.chain.height()?, corrected: false }));
                     }
                     self.close_settled(cid, c_op.txid)?;
                     return Ok(Some(Outer::Done));
@@ -350,47 +402,148 @@ impl Inner {
         }
     }
 
-    /// The claim `request` posts, taken into the book: checked against the
-    /// contract and the `b` and `E` she signed, its notes spent, the change
-    /// beyond `b` issued back to her. A claim that doesn't hold is noted,
-    /// not contested (milestone 2's statement will): `request_timeout`
-    /// pays her `b` all the same.
-    fn grants_take_exit(&self, d: &HpDisputed) -> Result<()> {
+    /// The claim `request` posts, as the statement reads it: `b`, and the
+    /// claim if well formed (as she signed it, `E` and `b`, of this
+    /// contract), else None.
+    fn posted_claim(&self, d: &HpDisputed) -> Result<(u32, Option<lichen_notes::Claim>)> {
         let record = &d.record;
-        let cid = record.cid();
         let req = self.chain.get_tx(&d.txid("request")).context("the request")?;
         let (b, e, posted) = HubProves::read_request(&link_args(&req))?;
         let b = u32::from_be_bytes(b.message().try_into().map_err(|_| anyhow::anyhow!("b's signature signs 4 bytes"))?);
         let e: [u8; 32] = e.message().try_into().map_err(|_| anyhow::anyhow!("E's signature signs 32 bytes"))?;
-        let taken = (|| -> Result<u64> {
-            let claim = lichen_notes::Claim::from_bytes(&posted)?;
-            ensure!(claim.e() == e && claim.b == b, "the claim posted isn't the one signed (its E or b)");
-            let unit = record.terms.unit.to_sat();
-            let total = claim.check(&self.book.issuer(), cid, &record.hp().deposit, &record.l2_address, unit)?;
-            self.book.take_claim(&claim, total, u64::from(b) * unit)?;
-            Ok(total)
-        })();
-        match taken {
-            Ok(total) => self.note(format!("contract {cid}: the user's exit claims {b} units ({total} sats of notes): taken into the book; request_timeout pays her")),
-            Err(e) => self.note(format!("contract {cid}: the user's exit claim doesn't hold ({e:#}); not contested in milestone 1: request_timeout pays her")),
-        }
-        Ok(())
+        let claim = lichen_notes::Claim::from_bytes(&posted).ok().filter(|c| c.e() == e && c.b == b && c.cid == record.cid() && c.deposit == record.hp().deposit);
+        Ok((b, claim))
     }
 
-    /// For tests, a lying hub: a forged proof asserted against the claim
-    /// (a proof of another contract's statement).
-    fn hp_assert(&self, d: &HpDisputed) -> Result<()> {
+    /// What the hub holds against `claim`, of contract `record`: what it's
+    /// owed by the statement's own count, and the evidence as the
+    /// statement takes it (two spends at most: their unlocks fill the
+    /// `OP_RETURN`).
+    pub(crate) fn assess(&self, record: &Record, claim: Option<&lichen_notes::Claim>) -> Assessed {
+        let owner = record.l2_address;
+        let mut a = Assessed::default();
+        let Some(claim) = claim else { return a };
+        let ev = self.book.evidence(claim);
+        for r in ev.cited.iter().take(grants::MAX_UNLOCKS) {
+            let Some(i) = r.spend.inputs.iter().position(|n| n.owner == owner) else { continue };
+            let Some(sig) = r.sigs.get(i).and_then(|s| hex::decode(s).ok()).and_then(|v| v.try_into().ok()) else { continue };
+            a.cited.push(grants::Cited {
+                inputs: r.spend.inputs.iter().map(|n| n.g()).collect(),
+                outputs: r.spend.outputs.iter().map(|o| (o.owner, o.value)).collect(),
+                t_point: r.grant.t_point.serialize(),
+                presigs: r.grant.presig_bytes(),
+                sig,
+            });
+            a.unlocks.push(r.t.secret_bytes());
+        }
+        a.others = ev.others.iter().take(grants::MAX_CITED).map(|c| c.to_bytes()).collect();
+        a.owed = grants::owed(Some(&claim.g()), &self.book.issuer(), &owner, record.terms.unit.to_sat(), &a.cited, &a.unlocks, &a.others);
+        a
+    }
+
+    /// The hub's answer to a request: a claim owed in full is taken into
+    /// the book (`request_timeout` pays her, None); otherwise `correct`,
+    /// signing `b_corr`, what she's owed, its fee child carrying the
+    /// unlocks of the spends the statement cites; the claim taken at that.
+    /// `correct`'s confirmation height.
+    fn grants_correct(&self, d: &HpDisputed) -> Result<Option<u32>> {
         let record = &d.record;
         let cid = record.cid();
-        self.note(format!("contract {cid}: asserting a forged proof against the claim"));
-        let proof = lichen_babe::statement::mock_prove(&lichen_proto::hp::journal(cid + 1, &record.deployment, &record.hp().deposit, record.hp().margin));
+        let unit = record.terms.unit.to_sat();
+        let (b, claim) = self.posted_claim(d)?;
+        let a = self.assess(record, claim.as_ref());
+        // a lying hub (tests) corrects a claim owed in full to nothing
+        let forge = self.forge_assertions.load(std::sync::atomic::Ordering::Relaxed);
+        let b_corr = if forge { 0 } else { a.owed };
+        if let Some(c) = &claim {
+            let paid = u64::from(if forge { b } else { b_corr }) * unit;
+            let change = self.book.take_claim(c, paid)?;
+            self.note(format!("contract {cid}: the user's exit claim of {b} units taken into the book{}", change.map_or(String::new(), |c| format!(", {} sats of change back to her", c.note.value))));
+        }
+        if b_corr == b {
+            self.note(format!("contract {cid}: the claim is owed in full: request_timeout pays her"));
+            return Ok(None);
+        }
+        self.note(format!("contract {cid}: the claim of {b} units is owed {b_corr}{}: correcting it", match &claim {
+            None => " (malformed)".to_string(),
+            Some(_) => format!(" ({} spends and {} claims of hers cited)", a.cited.len(), a.others.len()),
+        }));
+        let wire = HubProves::b_wire(&hub_bc(&self.cfg.seed, cid).sign(&b_corr.to_be_bytes())?);
+        let tx = d.finish("correct", wire)?;
+        let extra: Vec<bitcoin::TxOut> = (!a.unlocks.is_empty()).then(|| bitcoin::TxOut { value: bitcoin::Amount::ZERO, script_pubkey: op_return(&a.unlocks.concat()) }).into_iter().collect();
+        let (at, child) = self.post_with(cid, &tx, &extra)?;
+        let mut p = self.hp_prepared(cid)?;
+        p.correct_child = child;
+        self.hp_save(cid, &p)?;
+        self.note(format!("contract {cid}: corrected to {b_corr} units ({} vB){}", tx.vsize(), child.map_or(String::new(), |c| format!(", the unlocks in {c}"))));
+        Ok(Some(at))
+    }
+
+    /// The statement's input for a corrected dispute, once `request`'s
+    /// block has the contract's work on it (else why not yet).
+    fn grants_input(&self, d: &HpDisputed) -> Result<std::result::Result<grants::GrantsInput, String>> {
+        let record = &d.record;
+        let k = record.hp();
+        let checkpoint = record.checkpoint.as_ref().context("the contract's checkpoint")?;
+        let terms = grants::GTerms { issuer: self.book.issuer(), owner: record.l2_address, work: checkpoint.work(), unit: record.terms.unit.to_sat() };
+        ensure!(terms.d() == record.deployment, "the contract's D isn't the issuer's deployment's");
+        let funding = self.chain.get_tx(&record.funding.txid).context("the funding")?;
+        let request = lichen_proto::exit::request_proof(&self.chain, &funding, &d.txid("request"))?;
+        let req_tx = self.chain.get_tx(&d.txid("request")).context("the request")?;
+        let correct = lichen_proto::exit::request_proof(&self.chain, &req_tx, &d.txid("correct"))?;
+        use bitcoin::hashes::Hash as _;
+        let req_block = bitcoin::BlockHash::from_byte_array(lichen_ledger::lichen_validity::btc::Header(request.header).hash());
+        if let Err(e) = lichen_proto::headers_for(&self.chain, &req_block.to_byte_array(), terms.work) {
+            return Ok(Err(format!("{e:#}")));
+        }
+        let req_height = self.chain.block_height(&req_block)?.context("the request's block")?;
+        let mut headers = vec![request.header];
+        headers.extend(self.chain.headers_after(&req_block, (self.chain.height()? - req_height) as usize)?);
+        let child = match self.hp_prepared(record.cid())?.correct_child {
+            None => None,
+            Some(txid) => {
+                let b = lichen_proto::exit::in_block(&self.chain, &txid)?;
+                Some(grants::InBlock { tx: b.tx, header: self.chain.header(&b.block)?, index: b.index, path: b.path, coinbase: b.coinbase, coinbase_path: b.coinbase_path })
+            }
+        };
+        let (_, claim) = self.posted_claim(d)?;
+        let a = self.assess(record, claim.as_ref());
+        Ok(Ok(grants::GrantsInput { c: record.cid(), deposit: lichen_proto::setup::statement_outpoint(&k.deposit), margin: k.margin, terms, request, correct, child, headers, cited: a.cited, others: a.others }))
+    }
+
+    /// Prove the statement for a corrected dispute and assert it: checked
+    /// natively, then proved (the mock statement's proof until milestone
+    /// 3). A lying hub (tests) asserts a forged proof. Whether done.
+    fn grants_assert(&self, d: &HpDisputed) -> Result<bool> {
+        let record = &d.record;
+        let cid = record.cid();
+        let input = match self.grants_input(d)? {
+            Ok(i) => i,
+            Err(why) => {
+                self.note_once(format!("contract {cid}: the statement waits: {why}"));
+                return Ok(false);
+            }
+        };
+        let journal = if self.forge_assertions.load(std::sync::atomic::Ordering::Relaxed) {
+            self.note(format!("contract {cid}: asserting a forged proof against the claim"));
+            lichen_proto::hp::journal(cid + 1, &record.deployment, &record.hp().deposit, record.hp().margin)
+        } else {
+            match grants::check(&input) {
+                Ok(j) => j,
+                Err(e) => {
+                    self.note(format!("contract {cid}: the statement doesn't hold ({e:?}): no assertion; correct_timeout will pay the user"));
+                    return Ok(true);
+                }
+            }
+        };
+        let proof = lichen_babe::statement::mock_prove(&journal);
         let bits = lichen_babe::gadget::input(&proof.a);
         let (pi2, pi3) = lichen_babe::statement::pi23_to_bytes(&proof);
         let wire = HubProves::assert_wire(&hub_lamport(&self.cfg.seed, cid).sign(&digits(&bits)), &pi2, &pi3);
         let tx = d.finish("assert", wire)?;
         self.post(cid, &tx)?;
         self.note(format!("contract {cid}: asserted ({} vB)", tx.vsize()));
-        Ok(())
+        Ok(true)
     }
 
     /// The answer to her challenge: π1's secrets from it (her completions
@@ -425,8 +578,10 @@ impl Inner {
 impl State {
     pub(crate) fn describe(&self) -> String {
         match self {
-            State::Requested(_, _, false) => "requested: the hub takes the claim".into(),
+            State::Requested(_, _, false) => "requested: the hub weighs the claim".into(),
             State::Requested(_, _, true) => "requested: the claim taken, request_timeout pays the user".into(),
+            State::Corrected(_, _, false) => "corrected: the hub's statement is due".into(),
+            State::Corrected(_, _, true) => "corrected: asserted, or left to correct_timeout".into(),
             State::Asserted(..) => "asserted: the user's challenge is due".into(),
             State::Challenged(..) => "challenged: the hub's answer is due".into(),
         }

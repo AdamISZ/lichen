@@ -14,6 +14,9 @@ use lngap_sessions::contract::{anchor_tree_for, Presign};
 use lngap_btc::sighash::sign_tapscript;
 use lngap_btc::witness::tapscript_witness;
 use lngap_sessions::session::{bit_tree, reserve_tree};
+use lichen_babe::hp::{corr_bit_tree, HubProves};
+use lichen_proto::hp::HpDisputed;
+use lichen_proto::setup::link_args;
 
 pub use crate::engine::Outcome;
 use crate::engine::{wait_confirmed, Engine, Options, Store, WalletSigner};
@@ -110,20 +113,36 @@ impl Wallet {
         let core = c.core();
         let (t, ctx) = (core.terms, core.ctx());
         let b_key = c.b_key().clone();
-        let b_wire = self.secrets(&held.nonce).b_wire(b)?;
         let kp = self.contract_keys(&held.nonce).payment;
         let delta = core.params.delta;
         let mut ins: Vec<SweepIn> = vec![];
-        // her outputs: the bits set in b, then the reserves
         let at_delta = Sequence::from_height(delta);
-        for i in t.low_bits..t.bits {
-            if (b >> i) & 1 == 1 {
-                let vout = i - t.low_bits;
-                ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), at_delta, Some((bit_tree(&ctx, i, &b_key)?, format!("alice_bit_{i}"), true))));
+        let (b_wire, wait) = match &outcome {
+            // success: the bits set in the hub's b_corr, by its signature
+            // (in correct), at once; her reserve came to her payout address
+            Outcome::Corrected { b_corr, .. } => {
+                let d = HpDisputed::new(&held.record, statement)?;
+                let correct = chain.get_tx(&d.txid("correct")).context("correct")?;
+                let sig = HubProves::read_correct(&link_args(&correct))?;
+                for i in (t.low_bits..t.bits).filter(|i| (b_corr >> i) & 1 == 1) {
+                    let vout = i - t.low_bits;
+                    ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), Sequence::ENABLE_RBF_NO_LOCKTIME, Some((corr_bit_tree(&ctx, i, &d.graph.spec.bc_key)?, format!("alice_corr_bit_{i}"), true))));
+                }
+                (HubProves::b_wire(&sig), 0)
             }
-        }
-        let vout = t.bits - t.low_bits;
-        ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), at_delta, Some((reserve_tree(&ctx, t, &b_key)?, "alice_reserve".to_string(), false))));
+            // her outputs: the bits set in b, then the reserves
+            _ => {
+                for i in t.low_bits..t.bits {
+                    if (b >> i) & 1 == 1 {
+                        let vout = i - t.low_bits;
+                        ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), at_delta, Some((bit_tree(&ctx, i, &b_key)?, format!("alice_bit_{i}"), true))));
+                    }
+                }
+                let vout = t.bits - t.low_bits;
+                ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), at_delta, Some((reserve_tree(&ctx, t, &b_key)?, "alice_reserve".to_string(), false))));
+                (self.secrets(&held.nonce).b_wire(b)?, delta)
+            }
+        };
         let winnings: Amount = ins.iter().map(|i| i.1.value).sum();
         // her links' anchors (a link of the set with an anchor of hers is
         // hers), where they are unspent
@@ -148,8 +167,8 @@ impl Wallet {
         }
         let total: Amount = ins.iter().map(|i| i.1.value).sum();
         let budget = total - winnings - anchors;
-        self.step(format!("the payout confirmed at {at}: the user's outputs can be swept from block {}", at + u32::from(delta)));
-        while chain.height()? < at + u32::from(delta) {
+        self.step(format!("the payout confirmed at {at}: the user's outputs can be swept from block {}", at + u32::from(wait)));
+        while chain.height()? < at + u32::from(wait) {
             std::thread::sleep(Duration::from_millis(100));
         }
         let prevouts: Vec<TxOut> = ins.iter().map(|i| i.1.clone()).collect();
@@ -175,7 +194,7 @@ impl Wallet {
         let swept = chain.broadcast(&build(fee)?).context("sweeping the winnings")?;
         // the parts that came to nothing (on regtest the anchors often went
         // to fee bumps) are left out
-        let parts: Vec<String> = [("b's bits and the reserves", winnings), ("the anchors", anchors), ("the fee budget's rest", budget)]
+        let parts: Vec<String> = [("the payout's bits and reserves", winnings), ("the anchors", anchors), ("the fee budget's rest", budget)]
             .into_iter()
             .filter(|(_, v)| *v > Amount::ZERO)
             .map(|(name, v)| format!("{name} {}", v.to_sat()))

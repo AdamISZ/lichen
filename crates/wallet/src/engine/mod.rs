@@ -23,15 +23,16 @@ pub mod hp;
 pub enum Outcome {
     /// Stopped on request (`pause_after`); run again to resume.
     Paused,
-    /// The hub didn't assert her claim false: `request_timeout` paid her
-    /// (its txid).
+    /// The hub didn't correct her claim (`request_timeout`), or corrected
+    /// it and never proved so (`correct_timeout`): paid her claim (its
+    /// txid).
     HubTimedOut(Txid),
     /// The hub's assertion was false, it couldn't answer her challenge,
     /// and `failure` paid her.
     Refuted(Txid),
-    /// The hub asserted a valid proof that her claim is false: she lets
-    /// it stand, and `success` is the hub's.
-    Countered,
+    /// The hub corrected her claim to `b_corr` units and proved it:
+    /// `success` (its txid) paid her that, and her reserve.
+    Corrected { success: Txid, b_corr: u32 },
     /// The hub answered her challenge (or took the contract otherwise).
     Lost,
 }
@@ -40,8 +41,8 @@ impl Outcome {
     /// The payout's txid, for a win.
     pub fn payout(&self) -> Option<Txid> {
         match self {
-            Outcome::HubTimedOut(t) | Outcome::Refuted(t) => Some(*t),
-            Outcome::Lost | Outcome::Paused | Outcome::Countered => None,
+            Outcome::HubTimedOut(t) | Outcome::Refuted(t) | Outcome::Corrected { success: t, .. } => Some(*t),
+            Outcome::Lost | Outcome::Paused => None,
         }
     }
 }

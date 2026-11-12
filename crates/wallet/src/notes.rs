@@ -179,7 +179,11 @@ impl Wallet {
     /// change.
     pub(crate) fn claim_for(&mut self, cid: u32, units: u32) -> Result<ExitPlan> {
         let record = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?.record.clone();
-        self.sync()?;
+        // a hub that won't answer (a spend in flight, the mailbox) mustn't
+        // hold off the claim: what's unknown is a fallback
+        if let Err(e) = self.sync() {
+            self.step(format!("claiming without a sync: {e:#}"));
+        }
         if self.notes.len() > MAX_CLAIM_NOTES {
             self.merge()?;
         }

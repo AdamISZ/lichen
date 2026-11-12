@@ -197,7 +197,7 @@ fn exit_cmd(a: &Args, w: &mut Wallet, contract: u32, claim_only: bool, challenge
     w.unchecked_claims = challenge_anyway;
     let (outcome, swept) = w.exit(&chain, &a.statement, contract)?;
     match outcome {
-        lichen_wallet::dispute::Outcome::Countered => println!("The hub proved the claim false: a note of it isn't yours or isn't live, or was claimed through another contract too. Its success takes the contract."),
+        lichen_wallet::dispute::Outcome::Corrected { b_corr, .. } => println!("The hub proved the claim is owed at most {b_corr} units (a note of it spent, by a spend of yours or another claim); success paid that and your reserve; swept {swept:?}"),
         _ => println!("{outcome:?}; swept {swept:?}"),
     }
     Ok(())

@@ -55,7 +55,7 @@ struct Stored {
     mailbox_from: usize,
     /// Spends we signed, not yet answered.
     #[serde(default)]
-    inflight: Vec<notes::InFlight>,
+    pub inflight: Vec<notes::InFlight>,
 }
 
 mod hashes {
@@ -194,7 +194,7 @@ pub struct Wallet {
     pub notes: Vec<lichen_notes::Settled>,
     pub(crate) spent: Vec<Hash>,
     pub(crate) mailbox_from: usize,
-    pub(crate) inflight: Vec<notes::InFlight>,
+    pub inflight: Vec<notes::InFlight>,
 }
 
 impl Wallet {

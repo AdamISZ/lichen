@@ -285,7 +285,7 @@ pub struct GrantsInput {
     /// `correct` (witness serialization), spending `request`'s output, in
     /// a block of `headers`.
     pub correct: Request,
-    /// The hub's child of `correct` (spending its anchor), in a block of
+    /// A child of `correct` (spending an anchor of it), in a block of
     /// `headers`: its `OP_RETURN` carries the unlocks. None: no unlocks.
     pub child: Option<InBlock>,
     /// From `request`'s block on, consecutive.
@@ -381,37 +381,48 @@ fn point_of(t: &[u8; 32]) -> Option<[u8; 33]> {
 
 /// What the claim is owed, in units, by the evidence: the cited spends
 /// (each signed by her; counting if its `T`'s unlock is among `unlocks`)
-/// and the other claims she signed.
+/// and the other claims she signed (on other contracts: one on this
+/// contract was never paid, the payout being the posted claim's).
+///
+/// The candidates are the claim's notes; a cited spend kills those among
+/// its inputs, and if the claim names it a fallback, its outputs to her
+/// join the candidates (a later spend of hers may kill them in turn).
+/// Owed: the candidates not killed, in units, at most `b`.
 pub fn owed(claim: Option<&Claim>, issuer: &Hash, owner: &Hash, unit: u64, cited: &[Cited], unlocks: &[[u8; 32]], others: &[Vec<u8>]) -> u32 {
     let Some(claim) = claim else { return 0 };
     if claim.holds(issuer, owner, unit).is_none() {
         return 0;
     }
-    let e = claim.fingerprint();
+    let mut cands: Vec<(Hash, u64)> = claim.notes.iter().map(|i| (i.id, i.value)).collect();
     let mut dead: Vec<Hash> = Vec::new();
-    let mut revived: u64 = 0;
-    for c in cited {
-        if !c.signed_by(owner) || !unlocks.iter().any(|t| point_of(t) == Some(c.t_point)) {
-            continue;
+    let usable: Vec<(Hash, &Cited)> = cited.iter().filter(|c| c.signed_by(owner) && unlocks.iter().any(|t| point_of(t) == Some(c.t_point))).map(|c| (c.sid(), c)).collect();
+    let mut revived: Vec<Hash> = Vec::new();
+    loop {
+        let mut more = false;
+        for (sid, c) in &usable {
+            let killed: Vec<Hash> = c.inputs.iter().map(|n| n.id).filter(|id| cands.iter().any(|(x, _)| x == id) && !dead.contains(id)).collect();
+            if killed.is_empty() {
+                continue;
+            }
+            more = true;
+            dead.extend(killed);
+            if claim.fallbacks.contains(sid) && !revived.contains(sid) {
+                revived.push(*sid);
+                cands.extend(c.outputs.iter().enumerate().filter(|(_, (o, _))| o == owner).map(|(j, (_, v))| (output_id(sid, j as u32), *v)));
+            }
         }
-        let sid = c.sid();
-        let killed: Vec<Hash> = c.inputs.iter().map(|n| n.id).filter(|id| claim.notes.iter().any(|i| i.id == *id)).collect();
-        if killed.is_empty() {
-            continue;
+        if !more {
+            break;
         }
-        if claim.fallbacks.contains(&sid) {
-            revived = revived.saturating_add(c.outputs.iter().filter(|(o, _)| o == owner).map(|(_, v)| *v).sum());
-        }
-        dead.extend(killed);
     }
     for o in others {
         let Some(other) = Claim::from_bytes(o) else { continue };
-        if other.owner != *owner || other.fingerprint() == e || !verify(owner, &other.fingerprint(), &other.sig) {
+        if other.owner != *owner || other.cid == claim.cid || !verify(owner, &other.fingerprint(), &other.sig) {
             continue;
         }
-        dead.extend(other.notes.iter().map(|i| i.id).filter(|id| claim.notes.iter().any(|i| i.id == *id)));
+        dead.extend(other.notes.iter().map(|i| i.id));
     }
-    let live: u64 = claim.notes.iter().filter(|i| !dead.contains(&i.id)).map(|i| i.value).sum::<u64>().saturating_add(revived);
+    let live: u64 = cands.iter().filter(|(id, _)| !dead.contains(id)).fold(0u64, |a, (_, v)| a.saturating_add(*v));
     claim.b.min(u32::try_from(live / unit).unwrap_or(u32::MAX))
 }
 
@@ -452,7 +463,9 @@ pub fn check(input: &GrantsInput) -> Result<[u8; JOURNAL_LEN], Reject> {
                 return Err(Reject::Posted);
             }
             let tx = btc::parse_tx(&ch.tx).ok_or(Reject::Posted)?;
-            if !tx.inputs.contains(&OutPoint { txid: correct_id, vout: 1 }) {
+            // a child of correct: spending an anchor of it (not its
+            // first output, assert's)
+            if !tx.inputs.iter().any(|o| o.txid == correct_id && o.vout > 0) {
                 return Err(Reject::Posted);
             }
             tx.outputs.iter().find_map(|(_, s)| unlocks(s)).ok_or(Reject::Posted)?
@@ -623,6 +636,14 @@ mod tests {
         let other = Claim { sig: sign(&alice, &other.fingerprint()), ..other };
         assert_eq!(owed(&without, &[], &[], &[other.to_bytes()]), 700);
         assert_eq!(owed(&without, &[], &[], &[without.to_bytes()]), 1000);
+        // another claim on the same contract was never paid: no kill
+        let same = claim(&alice, 300, vec![n2], vec![]);
+        assert_eq!(owed(&without, &[], &[], &[same.to_bytes()]), 1000);
+        // her revived change spent on: dead too
+        let change = Note { id: output_id(&s.sid(), 1), owner, value: 20_000 };
+        let t2 = [13u8; 32];
+        let s2 = spend(&alice, vec![change], 20_000, &t2);
+        assert_eq!(owed(&with_fallback, &[s.clone(), s2.clone()], &[t, t2], &[]), 300);
         // malformed: a note not settled, her signature, b above the notes
         let bad_note = claim(&alice, 100, vec![Item { sig: [0; 64], ..n1 }], vec![]);
         assert_eq!(owed(&bad_note, &[], &[], &[]), 0);
