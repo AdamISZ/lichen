@@ -129,7 +129,17 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
    - **Tests** (regtest, `crates/hub/tests/contested.rs`): corrected to
      her change and paid by `success`; a forged correction to 0, refuted;
      a correction never proved, paid by `correct_timeout`.
-3. **The real guest**: the statement in RISC Zero, its Groth16 wrap.
+3. **The real guest** (2026-11-12): `r0/hp-guest` proves `grants::check`
+   on this branch (image id `fc24dc37…`, r0/guests/README.md); `lichen-r0
+   hp|exec-hp|hp-proof <input> [<out>]`, `r0/hp-prover.sh`, `r0/hp-remote.sh`
+   without a chain receipt. The hub on the real statement proves in the
+   background as the anchored L2's did (`LICHEN_HP_PROVER`, files in
+   `hp/<cid>/`); on the mock, `LICHEN_DUMP_HP` writes the statement's
+   input. The contested test's corrected exit (one spend cited, 12
+   headers): 1,281k user cycles, 2 segments; proved on lichen-vps (4
+   cores, CPU) in 973 s and wrapped in Groth16 in 265 s, about 21 minutes,
+   inside Mutinynet's `w_H` (2 h) after `correct`. The seal verifies under
+   BABE's `Kind::Risc0` for the contract's journal and no other.
 4. **Hardening**: the claim signed in full in `request` (its posted bytes
    are malleable today: anyone may swap them, and a claim not matching
    its `E` is malformed); compact item encoding (hub-assigned ids and

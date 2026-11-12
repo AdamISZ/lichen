@@ -524,19 +524,32 @@ impl Inner {
                 return Ok(false);
             }
         };
-        let journal = if self.forge_assertions.load(std::sync::atomic::Ordering::Relaxed) {
+        let proof = if self.forge_assertions.load(std::sync::atomic::Ordering::Relaxed) {
             self.note(format!("contract {cid}: asserting a forged proof against the claim"));
-            lichen_proto::hp::journal(cid + 1, &record.deployment, &record.hp().deposit, record.hp().margin)
+            lichen_babe::statement::mock_prove(&lichen_proto::hp::journal(cid + 1, &record.deployment, &record.hp().deposit, record.hp().margin))
         } else {
-            match grants::check(&input) {
+            let journal = match grants::check(&input) {
                 Ok(j) => j,
                 Err(e) => {
                     self.note(format!("contract {cid}: the statement doesn't hold ({e:?}): no assertion; correct_timeout will pay the user"));
                     return Ok(true);
                 }
+            };
+            ensure!(journal == record.hp_journal(), "the statement's journal isn't the contract's");
+            match self.cfg.statement.hp_kind()? {
+                lichen_babe::statement::Kind::Mock => {
+                    // for the guest's tests: the statement's input, as the prover takes it
+                    if let Ok(dir) = std::env::var("LICHEN_DUMP_HP") {
+                        let _ = std::fs::write(std::path::Path::new(&dir).join(format!("grants-{cid}.bin")), input.to_bytes());
+                    }
+                    lichen_babe::statement::mock_prove(&journal)
+                }
+                lichen_babe::statement::Kind::Risc0 => match self.hp_proof(cid, &input, &journal)? {
+                    Some(p) => p,
+                    None => return Ok(false),
+                },
             }
         };
-        let proof = lichen_babe::statement::mock_prove(&journal);
         let bits = lichen_babe::gadget::input(&proof.a);
         let (pi2, pi3) = lichen_babe::statement::pi23_to_bytes(&proof);
         let wire = HubProves::assert_wire(&hub_lamport(&self.cfg.seed, cid).sign(&digits(&bits)), &pi2, &pi3);
@@ -544,6 +557,44 @@ impl Inner {
         self.post(cid, &tx)?;
         self.note(format!("contract {cid}: asserted ({} vB)", tx.vsize()));
         Ok(true)
+    }
+
+    /// The proof of the hub's statement for contract `cid` (RISC Zero's,
+    /// wrapped in Groth16), once proved, from `input`: the prover runs in
+    /// the background (`r0/hp-prover.sh hp-proof`; LICHEN_HP_PROVER names
+    /// another, e.g. `r0/hp-remote.sh`), one a contract, its files in
+    /// `hp/<cid>/`. Any proof of the contract's journal will do, so a proof
+    /// begun on an input since grown (more headers) isn't begun again.
+    /// None while it proves; a failed prover is run again.
+    fn hp_proof(&self, cid: u32, input: &grants::GrantsInput, journal: &[u8]) -> Result<Option<ark_groth16::Proof<ark_bn254::Bn254>>> {
+        let dir = self.hp_dir(cid);
+        let seal = dir.join("proof.seal");
+        if seal.exists() {
+            let p = lichen_babe::risc0::proof_from_seal(&std::fs::read(&seal)?).context("the prover's seal")?;
+            ensure!(lichen_babe::statement::Kind::Risc0.verify(journal, &p), "the prover's proof doesn't verify for this contract");
+            self.note_once(format!("contract {cid}: the correction proved; asserting"));
+            return Ok(Some(p));
+        }
+        if !self.proving.lock().unwrap().insert(cid) {
+            return Ok(None);
+        }
+        let in_path = dir.join("input.bin");
+        std::fs::write(&in_path, input.to_bytes())?;
+        let prover = std::env::var("LICHEN_HP_PROVER").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../r0/hp-prover.sh").to_string());
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("prover.log"))?;
+        let tmp = dir.join("proof.seal.tmp");
+        let mut cmd = std::process::Command::new(&prover);
+        cmd.arg("hp-proof").arg(&in_path).arg(&tmp).stdout(log.try_clone()?).stderr(log);
+        self.note(format!("contract {cid}: proving the correction ({prover}, hp/{cid}/prover.log)"));
+        let proving = self.proving.clone();
+        std::thread::spawn(move || {
+            let ok = cmd.status().is_ok_and(|s| s.success()) && std::fs::rename(&tmp, &seal).is_ok();
+            if !ok {
+                eprintln!("hub: contract {cid}: the prover failed (hp/{cid}/prover.log); trying again");
+            }
+            proving.lock().unwrap().remove(&cid);
+        });
+        Ok(None)
     }
 
     /// The answer to her challenge: π1's secrets from it (her completions

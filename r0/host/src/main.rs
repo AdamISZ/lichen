@@ -15,16 +15,13 @@
 //!   (and, with RISC0_PPROF_OUT, a profile); a receipt not given stands in
 //!   by its claim, unresolved;
 //! - `verify-chain <receipt>`: check a chain receipt; print its journal;
-//! - `hp <hub input> <chain receipt|none> <out>`: prove the hub's statement
-//!   (`lichen_withdraw::hp`, docs/HUB_PROVES_PLAN.md) on its input (its
-//!   bytes, `HubInput::to_bytes`), the chain receipt at `A*`'s chain height
-//!   an assumption (`none` for a malformed claim, which needs none);
-//!   writes the succinct receipt, which resolves it; `exec-hp <hub input>
-//!   [<chain receipt>]` runs the guest without proving, the receipt's
-//!   claim an unresolved assumption if none is given (its cycles);
+//! - `hp <hub input> <out>`: prove the hub's statement, the grants L2's
+//!   (`lichen_withdraw::grants`, docs/GRANTS_PLAN.md), on its input (its
+//!   bytes, `GrantsInput::to_bytes`); writes the succinct receipt;
+//!   `exec-hp <hub input>` runs the guest without proving (its cycles);
 //! - `wrap <receipt> <out>`: the Groth16 receipt of a succinct receipt of
 //!   the hub's statement (x86 Linux with Docker: RISC Zero's gnark step);
-//! - `hp-proof <hub input> <chain receipt|none> <out>`: `hp` then `wrap`,
+//! - `hp-proof <hub input> <out>`: `hp` then `wrap`,
 //!   writing the Groth16 seal (256 bytes: A, B, C uncompressed, big-endian,
 //!   RISC Zero's), what the hub asserts (`lichen_babe::risc0`);
 //! - `pack <guest ELF> <out>`: a guest's ELF with RISC Zero's kernel (the
@@ -166,43 +163,18 @@ fn load(p: &str) -> Result<Receipt> {
     bincode::deserialize(&read(p)?).with_context(|| format!("a receipt, {p}"))
 }
 
-/// The hub's statement's input, and the chain receipt at `A*`'s chain
-/// height (`none`: a malformed claim's, which needs none), checked
-/// natively. The input's bytes, its journal, the receipt and, without one,
-/// the claim of the receipt the statement reads (`exec`'s stand-in).
+/// The hub's statement's input, checked natively: its bytes and journal.
 struct Hp {
     bytes: Vec<u8>,
     journal: Vec<u8>,
-    chain: Option<Receipt>,
-    claim: Option<ReceiptClaim>,
 }
 
-fn hp_input(input: &str, chain: Option<&str>) -> Result<Hp> {
+fn hp_input(input: &str) -> Result<Hp> {
     let bytes = read(input)?;
-    let hub = lichen_withdraw::hp::HubInput::from_bytes(&bytes).map_err(|r| anyhow::anyhow!("the hub's input: {r:?}"))?;
-    let id = image_id(&committed("chain")?)?;
-    let chain_id: [u8; 32] = id.as_bytes().try_into()?;
-    let chain = chain.filter(|c| *c != "none").map(load).transpose()?;
-    if let Some(r) = &chain {
-        r.verify(id).context("the chain receipt")?;
-    }
-    // the chain journal the statement asks for, if any
-    let mut asked = None;
-    let journal = lichen_withdraw::hp::check(&hub, &chain_id, &mut |j| {
-        asked = Some(j.to_vec());
-        chain.as_ref().is_none_or(|r| r.journal.bytes == j)
-    })
-    .map_err(|r| anyhow::anyhow!("the hub's statement rejects the input: {r:?}"))?;
-    let claim = match (&chain, asked) {
-        (None, Some(j)) => Some(ReceiptClaim::ok(id, j)),
-        _ => None,
-    };
-    let kind = match &hub.ground {
-        lichen_withdraw::hp::Ground::Malformed => "malformed".to_string(),
-        lichen_withdraw::hp::Ground::At { why, .. } => format!("{why:?}").split([' ', '{', '(']).next().unwrap_or("").to_string(),
-    };
-    eprintln!("lichen-r0: contract {}: the claim is false ({kind})", hub.c);
-    Ok(Hp { bytes, journal: journal.to_vec(), chain, claim })
+    let hub = lichen_withdraw::grants::GrantsInput::from_bytes(&bytes).map_err(|r| anyhow::anyhow!("the hub's input: {r:?}"))?;
+    let journal = lichen_withdraw::grants::check(&hub).map_err(|r| anyhow::anyhow!("the hub's statement rejects the input: {r:?}"))?;
+    eprintln!("lichen-r0: contract {}: the claim is owed at most the correction ({} spends, {} claims cited, {} headers)", hub.c, hub.cited.len(), hub.others.len(), hub.headers.len());
+    Ok(Hp { bytes, journal: journal.to_vec() })
 }
 
 /// Prove the hub's statement (or, `execute_only`, run it): the succinct
@@ -212,16 +184,6 @@ fn prove_hp(hp: Hp, execute_only: bool) -> Result<Option<Receipt>> {
     let id = image_id(&guest)?;
     let mut env = ExecutorEnv::builder();
     env.write(&(hp.bytes.len() as u32))?.write_slice(&words(&hp.bytes));
-    match (hp.chain, hp.claim) {
-        (Some(r), _) => {
-            env.add_assumption(r);
-        }
-        (None, Some(c)) if execute_only => {
-            env.add_assumption(c);
-        }
-        (None, Some(_)) => bail!("the statement reads a chain receipt: give one"),
-        (None, None) => {}
-    }
     let env = env.build()?;
     if execute_only {
         let s = default_executor().execute(env, &guest)?;
@@ -292,14 +254,14 @@ fn main() -> Result<()> {
                 None => Ok(()),
             }
         }
-        ["hp", input, chain, out] => {
-            let r = prove_hp(hp_input(input, Some(chain))?, false)?.context("a receipt")?;
+        ["hp", input, out] => {
+            let r = prove_hp(hp_input(input)?, false)?.context("a receipt")?;
             write(out, &bincode::serialize(&r)?)
         }
-        ["exec-hp", input, rest @ ..] if rest.len() <= 1 => prove_hp(hp_input(input, rest.first().copied())?, true).map(|_| ()),
+        ["exec-hp", input] => prove_hp(hp_input(input)?, true).map(|_| ()),
         ["wrap", receipt, out] => write(out, &bincode::serialize(&wrap(&load(receipt)?)?)?),
-        ["hp-proof", input, chain, out] => {
-            let r = prove_hp(hp_input(input, Some(chain))?, false)?.context("a receipt")?;
+        ["hp-proof", input, out] => {
+            let r = prove_hp(hp_input(input)?, false)?.context("a receipt")?;
             write(out, &seal(&wrap(&r)?)?)?;
             eprintln!("lichen-r0: {out}: the Groth16 seal of the hub's statement");
             Ok(())
@@ -337,6 +299,6 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        _ => bail!("usage: lichen-r0 spend <input> <receipt> | verify <receipt> <journal hex> | chain <block input> <out> [--prev <receipt>] [<spend receipt>...] | verify-chain <receipt> | hp <hub input> <chain receipt|none> <out> | exec-hp <hub input> [<chain receipt>] | wrap <receipt> <out> | hp-proof <hub input> <chain receipt|none> <out> | pack <guest ELF> <out> | pack-id <bin> | image-id [spend|chain|hp] | check-id"),
+        _ => bail!("usage: lichen-r0 spend <input> <receipt> | verify <receipt> <journal hex> | chain <block input> <out> [--prev <receipt>] [<spend receipt>...] | verify-chain <receipt> | hp <hub input> <out> | exec-hp <hub input> | wrap <receipt> <out> | hp-proof <hub input> <out> | pack <guest ELF> <out> | pack-id <bin> | image-id [spend|chain|hp] | check-id"),
     }
 }

@@ -161,6 +161,8 @@ pub(crate) struct Inner {
     /// holds.
     forge_assertions: AtomicBool,
     withhold_unlocks: AtomicBool,
+    /// Contracts whose statement the prover is proving.
+    proving: Arc<Mutex<std::collections::HashSet<u32>>>,
     abandon_corrections: AtomicBool,
     /// For tests: post no defaults (as a hub gone would not).
     hold_defaults: AtomicBool,
@@ -209,7 +211,7 @@ impl Hub {
         let server = Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let server = Arc::new(Mutex::new(Arc::new(server)));
-        let inner = Arc::new(Inner { cfg, chain, book, deployment, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), withhold_unlocks: AtomicBool::new(false), abandon_corrections: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, chain, book, deployment, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), withhold_unlocks: AtomicBool::new(false), proving: Default::default(), abandon_corrections: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             listen(&srv, &i1.stop, |mut req| {
