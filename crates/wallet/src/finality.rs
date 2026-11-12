@@ -88,8 +88,15 @@ impl Wallet {
             cache.push(crate::AnchorChecked { anchor: *s, hist: *h, block_height: height });
             prev = bitcoin::OutPoint { txid, vout: 0 };
         }
+        let checked: Vec<_> = cache.iter().map(|c| (c.anchor.height, c.block_height)).collect();
+        let grew = cache.len() > keep;
+        drop(cache);
+        if grew {
+            // kept in the wallet's file, for the next run
+            self.save()?;
+        }
         let tip = chain.height()?;
-        Ok(cache.iter().map(|c| Checked { height: c.anchor.height, confirmations: (tip + 1).saturating_sub(c.block_height) }).collect())
+        Ok(checked.into_iter().map(|(height, b)| Checked { height, confirmations: (tip + 1).saturating_sub(b) }).collect())
     }
 
     /// The wallet's holdings by how final they are, the anchors checked on

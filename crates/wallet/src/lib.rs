@@ -55,6 +55,9 @@ struct Stored {
     /// The spends this wallet signed ([`Signed`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     signed: Vec<Signed>,
+    /// The anchors checked on Bitcoin so far ([`AnchorChecked`], hex).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    anchors_checked: Vec<String>,
 }
 
 /// A spend this wallet signed: the nullifiers of the notes it spends. So
@@ -90,6 +93,44 @@ pub(crate) struct AnchorChecked {
     /// The history hash it committed.
     pub hist: Hash,
     pub block_height: u32,
+}
+
+impl AnchorChecked {
+    const LEN: usize = 32 + 4 + 32 + 32 + 4 + 8 + 32 + 32 + 32 + 4;
+    /// Kept in the wallet's file as hex (the guest's `AnchorState` has no
+    /// serde): a CLI run, or an app's launch, needn't check every anchor
+    /// on Bitcoin again.
+    fn to_hex(&self) -> String {
+        let a = &self.anchor;
+        let mut v = Vec::with_capacity(Self::LEN);
+        v.extend_from_slice(&a.genesis.txid);
+        v.extend_from_slice(&a.genesis.vout.to_le_bytes());
+        v.extend_from_slice(&a.sequencer);
+        v.extend_from_slice(&a.seal.txid);
+        v.extend_from_slice(&a.seal.vout.to_le_bytes());
+        v.extend_from_slice(&a.height.to_le_bytes());
+        v.extend_from_slice(&a.root);
+        v.extend_from_slice(&a.block);
+        v.extend_from_slice(&self.hist);
+        v.extend_from_slice(&self.block_height.to_le_bytes());
+        hex::encode(v)
+    }
+    fn from_hex(s: &str) -> Option<AnchorChecked> {
+        let v = hex::decode(s).ok().filter(|v| v.len() == Self::LEN)?;
+        let mut at = 0;
+        let mut take = |n: usize| {
+            at += n;
+            &v[at - n..at]
+        };
+        let h = |b: &[u8]| -> Hash { b.try_into().unwrap() };
+        let genesis = lichen_ledger::lichen_validity::btc::OutPoint { txid: h(take(32)), vout: u32::from_le_bytes(take(4).try_into().unwrap()) };
+        let sequencer = h(take(32));
+        let seal = lichen_ledger::lichen_validity::btc::OutPoint { txid: h(take(32)), vout: u32::from_le_bytes(take(4).try_into().unwrap()) };
+        let height = u64::from_le_bytes(take(8).try_into().unwrap());
+        let (root, block, hist) = (h(take(32)), h(take(32)), h(take(32)));
+        let block_height = u32::from_le_bytes(take(4).try_into().unwrap());
+        Some(AnchorChecked { anchor: lichen_ledger::AnchorState { genesis, sequencer, seal, height, root, block }, hist, block_height })
+    }
 }
 
 /// A deposit for a contract not yet open: kept from before it is paid,
@@ -224,7 +265,7 @@ impl Wallet {
             Some(d) => Client::pinned(sequencer, d),
             None => Client::new(sequencer)?,
         };
-        let w = Wallet { pause_after: None, unchecked_claims: false, acks_unsent: false, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), seen: std::sync::Mutex::new(s.seen), anchors_checked: Default::default(), exit_sets: std::sync::Mutex::new(s.exit_sets), exit_looked: Default::default(), signed: s.signed, contracts: s.contracts, deposits: s.deposits, sequencer: client };
+        let w = Wallet { pause_after: None, unchecked_claims: false, acks_unsent: false, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), seen: std::sync::Mutex::new(s.seen), anchors_checked: std::sync::Mutex::new(s.anchors_checked.iter().map_while(|a| AnchorChecked::from_hex(a)).collect()), exit_sets: std::sync::Mutex::new(s.exit_sets), exit_looked: Default::default(), signed: s.signed, contracts: s.contracts, deposits: s.deposits, sequencer: client };
         if s.deployment.is_none() {
             w.save()?;
         }
@@ -239,6 +280,7 @@ impl Wallet {
             seen: self.seen.lock().unwrap().clone(),
             exit_sets: self.exit_sets.lock().unwrap().clone(),
             signed: self.signed.clone(),
+            anchors_checked: self.anchors_checked.lock().unwrap().iter().map(AnchorChecked::to_hex).collect(),
         };
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
@@ -917,4 +959,18 @@ pub fn send_from(payout: &KeyFees, chain: &Chain, to: &bitcoin::Script, amount: 
     let prevouts: Vec<_> = coins.into_iter().map(|c| (c.0, c.1)).collect();
     let tx = payout.sign(chain, &tx, &prevouts)?;
     chain.broadcast(&tx).context("the payment from the payout address")
+}
+
+#[cfg(test)]
+mod anchors_checked {
+    use super::AnchorChecked;
+    use lichen_ledger::{AnchorState, OutPoint};
+
+    #[test]
+    fn kept_as_hex() {
+        let a = AnchorChecked { anchor: AnchorState { genesis: OutPoint { txid: [1; 32], vout: 2 }, sequencer: [3; 32], seal: OutPoint { txid: [4; 32], vout: 0 }, height: 77, root: [5; 32], block: [6; 32] }, hist: [7; 32], block_height: 3_583_400 };
+        let b = AnchorChecked::from_hex(&a.to_hex()).unwrap();
+        assert_eq!((b.anchor, b.hist, b.block_height), (a.anchor, a.hist, a.block_height));
+        assert!(AnchorChecked::from_hex("00").is_none());
+    }
 }
