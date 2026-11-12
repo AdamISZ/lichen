@@ -38,6 +38,17 @@ chain prover, anchoring, acknowledgments, shielded notes.
   2 (`KEEP_NOTES`); more than 4 unmerged (`ALARM_NOTES`) means the hub is
   refusing merges: stop taking payments, exit.
 
+## Deployed
+
+On lichen-hub since 2026-11-12, beside the anchored L2's deployment: the
+container `lichen-grants-hub` (image `lichen:grants`, from the `grants`
+worktree `~/lichen-grants`), on the Mutinynet node's compose network,
+its wallet `grants` there, its book in
+`~/lichen-grants/deploy/state/mutinynet/hub`, port 18320, behind
+`https://thimbly.org/lichen/grants/hub`. On the mock statement until
+milestone 3 (the anchored L2's real statement doesn't apply). Its issuer
+key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
+
 ## Milestones
 
 1. **Payments** (done 2026-11-12): `lichen-notes` (notes, spends, grants,
