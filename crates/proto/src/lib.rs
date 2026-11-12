@@ -303,8 +303,10 @@ pub struct OpenOffer {
     pub hub_sigs: HashMap<String, Vec<u8>>,
     /// `T`, the adaptor point of this funding transaction.
     pub mint_point: PublicKey,
-    /// The note minting `D` to [`mint_owner`]`(l2_address, T)`.
-    pub mint_index: u32,
+    /// `D`, pre-issued to Alice's L2 key under `T`: settled once the
+    /// funding puts `t` on chain (the grants L2, `lichen_notes`).
+    pub mint: lichen_notes::Note,
+    pub mint_presig: lichen_notes::Presig,
     /// In an anchored deployment, the contract's checkpoint.
     #[serde(default)]
     pub checkpoint: Option<Checkpoint>,

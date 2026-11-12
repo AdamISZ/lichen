@@ -16,6 +16,7 @@ lngap-channel.workspace = true
 lngap-btc.workspace = true
 lngap-lamport.workspace = true
 lichen-ledger.workspace = true
+lichen-notes.workspace = true
 lichen-chain.workspace = true
 lichen-babe.workspace = true
 lichen-withdraw.workspace = true

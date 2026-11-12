@@ -1818,9 +1818,8 @@ dependencies = [
  "lichen-chain",
  "lichen-l2",
  "lichen-ledger",
+ "lichen-notes",
  "lichen-proto",
- "lichen-sequencer",
- "lichen-validity",
  "lichen-wallet",
  "lichen-withdraw",
  "lngap-btc",
@@ -1831,6 +1830,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tiny_http",
+ "ureq",
 ]
 
 [[package]]
@@ -1891,6 +1891,7 @@ dependencies = [
  "lichen-babe",
  "lichen-chain",
  "lichen-ledger",
+ "lichen-notes",
  "lichen-withdraw",
  "lngap-btc",
  "lngap-channel",
@@ -1950,9 +1951,8 @@ dependencies = [
  "lichen-chain",
  "lichen-l2",
  "lichen-ledger",
+ "lichen-notes",
  "lichen-proto",
- "lichen-sequencer",
- "lichen-validity",
  "lichen-withdraw",
  "lngap-btc",
  "lngap-channel",

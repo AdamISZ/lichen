@@ -15,11 +15,9 @@ struct Args {
     /// The wallet file.
     #[arg(long, default_value = "wallet.json")]
     wallet: PathBuf,
-    /// The sequencer.
-    #[arg(long, default_value = "http://127.0.0.1:18300")]
-    sequencer: String,
-    /// The hub.
-    #[arg(long, default_value = "http://127.0.0.1:18310")]
+    /// The hub (its URL is kept in the wallet at `init`; given here, it
+    /// replaces it for this run).
+    #[arg(long, default_value = "")]
     hub: String,
     /// Esplora servers, comma-separated (the network's public one by
     /// default: mempool.space or mutinynet.com). With two or more, none is
@@ -39,12 +37,6 @@ struct Args {
     /// trials).
     #[arg(long, default_value = "hub-proves-mock")]
     statement: lichen_proto::Statement,
-    /// The prover of shielded spends: a command run as `<cmd> spend <input
-    /// file> <receipt file>`. Without it, spends carry native proofs (the
-    /// private input in the clear), which only a sequencer started with
-    /// --native-proofs accepts.
-    #[arg(long)]
-    spend_prover: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -53,43 +45,19 @@ struct Args {
 enum Cmd {
     /// Create a wallet with a fresh key.
     Init,
-    /// The wallet's L2 address (transparent), or its shielded address.
-    Address {
-        #[arg(long)]
-        shielded: bool,
-    },
-    /// The balance on the L2: transparent and shielded notes.
+    /// The wallet's L2 address: its key, which payers pay.
+    Address,
+    /// Our notes' total, after collecting what the hub holds for us (and
+    /// merging our notes into one if there are more than two).
     Balance,
-    /// Pay an L2 address: a transparent one (32 bytes, hex) from
-    /// transparent notes, a shielded one (64 bytes) from shielded notes.
+    /// Our notes, one a line.
+    Notes,
+    /// Pay an L2 address (32 bytes, hex): all our notes in, the payment and
+    /// our change out, final when the hub answers.
     Send { to: String, amount: u64 },
-    /// Acknowledge your spends: each one the sequencer has sealed and an
-    /// anchor on Bitcoin holds (docs/HUB_PROVES_PLAN.md, "Data
-    /// availability"). Until you do, a spend doesn't count against you and
-    /// its outputs, your change and your payee's note, stay locked. With
-    /// --wait, until none waits (about one anchor, the margin deep).
-    Ack {
-        #[arg(long)]
-        wait: bool,
-    },
-    /// Move `amount` of transparent notes into a shielded note.
-    Shield { amount: u64 },
-    /// Move `amount` of shielded notes into a transparent note of ours (a
-    /// withdrawal's claim, or an exit's, takes transparent notes).
-    Unshield { amount: u64 },
-    /// Print every signed root this wallet has checked (JSON), for others
-    /// to compare with theirs: a sequencer that signs two histories can't
-    /// show both to everyone without being caught.
-    Roots,
-    /// Compare signed roots from elsewhere with this wallet's: another
-    /// wallet's `lichen roots`, or a sequencer's URL (a mirror's, or the
-    /// sequencer's seen from another network). Prints how many heights
-    /// agree, or the two conflicting roots, written as evidence.
-    CompareRoots { from: String },
-    /// Check evidence that the sequencer signed two histories (an
-    /// `equivocation.json`): both roots at one height, both signed by this
-    /// wallet's sequencer.
-    CheckEquivocation { file: PathBuf },
+    /// Our notes as the hub's book has them (a wallet restored from its
+    /// file, or a check).
+    Restore,
     /// Open a contract with the hub: deposit `deposit` sats, with
     /// `liquidity` sats of inbound (what you can receive beyond your
     /// balance), a reserve of `reserve` sats. Prints the hub's fee for the
@@ -138,8 +106,8 @@ enum Cmd {
     /// The contracts this wallet holds.
     Contracts,
     /// Withdraw `amount` sats from a contract cooperatively (rounded down
-    /// to the contract's unit): a claim of your notes worth exactly that,
-    /// which the hub records on the L2, then the fold. 0 closes it early
+    /// to the contract's unit): a claim of your notes, which the hub takes
+    /// (the change back to you), then the fold. 0 closes it early
     /// with nothing withdrawn: your reserve back, as the default would pay
     /// it at T_close.
     Withdraw {
@@ -158,11 +126,10 @@ enum Cmd {
     /// Pay from this wallet's payout address: `amount` sats, or everything
     /// (less the fee) without it.
     SendPayout { to: String, amount: Option<u64> },
-    /// Exit through a contract when the operator won't fold a withdrawal,
-    /// or has gone: claim our notes (after a withdrawal not folded, its
-    /// claim), and play the dispute to its end (the hub proves the claim
-    /// false or the timeout pays). Run again to resume (the claim is kept
-    /// with the contract).
+    /// Exit through a contract when the hub won't fold a withdrawal, or has
+    /// gone: claim our notes (after a withdrawal not folded, its claim),
+    /// and play the dispute to its end (the timeout pays). Run again to
+    /// resume (the claim is kept with the contract).
     Exit {
         contract: u32,
         /// For trials: prepare the claim and keep it, without posting it
@@ -213,7 +180,7 @@ fn deadline(a: &Args, t_close: u32, height: Option<u32>) -> String {
 /// The next step when a withdrawal fails: the exit.
 fn exit_note(a: &Args, cid: u32, t_close: u32, height: Option<u32>) -> String {
     format!(
-        "contract {cid}: the withdrawal wasn't folded, so only an exit on Bitcoin gets it out: a claim of your notes, which needs neither the hub nor the sequencer. You prove nothing: the hub must prove the claim false within its window, or its timeout pays you.\n{}\nWith this command's --network, --wallet and --statement:\n    lichen exit {cid}\nor run this withdrawal again with --escalate.",
+        "contract {cid}: the withdrawal wasn't folded, so only an exit on Bitcoin gets it out: a claim of your notes, which needs nothing from the hub. You prove nothing: the hub must prove the claim false within its window, or its timeout pays you.\n{}\nWith this command's --network, --wallet and --statement:\n    lichen exit {cid}\nor run this withdrawal again with --escalate.",
         deadline(a, t_close, height)
     )
 }
@@ -230,7 +197,7 @@ fn exit_cmd(a: &Args, w: &mut Wallet, contract: u32, claim_only: bool, challenge
     w.unchecked_claims = challenge_anyway;
     let (outcome, swept) = w.exit(&chain, &a.statement, contract)?;
     match outcome {
-        lichen_wallet::dispute::Outcome::Countered => println!("The hub proved the claim false: a note of it isn't yours, isn't live at the last anchor before the request, or was claimed through another contract too. Its success takes the contract."),
+        lichen_wallet::dispute::Outcome::Countered => println!("The hub proved the claim false: a note of it isn't yours or isn't live, or was claimed through another contract too. Its success takes the contract."),
         _ => println!("{outcome:?}; swept {swept:?}"),
     }
     Ok(())
@@ -239,85 +206,46 @@ fn exit_cmd(a: &Args, w: &mut Wallet, contract: u32, claim_only: bool, challenge
 fn main() -> Result<()> {
     let a = Args::parse();
     if let Cmd::Init = a.cmd {
-        let w = Wallet::create(&a.wallet, &a.sequencer)?;
+        anyhow::ensure!(!a.hub.is_empty(), "--hub: the hub's URL, which the wallet keeps");
+        let w = Wallet::create(&a.wallet, &a.hub)?;
         println!("{}", hex::encode(w.address()));
+        println!("the hub's issuer key, pinned: {} (check it against the one its operator publishes)", hex::encode(w.deployment.hub));
         return Ok(());
     }
-    let mut w = Wallet::open(&a.wallet, &a.sequencer)?;
-    if let Some(p) = &a.spend_prover {
-        w.spend_prover = lichen_wallet::shielded::SpendProver::Command(p.clone());
-    }
+    let mut w = Wallet::open(&a.wallet, &a.hub)?;
+    let hub = w.hub.clone();
     match a.cmd {
         Cmd::Init => unreachable!(),
-        Cmd::Address { shielded: false } => println!("{}", hex::encode(w.address())),
-        Cmd::Address { shielded: true } => println!("{}", w.shielded_address()),
+        Cmd::Address => println!("{}", hex::encode(w.address())),
         Cmd::Balance => {
-            let (t, s) = w.balances()?;
-            println!("{} (transparent {t}, shielded {s})", t + s);
-            // in an anchored deployment: how final, the anchors checked on
-            // Bitcoin
-            if w.sequencer.deployment.seal.is_some() {
-                let f = w.finality(&chain(&a)?)?;
-                let depth = lichen_proto::hp::margin(a.network);
-                println!("  firm (anchored, {depth}+ blocks deep): {}; anchored, not yet {depth} deep: {}; sealed, not yet anchored: {}; locked, its spend not yet acknowledged: {}", f.firm, f.anchored, f.sealed, f.locked);
-                match f.last {
-                    Some(c) => println!("  the last anchor: height {}, {} confirmations", c.height, c.confirmations),
-                    None => println!("  no anchor yet"),
-                }
+            let new = w.sync()?;
+            if let Some(sid) = w.merge()? {
+                println!("merged our notes into one ({})", hex::encode(sid));
+            }
+            println!("{} sats in {} notes{}", w.balance(), w.notes.len(), if new > 0 { format!(" ({new} new)") } else { String::new() });
+        }
+        Cmd::Notes => {
+            w.sync()?;
+            for s in &w.notes {
+                println!("{} {}", hex::encode(s.note.id), s.note.value);
             }
         }
-        Cmd::Send { to, amount } if to.len() == 128 => {
-            let to: lichen_wallet::shielded::SAddress = to.parse()?;
-            println!("sent: note {}", w.send_shielded(&to, amount)?[0]);
+        Cmd::Send { ref to, amount } => {
+            let to: [u8; 32] = hex::decode(to)?.try_into().ok().context("an address is 32 bytes, hex")?;
+            let sid = w.send(to, amount)?;
+            println!("paid {amount} sats: spend {}, final", hex::encode(sid));
         }
-        Cmd::Send { to, amount } => {
-            let to: [u8; 32] = hex::decode(&to)?.try_into().ok().context("an address is 32 bytes (transparent) or 64 (shielded), hex")?;
-            println!("sent: note {}", w.send(to, amount, 0)?[0]);
-            println!("acknowledge it once it is anchored (`lichen ack --wait`): until then the payment is pending, your change locked");
-        }
-        Cmd::Ack { wait } => {
-            let chain = chain(&a)?;
-            if wait {
-                w.acknowledge_all(&chain, lichen_wallet::ACK_PATIENCE)?;
-                println!("every spend acknowledged");
-            } else {
-                match w.acknowledge(&chain)? {
-                    0 => println!("every spend acknowledged"),
-                    n => println!("{n} spends wait for an anchor to acknowledge them against"),
-                }
-            }
-        }
-        Cmd::Shield { amount } => println!("shielded: note {}", w.shield(amount)?[0]),
-        Cmd::Unshield { amount } => println!("unshielded: note {}", w.unshield(amount)?),
-        Cmd::Roots => {
-            w.state()?;
-            println!("{}", serde_json::to_string_pretty(&w.seen().roots.into_values().collect::<Vec<_>>())?);
-        }
-        Cmd::CompareRoots { ref from } => {
-            w.state()?;
-            let roots: Vec<lichen_ledger::SignedRoot> = if from.starts_with("http://") || from.starts_with("https://") {
-                lichen_l2::Client::pinned(from, w.sequencer.deployment).state()?.sealed
-            } else {
-                serde_json::from_slice(&std::fs::read(from)?).context("signed roots (JSON, as `lichen roots` prints)")?
-            };
-            let agree = w.compare_roots(&roots)?;
-            println!("{agree} heights in common, all the same roots ({} given, {} seen here)", roots.len(), w.seen().roots.len());
-        }
-        Cmd::CheckEquivocation { ref file } => {
-            let e: lichen_l2::Equivocation = serde_json::from_slice(&std::fs::read(file)?).context("an equivocation (JSON)")?;
-            e.verify(&w.sequencer.deployment.sequencer)?;
-            println!("{e}: both signed by sequencer {}", hex::encode(w.sequencer.deployment.sequencer));
-        }
+        Cmd::Restore => println!("{} notes, {} sats", w.restore_notes()?, w.balance()),
         Cmd::Open { deposit, liquidity, reserve, ref payout, resume } => {
             let chain = chain(&a)?;
             let ask = lichen_wallet::Ask { deposit, liquidity, reserve };
-            let q = ask.quote(&lichen_wallet::hub_info(&a.hub)?)?;
+            let q = ask.quote(&lichen_wallet::hub_info(&hub)?)?;
             println!("the hub's fee for {liquidity} sats of liquidity: {} sats; you'll be minted {} sats, with a cap of {} sats", q.fee, q.minted, q.cap);
             // the setup's steps (garbling, the upload of the kept instances)
             // take minutes on a slow uplink: say each
             w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
             let h = match resume {
-                Some(cid) => w.resume_open(&a.hub, &chain, &a.statement, ask, cid)?,
+                Some(cid) => w.resume_open(&hub, &chain, &a.statement, ask, cid)?,
                 None => {
                     let payout = match payout.as_deref() {
                         Some(p) => p.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()?.require_network(a.network.bitcoin()).context("--payout")?.script_pubkey(),
@@ -332,7 +260,7 @@ fn main() -> Result<()> {
                         println!("pay {} sats to {addr}\n(waiting for it to confirm)", amount.to_sat());
                         Ok(())
                     };
-                    w.open_contract(&a.hub, &chain, &a.statement, ask, payout, &pay)?
+                    w.open_contract(&hub, &chain, &a.statement, ask, payout, &pay)?
                 }
             };
             let t = &h.record.terms;
@@ -367,7 +295,7 @@ fn main() -> Result<()> {
         }
         Cmd::ClaimMint { contract } => {
             w.claim_mint(&chain(&a)?, contract)?;
-            println!("contract {contract}'s deposit is ours on the L2");
+            println!("contract {contract}'s deposit is ours: a note of {} sats", w.balance());
         }
         Cmd::Refund { contract, fee } => {
             let txid = w.refund(&chain(&a)?, contract, bitcoin::Amount::from_sat(fee))?;
@@ -392,7 +320,7 @@ fn main() -> Result<()> {
         }
         Cmd::Withdraw { contract, amount, escalate } => {
             w.progress = Some(std::sync::Arc::new(|m: String| println!("{m}")));
-            match w.withdraw(&chain(&a)?, &a.hub, &a.statement, contract, amount) {
+            match w.withdraw(&chain(&a)?, &hub, &a.statement, contract, amount) {
                 Ok(txid) if amount == 0 => println!("closed contract {contract} with nothing withdrawn, your reserve back: the fold is {txid}"),
                 Ok(txid) => {
                     // the claim is in whole units: the amount rounded down

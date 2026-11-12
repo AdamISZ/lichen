@@ -1,30 +1,27 @@
-//! The user's wallet: a key, the notes it owns on the L2, transfers, and
-//! its contracts with the hub (opening: [`Wallet::open_contract`]; the
+//! The user's wallet: a key, the notes it holds on the grants L2
+//! ([`notes`]: collected from the hub, paid by grants, merged), and its
+//! contracts with the hub (opening: [`Wallet::open_contract`]; the
 //! cooperative withdrawal, by claim: [`Wallet::withdraw`]; the exit:
 //! [`Wallet::exit`]).
 //!
-//! The ledger is transparent, so the wallet finds its notes by reading the
-//! sequencer's state; it checks every sealed root's signature.
+//! Every note is the hub's signature on it, which the wallet checks; no
+//! sequencer, no global state.
 
-mod ack;
-pub use ack::ACK_PATIENCE;
 mod hp;
 pub mod dispute;
 pub mod engine;
 pub mod exit;
-pub mod finality;
-pub mod shielded;
+pub mod notes;
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_ledger::{fresh_rho, mint_secret, note, sign, xonly, Deployment, Hash, Note, Spend, Transfer, Tx};
+use lichen_ledger::{fresh_rho, xonly, Deployment, Hash};
 use lichen_chain::{Chain, KeyFees};
 use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
-use lichen_proto::{check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, mint_owner, Presig, fee_budget_of, terms, Accept, DepositOffer, DepositRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, WithdrawRequest, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
-use lichen_l2::{Client, Equivocation, Seen, State};
-use lngap_btc::adaptor::{adaptor_extract, adaptor_sign, AdaptorSig};
+use lichen_proto::{check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, Presig, fee_budget_of, terms, Accept, DepositOffer, DepositRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, WithdrawRequest, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
+use lngap_btc::adaptor::{adaptor_complete, adaptor_extract, adaptor_sign, adaptor_verify, AdaptorSig};
 use lngap_channel::PartyKeys;
 use lngap_sessions::contract::sign_all;
 use crate::engine::ContractSecrets;
@@ -35,10 +32,10 @@ use serde::{Deserialize, Serialize};
 struct Stored {
     /// The secret key, hex.
     secret: String,
-    /// The L2 deployment, pinned when the wallet was made (an older file
-    /// without it pins it on first open).
-    #[serde(default)]
-    deployment: Option<Deployment>,
+    /// The hub's URL, and its deployment (its issuer key), pinned when the
+    /// wallet was made.
+    hub: String,
+    deployment: Deployment,
     /// Its contracts: each one's nonce (from which its keys derive) and
     /// record.
     #[serde(default)]
@@ -46,43 +43,28 @@ struct Stored {
     /// Deposits paid (or to be paid) for contracts not yet open.
     #[serde(default)]
     deposits: Vec<Deposit>,
-    /// Every signed root checked, by height.
+    /// Our notes, settled.
     #[serde(default)]
-    seen: Seen,
-    /// What an exit needs, kept at anchored heights ([`exit::ExitSet`]).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    exit_sets: Vec<exit::ExitSet>,
-    /// The spends this wallet signed ([`Signed`]).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    signed: Vec<Signed>,
-    /// The anchors checked on Bitcoin so far ([`AnchorChecked`], hex).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    anchors_checked: Vec<String>,
+    notes: Vec<lichen_notes::Settled>,
+    /// The notes we spent (or claimed), so that a delivery read again never
+    /// brings one back.
+    #[serde(default, with = "hashes")]
+    spent: Vec<Hash>,
+    /// How far into the hub's mailbox for us we have read.
+    #[serde(default)]
+    mailbox_from: usize,
+    /// Spends we signed, not yet answered.
+    #[serde(default)]
+    inflight: Vec<notes::InFlight>,
 }
 
-/// A spend this wallet signed: the nullifiers of the notes it spends. So
-/// that an exit with the sequencer gone knows which kept notes it may
-/// have spent since (docs/HUB_PROVES_PLAN.md), and so that the wallet
-/// acknowledges it ([`Wallet::acknowledge`]): its acknowledgment once
-/// signed, and whether it is settled (acknowledged on the L2, void, or
-/// needing none).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Signed {
-    pub nullifiers: Vec<Hash>,
-    #[serde(default)]
-    pub ack: Option<lichen_ledger::Ack>,
-    #[serde(default)]
-    pub done: bool,
-    /// Its transparent outputs, by their nullifiers: a claim of one made
-    /// without the sequencer (from the exit set kept) finds its
-    /// acknowledgment by them.
-    #[serde(default)]
-    pub outputs: Vec<Hash>,
-}
-
-impl Signed {
-    pub fn new(nullifiers: Vec<Hash>, outputs: &[Note]) -> Signed {
-        Signed { nullifiers, ack: None, done: false, outputs: outputs.iter().map(lichen_ledger::nullifier).collect() }
+mod hashes {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(v: &[[u8; 32]], s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(v.iter().map(hex::encode))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<[u8; 32]>, D::Error> {
+        Vec::<String>::deserialize(d)?.into_iter().map(|h| hex::decode(h).ok().and_then(|v| v.try_into().ok()).ok_or_else(|| serde::de::Error::custom("a note id"))).collect()
     }
 }
 
@@ -104,59 +86,12 @@ pub enum Opening {
     Uploading { sent: u64, total: u64 },
     /// The hub checks the instances opened to it, and signs the contract.
     HubChecking,
-    /// The deposit minted to us on the L2, and sealed.
+    /// The deposit pre-issued to us, checked.
     Minted,
     /// The hub broadcast the contract's funding.
     Funding { txid: String },
     /// The contract is open.
     Open { cid: u32 },
-}
-
-/// An anchor checked on Bitcoin, and the height of its block.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct AnchorChecked {
-    pub anchor: lichen_ledger::AnchorState,
-    /// The history hash it committed.
-    pub hist: Hash,
-    pub block_height: u32,
-}
-
-impl AnchorChecked {
-    const LEN: usize = 32 + 4 + 32 + 32 + 4 + 8 + 32 + 32 + 32 + 4;
-    /// Kept in the wallet's file as hex (the guest's `AnchorState` has no
-    /// serde): a CLI run, or an app's launch, needn't check every anchor
-    /// on Bitcoin again.
-    fn to_hex(&self) -> String {
-        let a = &self.anchor;
-        let mut v = Vec::with_capacity(Self::LEN);
-        v.extend_from_slice(&a.genesis.txid);
-        v.extend_from_slice(&a.genesis.vout.to_le_bytes());
-        v.extend_from_slice(&a.sequencer);
-        v.extend_from_slice(&a.seal.txid);
-        v.extend_from_slice(&a.seal.vout.to_le_bytes());
-        v.extend_from_slice(&a.height.to_le_bytes());
-        v.extend_from_slice(&a.root);
-        v.extend_from_slice(&a.block);
-        v.extend_from_slice(&self.hist);
-        v.extend_from_slice(&self.block_height.to_le_bytes());
-        hex::encode(v)
-    }
-    fn from_hex(s: &str) -> Option<AnchorChecked> {
-        let v = hex::decode(s).ok().filter(|v| v.len() == Self::LEN)?;
-        let mut at = 0;
-        let mut take = |n: usize| {
-            at += n;
-            &v[at - n..at]
-        };
-        let h = |b: &[u8]| -> Hash { b.try_into().unwrap() };
-        let genesis = lichen_ledger::lichen_validity::btc::OutPoint { txid: h(take(32)), vout: u32::from_le_bytes(take(4).try_into().unwrap()) };
-        let sequencer = h(take(32));
-        let seal = lichen_ledger::lichen_validity::btc::OutPoint { txid: h(take(32)), vout: u32::from_le_bytes(take(4).try_into().unwrap()) };
-        let height = u64::from_le_bytes(take(8).try_into().unwrap());
-        let (root, block, hist) = (h(take(32)), h(take(32)), h(take(32)));
-        let block_height = u32::from_le_bytes(take(4).try_into().unwrap());
-        Some(AnchorChecked { anchor: lichen_ledger::AnchorState { genesis, sequencer, seal, height, root, block }, hist, block_height })
-    }
 }
 
 /// A deposit for a contract not yet open: kept from before it is paid,
@@ -194,19 +129,20 @@ impl Deposit {
     }
 }
 
-/// A contract's `D`, minted before its funding to [`mint_owner`] of our
-/// address and the funding's adaptor point: ours once we know `t`.
+/// A contract's `D`, pre-issued before its funding under the funding's
+/// adaptor point: ours once we know `t`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Locked {
-    /// The note.
-    pub index: u32,
+    /// The note, and the hub's pre-signature on it under `T`.
+    pub note: lichen_notes::Note,
+    pub note_presig: lichen_notes::Presig,
     /// `T`.
     pub point: PublicKey,
     /// Our pre-signature on the funding's deposit input, and the deposit:
     /// the funding's completed signature, less it, is `t`.
     pub presig: Presig,
     pub deposit: bitcoin::OutPoint,
-    /// Moved to our own key.
+    /// Settled, in our notes.
     #[serde(default)]
     pub claimed: bool,
 }
@@ -244,71 +180,55 @@ pub struct Wallet {
     /// For tests: challenge the hub's assertion even if its proof is
     /// valid.
     pub unchecked_claims: bool,
-    /// For tests: sign acknowledgments and keep them, but send none (a
-    /// sequencer that drops them, or withholds that it took them).
-    pub acks_unsent: bool,
     /// Told each step of a dispute, in words (for a front end).
     pub progress: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
     /// Told each step of a contract's opening ([`Opening`]).
     pub opening: Option<std::sync::Arc<dyn Fn(Opening) + Send + Sync>>,
-    /// How shielded spends are proved.
-    pub spend_prover: shielded::SpendProver,
     key: SigningKey,
     path: PathBuf,
-    seen: std::sync::Mutex<Seen>,
-    /// The anchors checked on Bitcoin so far ([`Wallet::checked_anchors`]).
-    anchors_checked: std::sync::Mutex<Vec<AnchorChecked>>,
-    exit_sets: std::sync::Mutex<Vec<exit::ExitSet>>,
-    /// When [`Wallet::state`] last looked to keep the exit set.
-    exit_looked: std::sync::Mutex<Option<std::time::Instant>>,
-    signed: Vec<Signed>,
+    /// The hub, and its deployment as pinned.
+    pub hub: String,
+    pub deployment: Deployment,
     pub contracts: Vec<Held>,
     pub deposits: Vec<Deposit>,
-    pub sequencer: Client,
-}
-
-/// An unspent note of ours.
-#[derive(Clone, Copy, Debug)]
-pub struct Owned {
-    pub note: Note,
-    pub index: u32,
+    pub notes: Vec<lichen_notes::Settled>,
+    pub(crate) spent: Vec<Hash>,
+    pub(crate) mailbox_from: usize,
+    pub(crate) inflight: Vec<notes::InFlight>,
 }
 
 impl Wallet {
-    /// Create a wallet at `path` with a fresh key.
-    pub fn create(path: &Path, sequencer: &str) -> Result<Wallet> {
+    /// Create a wallet at `path` with a fresh key, for the hub at `hub`
+    /// (its deployment pinned from now on).
+    pub fn create(path: &Path, hub: &str) -> Result<Wallet> {
         if path.exists() {
             bail!("{} already exists", path.display());
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
-        // the deployment the sequencer announces, kept from now on
-        let w = Wallet { pause_after: None, unchecked_claims: false, acks_unsent: false, progress: None, opening: None, spend_prover: Default::default(), key, path: path.to_path_buf(), seen: Default::default(), anchors_checked: Default::default(), exit_sets: Default::default(), exit_looked: Default::default(), signed: vec![], contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
+        let info = hub_info(hub)?;
+        let w = Wallet { pause_after: None, unchecked_claims: false, progress: None, opening: None, key, path: path.to_path_buf(), hub: hub.trim_end_matches('/').to_string(), deployment: info.deployment, contracts: vec![], deposits: vec![], notes: vec![], spent: vec![], mailbox_from: 0, inflight: vec![] };
         w.save()?;
         Ok(w)
     }
-    pub fn open(path: &Path, sequencer: &str) -> Result<Wallet> {
+    /// The wallet at `path`, talking to the hub at `hub` (the one it was
+    /// made for: its deployment is checked at every call that matters).
+    pub fn open(path: &Path, hub: &str) -> Result<Wallet> {
         let s: Stored = serde_json::from_slice(&std::fs::read(path).with_context(|| format!("no wallet at {}", path.display()))?)?;
         let key = SigningKey::from_bytes(&hex::decode(&s.secret)?).context("the wallet's key")?;
-        let client = match s.deployment {
-            Some(d) => Client::pinned(sequencer, d),
-            None => Client::new(sequencer)?,
-        };
-        let w = Wallet { pause_after: None, unchecked_claims: false, acks_unsent: false, progress: None, opening: None, spend_prover: Default::default(), key, path: path.to_path_buf(), seen: std::sync::Mutex::new(s.seen), anchors_checked: std::sync::Mutex::new(s.anchors_checked.iter().map_while(|a| AnchorChecked::from_hex(a)).collect()), exit_sets: std::sync::Mutex::new(s.exit_sets), exit_looked: Default::default(), signed: s.signed, contracts: s.contracts, deposits: s.deposits, sequencer: client };
-        if s.deployment.is_none() {
-            w.save()?;
-        }
-        Ok(w)
+        let hub = if hub.is_empty() { s.hub } else { hub.trim_end_matches('/').to_string() };
+        Ok(Wallet { pause_after: None, unchecked_claims: false, progress: None, opening: None, key, path: path.to_path_buf(), hub, deployment: s.deployment, contracts: s.contracts, deposits: s.deposits, notes: s.notes, spent: s.spent, mailbox_from: s.mailbox_from, inflight: s.inflight })
     }
     pub(crate) fn save(&self) -> Result<()> {
         let s = Stored {
             secret: hex::encode(self.key.to_bytes()),
-            deployment: Some(self.sequencer.deployment),
+            hub: self.hub.clone(),
+            deployment: self.deployment,
             contracts: self.contracts.clone(),
             deposits: self.deposits.clone(),
-            seen: self.seen.lock().unwrap().clone(),
-            exit_sets: self.exit_sets.lock().unwrap().clone(),
-            signed: self.signed.clone(),
-            anchors_checked: self.anchors_checked.lock().unwrap().iter().map(AnchorChecked::to_hex).collect(),
+            notes: self.notes.clone(),
+            spent: self.spent.clone(),
+            mailbox_from: self.mailbox_from,
+            inflight: self.inflight.clone(),
         };
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
@@ -316,54 +236,6 @@ impl Wallet {
         // the only copy of the wallet's key: replaced atomically, the owner's alone
         lichen_ledger::files::write_private(&self.path, &serde_json::to_vec_pretty(&s)?)?;
         Ok(())
-    }
-    /// The sequencer's state, its roots checked and recorded: an error if
-    /// it shows a root at a height seen before other than the one seen
-    /// (the evidence written beside the wallet, `<wallet>.equivocation.json`).
-    /// Its exit set kept up to it as well, at most every
-    /// [`exit::EXIT_SET_EVERY`] ([`Wallet::keep_exit_set`]).
-    pub fn state(&self) -> Result<State> {
-        let s = self.observe(self.sequencer.state()?)?;
-        self.keep_exit_set_soon(&s);
-        Ok(s)
-    }
-    /// A state of the sequencer fetched apart from the wallet (with a
-    /// client pinned to its deployment, which checks its roots), recorded
-    /// as [`Wallet::state`] records it: a caller holding the wallet in a
-    /// lock fetches it first.
-    pub fn observe(&self, state: State) -> Result<State> {
-        let new = self.seen.lock().unwrap().record(&state.sealed);
-        match new {
-            Ok(true) => self.save()?,
-            Ok(false) => {}
-            Err(e) => bail!("{e}: it signed two histories. The evidence: {}", self.evidence(&e)?.display()),
-        }
-        Ok(state)
-    }
-    /// The signed roots seen, by height.
-    pub fn seen(&self) -> Seen {
-        self.seen.lock().unwrap().clone()
-    }
-    /// Check `roots` from elsewhere (another wallet's, another server's)
-    /// against those seen: how many heights agree, or the first conflict,
-    /// its evidence written as by [`Wallet::state`]. Each root's signature
-    /// is checked first.
-    pub fn compare_roots(&self, roots: &[lichen_ledger::SignedRoot]) -> Result<usize> {
-        for r in roots {
-            r.verify(&self.sequencer.deployment.sequencer).with_context(|| format!("height {}: not the sequencer's signature", r.height))?;
-        }
-        let mut theirs = Seen::default();
-        theirs.record(roots).map_err(|e| anyhow::anyhow!("{e}: the roots given conflict among themselves"))?;
-        let seen = self.seen();
-        if let Err(e) = seen.clone().record(roots) {
-            bail!("{e}: it signed two histories. The evidence: {}", self.evidence(&e)?.display());
-        }
-        Ok(theirs.roots.keys().filter(|h| seen.roots.contains_key(h)).count())
-    }
-    fn evidence(&self, e: &Equivocation) -> Result<PathBuf> {
-        let path = self.path.with_extension("equivocation.json");
-        std::fs::write(&path, serde_json::to_vec_pretty(e)?)?;
-        Ok(path)
     }
     /// A line for whoever follows a long operation ([`Wallet::progress`]).
     pub(crate) fn say(&self, m: String) {
@@ -379,62 +251,6 @@ impl Wallet {
     /// The wallet's L2 address: its x-only public key.
     pub fn address(&self) -> Hash {
         xonly(&self.key)
-    }
-    /// Our unspent notes, unlocked (a locked one waits for its sender's
-    /// acknowledgment: [`State::locked`]).
-    pub fn notes(&self, state: &State) -> Vec<Owned> {
-        self.notes_locked_too(state).into_iter().filter(|o| !state.locked(o.index)).collect()
-    }
-    /// Our unspent notes, locked or not.
-    pub fn notes_locked_too(&self, state: &State) -> Vec<Owned> {
-        let me = self.address();
-        state.transparent().filter(|(_, n)| n.owner == me && !state.is_spent(n)).map(|(i, n)| Owned { note: *n, index: i }).collect()
-    }
-    /// The one-time acknowledgment key of our spend whose first nullifier
-    /// is `nf0` (`lichen_validity::ack`).
-    pub(crate) fn ak_key(&self, nf0: &Hash) -> SigningKey {
-        use sha2::Digest;
-        let mut h = sha2::Sha256::new();
-        h.update(b"lichen/ak");
-        h.update(self.key.to_bytes());
-        h.update(nf0);
-        SigningKey::from_bytes(&h.finalize()).expect("a scalar, all but certainly")
-    }
-    /// What we hold on the L2: transparent and shielded notes.
-    pub fn balance(&self) -> Result<u64> {
-        let (t, s) = self.balances()?;
-        Ok(t + s)
-    }
-    /// Pay `amount` to `to` with `memo`; the new notes' indices (the
-    /// payment's first, then our change if any).
-    pub fn send(&mut self, to: Hash, amount: u64, memo: u32) -> Result<Vec<u32>> {
-        anyhow::ensure!(amount > 0, "nothing to send");
-        let state = self.state()?;
-        let mut mine = self.notes(&state);
-        mine.sort_by_key(|o| std::cmp::Reverse(o.note.value));
-        let (mut spends, mut total) = (vec![], 0u64);
-        for o in mine {
-            if total >= amount {
-                break;
-            }
-            total += o.note.value;
-            spends.push(Spend { note: o.note, index: o.index });
-        }
-        if total < amount {
-            bail!("the balance is {total}, short of {amount}");
-        }
-        let mut outputs = vec![note(to, amount, memo)];
-        if total > amount {
-            outputs.push(note(self.address(), total - amount, 0));
-        }
-        let nfs: Vec<Hash> = spends.iter().map(|s| lichen_ledger::nullifier(&s.note)).collect();
-        let ak = xonly(&self.ak_key(&nfs[0]));
-        let digest = Transfer::digest(&spends, &outputs, &ak);
-        let sigs = spends.iter().map(|_| sign(&self.key, &digest)).collect();
-        // kept before it goes: an exit without the sequencer must know,
-        // and the wallet acknowledges it
-        self.record_signed(Signed::new(nfs, &outputs))?;
-        self.sequencer.submit(&Tx::Transfer(Transfer { spends, outputs, sigs, ak }))
     }
 }
 
@@ -549,8 +365,8 @@ impl Wallet {
         let info: Info = hub_call(&format!("{hub}/info"), None, true)?;
         let net = chain.network;
         ensure!(info.network == net, "the hub is on {}, this wallet's coins on {net}", info.network);
-        let d = self.sequencer.deployment;
-        ensure!(info.deployment == d, "the hub is in another deployment (sequencer {}, hub {}) than this wallet's (sequencer {}, hub {})", hex::encode(info.deployment.sequencer), hex::encode(info.deployment.hub), hex::encode(d.sequencer), hex::encode(d.hub));
+        let d = self.deployment;
+        ensure!(info.deployment == d, "the hub is in another deployment (issuer {}) than this wallet's (issuer {})", hex::encode(info.deployment.hub), hex::encode(d.hub));
         ensure!(info.statement == statement.id(), "the hub runs {}, this wallet {}", info.statement, statement.id());
         check_guests(&info)?;
         bitcoin::Address::from_script(&payout, net.bitcoin()).with_context(|| format!("the payout address isn't a {net} address"))?;
@@ -604,7 +420,7 @@ impl Wallet {
     #[allow(clippy::too_many_arguments)]
     fn open_with(&mut self, hub: &str, chain: &Chain, statement: &Statement, ask: Ask, quote: Quote, dep: Deposit, coin: (bitcoin::OutPoint, bitcoin::TxOut)) -> Result<Held> {
         let Ask { deposit, liquidity, reserve } = ask;
-        let (net, d) = (chain.network, self.sequencer.deployment);
+        let (net, d) = (chain.network, self.deployment);
         let (nonce, payout) = (dep.nonce.clone(), dep.payout.clone());
         let dep_kp = self.deposit_key(&nonce);
         let dep_tree = deposit_tree(&dep_kp.x_only_public_key().0, &dep.hub, dep.timeout)?;
@@ -670,15 +486,18 @@ impl Wallet {
         // the hub's adaptor pre-signatures on her challenge
         Wallet::hp_check_offer(net, offer.t_close, &secrets, &hp_open, &offer.dispute, &set)?;
         record.alice_sigs = sign_all(&set, &keys.payment)?;
-        // D, minted already to a key we can spend once this funding is out:
-        // there, and sealed, before we sign the funding
-        self.wait_mint(offer.mint_index, &mint_owner(&self.address(), &offer.mint_point)?, record.minted())?;
+        // D, pre-issued to us under this funding's adaptor point: ours once
+        // the funding is out, checked before we sign it
+        let (mint, mint_presig) = (offer.mint, offer.mint_presig.clone());
+        ensure!(mint.owner == self.address() && mint.value == record.minted(), "the deposit pre-issued is {} sats to {}, not {} to us", mint.value, hex::encode(mint.owner), record.minted());
+        let issuer = bitcoin::XOnlyPublicKey::from_slice(&d.hub).context("the hub's issuer key")?;
+        ensure!(adaptor_verify(&issuer, &bitcoin::secp256k1::Message::from_digest(mint.digest()), &offer.mint_point, &AdaptorSig::from(&mint_presig)), "the hub's pre-signature on our deposit's note");
         self.opened_step(Opening::Minted);
         // our pre-signature on the funding's deposit input, locked to T
         // (taproot signs every input's prevout: ours and the hub's coins)
         let known: Vec<(bitcoin::OutPoint, bitcoin::TxOut)> = std::iter::once(coin.clone()).chain(offer.hub_coins.iter().cloned()).collect();
         let (_, msg) = deposit_open_msg(&offer.funding, &coin.0, &known, &dep_tree)?;
-        let locked = Locked { index: offer.mint_index, point: offer.mint_point, presig: adaptor_sign(&dep_kp, &msg, &offer.mint_point).into(), deposit: coin.0, claimed: false };
+        let locked = Locked { note: mint, note_presig: mint_presig, point: offer.mint_point, presig: adaptor_sign(&dep_kp, &msg, &offer.mint_point).into(), deposit: coin.0, claimed: false };
         if let Some(d) = self.deposits.iter_mut().find(|d| d.cid == dep.cid) {
             if let Some(old) = d.offered.replace((record.clone(), locked.clone())) {
                 if old.0.funding != record.funding {
@@ -714,29 +533,10 @@ impl Wallet {
         self.contracts.iter().find(|h| h.record.cid() == dep.cid).cloned().context("the contract")
     }
 
-    /// Wait until note `index` is `value` to `owner` (memo 0), unspent and
-    /// sealed: a contract's mint, before we sign its funding.
-    fn wait_mint(&self, index: u32, owner: &Hash, value: u64) -> Result<()> {
-        let start = std::time::Instant::now();
-        loop {
-            let state = self.state()?;
-            if let Some(n) = state.note(index) {
-                ensure!((n.owner, n.value, n.memo) == (*owner, value, 0), "note {index} is not the deposit minted to us, locked to the funding");
-                ensure!(!state.is_spent(n), "the deposit minted to us is spent");
-                if state.sealed.iter().any(|s| s.size > index) {
-                    return Ok(());
-                }
-                let _ = self.sequencer.seal();
-            }
-            ensure!(start.elapsed() < std::time::Duration::from_secs(120), "the deposit minted to us was never sealed");
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-    }
-
-    /// Move contract `cid`'s deposit, minted before its funding, to our own
-    /// key, with `t` taken from the funding on chain (our completed
-    /// signature in it): for a hub that didn't answer. Opens the contract
-    /// first if its opening's answer was lost but its funding is out.
+    /// Settle contract `cid`'s deposit, pre-issued before its funding, with
+    /// `t` taken from the funding on chain (our completed signature in it):
+    /// for a hub that didn't answer. Opens the contract first if its
+    /// opening's answer was lost but its funding is out.
     pub fn claim_mint(&mut self, chain: &Chain, cid: u32) -> Result<()> {
         if !self.contracts.iter().any(|h| h.record.cid() == cid) {
             let dep = self.deposits.iter().find(|d| d.cid == cid).cloned().with_context(|| format!("no contract or deposit {cid}"))?;
@@ -762,23 +562,16 @@ impl Wallet {
         self.claim_mint_with(cid, &t)
     }
 
-    /// Move contract `cid`'s locked deposit to our own key, `t` in hand.
+    /// Settle contract `cid`'s pre-issued deposit, `t` in hand: the hub's
+    /// pre-signature completed, the note ours.
     fn claim_mint_with(&mut self, cid: u32, t: &SecretKey) -> Result<()> {
         let k = self.contracts.iter().position(|h| h.record.cid() == cid).context("the contract")?;
-        let locked = self.contracts[k].mint.clone().context("no locked deposit")?;
+        let locked = self.contracts[k].mint.clone().context("no pre-issued deposit")?;
         ensure!(PublicKey::from_secret_key(SECP256K1, t) == locked.point, "not the adaptor point's secret");
-        let key = mint_secret(&self.key, &t.secret_bytes())?;
-        let state = self.state()?;
-        let n = *state.note(locked.index).context("the deposit minted to us is gone")?;
-        ensure!(n.owner == xonly(&key), "the deposit minted is not ours to claim");
-        if !state.is_spent(&n) {
-            let spends = vec![Spend { note: n, index: locked.index }];
-            let outputs = vec![note(self.address(), n.value, 0)];
-            let nf = lichen_ledger::nullifier(&n);
-            let ak = xonly(&self.ak_key(&nf));
-            let digest = Transfer::digest(&spends, &outputs, &ak);
-            self.record_signed(Signed::new(vec![nf], &outputs))?;
-            self.sequencer.submit(&Tx::Transfer(Transfer { sigs: vec![sign(&key, &digest)], spends, outputs, ak }))?;
+        let settled = lichen_notes::Settled { note: locked.note, sig: *adaptor_complete(&AdaptorSig::from(&locked.note_presig), t).as_ref() };
+        ensure!(settled.verify(&self.issuer()), "the deposit's note doesn't settle with t");
+        if !self.notes.iter().any(|s| s.note.id == settled.note.id) && !self.spent.contains(&settled.note.id) {
+            self.notes.push(settled);
         }
         self.contracts[k].mint.as_mut().expect("checked").claimed = true;
         self.save()
@@ -892,19 +685,17 @@ impl Wallet {
         Ok(txid)
     }
 
-    /// Withdraw `b` sats from contract `cid` cooperatively, by claim: her
-    /// notes worth exactly the withdrawal's units (`b` rounded down to
-    /// the contract's unit) claimed for the contract, and her signature
-    /// on the fold paying them (and her reserve); the hub records the
-    /// claim on the L2, retiring the notes, and folds at once. Whole notes
-    /// only: a note to size is split off first, by a payment to herself.
-    /// The claim is kept with the contract before it goes: if the hub
-    /// recorded it but won't fold, `exit` posts the same claim (this
-    /// contract's own record doesn't count against it). Run again after a
-    /// failed fold, it asks again with the same claim. At `b` 0 it closes
-    /// the contract early: no claim, the fold paying her reserve, as the
-    /// default would at `T_close`. Returns the fold's txid.
-    pub fn withdraw(&mut self, chain: &Chain, hub: &str, statement: &Statement, cid: u32, b: u64) -> Result<bitcoin::Txid> {
+    /// Withdraw `b` sats from contract `cid` cooperatively, by claim: all
+    /// her notes claimed for the contract's units (`b` rounded down to its
+    /// unit), and her signature on the fold paying them (and her reserve);
+    /// the hub takes the claim (its notes spent, what they hold beyond the
+    /// units back to her as change) and folds at once. The claim is kept
+    /// with the contract before it goes: if the hub took it but won't
+    /// fold, `exit` posts the same claim. Run again after a failed fold, it
+    /// asks again with the same claim. At `b` 0 it closes the contract
+    /// early: no claim, the fold paying her reserve, as the default would
+    /// at `T_close`. Returns the fold's txid.
+    pub fn withdraw(&mut self, _chain: &Chain, hub: &str, statement: &Statement, cid: u32, b: u64) -> Result<bitcoin::Txid> {
         let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
         let held = self.contracts[k].clone();
         ensure!(held.closed.is_none(), "contract {cid} is closed");
@@ -921,7 +712,7 @@ impl Wallet {
                 None
             }
             (None, _) => {
-                let p = self.withdrawal_claim(chain, cid, units)?;
+                let p = self.claim_for(cid, units)?;
                 self.contracts[k].exit = Some(p.clone());
                 self.save()?;
                 Some(p)
@@ -937,38 +728,11 @@ impl Wallet {
         ensure!(done.txid == fold.tx.compute_txid(), "the hub answered {} for the fold, not its txid {}", done.txid, fold.tx.compute_txid());
         self.contracts[k].closed = Some(done.txid);
         self.save()?;
+        // the change of the claim, if any
+        let _ = self.sync();
         Ok(done.txid)
     }
 
-    /// A cooperative withdrawal's claim of `units` from contract `cid`:
-    /// her notes worth exactly `units` of the contract's unit, by
-    /// position, signed for the contract. Her notes if some are worth it
-    /// exactly (all of them, or one); else a note of that value split off
-    /// by a payment to herself, waited for until acknowledged (its output
-    /// unlocked: anchored, the margin deep).
-    fn withdrawal_claim(&mut self, chain: &Chain, cid: u32, units: u32) -> Result<exit::ExitPlan> {
-        let record = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?.record.clone();
-        let want = u64::from(units) * record.terms.unit.to_sat();
-        // our own spends acknowledged first: their change unlocked
-        self.acknowledge_all(chain, ack::ACK_PATIENCE)?;
-        let mine = self.notes(&self.state()?);
-        let total: u64 = mine.iter().map(|o| o.note.value).sum();
-        ensure!(total >= want, "the transparent balance is {total} sats, short of {want}");
-        let positions: Vec<u32> = if total == want && mine.len() <= lichen_withdraw::hp::MAX_NOTES {
-            mine.iter().map(|o| o.index).collect()
-        } else if let Some(o) = mine.iter().find(|o| o.note.value == want) {
-            vec![o.index]
-        } else {
-            self.say(format!("splitting off a note of {want} sats to claim"));
-            let i = self.send(self.address(), want, 0)?[0];
-            self.say("waiting for the split to be anchored and acknowledged: until then its note is locked".into());
-            self.acknowledge_all(chain, ack::ACK_PATIENCE)?;
-            ensure!(!self.state()?.locked(i), "the note split off is still locked");
-            vec![i]
-        };
-        let acks = self.acks_for(&self.state()?, &positions)?;
-        self.claim_of(&record, units, positions, acks)
-    }
 }
 
 /// Send from one key's coins, a wallet's payout key's (all of them,
@@ -1005,18 +769,4 @@ pub fn send_from(payout: &KeyFees, chain: &Chain, to: &bitcoin::Script, amount: 
     let prevouts: Vec<_> = coins.into_iter().map(|c| (c.0, c.1)).collect();
     let tx = payout.sign(chain, &tx, &prevouts)?;
     chain.broadcast(&tx).context("the payment from the payout address")
-}
-
-#[cfg(test)]
-mod anchors_checked {
-    use super::AnchorChecked;
-    use lichen_ledger::{AnchorState, OutPoint};
-
-    #[test]
-    fn kept_as_hex() {
-        let a = AnchorChecked { anchor: AnchorState { genesis: OutPoint { txid: [1; 32], vout: 2 }, sequencer: [3; 32], seal: OutPoint { txid: [4; 32], vout: 0 }, height: 77, root: [5; 32], block: [6; 32] }, hist: [7; 32], block_height: 3_583_400 };
-        let b = AnchorChecked::from_hex(&a.to_hex()).unwrap();
-        assert_eq!((b.anchor, b.hist, b.block_height), (a.anchor, a.hist, a.block_height));
-        assert!(AnchorChecked::from_hex("00").is_none());
-    }
 }

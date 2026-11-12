@@ -1,8 +1,8 @@
 //! `lichen-hub`: the hub's daemon.
 //!
-//! Its secrets are made on first start and kept in `--dir`: its L2 key
-//! (`l2.key`: it mints; the sequencer names it with `--issuer`, as
-//! `--print-key` prints it) and the seed of its contract keys (`seed`).
+//! Its secrets are made on first start and kept in `--dir`: its issuer key
+//! (`l2.key`: it signs every note; `--print-key` prints it) and the seed
+//! of its contract keys (`seed`). Its notes are in `book.json` there.
 //! `--toy` uses the toy deployment's keys instead (anyone can derive
 //! them: tests only).
 
@@ -22,8 +22,6 @@ struct Args {
     network: lichen_proto::Net,
     #[arg(long, default_value = "127.0.0.1:18310")]
     listen: String,
-    #[arg(long, default_value = "http://127.0.0.1:18300")]
-    sequencer: String,
     /// The node's RPC URL and cookie file; the hub's wallet there.
     #[arg(long)]
     rpc_url: Option<String>,
@@ -97,7 +95,6 @@ fn main() -> Result<()> {
     let hub = Hub::start(Config {
         network: a.network,
         listen: a.listen,
-        sequencer: a.sequencer,
         rpc_url: a.rpc_url.context("--rpc-url: the node's RPC URL")?,
         cookie: a.cookie.context("--cookie: the node's cookie file")?,
         wallet: a.chain_wallet,

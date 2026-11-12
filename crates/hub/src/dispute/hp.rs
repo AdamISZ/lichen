@@ -2,17 +2,13 @@
 //! `lichen_proto::hp`): its setup, in which Alice garbles and the hub
 //! keeps her instances, and its dispute ([`super`] drives it).
 //!
-//! When `request` confirms, the hub looks for a ground that her claim is
-//! false (`lichen_withdraw::hp::Ground`), natively, from the L2's state
-//! and the chain: once `request`'s block has the contract's work on it,
-//! and `A*` is shown the last anchor before the cutoff. With one, it
-//! builds the statement's input, checks it natively, and asserts its
-//! proof (on the mock, the mock's) before `w_H`; she may challenge it,
-//! revealing π1's input secrets, and the hub answers with a kept
-//! instance's `msg`. Without one, it holds the claimed notes, records the
-//! exit on the L2, and lets `request_timeout` pay her; until `w_H` nears
-//! it keeps looking for a second claim of her notes through another
-//! contract.
+//! On the grants L2 (milestone 1, docs/GRANTS_PLAN.md): when `request`
+//! confirms, the hub takes the claim it posts into its book (its notes
+//! spent, the change beyond `b` issued back to the owner) and lets
+//! `request_timeout` pay her. It doesn't contest a claim yet: the
+//! statement "she is owed at most `b_corr`" comes in milestone 2. A test's
+//! lying hub still asserts a forged proof, and answers a challenge with a
+//! kept instance if one opens.
 //!
 //! Its keys as the prover (a Lamport key for π1, adaptor keys) derive from
 //! its seed. Of the setup it keeps `hp/<cid>.json` (the setup, her
@@ -20,7 +16,6 @@
 //! shares) and the kept instances, `hp/<cid>/instance-<i>.bin`.
 
 use anyhow::{ensure, Context, Result};
-use bitcoin::hashes::Hash as _;
 use bitcoin::OutPoint;
 use lichen_babe::garble::evaluate;
 use lichen_babe::hp::HubProves;
@@ -29,12 +24,9 @@ use lichen_babe::setup::{check_opened, choose, digits, par, Hash, Instance, Secr
 use lichen_babe::vsss::interpolate;
 use lichen_babe::we::decrypt;
 use lichen_chain::NodeWallet;
-use lichen_proto::setup::{dealing_from_hex, link_args, shares_from_hex, statement_outpoint, Opened};
+use lichen_proto::setup::{dealing_from_hex, link_args, shares_from_hex, Opened};
 use lichen_proto::hp::{check_commit, HpCommit, HpDisputed, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
 use lichen_proto::{Checkpoint, Presig, Record};
-use lichen_ledger::lichen_validity::TNote;
-use lichen_ledger::lichen_validity::ack::{self, Ack};
-use lichen_withdraw::hp::{Bad, ChainSet, Claim, Counts, Ground, HubInput, Last, Opening, SealSpend, Terms, Why};
 use lngap_btc::adaptor::AdaptorSig;
 use lngap_btc::keys::Seed;
 use rand_chacha::ChaCha20Rng;
@@ -90,7 +82,7 @@ impl Inner {
     }
     /// The journal of the contract of `setup`.
     fn hp_journal_of(&self, setup: &HpSetup) -> Result<[u8; lichen_withdraw::hp::JOURNAL_LEN]> {
-        let d = lichen_proto::contract_word(&self.seq.deployment, setup.checkpoint.as_ref(), bitcoin::Amount::from_sat(setup.unit))?;
+        let d = lichen_proto::contract_word(&self.deployment, setup.checkpoint.as_ref(), bitcoin::Amount::from_sat(setup.unit))?;
         Ok(lichen_proto::hp::journal(setup.cid, &d, &setup.deposit, setup.margin))
     }
 
@@ -105,7 +97,6 @@ impl Inner {
             ensure!(p.setup.deposit == req.deposit && p.setup.unit == req.unit, "contract {cid}'s setup is for another deposit or unit");
             return Ok(p.setup);
         }
-        ensure!(self.seq.deployment.seal.is_some(), "the exit where the hub proves needs an anchored deployment");
         self.check_deposit(cid, &req.deposit)?;
         let (n, m) = cut_and_choose(self.cfg.network);
         let setup = HpSetup {
@@ -113,7 +104,8 @@ impl Inner {
             n,
             m,
             margin: lichen_proto::hp::margin(self.cfg.network),
-            checkpoint: Some(Checkpoint::tip(&self.chain)?),
+            // the grants L2 anchors nothing: no checkpoint on its work
+            checkpoint: None,
             unit: req.unit,
             deposit: req.deposit,
             lamport: hub_lamport(&self.cfg.seed, cid).public(),
@@ -239,28 +231,6 @@ pub fn cut_and_choose(net: lichen_proto::Net) -> (u32, u32) {
     }
 }
 
-/// A claimed note at `A*`, opened: its position, its opening as a ground
-/// shows it, its value and nullifier, and the key whose signature makes
-/// it hers (a shielded note's: its owner's exit key).
-struct HeldNote {
-    index: u32,
-    shielded: bool,
-    opening: Opening,
-    value: u64,
-    nf: Hash,
-    key: Hash,
-}
-
-/// The hub's decision on a claim.
-enum Decision {
-    /// A ground, its input, and why (for the log).
-    Assert(Box<HubInput>, String),
-    /// None holds.
-    Holds,
-    /// Not yet decidable: why.
-    Wait(String),
-}
-
 /// A dispute's state at the hub, in play.
 pub(crate) enum State {
     /// `request` confirmed at `at`; `recorded` once the claim was found to
@@ -316,37 +286,21 @@ impl Inner {
                     self.note(format!("contract {cid}: the user's request timed out; she is paid her claim"));
                     return Ok(Some(Outer::Collect { link: r_op.txid, since: self.chain.height()? }));
                 }
+                if !recorded {
+                    self.grants_take_exit(&d)?;
+                }
                 let w = d.graph.spec.windows;
                 // the assertion must confirm before her timeout
                 let last_chance = at + u32::from(w.w_h) - (u32::from(w.w_h) / 4).max(2);
                 if self.chain.height()? >= last_chance {
                     self.note_once(format!("contract {cid}: too late to assert; request_timeout will pay the user"));
-                    return Ok(bb(State::Requested(d, at, recorded)));
+                    return Ok(bb(State::Requested(d, at, true)));
                 }
-                if !recorded {
-                    self.hp_hold(&d)?;
+                // for tests: a lying hub asserts against a claim that holds
+                if self.forge_assertions.load(std::sync::atomic::Ordering::Relaxed) {
+                    self.hp_assert(&d)?;
                 }
-                match self.hp_decide(&d, at, recorded)? {
-                    Decision::Wait(why) => {
-                        self.note_once(format!("contract {cid}: {why}"));
-                        Ok(bb(State::Requested(d, at, recorded)))
-                    }
-                    // for tests: a lying hub asserts against a claim that holds
-                    Decision::Holds if self.forge_assertions.load(std::sync::atomic::Ordering::Relaxed) => {
-                        self.hp_assert(&d, None, "")?;
-                        Ok(bb(State::Requested(d, at, recorded)))
-                    }
-                    Decision::Holds => {
-                        if !recorded {
-                            self.hp_record(&d)?;
-                        }
-                        Ok(bb(State::Requested(d, at, true)))
-                    }
-                    Decision::Assert(input, why) => {
-                        self.hp_assert(&d, Some(&input), &why)?;
-                        Ok(bb(State::Requested(d, at, recorded)))
-                    }
-                }
+                Ok(bb(State::Requested(d, at, true)))
             }
             State::Asserted(d, at) => {
                 if let Some(c) = confirmed_at(self, &d.txid("challenge_assert"))? {
@@ -389,334 +343,40 @@ impl Inner {
         }
     }
 
-    /// Hold the notes a request claims, once, as soon as it is seen: the
-    /// sequencer refuses their spends, and the acknowledgment of a spend of
-    /// them (the earlier of an exit and a spend wins).
-    fn hp_hold(&self, d: &HpDisputed) -> Result<()> {
-        let cid = d.record.cid();
-        let once = format!("contract {cid}: holding the notes the request claims");
-        if self.log.lock().unwrap().contains(&once) {
-            return Ok(());
-        }
-        let req = self.chain.get_tx(&d.txid("request")).context("the request")?;
-        let (_, _, posted) = HpDisputed::requested(&req)?;
-        let Ok(claim) = Claim::from_bytes(&posted) else { return Ok(()) };
-        let state = self.seq.state()?;
-        let mut nfs: Vec<Hash> = claim.positions.iter().filter_map(|i| state.note(*i)).map(lichen_ledger::nullifier).collect();
-        if let Some(sc) = &claim.shielded {
-            nfs.extend(sc.notes.iter().map(|n| sc.nullifier(n)));
-        }
-        if !nfs.is_empty() {
-            self.seq.hold(&self.cfg.l2_key, &nfs)?;
-        }
-        self.note(once);
-        Ok(())
-    }
-
-    /// The claim holds: hold its notes, and record its exit on the L2,
-    /// retiring them.
-    fn hp_record(&self, d: &HpDisputed) -> Result<()> {
-        let cid = d.record.cid();
-        let req = self.chain.get_tx(&d.txid("request")).context("the request")?;
-        let (b, e, posted) = HpDisputed::requested(&req)?;
-        let claim = Claim::from_bytes(&posted).map_err(|r| anyhow::anyhow!("the claim: {r:?}"))?;
-        self.note(format!("contract {cid}: the user's exit claim of {b} units holds: no assertion; request_timeout will pay her"));
-        let state = self.seq.state()?;
-        let notes: Vec<TNote> = claim.positions.iter().map(|i| state.notes.get(*i as usize).and_then(|l| l.note()).map(tnote).context("a claimed note isn't transparent")).collect::<Result<_>>()?;
-        let mut nfs: Vec<Hash> = notes.iter().map(TNote::nullifier).collect();
-        if let Some(sc) = &claim.shielded {
-            nfs.extend(sc.notes.iter().map(|n| sc.nullifier(n)));
-        }
-        if let Err(e) = self.seq.hold(&self.cfg.l2_key, &nfs) {
-            self.note(format!("contract {cid}: holding the claimed notes: {e:#}"));
-        }
-        let deposit = statement_outpoint(&d.record.hp().deposit);
-        let Some((notes, sigs)) = claim.record(&notes, &e) else { return Ok(()) };
-        let notes = notes.into_iter().map(|(n, index)| lichen_ledger::Spend { note: lichen_ledger::Note { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho }, index }).collect();
-        let acks = claim.acks.iter().map(lichen_ledger::Ack::of).collect();
-        let tx = lichen_ledger::Tx::Exit(lichen_ledger::Exit::new(&self.cfg.l2_key, &self.seq.deployment, cid, deposit, b, notes, claim.shielded.clone(), acks, sigs));
-        match self.seq.submit(&tx) {
-            Ok(_) => self.note(format!("contract {cid}: the exit claim recorded on the L2: its notes are retired")),
-            Err(e) => self.note(format!("contract {cid}: the exit record: {e:#}")),
-        }
-        Ok(())
-    }
-
-    /// Whether the claim of `d`'s request (confirmed at `at`) is false: its
-    /// ground and the statement's input, once decidable.
-    fn hp_decide(&self, d: &HpDisputed, at: u32, recorded: bool) -> Result<Decision> {
+    /// The claim `request` posts, taken into the book: checked against the
+    /// contract and the `b` and `E` she signed, its notes spent, the change
+    /// beyond `b` issued back to her. A claim that doesn't hold is noted,
+    /// not contested (milestone 2's statement will): `request_timeout`
+    /// pays her `b` all the same.
+    fn grants_take_exit(&self, d: &HpDisputed) -> Result<()> {
         let record = &d.record;
         let cid = record.cid();
-        let k = record.hp();
-        let deposit = statement_outpoint(&k.deposit);
-        let req_id = d.txid("request");
-        let req = self.chain.get_tx(&req_id).context("the request")?;
-        let (b, e, posted) = HpDisputed::requested(&req)?;
-        let checkpoint = record.checkpoint.as_ref().context("a hub-proves contract's checkpoint")?;
-        let dep = self.seq.deployment;
-        let terms = Terms { sequencer: dep.sequencer, hub: dep.hub, genesis: dep.seal.context("an anchored deployment")?, work: checkpoint.work(), unit: record.terms.unit.to_sat() };
-        // request in its block, with the contract's work on it
-        let funding = self.chain.get_tx(&record.funding.txid).context("the funding")?;
-        let request = lichen_proto::exit::request_proof(&self.chain, &funding, &req_id)?;
-        let req_block = lichen_ledger::lichen_validity::btc::Header(request.header).hash();
-        let headers = match lichen_proto::headers_for(&self.chain, &req_block, terms.work) {
-            Ok(h) => h,
-            Err(e) => return Ok(Decision::Wait(format!("deciding the claim: {e:#}"))),
-        };
-        let input = |ground: Ground| Box::new(HubInput { c: cid, deposit, margin: k.margin, terms, request: request.clone(), headers: headers.clone(), ground });
-        let claim = match Claim::from_bytes(&posted) {
-            Ok(c) if c.well_formed() && c.fingerprint(cid, &deposit, b) == e => c,
-            _ => return Ok(Decision::Assert(input(Ground::Malformed), "the claim is malformed".into())),
-        };
-        let state = self.seq.state()?;
-        let cutoff = at.saturating_sub(k.margin);
-        // A*: the last anchor recorded whose block is at most the cutoff
-        let mut star = None;
-        for (i, a) in state.anchors.iter().enumerate() {
-            if self.chain.block_height(&bitcoin::BlockHash::from_byte_array(a.anchor.block))?.is_some_and(|h| h <= cutoff) {
-                star = Some(i);
-            }
+        let req = self.chain.get_tx(&d.txid("request")).context("the request")?;
+        let (b, e, posted) = HubProves::read_request(&link_args(&req))?;
+        let b = u32::from_be_bytes(b.message().try_into().map_err(|_| anyhow::anyhow!("b's signature signs 4 bytes"))?);
+        let e: [u8; 32] = e.message().try_into().map_err(|_| anyhow::anyhow!("E's signature signs 32 bytes"))?;
+        let taken = (|| -> Result<u64> {
+            let claim = lichen_notes::Claim::from_bytes(&posted)?;
+            ensure!(claim.e() == e && claim.b == b, "the claim posted isn't the one signed (its E or b)");
+            let unit = record.terms.unit.to_sat();
+            let total = claim.check(&self.book.issuer(), cid, &record.hp().deposit, &record.l2_address, unit)?;
+            self.book.take_claim(&claim, total, u64::from(b) * unit)?;
+            Ok(total)
+        })();
+        match taken {
+            Ok(total) => self.note(format!("contract {cid}: the user's exit claims {b} units ({total} sats of notes): taken into the book; request_timeout pays her")),
+            Err(e) => self.note(format!("contract {cid}: the user's exit claim doesn't hold ({e:#}); not contested in milestone 1: request_timeout pays her")),
         }
-        let Some(i) = star else { return Ok(Decision::Wait("no anchor before the claim's cutoff".into())) };
-        let a = state.anchors[i];
-        let Some(next) = state.anchors.get(i + 1) else {
-            self.hp_nudge(cid)?;
-            return Ok(Decision::Wait("waiting for an anchor after the cutoff, to show A* the last before it".into()));
-        };
-        let succ = bitcoin::Txid::from_byte_array(next.anchor.seal.txid);
-        let spend = lichen_proto::exit::in_block(&self.chain, &succ)?;
-        let a_block = bitcoin::BlockHash::from_byte_array(a.anchor.block);
-        let a_height = self.chain.block_height(&a_block)?.context("A*'s block isn't on the chain")?;
-        let s_height = self.chain.block_height(&spend.block)?.context("the seal's spend isn't on the chain")?;
-        ensure!(s_height > cutoff, "the anchor after A* is before the cutoff (not recorded yet?)");
-        let star_headers = self.chain.headers_after(&a_block, (self.chain.height()? - a_height) as usize)?;
-        let h2 = a.anchor.height;
-        let s2 = state.sealed.iter().find(|s| s.height == h2).context("A* isn't sealed")?;
-        let (chain_root, recent, hist) = state.chain_at(a.from)?;
-        let last = Last {
-            state: lichen_withdraw::Anchored {
-                height: h2,
-                nullifiers: s2.nullifiers,
-                signature: s2.signature.as_slice().try_into().context("a signature of 64 bytes")?,
-                sequencer: dep.sequencer,
-                hub: dep.hub,
-                chain_height: a.from,
-                chain_root,
-                recent,
-                hist,
-                anchor: a.anchor,
-                headers: star_headers,
-                work: terms.work,
-                unit: terms.unit,
-            },
-            tree: s2.tree,
-            seal: SealSpend { tx: spend.tx, at: s_height - a_height - 1, index: spend.index, path: spend.path, coinbase: spend.coinbase, coinbase_path: spend.coinbase_path },
-        };
-        let at_star = |why: Why| input(Ground::At { last: last.clone(), why });
-        // each claimed note at A*, opened: a transparent note at its
-        // position, or the shielded note the claim opens
-        let tree = state.tree();
-        let mut held: Vec<HeldNote> = vec![];
-        for w in 0..claim.len() {
-            let index = claim.position(w).context("a claimed note's position")?;
-            let path = tree.path_at(index, s2.size);
-            let leaf = state.notes.get(index as usize).filter(|_| index < s2.size);
-            let found = match (claim.shielded_note(w), &claim.shielded) {
-                (Some(n), Some(sc)) => (leaf.map(|l| l.leaf()) == Some(sc.leaf(n))).then(|| HeldNote { index, shielded: true, opening: Opening { note: None, path: path.clone() }, value: n.value, nf: sc.nullifier(n), key: sc.x }),
-                _ => leaf.and_then(|l| l.note()).map(|n| HeldNote { index, shielded: false, opening: Opening { note: Some(tnote(n)), path: path.clone() }, value: n.value, nf: lichen_ledger::nullifier(n), key: n.owner }),
-            };
-            match found {
-                Some(h) => held.push(h),
-                None => {
-                    let leaf = leaf.map_or(lichen_ledger::lichen_validity::tree_empties()[0], |l| l.leaf());
-                    return Ok(Decision::Assert(at_star(Why::NotANote { which: w as u8, leaf, path }), format!("position {index} isn't the note claimed at A* (height {h2})")));
-                }
-            }
-        }
-        for (w, h) in held.iter().enumerate() {
-            if claim.signed_by(&h.key, &e).is_none() {
-                return Ok(Decision::Assert(at_star(Why::NotHers { which: w as u8, opening: h.opening.clone() }), format!("note {} isn't the user's", h.index)));
-            }
-        }
-        let total: u64 = held.iter().map(|h| h.value).sum();
-        if total / terms.unit < u64::from(b) {
-            return Ok(Decision::Assert(at_star(Why::TooMuch { openings: held.iter().map(|h| h.opening.clone()).collect() }), format!("its notes are worth {total} sats, less than {b} units")));
-        }
-        if let Some((why, said)) = self.hp_second(cid, &held)? {
-            return Ok(Decision::Assert(at_star(why), said));
-        }
-        // once found to hold, only a second claim can still appear
-        if recorded {
-            return Ok(Decision::Holds);
-        }
-        // its locks at A*: each claimed output of a spend void then, or
-        // pending without an acknowledgment that holds
-        let c_h = a.from;
-        let s_ch = state.sealed.iter().find(|s| s.height == c_h).context("A*'s chain receipt's height isn't sealed")?;
-        let chain = ChainSet { tree: s_ch.tree, set: s_ch.nullifiers };
-        let open = |k: &Hash, h: u64| self.seq.opening(k, h);
-        for (w, h) in held.iter().enumerate() {
-            let index = h.index;
-            let lock = open(&ack::lock_key(index), h2)?;
-            let t = lock.leaf;
-            if t == [0; 32] {
-                continue;
-            }
-            let void = open(&ack::void_key(&t), h2)?;
-            if void.leaf != [0; 32] {
-                return Ok(Decision::Assert(at_star(Why::Voided { which: w as u8, lock, void }), format!("note {index} is an output of a spend void at A* (height {h2})")));
-            }
-            let acked = open(&ack::acked_key(&t), h2)?;
-            if acked.leaf != [0; 32] {
-                continue;
-            }
-            let bad = match claim.acks.iter().find(|a| a.txid == t) {
-                None => Some(None),
-                Some(a) if !a.signed() => Some(Some(Bad::Signature)),
-                Some(a) => {
-                    let p = open(&ack::tx_key(&t), h2)?;
-                    if p.leaf != ack::pending(&a.ak, a.h) {
-                        Some(Some(Bad::Pending(p)))
-                    } else {
-                        let an = open(&ack::anchor_key(a.a), c_h)?;
-                        (an.leaf != a.hist_a).then_some(Some(Bad::Anchor(an, chain)))
-                    }
-                }
-            };
-            if let Some(bad) = bad {
-                return Ok(Decision::Assert(at_star(Why::Locked { which: w as u8, lock, acked, bad }), format!("note {index} is locked at A* (height {h2}): its spend unacknowledged")));
-            }
-        }
-        // its spends at A*: each that counts against her
-        let known = self.hp_known_acks(cid)?;
-        for (w, h) in held.iter().enumerate() {
-            let leaf = open(&h.nf, h2)?;
-            let t = leaf.leaf;
-            if t == [0; 32] {
-                continue;
-            }
-            let counts = if let Some(c) = self.hp_exited(&t) {
-                if c == cid {
-                    continue;
-                }
-                Counts::Exit { c }
-            } else {
-                let acked = open(&ack::acked_key(&t), h2)?;
-                if acked.leaf != [0; 32] {
-                    Counts::Acked { acked }
-                } else {
-                    // pending at A*: it counts if an acknowledgment of it
-                    // exists (sequenced since, or in another claim) whose
-                    // anchor is applied by A*'s own record
-                    let found = match self.seq.ack(&t)? {
-                        Some(a) => Some(a.v()?),
-                        None => known.iter().find(|a| a.txid == t).copied(),
-                    };
-                    let Some(a) = found else { continue };
-                    let (pending, void, anchor) = (open(&ack::tx_key(&t), h2)?, open(&ack::void_key(&t), h2)?, open(&ack::anchor_key(a.a), c_h)?);
-                    if !a.signed() || pending.leaf != ack::pending(&a.ak, a.h) || void.leaf != [0; 32] || anchor.leaf != a.hist_a {
-                        continue;
-                    }
-                    Counts::Shown { ack: a, pending, void, anchor, chain }
-                }
-            };
-            let why = Why::Spent { which: w as u8, opening: h.opening.clone(), leaf, counts };
-            return Ok(Decision::Assert(at_star(why), format!("note {} was spent by A* (height {h2})", h.index)));
-        }
-        Ok(Decision::Holds)
-    }
-
-    /// The contract whose exit record a spent set leaf is, if it is one.
-    fn hp_exited(&self, leaf: &Hash) -> Option<u32> {
-        let cids: Vec<u32> = self.open.lock().unwrap().keys().copied().collect();
-        cids.into_iter().find(|c| lichen_ledger::lichen_validity::smt::exited(*c) == *leaf)
-    }
-
-    /// The acknowledgments other contracts' requests on chain carry: a
-    /// user who claims a spend's outputs through one contract shows it
-    /// counts, against a claim of its inputs through another.
-    fn hp_known_acks(&self, cid: u32) -> Result<Vec<Ack>> {
-        let records: Vec<Record> = self.open.lock().unwrap().values().map(|o| o.record.clone()).filter(|r| r.cid() != cid).collect();
-        let mut acks = vec![];
-        for r in records {
-            let Ok(d) = HpDisputed::new(&r, &self.cfg.statement) else { continue };
-            let Some(req) = self.chain.get_tx(&d.txid("request")) else { continue };
-            let Ok((_, _, posted)) = HpDisputed::requested(&req) else { continue };
-            if let Ok(other) = Claim::from_bytes(&posted) {
-                acks.extend(other.acks);
-            }
-        }
-        Ok(acks)
-    }
-
-    /// A second claim of a note of a claim (`held`, its notes opened)
-    /// through another hub-proves contract, its request on chain and
-    /// signed by the note's owner.
-    fn hp_second(&self, cid: u32, held: &[HeldNote]) -> Result<Option<(Why, String)>> {
-        let records: Vec<Record> = self.open.lock().unwrap().values().map(|o| o.record.clone()).filter(|r| r.cid() != cid).collect();
-        for r in records {
-            let Ok(d) = HpDisputed::new(&r, &self.cfg.statement) else { continue };
-            let Some(req) = self.chain.get_tx(&d.txid("request")) else { continue };
-            let Ok((b2, _, posted)) = HpDisputed::requested(&req) else { continue };
-            let Ok(other) = Claim::from_bytes(&posted) else { continue };
-            let d2 = statement_outpoint(&r.hp().deposit);
-            let e2 = other.fingerprint(r.cid(), &d2, b2);
-            for (w, h) in held.iter().enumerate() {
-                if other.claims(h.index, h.shielded) && other.signed_by(&h.key, &e2).is_some() {
-                    let why = Why::Second { which: w as u8, opening: h.opening.clone(), other_c: r.cid(), other_deposit: d2, other_b: b2, other: other.clone() };
-                    return Ok(Some((why, format!("note {} was claimed through contract {} too", h.index, r.cid()))));
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    /// No anchor after `A*` yet: change the L2's state (a mint of one sat
-    /// to the hub itself, once a contract), so that the sequencer seals and
-    /// anchors, spending `A*`'s seal.
-    fn hp_nudge(&self, cid: u32) -> Result<()> {
-        let once = format!("contract {cid}: minting a sat to the hub, for an anchor after the cutoff");
-        if self.log.lock().unwrap().contains(&once) {
-            return Ok(());
-        }
-        self.note(once);
-        let owner = lichen_ledger::xonly(&self.cfg.l2_key);
-        self.seq.submit(&lichen_ledger::Tx::Mint(lichen_ledger::Mint::new(&self.cfg.l2_key, &self.seq.deployment, vec![lichen_ledger::note(owner, 1, 0)])))?;
         Ok(())
     }
 
-    /// The statement's input `input` checked natively, then its proof
-    /// asserted: on the mock, the mock's. With no input (a test's lying
-    /// hub), a proof of another contract's statement.
-    fn hp_assert(&self, d: &HpDisputed, input: Option<&HubInput>, why: &str) -> Result<()> {
+    /// For tests, a lying hub: a forged proof asserted against the claim
+    /// (a proof of another contract's statement).
+    fn hp_assert(&self, d: &HpDisputed) -> Result<()> {
         let record = &d.record;
         let cid = record.cid();
-        let kind = self.cfg.statement.hp_kind()?;
-        let journal = record.hp_journal();
-        let proof = if let Some(input) = input {
-            match lichen_withdraw::hp::check(input, &[0; 32], &mut |_| true) {
-                Ok(j) if j == journal => {}
-                Ok(_) => anyhow::bail!("the statement's journal isn't the contract's"),
-                Err(r) => anyhow::bail!("the ground ({why}) doesn't check natively: {r:?}"),
-            }
-            match kind {
-                lichen_babe::statement::Kind::Mock => {
-                    self.note(format!("contract {cid}: the user's exit claim is false: {why}: asserting"));
-                    // for the guest's tests: the statement's inputs, as the prover takes them
-                    if let Ok(d) = std::env::var("LICHEN_DUMP_HP") {
-                        let _ = std::fs::write(std::path::Path::new(&d).join(format!("hp-{cid}.bin")), input.to_bytes());
-                    }
-                    lichen_babe::statement::mock_prove(&journal)
-                }
-                lichen_babe::statement::Kind::Risc0 => match self.hp_proof(cid, input, &journal, why)? {
-                    Some(p) => p,
-                    None => return Ok(()),
-                },
-            }
-        } else {
-            self.note(format!("contract {cid}: asserting a forged proof against the claim"));
-            lichen_babe::statement::mock_prove(&lichen_proto::hp::journal(cid + 1, &record.deployment, &record.hp().deposit, record.hp().margin))
-        };
+        self.note(format!("contract {cid}: asserting a forged proof against the claim"));
+        let proof = lichen_babe::statement::mock_prove(&lichen_proto::hp::journal(cid + 1, &record.deployment, &record.hp().deposit, record.hp().margin));
         let bits = lichen_babe::gadget::input(&proof.a);
         let (pi2, pi3) = lichen_babe::statement::pi23_to_bytes(&proof);
         let wire = HubProves::assert_wire(&hub_lamport(&self.cfg.seed, cid).sign(&digits(&bits)), &pi2, &pi3);
@@ -724,60 +384,6 @@ impl Inner {
         self.post(cid, &tx)?;
         self.note(format!("contract {cid}: asserted ({} vB)", tx.vsize()));
         Ok(())
-    }
-
-    /// The proof of the hub's statement for contract `cid` (RISC Zero's,
-    /// wrapped in Groth16), once proved, from `input`: the prover runs in
-    /// the background (`r0/hp-prover.sh hp-proof`; LICHEN_HP_PROVER names
-    /// another), one a contract, its files in `hp/<cid>/`. Any proof of
-    /// the contract's journal will do, so a proof begun on an input since
-    /// grown (more headers on `A*`) isn't begun again. None while it
-    /// proves, or while the chain receipt it needs, at `A*`'s chain height,
-    /// isn't proved yet; a failed prover is run again.
-    fn hp_proof(&self, cid: u32, input: &HubInput, journal: &[u8], why: &str) -> Result<Option<ark_groth16::Proof<ark_bn254::Bn254>>> {
-        let dir = self.hp_dir(cid);
-        let seal = dir.join("proof.seal");
-        if seal.exists() {
-            let p = lichen_babe::risc0::proof_from_seal(&std::fs::read(&seal)?).context("the prover's seal")?;
-            ensure!(lichen_babe::statement::Kind::Risc0.verify(journal, &p), "the prover's proof doesn't verify for this contract");
-            self.note_once(format!("contract {cid}: the user's exit claim is false: {why}: proved; asserting"));
-            return Ok(Some(p));
-        }
-        let tag = cid.to_string();
-        if self.proving.lock().unwrap().contains(&tag) {
-            return Ok(None);
-        }
-        let chain = match &input.ground {
-            Ground::Malformed => "none".to_string(),
-            Ground::At { last, .. } => {
-                let h = last.state.chain_height;
-                let Some(r) = self.seq.chain_receipt(h)? else {
-                    self.note_once(format!("contract {cid}: the claim is false ({why}); waiting for the chain receipt at height {h} to prove it"));
-                    return Ok(None);
-                };
-                let p = dir.join(format!("chain-{h}.receipt"));
-                std::fs::write(&p, r)?;
-                p.display().to_string()
-            }
-        };
-        let in_path = dir.join("input.bin");
-        std::fs::write(&in_path, input.to_bytes())?;
-        let prover = std::env::var("LICHEN_HP_PROVER").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../r0/hp-prover.sh").to_string());
-        let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("prover.log"))?;
-        let tmp = dir.join("proof.seal.tmp");
-        let mut cmd = std::process::Command::new(&prover);
-        cmd.arg("hp-proof").arg(&in_path).arg(&chain).arg(&tmp).stdout(log.try_clone()?).stderr(log);
-        self.proving.lock().unwrap().insert(tag.clone());
-        self.note(format!("contract {cid}: the user's exit claim is false: {why}: proving ({prover}, hp/{cid}/prover.log)"));
-        let proving = self.proving.clone();
-        std::thread::spawn(move || {
-            let ok = cmd.status().is_ok_and(|s| s.success()) && std::fs::rename(&tmp, &seal).is_ok();
-            if !ok {
-                eprintln!("hub: contract {cid}: the prover failed (hp/{cid}/prover.log); trying again");
-            }
-            proving.lock().unwrap().remove(&tag);
-        });
-        Ok(None)
     }
 
     /// The answer to her challenge: π1's secrets from it (her completions
@@ -812,15 +418,10 @@ impl Inner {
 impl State {
     pub(crate) fn describe(&self) -> String {
         match self {
-            State::Requested(_, _, false) => "requested: the hub decides the claim".into(),
-            State::Requested(_, _, true) => "requested: the claim holds, request_timeout pays the user".into(),
+            State::Requested(_, _, false) => "requested: the hub takes the claim".into(),
+            State::Requested(_, _, true) => "requested: the claim taken, request_timeout pays the user".into(),
             State::Asserted(..) => "asserted: the user's challenge is due".into(),
             State::Challenged(..) => "challenged: the hub's answer is due".into(),
         }
     }
-}
-
-/// A ledger note as the statements read it.
-fn tnote(n: &lichen_ledger::Note) -> TNote {
-    TNote { owner: n.owner, value: n.value, memo: n.memo, rho: n.rho }
 }
