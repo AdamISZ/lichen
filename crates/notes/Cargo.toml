@@ -14,3 +14,4 @@ serde_json.workspace = true
 sha2.workspace = true
 lngap-btc.workspace = true
 lichen-ledger.workspace = true
+lichen-withdraw.workspace = true

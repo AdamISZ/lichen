@@ -30,27 +30,19 @@ use bitcoin::key::{Keypair, XOnlyPublicKey};
 use bitcoin::secp256k1::{schnorr, Message, PublicKey, SecretKey, SECP256K1};
 use lngap_btc::adaptor::{adaptor_complete, adaptor_sign, adaptor_verify, AdaptorSig};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use lichen_withdraw::grants as g;
+
+pub use lichen_withdraw::grants::tagged;
 
 pub type Hash = [u8; 32];
 
 /// The most inputs, and outputs, a spend takes.
 pub const MAX_INPUTS: usize = 16;
 pub const MAX_OUTPUTS: usize = 16;
-/// The most notes a claim takes: what fits in `request`'s posted bytes.
-pub const MAX_CLAIM_NOTES: usize = 10;
-
-/// A domain-separated hash of length-prefixed parts.
-pub fn tagged(tag: &str, parts: &[&[u8]]) -> Hash {
-    let mut s = Sha256::new();
-    s.update(tag.as_bytes());
-    s.update([0u8]);
-    for p in parts {
-        s.update((p.len() as u32).to_be_bytes());
-        s.update(p);
-    }
-    s.finalize().into()
-}
+/// The most notes a claim takes (what fits in `request`'s posted bytes),
+/// and the most fallbacks.
+pub const MAX_CLAIM_NOTES: usize = g::MAX_NOTES;
+pub const MAX_FALLBACKS: usize = g::MAX_FALLBACKS;
 
 pub mod hex32 {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -103,7 +95,10 @@ pub struct Note {
 impl Note {
     /// What the hub signs to issue it.
     pub fn digest(&self) -> Hash {
-        tagged("lichen/notes/note", &[&self.id, &self.owner, &self.value.to_be_bytes()])
+        self.g().digest()
+    }
+    pub fn g(&self) -> g::Note {
+        g::Note { id: self.id, owner: self.owner, value: self.value }
     }
 }
 
@@ -143,17 +138,12 @@ pub struct Spend {
 
 impl Spend {
     pub fn id(&self) -> Hash {
-        let mut parts: Vec<Vec<u8>> = vec![(self.inputs.len() as u32).to_be_bytes().to_vec()];
-        parts.extend(self.inputs.iter().map(|n| n.digest().to_vec()));
-        parts.push((self.outputs.len() as u32).to_be_bytes().to_vec());
-        parts.extend(self.outputs.iter().map(|o| [o.owner.to_vec(), o.value.to_be_bytes().to_vec()].concat()));
-        let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
-        tagged("lichen/notes/spend", &refs)
+        g::spend_id(&self.inputs.iter().map(Note::g).collect::<Vec<_>>(), &self.outputs.iter().map(|o| (o.owner, o.value)).collect::<Vec<_>>())
     }
     /// The notes it makes, in its outputs' order.
     pub fn notes(&self) -> Vec<Note> {
         let sid = self.id();
-        self.outputs.iter().enumerate().map(|(j, o)| Note { id: tagged("lichen/notes/out", &[&sid, &(j as u32).to_be_bytes()]), owner: o.owner, value: o.value }).collect()
+        self.outputs.iter().enumerate().map(|(j, o)| Note { id: g::output_id(&sid, j as u32), owner: o.owner, value: o.value }).collect()
     }
     /// Well formed: inputs and outputs within bounds, distinct inputs, no
     /// empty output, the totals equal.
@@ -231,12 +221,12 @@ impl Grant {
     }
     /// What the payer signs with the spend: the grant as she checked it.
     pub fn commitment(&self) -> Hash {
-        let mut parts: Vec<Vec<u8>> = vec![self.sid.to_vec(), self.t_point.serialize().to_vec()];
-        for p in &self.presigs {
-            parts.push([p.r_final.serialize().to_vec(), p.r.serialize().to_vec(), p.s_prime.secret_bytes().to_vec()].concat());
-        }
-        let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
-        tagged("lichen/notes/grant-commitment", &refs)
+        g::grant_commitment(&self.sid, &self.t_point.serialize(), &self.presig_bytes())
+    }
+    /// Each pre-signature as the commitment takes it: `R'` x-only, `R`,
+    /// `s'` (97 bytes).
+    pub fn presig_bytes(&self) -> Vec<[u8; 97]> {
+        self.presigs.iter().map(|p| [p.r_final.serialize().as_slice(), &p.r.serialize(), &p.s_prime.secret_bytes()].concat().try_into().expect("97 bytes")).collect()
     }
     /// The grant is the hub's, on `spend`: `T` signed, and each output's
     /// pre-signature good under `T`.
@@ -263,7 +253,7 @@ impl Grant {
 /// What each input's owner signs to make a spend: the spend, and the
 /// grant she checked.
 pub fn auth_msg(sid: &Hash, commitment: &Hash) -> Hash {
-    tagged("lichen/notes/auth", &[sid, commitment])
+    g::auth_msg(sid, commitment)
 }
 
 /// The owners' signatures on a spend and its grant, one per input.
@@ -282,8 +272,11 @@ pub struct Delivery {
     pub from: Hash,
 }
 
-/// A claim: settled notes of the contract's owner and `b` units of the
-/// contract, signed by the owner.
+/// A claim: settled notes of the contract's owner, fallbacks (the ids of
+/// spends of hers in flight whose inputs are among the notes: if the hub
+/// shows one recorded, its change to her counts instead), and `b` units
+/// of the contract, signed by the owner. Its hash and bytes are the
+/// statement's ([`lichen_withdraw::grants::Claim`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claim {
     pub cid: u32,
@@ -292,26 +285,44 @@ pub struct Claim {
     #[serde(with = "hex32")]
     pub owner: Hash,
     pub notes: Vec<Settled>,
+    #[serde(default)]
+    pub fallbacks: Vec<String>,
     #[serde(with = "hex64")]
     pub sig: [u8; 64],
 }
 
+/// The statement's outpoint for a Bitcoin one.
+pub fn outpoint(o: &bitcoin::OutPoint) -> lichen_ledger::OutPoint {
+    use bitcoin::hashes::Hash as _;
+    lichen_ledger::OutPoint { txid: o.txid.to_byte_array(), vout: o.vout }
+}
+
 impl Claim {
+    fn g_unsigned(&self) -> g::Claim {
+        g::Claim {
+            cid: self.cid,
+            deposit: outpoint(&self.deposit),
+            b: self.b,
+            owner: self.owner,
+            notes: self.notes.iter().map(|s| g::Item { id: s.note.id, value: s.note.value, sig: s.sig }).collect(),
+            fallbacks: self.fallbacks.iter().map(|f| hex::decode(f).ok().and_then(|v| v.try_into().ok()).unwrap_or([0; 32])).collect(),
+            sig: self.sig,
+        }
+    }
+    /// A claim by `owner` of `b` units of contract `cid`: `notes`, and
+    /// the spends in flight `fallbacks` (their ids).
+    pub fn new(owner: &Keypair, cid: u32, deposit: bitcoin::OutPoint, b: u32, notes: Vec<Settled>, fallbacks: &[Hash]) -> Claim {
+        let mut c = Claim { cid, deposit, b, owner: xonly(owner), notes, fallbacks: fallbacks.iter().map(hex::encode).collect(), sig: [0; 64] };
+        c.sig = sign(owner, &c.e());
+        c
+    }
     /// `E`: what the owner signs, and an exit's one-time key signs.
-    pub fn fingerprint(cid: u32, deposit: &bitcoin::OutPoint, b: u32, owner: &Hash, notes: &[Note]) -> Hash {
-        use bitcoin::hashes::Hash as _;
-        let mut parts: Vec<Vec<u8>> = vec![cid.to_be_bytes().to_vec(), deposit.txid.to_byte_array().to_vec(), deposit.vout.to_be_bytes().to_vec(), b.to_be_bytes().to_vec(), owner.to_vec()];
-        parts.extend(notes.iter().map(|n| n.digest().to_vec()));
-        let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
-        tagged("lichen/notes/claim", &refs)
-    }
-    pub fn new(owner: &Keypair, cid: u32, deposit: bitcoin::OutPoint, b: u32, notes: Vec<Settled>) -> Claim {
-        let o = xonly(owner);
-        let e = Claim::fingerprint(cid, &deposit, b, &o, &notes.iter().map(|s| s.note).collect::<Vec<_>>());
-        Claim { cid, deposit, b, owner: o, notes, sig: sign(owner, &e) }
-    }
     pub fn e(&self) -> Hash {
-        Claim::fingerprint(self.cid, &self.deposit, self.b, &self.owner, &self.notes.iter().map(|s| s.note).collect::<Vec<_>>())
+        self.g_unsigned().fingerprint()
+    }
+    /// The fallbacks' ids.
+    pub fn fallback_ids(&self) -> Vec<Hash> {
+        self.g_unsigned().fallbacks
     }
     /// The claim holds as far as it shows itself: of contract `cid` and
     /// `deposit`, by `owner`; its notes distinct, settled under `issuer`,
@@ -319,65 +330,20 @@ impl Claim {
     /// total.
     pub fn check(&self, issuer: &Hash, cid: u32, deposit: &bitcoin::OutPoint, owner: &Hash, unit: u64) -> Result<u64> {
         ensure!(self.cid == cid && self.deposit == *deposit, "a claim on another contract");
-        ensure!(self.owner == *owner, "a claim by another owner than the contract's");
-        ensure!(!self.notes.is_empty() && self.notes.len() <= MAX_CLAIM_NOTES, "a claim of {} notes (1 to {MAX_CLAIM_NOTES})", self.notes.len());
-        let mut ids: Vec<&Hash> = self.notes.iter().map(|s| &s.note.id).collect();
-        ids.sort();
-        ids.dedup();
-        ensure!(ids.len() == self.notes.len(), "a claim names a note twice");
-        for s in &self.notes {
-            ensure!(s.note.owner == self.owner, "a note of the claim isn't the owner's");
-            ensure!(s.verify(issuer), "a note of the claim isn't settled");
-        }
-        ensure!(verify(owner, &self.e(), &self.sig), "the owner didn't sign the claim");
-        let total = self.notes.iter().try_fold(0u64, |a, s| a.checked_add(s.note.value)).context("a sum that overflows")?;
-        ensure!(total >= u64::from(self.b).saturating_mul(unit), "the notes are worth {total} sats, less than {} units of {unit}", self.b);
-        Ok(total)
+        ensure!(self.notes.len() <= MAX_CLAIM_NOTES && self.fallbacks.len() <= MAX_FALLBACKS, "a claim of {} notes and {} fallbacks (at most {MAX_CLAIM_NOTES} and {MAX_FALLBACKS})", self.notes.len(), self.fallbacks.len());
+        ensure!(self.notes.iter().all(|s| s.note.owner == self.owner), "a note of the claim isn't the owner's");
+        self.g_unsigned().holds(issuer, owner, unit).with_context(|| format!("the claim doesn't hold: by another owner, a note not settled or named twice, its signature, or worth less than {} units of {unit}", self.b))
     }
-    /// Its bytes, as an exit posts them: cid, deposit, b, owner, the notes
-    /// (id, value, signature: the owner is the claim's), the signature.
+    /// Its bytes, as an exit posts them.
     pub fn to_bytes(&self) -> Vec<u8> {
-        use bitcoin::hashes::Hash as _;
-        let mut v = vec![];
-        v.extend(self.cid.to_be_bytes());
-        v.extend(self.deposit.txid.to_byte_array());
-        v.extend(self.deposit.vout.to_be_bytes());
-        v.extend(self.b.to_be_bytes());
-        v.extend(self.owner);
-        v.push(self.notes.len() as u8);
-        for s in &self.notes {
-            v.extend(s.note.id);
-            v.extend(s.note.value.to_be_bytes());
-            v.extend(s.sig);
-        }
-        v.extend(self.sig);
-        v
+        self.g_unsigned().to_bytes()
     }
     pub fn from_bytes(b: &[u8]) -> Result<Claim> {
         use bitcoin::hashes::Hash as _;
-        let mut at = 0usize;
-        let mut take = |n: usize| -> Result<&[u8]> {
-            ensure!(b.len() >= at + n, "a claim cut short");
-            at += n;
-            Ok(&b[at - n..at])
-        };
-        let cid = u32::from_be_bytes(take(4)?.try_into()?);
-        let txid = bitcoin::Txid::from_byte_array(take(32)?.try_into()?);
-        let vout = u32::from_be_bytes(take(4)?.try_into()?);
-        let bb = u32::from_be_bytes(take(4)?.try_into()?);
-        let owner: Hash = take(32)?.try_into()?;
-        let n = take(1)?[0] as usize;
-        ensure!(n <= MAX_CLAIM_NOTES, "a claim of {n} notes");
-        let mut notes = vec![];
-        for _ in 0..n {
-            let id: Hash = take(32)?.try_into()?;
-            let value = u64::from_be_bytes(take(8)?.try_into()?);
-            let sig: [u8; 64] = take(64)?.try_into()?;
-            notes.push(Settled { note: Note { id, owner, value }, sig });
-        }
-        let sig: [u8; 64] = take(64)?.try_into()?;
-        ensure!(at == b.len(), "a claim with bytes left over");
-        Ok(Claim { cid, deposit: bitcoin::OutPoint { txid, vout }, b: bb, owner, notes, sig })
+        let c = g::Claim::from_bytes(b).context("not a claim's bytes")?;
+        let notes = c.notes.iter().map(|i| Settled { note: Note { id: i.id, owner: c.owner, value: i.value }, sig: i.sig }).collect();
+        let deposit = bitcoin::OutPoint { txid: bitcoin::Txid::from_byte_array(c.deposit.txid), vout: c.deposit.vout };
+        Ok(Claim { cid: c.cid, deposit, b: c.b, owner: c.owner, notes, fallbacks: c.fallbacks.iter().map(hex::encode).collect(), sig: c.sig })
     }
 }
 
@@ -430,13 +396,13 @@ mod tests {
         let issuer = xonly(&hub);
         let notes = vec![issue(&hub, Note { id: [5; 32], owner: xonly(&alice), value: 7000 }), issue(&hub, Note { id: [6; 32], owner: xonly(&alice), value: 3000 })];
         let dep = bitcoin::OutPoint { txid: bitcoin::Txid::from_raw_hash(bitcoin::hashes::Hash::from_byte_array([8; 32])), vout: 1 };
-        let c = Claim::new(&alice, 1000, dep, 9, notes);
+        let c = Claim::new(&alice, 1000, dep, 9, notes, &[[3; 32]]);
         assert_eq!(Claim::from_bytes(&c.to_bytes()).unwrap(), c);
         assert_eq!(c.check(&issuer, 1000, &dep, &xonly(&alice), 1000).unwrap(), 10_000);
         // more units than the notes hold
         assert!(c.check(&issuer, 1000, &dep, &xonly(&alice), 1200).is_err());
         // the most notes fit in what an exit posts (15 items of 80 bytes)
         let many: Vec<Settled> = (0..MAX_CLAIM_NOTES as u8).map(|i| issue(&hub, Note { id: [i; 32], owner: xonly(&alice), value: 1 })).collect();
-        assert!(Claim::new(&alice, 1, dep, 0, many).to_bytes().len() <= 15 * 80);
+        assert!(Claim::new(&alice, 1, dep, 0, many, &[[1; 32], [2; 32], [3; 32], [4; 32]]).to_bytes().len() <= 15 * 80);
     }
 }

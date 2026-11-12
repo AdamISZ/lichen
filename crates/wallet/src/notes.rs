@@ -10,8 +10,11 @@
 //!
 //! A spend is kept before it goes ([`InFlight`]): until the hub answers
 //! with `t`, its inputs may be spent or not. Finishing it again asks the
-//! same (the hub's grant and record are idempotent); a hub with no grant
-//! on it never recorded it, and its inputs are still ours.
+//! same (the hub's grant and record are idempotent). A hub that says it
+//! has no grant on it is taken at its word for spending the inputs again,
+//! but not for claiming them: the spend stays a fallback of any claim of
+//! its inputs until a spend of ours that we hold `t` for consumes them (a
+//! hub that recorded it and said otherwise could cite it against us).
 
 use anyhow::{ensure, Context, Result};
 use bitcoin::secp256k1::SecretKey;
@@ -33,6 +36,9 @@ pub struct InFlight {
     pub spend: Spend,
     pub grant: Grant,
     pub sigs: Vec<String>,
+    /// The hub said it has no grant on it: not asked again.
+    #[serde(default)]
+    pub abandoned: bool,
 }
 
 impl Wallet {
@@ -125,7 +131,7 @@ impl Wallet {
         let sigs = vec![sig; spend.inputs.len()];
         // kept before it goes: until the hub answers, the inputs may be
         // spent, and the grant opens our change once it does
-        self.inflight.push(InFlight { spend, grant, sigs });
+        self.inflight.push(InFlight { spend, grant, sigs, abandoned: false });
         self.save()?;
         self.finish(self.inflight.len() - 1)
     }
@@ -139,23 +145,26 @@ impl Wallet {
         let outs = f.grant.open(&self.issuer(), &f.spend, &t).context("the unlock doesn't open the grant")?;
         let gone: Vec<Hash> = f.spend.inputs.iter().map(|n| n.id).collect();
         self.notes.retain(|s| !gone.contains(&s.note.id));
-        self.spent.extend(gone);
+        self.spent.extend(gone.iter().copied());
         let me = self.address();
         for o in outs.into_iter().filter(|o| o.note.owner == me) {
             self.add_note(o)?;
         }
         self.inflight.remove(i);
+        // a spend abandoned whose inputs this one consumed can't have been
+        // recorded: done with
+        self.inflight.retain(|x| !(x.abandoned && x.spend.inputs.iter().any(|n| gone.contains(&n.id))));
         self.save()?;
         Ok(f.grant.sid)
     }
     /// Each spend in flight finished, or dropped if the hub has no grant on
     /// it (never recorded: its inputs are still ours).
     fn settle_inflight(&mut self) -> Result<()> {
-        while !self.inflight.is_empty() {
-            match self.finish(0) {
+        while let Some(i) = self.inflight.iter().position(|f| !f.abandoned) {
+            match self.finish(i) {
                 Ok(_) => {}
                 Err(e) if format!("{e:#}").contains("no grant on that spend") => {
-                    self.inflight.remove(0);
+                    self.inflight[i].abandoned = true;
                     self.save()?;
                 }
                 Err(e) => return Err(e.context("a spend in flight")),
@@ -176,7 +185,12 @@ impl Wallet {
         }
         let want = u64::from(units) * record.terms.unit.to_sat();
         ensure!(self.balance() >= want, "the balance is {} sats, short of {want}", self.balance());
-        let claim = Claim::new(&self.kp(), cid, record.hp().deposit, units, self.notes.clone());
+        // every spend of ours not known recorded whose inputs the claim
+        // takes: a fallback
+        let ids: Vec<Hash> = self.notes.iter().map(|s| s.note.id).collect();
+        let fallbacks: Vec<Hash> = self.inflight.iter().filter(|f| f.spend.inputs.iter().any(|n| ids.contains(&n.id))).map(|f| f.grant.sid).collect();
+        ensure!(fallbacks.len() <= lichen_notes::MAX_FALLBACKS, "{} spends of these notes in flight, more than a claim takes", fallbacks.len());
+        let claim = Claim::new(&self.kp(), cid, record.hp().deposit, units, self.notes.clone(), &fallbacks);
         let gone: Vec<Hash> = self.notes.iter().map(|s| s.note.id).collect();
         self.notes.clear();
         self.spent.extend(gone);

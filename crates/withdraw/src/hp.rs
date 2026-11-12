@@ -262,7 +262,7 @@ pub struct Requested {
 /// A Winternitz signature's message from its witness items, bottom first
 /// (`hash_0, digit_0, hash_1, digit_1, …`): its first `bytes` bytes'
 /// digits.
-fn signed_message(items: &[&[u8]], bytes: usize) -> Option<Vec<u8>> {
+pub(crate) fn signed_message(items: &[&[u8]], bytes: usize) -> Option<Vec<u8>> {
     let digit = |i: usize| -> Option<u8> {
         match items.get(2 * i + 1)? {
             [] => Some(0),
@@ -275,7 +275,7 @@ fn signed_message(items: &[&[u8]], bytes: usize) -> Option<Vec<u8>> {
 
 /// The checksum digits of a signature on `bytes` bytes (ln-gap's
 /// `WotsParams::for_bytes`).
-fn checksum_digits(bytes: usize) -> usize {
+pub(crate) fn checksum_digits(bytes: usize) -> usize {
     let most = 15 * 2 * bytes as u64;
     (1..).find(|n| 16u64.pow(*n) > most).unwrap() as usize
 }

@@ -1872,6 +1872,7 @@ dependencies = [
  "bitcoin",
  "hex",
  "lichen-ledger",
+ "lichen-withdraw",
  "lngap-btc",
  "serde",
  "serde_json",

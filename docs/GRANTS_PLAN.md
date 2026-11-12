@@ -29,7 +29,7 @@ chain prover, anchoring, acknowledgments, shielded notes.
   adaptor point: the note settles when the funding reveals `t`, the same
   swap as the anchored L2's locked mint.
 - **A claim** (`lichen_notes::Claim`): settled notes of the contract's
-  owner and `b` units, signed by the owner; posted in `request` (up to 10
+  owner and `b` units, signed by the owner; posted in `request` (up to 8
   notes, in its 1,200 bytes). A cooperative withdrawal hands the same
   claim to the hub, which takes it (its notes spent, the change beyond
   `b` back to the owner) and folds.
@@ -58,12 +58,51 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
    book and doesn't contest it, so `request_timeout` pays. Tests on
    regtest: payments (final in ~40 ms), the mint's faults, withdrawals
    and defaults, a user on Esplora with an exit.
-2. **Exits contested**: claims with fallbacks (the change of a spend in
-   flight), the hub's statement "she is owed at most `b_corr`" (the mask
-   over spends she signed, the unlocks published in a confirmed
-   transaction), `assert` carrying the hub's one-time signature on
-   `b_corr`, `success` paying `b_corr` in bit outputs by the hub's bits.
-   The mock statement first; every branch tested.
+2. **Exits contested** (design, 2026-11-12): a claim may carry
+   fallbacks; the hub answers a claim it can correct with `b_corr`, and
+   proves "she is owed at most `b_corr`". BABE fixes the statement's public
+   inputs at the opening, so `b_corr` can't be one: the statement reads it
+   from the chain, from a new link.
+
+   ```text
+   request (Alice: b, E, the claim)
+    ├─ request_timeout (after w_H)        → Alice: b
+    └─ correct (the hub: b_corr, one-time signed under its key bc)
+        │   its fee child (the hub's, SIGHASH_ALL): OP_RETURN with the
+        │   unlocks t of the spends it cites
+        ├─ correct_timeout (after w_H)    → Alice: b (it never proved)
+        └─ assert (the hub: π)
+            ├─ success (after Δ2)         → Alice: b_corr's bits (read from the
+            │                                hub's signature), her reserve if
+            │                                b_corr > 0; the rest the hub's
+            └─ challenge_assert (Alice)
+                ├─ wrongly_challenged_k   → the hub
+                └─ failure (after Δ1)     → Alice: b, and both reserves
+   ```
+
+   - **The claim**: settled notes; fallbacks `(sid, change)`, the
+     claimant's change of a spend in flight whose inputs are among the
+     notes; `b` in units. All her signature covers (`E`).
+   - **The statement** ("owed ≤ b_corr", the journal still `c ‖ D ‖
+     H(O_D ‖ margin)`): `request` and `correct` from the chain (spends of
+     the contract output and of `request`'s, with the contract's work on
+     `request`'s block), the fee child's unlocks, the spends the hub cites.
+     `owed` is 0 for a malformed claim (its bytes, `E` or `b` not as
+     signed; a note not settled under the issuer, or not the contract
+     owner's; the owner's signature; `b` above the notes); else the notes
+     less those killed, plus the fallbacks revived, in units, at most `b`.
+     A note is killed by a spend she signed (her signature on the spend
+     and its grant's commitment) whose `t` is in the fee child (`t·G =
+     T`), or by another claim of hers on chain naming it; a killing
+     spend's change is revived if the claim names it a fallback.
+   - **Why the fee child**: data in a witness can be swapped by anyone
+     (the request's hole); an output under the hub's `SIGHASH_ALL` can't.
+     83 bytes of `OP_RETURN` (Core 29's limit): two unlocks.
+   - **`b_corr` binds the payout**: `success`'s bit outputs read the
+     hub's one-time signature (from `correct`); two different signatures
+     under `bc` (an equivocation) give Alice every bit output.
+   - **Mock first**: the hub checks the statement natively and asserts the
+     mock's proof; the tests play every branch.
 3. **The real guest**: the statement in RISC Zero, its Groth16 wrap.
 4. **Hardening**: the claim signed in full in `request` (its posted bytes
    are malleable today: anyone may swap them, and a claim not matching
