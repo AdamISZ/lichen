@@ -1,6 +1,6 @@
-# A lichen deployment for NETWORK (deploy/.env): the node, the L2's
-# sequencer (anchoring its history through the node), its chain prover,
-# and the hub; on regtest a miner too (COMPOSE_PROFILES=regtest).
+# A lichen deployment for NETWORK (deploy/.env): the node and the hub,
+# which keeps the grants L2's notes itself (no sequencer); on regtest a
+# miner too (COMPOSE_PROFILES=regtest).
 #   deploy/build.sh && deploy/lichen.sh up
 # Data: deploy/state/<network>/.
 name: lichen-${NETWORK:?set NETWORK in deploy/.env}
@@ -40,41 +40,6 @@ services:
       bitcoind: { condition: service_healthy }
     restart: unless-stopped
 
-  sequencer:
-    logging: *logging
-    image: ${LICHEN_IMAGE:-lichen:latest}
-    command: ["sequencer"]
-    environment:
-      NETWORK: ${NETWORK}
-      SEAL_EVERY: ${SEAL_EVERY:-5}
-      ANCHOR: ${ANCHOR:-on}
-      ANCHOR_WALLET: ${ANCHOR_WALLET:-sequencer}
-      # empty: the network's margin (deploy/entry.sh), which an acknowledgment
-      # waits for; set it only to anchor deeper
-      ANCHOR_CONFIRMATIONS: ${ANCHOR_CONFIRMATIONS:-}
-      ANCHOR_FEERATE: ${ANCHOR_FEERATE:-2}
-    volumes:
-      - ./state/${NETWORK}/sequencer:/seq
-      # the hub's keys: its L2 key is the sequencer's issuer (made here on
-      # first start, before the hub, which waits for the sequencer)
-      - ./state/${NETWORK}/hub:/hub
-      - ./state/${NETWORK}/bitcoind:/bitcoind:ro
-    ports:
-      - "${SEQUENCER_PORT:-18300}:18300"
-    depends_on:
-      bitcoind: { condition: service_healthy }
-    restart: unless-stopped
-
-  chain-prover:
-    logging: *logging
-    image: ${LICHEN_IMAGE:-lichen:latest}
-    command: ["chain-prover"]
-    environment:
-      NETWORK: ${NETWORK}
-    volumes:
-      - ./state/${NETWORK}/sequencer:/seq
-    restart: unless-stopped
-
   hub:
     logging: *logging
     image: ${LICHEN_IMAGE:-lichen:latest}
@@ -88,6 +53,7 @@ services:
       DURATION: ${DURATION:-}
       HOSTILE: ${HOSTILE:-}
       REFUSE_FOLDS: ${REFUSE_FOLDS:-}
+      HUB_WALLET: ${HUB_WALLET:-hub}
       # the wrap of the hub's statement in Groth16 (STATEMENT=hub-proves):
       # its working files, at the same path on the host and here, for RISC
       # Zero's prover image on the host's Docker

@@ -2,9 +2,9 @@
 # A smoke test of a running regtest deployment (COMPOSE_PROFILES=regtest):
 # a user's wallet, as a one-off container on the deployment's compose
 # network, opens a contract with inbound liquidity (its deposit paid from
-# the miner's coins), waits for the deposit less the hub's fee to be
-# minted on the L2, withdraws cooperatively (in the contract's units), and
-# checks the payout address received it.
+# the miner's coins), finds the deposit less the hub's fee issued to it as
+# a note, withdraws cooperatively (in the contract's units), and checks the
+# payout address received it.
 #   deploy/smoke.sh              (deploy/.env, or ENV_FILE)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -20,26 +20,18 @@ smoke="$here/state/regtest/smoke"
 w=/w/smoke-$$.json
 wallet() {
     dc run --rm --no-deps -T -v "$smoke:/w" -v "$here/state/regtest/bitcoind:/bitcoind:ro" --entrypoint lichen hub \
-        --network regtest --wallet "$w" --sequencer http://sequencer:18300 --hub http://hub:18310 \
+        --network regtest --wallet "$w" --hub http://hub:18310 \
         --rpc-url http://bitcoind:8332 --cookie /bitcoind/regtest/.cookie --chain-wallet smoke --statement "${STATEMENT:-hub-proves-mock}" "$@"
 }
 mkdir -p "$smoke"
 
-# the sequencer first: a new ledger waits for its wallet's funds (for the
-# genesis seal), and the hub, which makes its wallet when it starts, waits
-# for the sequencer
-echo "== the sequencer's and the hub's funds"
+echo "== the hub's funds"
 until cli -rpcwallet=miner getbalance >/dev/null 2>&1; do sleep 2; done
-if [ "${ANCHOR:-on}" != off ]; then
-    until cli -rpcwallet="${ANCHOR_WALLET:-sequencer}" getbalance >/dev/null 2>&1; do sleep 2; done
-    [ "$(cli -rpcwallet="${ANCHOR_WALLET:-sequencer}" getbalance | cut -d. -f1)" -ge 1 ] || ops fund 1 "${ANCHOR_WALLET:-sequencer}" >/dev/null
-fi
 until cli -rpcwallet=hub getbalance >/dev/null 2>&1; do sleep 2; done
 [ "$(cli -rpcwallet=hub getbalance | cut -d. -f1)" -ge 5 ] || { ops fund 10 >/dev/null; sleep 5; }
 cli -rpcwallet=hub getbalance
 
-echo "== the sequencer and the hub answer"
-until curl -fsS "http://127.0.0.1:${SEQUENCER_PORT:-18300}/info" >/dev/null 2>&1; do sleep 2; done
+echo "== the hub answers"
 until [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${HUB_PORT:-18310}/" || true)" != 000 ]; do sleep 2; done
 
 echo "== a wallet, pinned to the deployment"
@@ -62,13 +54,9 @@ cat "$log"
 cid="$(grep -o '^contract [0-9]*' "$log" | cut -d' ' -f2)"
 minted="$(grep -o "you'll be minted [0-9]*" "$log" | grep -o '[0-9]*$')"
 
-echo "== minted on the L2: the deposit less the hub's fee, $minted sats"
-for _ in $(seq 60); do
-    [ "$(wallet balance | awk 'NR == 1 {print $1}')" -ge "$minted" ] && break
-    sleep 2
-done
+echo "== issued: the deposit less the hub's fee, $minted sats, a note"
 wallet balance
-[ "$(wallet balance | awk 'NR == 1 {print $1}')" = "$minted" ] || { echo "FAIL: not $minted minted" >&2; exit 1; }
+[ "$(wallet balance | awk 'NR == 1 {print $1}')" = "$minted" ] || { echo "FAIL: not $minted issued" >&2; exit 1; }
 
 echo "== withdraw 300000 cooperatively (rounded down to the contract's unit)"
 wlog="$(mktemp)"
