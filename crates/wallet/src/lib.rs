@@ -86,6 +86,32 @@ impl Signed {
     }
 }
 
+/// A step of a contract's opening, for a front end to show where it is
+/// ([`Wallet::opening`]); the same steps are said in words too
+/// ([`Wallet::progress`]).
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum Opening {
+    /// The deposit to pay: exactly `sats` to `address`.
+    Pay { address: String, sats: u64 },
+    /// The deposit seen on the network, not yet confirmed.
+    DepositSeen { txid: String },
+    /// The deposit confirmed.
+    DepositConfirmed { txid: String },
+    /// The setup's instances garbled so far, of `total`.
+    Garbling { done: u32, total: u32 },
+    /// The instances the hub keeps, uploaded so far (bytes).
+    Uploading { sent: u64, total: u64 },
+    /// The hub checks the instances opened to it, and signs the contract.
+    HubChecking,
+    /// The deposit minted to us on the L2, and sealed.
+    Minted,
+    /// The hub broadcast the contract's funding.
+    Funding { txid: String },
+    /// The contract is open.
+    Open { cid: u32 },
+}
+
 /// An anchor checked on Bitcoin, and the height of its block.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AnchorChecked {
@@ -223,6 +249,8 @@ pub struct Wallet {
     pub acks_unsent: bool,
     /// Told each step of a dispute, in words (for a front end).
     pub progress: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
+    /// Told each step of a contract's opening ([`Opening`]).
+    pub opening: Option<std::sync::Arc<dyn Fn(Opening) + Send + Sync>>,
     /// How shielded spends are proved.
     pub spend_prover: shielded::SpendProver,
     key: SigningKey,
@@ -254,7 +282,7 @@ impl Wallet {
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
         // the deployment the sequencer announces, kept from now on
-        let w = Wallet { pause_after: None, unchecked_claims: false, acks_unsent: false, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), seen: Default::default(), anchors_checked: Default::default(), exit_sets: Default::default(), exit_looked: Default::default(), signed: vec![], contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
+        let w = Wallet { pause_after: None, unchecked_claims: false, acks_unsent: false, progress: None, opening: None, spend_prover: Default::default(), key, path: path.to_path_buf(), seen: Default::default(), anchors_checked: Default::default(), exit_sets: Default::default(), exit_looked: Default::default(), signed: vec![], contracts: vec![], deposits: vec![], sequencer: Client::new(sequencer)? };
         w.save()?;
         Ok(w)
     }
@@ -265,7 +293,7 @@ impl Wallet {
             Some(d) => Client::pinned(sequencer, d),
             None => Client::new(sequencer)?,
         };
-        let w = Wallet { pause_after: None, unchecked_claims: false, acks_unsent: false, progress: None, spend_prover: Default::default(), key, path: path.to_path_buf(), seen: std::sync::Mutex::new(s.seen), anchors_checked: std::sync::Mutex::new(s.anchors_checked.iter().map_while(|a| AnchorChecked::from_hex(a)).collect()), exit_sets: std::sync::Mutex::new(s.exit_sets), exit_looked: Default::default(), signed: s.signed, contracts: s.contracts, deposits: s.deposits, sequencer: client };
+        let w = Wallet { pause_after: None, unchecked_claims: false, acks_unsent: false, progress: None, opening: None, spend_prover: Default::default(), key, path: path.to_path_buf(), seen: std::sync::Mutex::new(s.seen), anchors_checked: std::sync::Mutex::new(s.anchors_checked.iter().map_while(|a| AnchorChecked::from_hex(a)).collect()), exit_sets: std::sync::Mutex::new(s.exit_sets), exit_looked: Default::default(), signed: s.signed, contracts: s.contracts, deposits: s.deposits, sequencer: client };
         if s.deployment.is_none() {
             w.save()?;
         }
@@ -341,6 +369,11 @@ impl Wallet {
     pub(crate) fn say(&self, m: String) {
         if let Some(p) = &self.progress {
             p(m)
+        }
+    }
+    pub(crate) fn opened_step(&self, o: Opening) {
+        if let Some(p) = &self.opening {
+            p(o)
         }
     }
     /// The wallet's L2 address: its x-only public key.
@@ -536,7 +569,9 @@ impl Wallet {
         let dep_spk = deposit_tree(&dep_kp.x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();
         chain.watch(&dep_spk)?;
         let amount = Wallet::deposit_amount(&ask, net);
-        pay(&bitcoin::Address::from_script(&dep_spk, net.bitcoin())?, amount)?;
+        let address = bitcoin::Address::from_script(&dep_spk, net.bitcoin())?;
+        self.opened_step(Opening::Pay { address: address.to_string(), sats: amount.to_sat() });
+        pay(&address, amount)?;
         let coin = self.wait_deposit(chain, &dep_spk, amount)?;
         self.open_with(hub, chain, statement, ask, quote, dep, coin)
     }
@@ -581,6 +616,7 @@ impl Wallet {
         // those the hub keeps uploaded, the others opened
         let secrets = self.secrets(&nonce);
         let hp_open = self.hp_opening(hub, statement, dep.cid, coin.0, quote.unit, &secrets, net)?;
+        self.opened_step(Opening::HubChecking);
         let fees = self.fees(&nonce, net);
         let req = OpenRequest { alice, l2_address: self.address(), deposit, liquidity, fee: quote.fee, reserve, dispute: hp_open.request.clone(), cid: dep.cid, deposit_coin: coin.clone(), fee_spk: fees.spk() };
         let offer: OpenOffer = hub_call(&format!("{hub}/open"), Some(serde_json::to_string(&req)?), false)?;
@@ -637,6 +673,7 @@ impl Wallet {
         // D, minted already to a key we can spend once this funding is out:
         // there, and sealed, before we sign the funding
         self.wait_mint(offer.mint_index, &mint_owner(&self.address(), &offer.mint_point)?, record.minted())?;
+        self.opened_step(Opening::Minted);
         // our pre-signature on the funding's deposit input, locked to T
         // (taproot signs every input's prevout: ours and the hub's coins)
         let known: Vec<(bitcoin::OutPoint, bitcoin::TxOut)> = std::iter::once(coin.clone()).chain(offer.hub_coins.iter().cloned()).collect();
@@ -664,6 +701,7 @@ impl Wallet {
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         };
+        self.opened_step(Opening::Funding { txid: record.funding.txid.to_string() });
         self.contracts.push(Held { nonce, record, closed: None, payout: None, mint: Some(locked), exit: None });
         // the deposit's record goes once the funding is out: until then a
         // hub that answered but never broadcast leaves the refund
@@ -672,6 +710,7 @@ impl Wallet {
         }
         self.save()?;
         self.claim_mint_with(dep.cid, &opened.t)?;
+        self.opened_step(Opening::Open { cid: dep.cid });
         self.contracts.iter().find(|h| h.record.cid() == dep.cid).cloned().context("the contract")
     }
 
@@ -811,9 +850,16 @@ impl Wallet {
     /// Wait for a confirmed coin of at least `amount` to `spk` (a deposit).
     fn wait_deposit(&self, chain: &Chain, spk: &bitcoin::Script, amount: bitcoin::Amount) -> Result<(bitcoin::OutPoint, bitcoin::TxOut)> {
         let mut stall = lichen_chain::Stall::new(chain.height()?, chain.network);
+        let mut seen = false;
         loop {
-            if let Some(c) = chain.coins_of(spk)?.into_iter().find(|c| c.2.is_some() && c.1.value >= amount) {
-                return Ok((c.0, c.1));
+            let coins = chain.coins_of(spk)?;
+            if let Some(c) = coins.iter().find(|c| c.2.is_some() && c.1.value >= amount) {
+                self.opened_step(Opening::DepositConfirmed { txid: c.0.txid.to_string() });
+                return Ok((c.0, c.1.clone()));
+            }
+            if let (false, Some(c)) = (seen, coins.iter().find(|c| c.1.value >= amount)) {
+                self.opened_step(Opening::DepositSeen { txid: c.0.txid.to_string() });
+                seen = true;
             }
             ensure!(!stall.stalled(chain.height()?), "the chain stalled before the deposit confirmed");
             std::thread::sleep(std::time::Duration::from_millis(300));

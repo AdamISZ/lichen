@@ -64,9 +64,13 @@ impl Wallet {
         let (dealer, dealt) = dealing(s, n, m);
         self.say(format!("garbling {n} instances of the hub's statement (the hub keeps {m})"));
         let start = std::time::Instant::now();
+        let done = std::sync::atomic::AtomicU32::new(0);
+        self.opened_step(crate::Opening::Garbling { done: 0, total: n });
         let commitments: Vec<String> = par(n as usize, |k| {
             let i = k as u32 + 1;
-            hex::encode(instance(&instance_seed(s, i), &dealer.shares(u64::from(i)), &vk, &public).0.commitment())
+            let c = hex::encode(instance(&instance_seed(s, i), &dealer.shares(u64::from(i)), &vk, &public).0.commitment());
+            self.opened_step(crate::Opening::Garbling { done: done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, total: n });
+            c
         });
         self.say(format!("garbled in {:.1?}", start.elapsed()));
         let commit = HpCommit { cid, b_key: s.hp_b().public(), e_key: s.hp_e().public(), commitments, dealing: dealing_to_hex(&dealt) };
@@ -80,7 +84,12 @@ impl Wallet {
             let (inst, _) = instance(&instance_seed(s, *i), &dealer.shares(u64::from(*i)), &vk, &public);
             let bytes = inst.to_bytes();
             self.say(format!("uploading the instance the hub keeps, {} of {m} ({} MB)", j + 1, bytes.len() >> 20));
-            lichen_l2::http::slow().post(&format!("{hub}/hp/instance/{cid}/{i}")).send_bytes(&bytes).with_context(|| format!("uploading kept instance {i}"))?;
+            // its progress told as it goes (the instances are the same size)
+            let (len, total) = (bytes.len() as u64, bytes.len() as u64 * u64::from(m));
+            let before = len * j as u64;
+            let body = Counted { inner: std::io::Cursor::new(&bytes), sent: 0, told: 0, tell: &|sent| self.opened_step(crate::Opening::Uploading { sent: before + sent, total }) };
+            lichen_l2::http::slow().post(&format!("{hub}/hp/instance/{cid}/{i}")).set("Content-Length", &len.to_string()).send(body).with_context(|| format!("uploading kept instance {i}"))?;
+            self.opened_step(crate::Opening::Uploading { sent: before + len, total });
             hmsg.push(inst.hmsg);
         }
         let opened = (1..=n).filter(|i| !k.contains(i)).map(|i| Opened { i, seed: hex::encode(instance_seed(s, i)), shares: shares_to_hex(&dealer.shares(u64::from(i))) }).collect();
@@ -371,3 +380,22 @@ impl Wallet {
     }
 }
 
+/// A body read through, its progress told every MB.
+struct Counted<'a, R> {
+    inner: R,
+    sent: u64,
+    told: u64,
+    tell: &'a dyn Fn(u64),
+}
+
+impl<R: std::io::Read> std::io::Read for Counted<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let k = self.inner.read(buf)?;
+        self.sent += k as u64;
+        if self.sent - self.told >= 1 << 20 {
+            self.told = self.sent;
+            (self.tell)(self.sent);
+        }
+        Ok(k)
+    }
+}
