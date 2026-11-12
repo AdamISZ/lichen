@@ -20,6 +20,13 @@ use crate::Wallet;
 pub const ACK_PATIENCE: u64 = 6 * 3600;
 
 impl Wallet {
+    /// How many spends of ours may still need acknowledging: until
+    /// [`Wallet::acknowledge`] finds each acknowledged (or refused, or
+    /// void), the wallet's user should stay online.
+    pub fn unacknowledged(&self) -> usize {
+        self.signed.iter().filter(|s| !s.done).count()
+    }
+
     /// Acknowledge each spend of ours the sequencer has sealed and an
     /// anchor checked on `chain` holds; how many are still waiting (not
     /// sealed, not anchored yet, or refused for now).
