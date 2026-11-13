@@ -525,7 +525,8 @@ only. Still a proposal; v0.1.1 is the built design.
 
 ### Building v0.4.1 (the user, 2026-11-13)
 
-The user approved building papers/lichen-grants-v0.4.1, replacing the
+The user approved building papers/lichen-grants-v0.4.1 (now v0.4.2, which
+adds only a note on countersigning a commitment, §5.6), replacing the
 v0.1 code. Proofs run on the mock statement at first. Order, by risk:
 
 1. **The script graph** (done 2026-11-13): `lichen_babe::countersigned`
