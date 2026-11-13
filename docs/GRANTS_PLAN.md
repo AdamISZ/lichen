@@ -337,3 +337,27 @@ the paper fixed. The user is reading v0.1.1 first; decide then.
   publication). It works because the hub wants the spend counted;
   declining is allowed and is exactly the case where she's owed her
   inputs.
+
+### Undecided: the slots under her key (2026-11-13)
+
+The user asked why the slots can't be Alice's signatures. They can,
+and it is the standard adaptor form (publisher ≠ key holder):
+`correct`'s slots under her key (`P_A^c` will do); at step 3 of a
+payment she makes `μ_A = PreSign_a(m_c, T_S)` and sends it with her
+spend signatures; the hub checks `PreVerify` before recording (else it
+records a spend it can never cite), completes it into a slot to cite
+the spend, and she extracts `t_S = s − s'`.
+
+- Gone: the hub can't put a non-revealing signature in a slot; the
+  other-nonce, other-message, sighash-type and annex cases. Reveals
+  leave the grant (back to `T_S`, `τ`, the output pre-signatures).
+- Padding: her 2-of-2 signature on `correct` from the opening (a valid
+  signature on `m_c`), or slots that accept an empty signature (`<K>
+  OP_CHECKSIG OP_DROP`, size 0 or 64; `correct` smaller).
+- Stays: her signature commits to `μ_A` (`α_o = H(sid, C, o, enc(μ_o))`
+  per owner), and the statement matches the slot's `R` to that spend's
+  `μ_A` (linearity: else `R'_A := R''_Y + T_Y − T_X` passes off `Y`'s
+  completion as `X`'s); the chain evidence for `correct` (publication,
+  `b_corr` binding).
+- Cost: grant, wallet, hub intake, statement, maybe the leaf, guest
+  rebuild: do it with the collision fix. My pick: adopt.
