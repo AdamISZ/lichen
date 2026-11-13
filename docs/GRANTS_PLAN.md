@@ -361,3 +361,22 @@ the spend, and she extracts `t_S = s − s'`.
   `b_corr` binding).
 - Cost: grant, wallet, hub intake, statement, maybe the leaf, guest
   rebuild: do it with the collision fix. My pick: adopt.
+
+### Why the statement needs the chain (2026-11-13)
+
+The user asked whether her-key slots would let the work proof go. No:
+the journal is fixed at the opening (BABE garbles against it), and the
+facts judged arise at exit. Two ways in: proved from the chain
+(inclusion and Ω of work: ours, as BitVM2 bridges' header-chain proofs)
+or committed as signed digits that are extra verifier inputs (BitVM2's
+assert). `P`, `b` (her one-time words) and `b_corr` (the hub's) could
+go the second way; the slots can't: script verifies a 64-byte
+signature whole, and nothing (no `OP_CAT`, no splitting) ties digits
+committing its `R` to the signature published. So the mined `correct`
+is irreducible, whoever's key signs the slots. With `OP_CAT`/`CSFS` it
+could go.
+
+**Open, for the paper**: Ω makes safety a mining-cost bound (a hub
+mining Ω on a private fork proves a fake `correct`): ten blocks' work
+is about ten blocks' revenue on mainnet, nothing on a testnet. Ω should
+scale with `V_max`; state it.
