@@ -393,3 +393,31 @@ can't bind its value to its own private witness (an equivocation under
 witness reveals nothing). So: headers on `correct`'s block, not
 `request`'s; dropping the chain entirely needs the hub not to choose
 exit-time values (or `b_corr` as a BABE verifier input, changing BABE).
+
+### Undecided: no chain at all, by countersignature (the user, 2026-11-13)
+
+BABE_DISPUTE_PLAN §2's countersignature, reversed (the prover's value
+bound by its opponent's one-time signature, script forcing equality):
+
+- **`b_corr`**: a link `ack` after `correct`, Alice's WOTS on `b_corr`
+  and the hub's re-posted, digit-equal (both in one transaction, as
+  `respond` there); her silence past a window pays `b_corr` unproven
+  (accepting). The statement checks her `ack` signature (key in `J`):
+  one proof, `owed ≤ b_corr`, binary as now.
+- **The reveals**: a BIP340 slot can't be countersigned (its `R` can't
+  be compared with digits), so publish the unlocks themselves, `t_S`, as
+  the hub's WOTS words in `correct`, countersigned in `ack`; the
+  statement checks `t_S·G = T_X`. Reveals leave the grant entirely (no
+  `μ`, no `m_c`, no slots).
+- Then, with `request` amount-authenticated (v0.5): no headers, no Ω,
+  no mining-cost bound; a smaller guest.
+- Costs: `ack` carries 2 signatures a byte (8 items): about 120 bytes
+  under 1,000 stack items, `b_corr` and 3 unlocks; Proposition 2 needs
+  up to 7: several `correct`/`ack` pairs, or smaller claims (2 notes, 1
+  fallback: 3 spends), which meets the id-length question. One more
+  move by Alice in a window, before `assert`; her tower holds the `ack`
+  key (harmless: script forces equality; silence accepts `b_corr`), a
+  dent in "keyless tower".
+- To analyse: the byte budget against the claim's limits; knowledge
+  soundness as in babe-amount-authenticated (C4); with the collision
+  fix.
