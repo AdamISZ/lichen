@@ -20,20 +20,20 @@
 //!   the hub's aggregate signature, `b` above the notes); else the notes
 //!   not killed, plus the change of the fallbacks revived, in units, at
 //!   most `b`. A note is killed by a spend she signed (with its grant's
-//!   commitment) whose unlock `t` the hub put on chain (`t·G = T`), or by
-//!   another claim she signed naming it; a killing spend's change is
-//!   revived if the claim names it a fallback.
+//!   commitment) whose unlock `t` the hub revealed to her in `correct`:
+//!   one of its [`SLOTS`] holds the hub's signature completing the
+//!   grant's pre-signature on `correct` (its reveal), so `t = s − s'`. A
+//!   killing spend's change is revived if the claim names it a fallback.
 //! - **The statement** holds iff `owed ≤ b_corr`. It reads `request` (the
-//!   contract output's spend), `correct` (`request`'s), and the hub's
-//!   child of `correct` (its `OP_RETURN`: the unlocks), each in a block of
-//!   the headers given, which carry the contract's work on `request`'s
-//!   block. Its journal is the hub-proves one, fixed at the opening; its
-//!   `D` binds the issuer and the contract's owner.
+//!   contract output's spend) and `correct` (`request`'s: `b_corr` and the
+//!   slots), each in a block of the headers given, which carry the
+//!   contract's work on `request`'s block. Its journal is the hub-proves
+//!   one, fixed at the opening; its `D` binds the issuer and the
+//!   contract's owner, a key fresh for the contract.
 
 use alloc::vec::Vec;
 use k256::elliptic_curve::ops::Reduce;
 use k256::elliptic_curve::point::DecompressPoint;
-use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::elliptic_curve::subtle::Choice;
 use k256::elliptic_curve::PrimeField;
 use k256::schnorr::{Signature, VerifyingKey};
@@ -47,14 +47,15 @@ use crate::hp::{journal, signed_message, checksum_digits, JOURNAL_LEN};
 use crate::{contract_id, deployment_id, work_on, Hash, Reject, Request};
 
 /// The most notes and fallbacks a claim takes (the posted claim fits
-/// fewer of both: [`fits`]), and the most cited spends and other claims a
-/// statement takes.
+/// fewer of both: [`fits`]).
 pub const MAX_NOTES: usize = 4;
 pub const MAX_FALLBACKS: usize = 4;
-pub const MAX_CITED: usize = 4;
-/// The unlocks the hub's child of `correct` carries: two, in an
-/// `OP_RETURN` of 64 bytes (Core 29 relays 83).
-pub const MAX_UNLOCKS: usize = 2;
+/// `correct`'s slots: each a signature by the hub on `correct`, which
+/// completes the reveal of one spend it cites. Enough for every spend a
+/// claim's evidence needs: each kills a candidate, and a claim has at
+/// most 4 notes and 4 fallbacks, each reviving one output of hers (a
+/// spend pays an owner once).
+pub const SLOTS: usize = 8;
 
 /// The posted claim's length: its one-time signature (2 digits a byte, 2
 /// witness items a digit), `b`'s, and the 2-of-2's fill `request`'s
@@ -127,11 +128,17 @@ pub fn output_id(sid: &Hash, j: u32) -> Hash {
     tagged("lichen/notes/out", &[sid, &j.to_be_bytes()])
 }
 
-/// A grant's commitment: the spend, `T` (33 bytes), and each output's
-/// pre-signature (`R'` x-only, `R`, `s'`: 97 bytes).
-pub fn grant_commitment(sid: &Hash, t_point: &[u8; 33], presigs: &[[u8; 97]]) -> Hash {
-    let mut parts: Vec<&[u8]> = alloc::vec![sid.as_slice(), t_point.as_slice()];
+/// A grant's commitment: the spend, `T` (33 bytes), each output's
+/// pre-signature (`R` x-only, `R'`, `s'`: 97 bytes), and each reveal (an
+/// input owner, its pre-signature on her contract's `correct`).
+pub fn grant_commitment(sid: &Hash, t_point: &[u8; 33], presigs: &[[u8; 97]], reveals: &[(Hash, [u8; 97])]) -> Hash {
+    let n = (presigs.len() as u32).to_be_bytes();
+    let mut parts: Vec<&[u8]> = alloc::vec![sid.as_slice(), t_point.as_slice(), n.as_slice()];
     parts.extend(presigs.iter().map(|p| p.as_slice()));
+    for (o, p) in reveals {
+        parts.push(o);
+        parts.push(p);
+    }
     tagged("lichen/notes/grant-commitment", &parts)
 }
 
@@ -413,14 +420,17 @@ impl Posted {
 
 // ----- the statement's input -----
 
-/// A spend the hub cites: what she signed (the spend, its grant's `T` and
-/// pre-signatures), her signature.
+/// A spend the hub cites: what she signed (the spend, its grant's `T`,
+/// its output pre-signatures and its reveals), her signature.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cited {
     pub inputs: Vec<Note>,
     pub outputs: Vec<(Hash, u64)>,
     pub t_point: [u8; 33],
     pub presigs: Vec<[u8; 97]>,
+    /// Each input owner's reveal: the hub's pre-signature under `T` on
+    /// that owner's contract's `correct` (`R` x-only, `R'`, `s'`).
+    pub reveals: Vec<(Hash, [u8; 97])>,
     pub sig: [u8; 64],
 }
 
@@ -431,25 +441,13 @@ impl Cited {
     /// Signed by `owner` with its grant.
     fn signed_by(&self, owner: &Hash) -> bool {
         let sid = self.sid();
-        verify(owner, &auth_msg(&sid, &grant_commitment(&sid, &self.t_point, &self.presigs)), &self.sig)
+        verify(owner, &auth_msg(&sid, &grant_commitment(&sid, &self.t_point, &self.presigs, &self.reveals)), &self.sig)
     }
-}
-
-/// A transaction (non-witness serialization) in a block: its index and
-/// path, the block's coinbase and its path.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InBlock {
-    pub tx: Vec<u8>,
-    pub header: [u8; 80],
-    pub index: u32,
-    pub path: Vec<Hash>,
-    pub coinbase: Vec<u8>,
-    pub coinbase_path: Vec<Hash>,
-}
-
-impl InBlock {
-    fn holds(&self) -> bool {
-        btc::in_block(&self.tx, &Header(self.header), self.index, &self.path, &self.coinbase, &self.coinbase_path)
+    /// Revealed to `owner` by one of `correct`'s `slots`: a signature
+    /// there with the final nonce of her reveal. Bitcoin checked it, on the
+    /// message she checked her pre-signature on, so `s − s'` is `t`.
+    fn revealed(&self, owner: &Hash, slots: &[[u8; 32]]) -> bool {
+        self.reveals.iter().any(|(o, p)| o == owner && slots.iter().any(|r| r[..] == p[..32]))
     }
 }
 
@@ -483,16 +481,11 @@ pub struct GrantsInput {
     /// `request` (its witness serialization) with the funding.
     pub request: Request,
     /// `correct` (witness serialization), spending `request`'s output, in
-    /// a block of `headers`.
+    /// a block of `headers`: `b_corr`, and the slots' signatures.
     pub correct: Request,
-    /// A child of `correct` (spending an anchor of it), in a block of
-    /// `headers`: its `OP_RETURN` carries the unlocks. None: no unlocks.
-    pub child: Option<InBlock>,
     /// From `request`'s block on, consecutive.
     pub headers: Vec<[u8; 80]>,
     pub cited: Vec<Cited>,
-    /// Other claims she signed.
-    pub others: Vec<Vec<u8>>,
 }
 
 /// A transaction's id from its witness serialization.
@@ -544,39 +537,19 @@ fn body_len(b: &[u8], inputs: usize, outputs: usize) -> Option<usize> {
     (at <= b.len()).then_some(at)
 }
 
-/// `correct`'s witness: the hub's one-time signature on `b_corr` (4
-/// bytes), below the 2-of-2's signatures, the script and the control
-/// block.
-pub fn corrected(witness: &[&[u8]]) -> Option<u32> {
+/// `correct`'s witness (bottom first): the slots' signatures (64 bytes
+/// each: `SIGHASH_DEFAULT`, the message every reveal pre-signs), the hub's
+/// one-time signature on `b_corr` (4 bytes), below the 2-of-2's
+/// signatures, the script and the control block. `b_corr`, and each
+/// slot's final nonce `R`.
+pub fn corrected(witness: &[&[u8]]) -> Option<(u32, Vec<[u8; 32]>)> {
     let items = 2 * (8 + checksum_digits(4));
-    if witness.len() != items + 4 {
+    if witness.len() != SLOTS + items + 4 || witness[..SLOTS].iter().any(|s| s.len() != 64) {
         return None;
     }
-    let b = signed_message(&witness[..items], 4)?;
-    Some(u32::from_be_bytes(b.try_into().ok()?))
-}
-
-/// The unlocks an `OP_RETURN` script carries: 32 bytes each.
-fn unlocks(script: &[u8]) -> Option<Vec<[u8; 32]>> {
-    // OP_RETURN, then one push of 32·k bytes
-    let (&op, rest) = script.split_first()?;
-    if op != 0x6a {
-        return None;
-    }
-    let (&len, data) = rest.split_first()?;
-    let data = match len {
-        1..=75 if data.len() == len as usize => data,
-        0x4c if !data.is_empty() && data.len() == data[0] as usize + 1 => &data[1..],
-        _ => return None,
-    };
-    (data.len() % 32 == 0 && data.len() / 32 <= MAX_UNLOCKS).then(|| data.chunks(32).map(|c| c.try_into().unwrap()).collect())
-}
-
-/// `t·G`, compressed.
-fn point_of(t: &[u8; 32]) -> Option<[u8; 33]> {
-    let s: k256::Scalar = Option::from(k256::Scalar::from_repr((*t).into()))?;
-    let p = (k256::ProjectivePoint::GENERATOR * s).to_affine();
-    p.to_encoded_point(true).as_bytes().try_into().ok()
+    let slots = witness[..SLOTS].iter().map(|s| s[..32].try_into().unwrap()).collect();
+    let b = signed_message(&witness[SLOTS..SLOTS + items], 4)?;
+    Some((u32::from_be_bytes(b.try_into().ok()?), slots))
 }
 
 /// `request`'s witness (bottom first): Alice's one-time signature on the
@@ -594,29 +567,28 @@ pub fn requested(witness: &[&[u8]]) -> Option<(u32, Vec<u8>)> {
     Some((u32::from_be_bytes(b.try_into().ok()?), posted))
 }
 
-/// A posted claim of `b` units on contract `cid` as the statement counts
-/// it: the owner's, the hub's key `issuer`, the contract's `unit`.
+/// A posted claim of `b` units as the statement counts it: the
+/// contract's owner, the hub's key `issuer`, the contract's `unit`.
 #[derive(Clone, Copy, Debug)]
 pub struct Counted<'a> {
     pub posted: Option<&'a Posted>,
     pub b: u32,
-    pub cid: u32,
     pub issuer: &'a Hash,
     pub owner: &'a Hash,
     pub unit: u64,
 }
 
-/// What the claim is owed, in units, by the evidence: the cited spends
-/// (each signed by her; counting if its `T`'s unlock is among `unlocks`)
-/// and the other claims she signed (on other contracts: one on this
-/// contract was never paid, the payout being the posted claim's).
+/// What the claim is owed, in units, by the evidence: the cited spends,
+/// each counting if she signed it and one of `correct`'s `slots`
+/// revealed its `t` to her.
 ///
 /// The candidates are the claim's notes (by short id and value); a cited
 /// spend kills those among its inputs, and if the claim names it a
-/// fallback, its outputs to her join the candidates (a later spend of
-/// hers may kill them in turn). Owed: the candidates not killed, in
-/// units, at most `b`.
-pub fn owed(c: &Counted, cited: &[Cited], unlocks: &[[u8; 32]], others: &[Vec<u8>]) -> u32 {
+/// fallback, its output to her joins the candidates (a later spend of
+/// hers may kill it in turn). Owed: the candidates not killed, in units,
+/// at most `b`. (The contract's key is its own: no claim through another
+/// contract names its notes.)
+pub fn owed(c: &Counted, cited: &[Cited], slots: &[[u8; 32]]) -> u32 {
     let Some(claim) = c.posted else { return 0 };
     if !claim.holds(c.b, c.issuer, c.owner, c.unit) {
         return 0;
@@ -624,7 +596,7 @@ pub fn owed(c: &Counted, cited: &[Cited], unlocks: &[[u8; 32]], others: &[Vec<u8
     let owner = c.owner;
     let mut cands: Vec<(Short8, u64)> = claim.notes.iter().map(|n| (n.id, n.value)).collect();
     let mut dead: Vec<(Short8, u64)> = Vec::new();
-    let usable: Vec<(Hash, &Cited)> = cited.iter().filter(|x| x.signed_by(owner) && unlocks.iter().any(|t| point_of(t) == Some(x.t_point))).map(|x| (x.sid(), x)).collect();
+    let usable: Vec<(Hash, &Cited)> = cited.iter().filter(|x| x.signed_by(owner) && x.revealed(owner, slots)).map(|x| (x.sid(), x)).collect();
     let mut revived: Vec<Hash> = Vec::new();
     loop {
         let mut more = false;
@@ -644,13 +616,6 @@ pub fn owed(c: &Counted, cited: &[Cited], unlocks: &[[u8; 32]], others: &[Vec<u8
             break;
         }
     }
-    for o in others {
-        let Some(other) = Claim::from_bytes(o) else { continue };
-        if other.owner != *owner || other.cid == c.cid || !verify(owner, &other.fingerprint(), &other.sig) {
-            continue;
-        }
-        dead.extend(other.notes.iter().map(|i| (short(&i.id), i.value)));
-    }
     let live: u64 = cands.iter().filter(|k| !dead.contains(k)).fold(0u64, |a, (_, v)| a.saturating_add(*v));
     c.b.min(u32::try_from(live / c.unit).unwrap_or(u32::MAX))
 }
@@ -659,7 +624,7 @@ pub fn owed(c: &Counted, cited: &[Cited], unlocks: &[[u8; 32]], others: &[Vec<u8
 /// `b_corr` `correct` signs. Its journal, or why not.
 pub fn check(input: &GrantsInput) -> Result<[u8; JOURNAL_LEN], Reject> {
     let t = &input.terms;
-    if t.unit == 0 || input.cited.len() > MAX_CITED || input.others.len() > MAX_CITED {
+    if t.unit == 0 || input.cited.len() > SLOTS {
         return Err(Reject::Encoding);
     }
     // request: the contract output's spend, in a block with the work on it
@@ -675,33 +640,15 @@ pub fn check(input: &GrantsInput) -> Result<[u8; JOURNAL_LEN], Reject> {
     let posted = Posted::from_bytes(&bytes);
     // correct: request's spend, in a block of the headers
     let request_id = txid_of(&input.request.tx).ok_or(Reject::Posted)?;
-    let in_headers = |h: &[u8; 80]| input.headers.contains(h);
     let c = &input.correct;
-    if !in_headers(&c.header) || !btc::witness_in_block(&c.tx, &Header(c.header), c.index, &c.path, &c.coinbase, &c.coinbase_path, &c.reserved) {
+    if !input.headers.contains(&c.header) || !btc::witness_in_block(&c.tx, &Header(c.header), c.index, &c.path, &c.coinbase, &c.coinbase_path, &c.reserved) {
         return Err(Reject::Posted);
     }
     let ct = btc::parse_witness_tx(&c.tx).ok_or(Reject::Posted)?;
     let at = ct.tx.inputs.iter().position(|o| *o == OutPoint { txid: request_id, vout: 0 }).ok_or(Reject::Posted)?;
-    let b_corr = corrected(&ct.witness[at]).ok_or(Reject::Posted)?;
-    let correct_id = txid_of(&c.tx).ok_or(Reject::Posted)?;
-    // the unlocks: the hub's child of correct, in a block of the headers
-    let unlocks = match &input.child {
-        None => Vec::new(),
-        Some(ch) => {
-            if !in_headers(&ch.header) || !ch.holds() {
-                return Err(Reject::Posted);
-            }
-            let tx = btc::parse_tx(&ch.tx).ok_or(Reject::Posted)?;
-            // a child of correct: spending an anchor of it (not its
-            // first output, assert's)
-            if !tx.inputs.iter().any(|o| o.txid == correct_id && o.vout > 0) {
-                return Err(Reject::Posted);
-            }
-            tx.outputs.iter().find_map(|(_, s)| unlocks(s)).ok_or(Reject::Posted)?
-        }
-    };
-    let counted = Counted { posted: posted.as_ref(), b, cid: input.c, issuer: &t.issuer, owner: &t.owner, unit: t.unit };
-    if owed(&counted, &input.cited, &unlocks, &input.others) > b_corr {
+    let (b_corr, slots) = corrected(&ct.witness[at]).ok_or(Reject::Posted)?;
+    let counted = Counted { posted: posted.as_ref(), b, issuer: &t.issuer, owner: &t.owner, unit: t.unit };
+    if owed(&counted, &input.cited, &slots) > b_corr {
         return Err(Reject::Holds);
     }
     Ok(journal(input.c, &t.d(), &input.deposit, input.margin))
@@ -721,18 +668,6 @@ impl GrantsInput {
         w.put(&self.terms.unit.to_be_bytes());
         self.request.write(&mut w);
         self.correct.write(&mut w);
-        match &self.child {
-            None => w.put(&[0]),
-            Some(ch) => {
-                w.put(&[1]);
-                w.bytes(&ch.tx);
-                w.put(&ch.header);
-                w.put(&ch.index.to_be_bytes());
-                w.list(&ch.path);
-                w.bytes(&ch.coinbase);
-                w.list(&ch.coinbase_path);
-            }
-        }
         w.list(&self.headers);
         w.put(&(self.cited.len() as u32).to_be_bytes());
         for c in &self.cited {
@@ -749,11 +684,12 @@ impl GrantsInput {
             }
             w.put(&c.t_point);
             w.list(&c.presigs);
+            w.put(&(c.reveals.len() as u32).to_be_bytes());
+            for (o, p) in &c.reveals {
+                w.put(o);
+                w.put(p);
+            }
             w.put(&c.sig);
-        }
-        w.put(&(self.others.len() as u32).to_be_bytes());
-        for o in &self.others {
-            w.bytes(o);
         }
         w.0
     }
@@ -766,14 +702,9 @@ impl GrantsInput {
         let terms = GTerms { issuer: r.take()?, owner: r.take()?, work: u128::from_be_bytes(r.take()?), unit: u64::from_be_bytes(r.take()?) };
         let request = Request::read(&mut r)?;
         let correct = Request::read(&mut r)?;
-        let child = match r.take()? {
-            [0] => None,
-            [1] => Some(InBlock { tx: r.bytes()?, header: r.take()?, index: u32::from_be_bytes(r.take()?), path: r.list()?, coinbase: r.bytes()?, coinbase_path: r.list()? }),
-            _ => return Err(Reject::Encoding),
-        };
         let headers = r.list()?;
         let n = u32::from_be_bytes(r.take()?) as usize;
-        if n > MAX_CITED {
+        if n > SLOTS {
             return Err(Reject::Encoding);
         }
         let mut cited = Vec::new();
@@ -788,17 +719,18 @@ impl GrantsInput {
                 return Err(Reject::Encoding);
             }
             let outputs = (0..no).map(|_| Ok((r.take()?, u64::from_be_bytes(r.take()?)))).collect::<Result<Vec<_>, Reject>>()?;
-            cited.push(Cited { inputs, outputs, t_point: r.take()?, presigs: r.list()?, sig: r.take()? });
+            let (t_point, presigs) = (r.take()?, r.list()?);
+            let nr = u32::from_be_bytes(r.take()?) as usize;
+            if nr > 64 {
+                return Err(Reject::Encoding);
+            }
+            let reveals = (0..nr).map(|_| Ok((r.take()?, r.take()?))).collect::<Result<Vec<_>, Reject>>()?;
+            cited.push(Cited { inputs, outputs, t_point, presigs, reveals, sig: r.take()? });
         }
-        let n = u32::from_be_bytes(r.take()?) as usize;
-        if n > MAX_CITED {
-            return Err(Reject::Encoding);
-        }
-        let others = (0..n).map(|_| r.bytes()).collect::<Result<Vec<_>, _>>()?;
         if !r.0.is_empty() {
             return Err(Reject::Encoding);
         }
-        Ok(GrantsInput { c, deposit, margin, terms, request, correct, child, headers, cited, others })
+        Ok(GrantsInput { c, deposit, margin, terms, request, correct, headers, cited })
     }
 }
 
@@ -826,14 +758,22 @@ mod tests {
         c.sig = sign(owner, &c.fingerprint());
         c
     }
+    /// `t·G`, compressed.
+    fn point_of(t: &[u8; 32]) -> [u8; 33] {
+        use k256::elliptic_curve::sec1::ToEncodedPoint;
+        let s: Scalar = Option::from(Scalar::from_repr((*t).into())).unwrap();
+        (ProjectivePoint::GENERATOR * s).to_affine().to_encoded_point(true).as_bytes().try_into().unwrap()
+    }
     /// A spend of `inputs` by `owner`: `pay` to another, the rest back, its
-    /// grant's T the point of `t`.
-    fn spend(owner: &SigningKey, inputs: Vec<Note>, pay: u64, t: &[u8; 32]) -> Cited {
+    /// grant's T the point of `t`, its reveal to her with final nonce `r`.
+    fn spend(owner: &SigningKey, inputs: Vec<Note>, pay: u64, t: &[u8; 32], r: u8) -> Cited {
         let total: u64 = inputs.iter().map(|n| n.value).sum();
         let outputs = vec![([5; 32], pay), (pk(owner), total - pay)];
-        let mut c = Cited { inputs, outputs, t_point: point_of(t).unwrap(), presigs: vec![[3; 97], [4; 97]], sig: [0; 64] };
+        let mut reveal = [7u8; 97];
+        reveal[..32].copy_from_slice(&[r; 32]);
+        let mut c = Cited { inputs, outputs, t_point: point_of(t), presigs: vec![[3; 97], [4; 97]], reveals: vec![(pk(owner), reveal)], sig: [0; 64] };
         let sid = c.sid();
-        c.sig = sign(owner, &auth_msg(&sid, &grant_commitment(&sid, &c.t_point, &c.presigs)));
+        c.sig = sign(owner, &auth_msg(&sid, &grant_commitment(&sid, &c.t_point, &c.presigs, &c.reveals)));
         c
     }
 
@@ -866,46 +806,47 @@ mod tests {
         let (issuer, owner) = (pk(&hub), pk(&alice));
         let unit = 100;
         let (n1, n2) = (item(&hub, &owner, 1, 70_000), item(&hub, &owner, 2, 30_000));
-        let t = [11u8; 32];
-        // her spend of n1 in flight: 50,000 to Bob, 20,000 back to her
-        let s = spend(&alice, vec![Note { id: n1.id, owner, value: n1.value }], 50_000, &t);
+        // her spend of n1 in flight: 50,000 to Bob, 20,000 back to her;
+        // its reveal's final nonce [21; 32]
+        let s = spend(&alice, vec![Note { id: n1.id, owner, value: n1.value }], 50_000, &[11; 32], 21);
         let with_fallback = claim(&alice, 1000, vec![n1, n2], vec![s.sid()]).posted(&issuer).unwrap();
-        let owed = |p: &Posted, b: u32, cited: &[Cited], unlocks: &[[u8; 32]], others: &[Vec<u8>]| super::owed(&Counted { posted: Some(p), b, cid: 7, issuer: &issuer, owner: &owner, unit }, cited, unlocks, others);
+        let owed = |p: &Posted, b: u32, cited: &[Cited], slots: &[[u8; 32]]| super::owed(&Counted { posted: Some(p), b, issuer: &issuer, owner: &owner, unit }, cited, slots);
         // nothing cited: all of it
-        assert_eq!(owed(&with_fallback, 1000, &[], &[], &[]), 1000);
-        // the spend recorded and its unlock on chain: n1 dead, her change revived
-        assert_eq!(owed(&with_fallback, 1000, core::slice::from_ref(&s), &[t], &[]), 500);
-        // without its unlock on chain the spend doesn't count
-        assert_eq!(owed(&with_fallback, 1000, core::slice::from_ref(&s), &[[12; 32]], &[]), 1000);
+        assert_eq!(owed(&with_fallback, 1000, &[], &[]), 1000);
+        // the spend recorded and revealed in a slot: n1 dead, her change revived
+        assert_eq!(owed(&with_fallback, 1000, core::slice::from_ref(&s), &[[9; 32], [21; 32]]), 500);
+        // not revealed in correct's slots: the spend doesn't count
+        assert_eq!(owed(&with_fallback, 1000, core::slice::from_ref(&s), &[[9; 32]]), 1000);
+        // a reveal to another owner doesn't count
+        let mut other = s.clone();
+        other.reveals[0].0 = [8; 32];
+        other.sig = sign(&alice, &auth_msg(&other.sid(), &grant_commitment(&other.sid(), &other.t_point, &other.presigs, &other.reveals)));
+        assert_eq!(owed(&with_fallback, 1000, &[other], &[[21; 32]]), 1000);
         // not declared a fallback: no change revived
         let full = claim(&alice, 1000, vec![n1, n2], vec![]);
         let without = full.posted(&issuer).unwrap();
-        assert_eq!(owed(&without, 1000, core::slice::from_ref(&s), &[t], &[]), 300);
-        // a spend not signed by her doesn't count
+        assert_eq!(owed(&without, 1000, core::slice::from_ref(&s), &[[21; 32]]), 300);
+        // a spend not signed by her, or its reveal altered: doesn't count
         let mut forged = s.clone();
         forged.sig = sign(&key(3), &[0; 32]);
-        assert_eq!(owed(&with_fallback, 1000, &[forged], &[t], &[]), 1000);
-        // another claim of hers naming n2 kills it; one on the same
-        // contract was never paid: no kill
-        let other = Claim { cid: 8, ..claim(&alice, 300, vec![n2], vec![]) };
-        let other = Claim { sig: sign(&alice, &other.fingerprint()), ..other };
-        assert_eq!(owed(&without, 1000, &[], &[], &[other.to_bytes()]), 700);
-        assert_eq!(owed(&without, 1000, &[], &[], &[full.to_bytes()]), 1000);
+        assert_eq!(owed(&with_fallback, 1000, &[forged], &[[21; 32]]), 1000);
+        let mut swapped = s.clone();
+        swapped.reveals[0].1[..32].copy_from_slice(&[9; 32]);
+        assert_eq!(owed(&with_fallback, 1000, &[swapped], &[[9; 32]]), 1000);
         // her revived change spent on: dead too
         let change = Note { id: output_id(&s.sid(), 1), owner, value: 20_000 };
-        let t2 = [13u8; 32];
-        let s2 = spend(&alice, vec![change], 20_000, &t2);
-        assert_eq!(owed(&with_fallback, 1000, &[s.clone(), s2.clone()], &[t, t2], &[]), 300);
+        let s2 = spend(&alice, vec![change], 20_000, &[13; 32], 22);
+        assert_eq!(owed(&with_fallback, 1000, &[s.clone(), s2.clone()], &[[21; 32], [22; 32]]), 300);
         // malformed: a note not settled, b above the notes, a note twice
         let bad_note = Claim { notes: vec![Item { sig: sign(&key(3), &[0; 32]), ..n1 }], ..full.clone() }.posted(&issuer).unwrap();
-        assert_eq!(owed(&bad_note, 100, &[], &[], &[]), 0);
-        assert_eq!(owed(&without, 1001, &[], &[], &[]), 0);
+        assert_eq!(owed(&bad_note, 100, &[], &[]), 0);
+        assert_eq!(owed(&without, 1001, &[], &[]), 0);
         let twice = Posted { notes: vec![without.notes[0], without.notes[0]], ..without.clone() };
-        assert_eq!(owed(&twice, 1, &[], &[], &[]), 0);
+        assert_eq!(owed(&twice, 1, &[], &[]), 0);
         // another owner's claim, under the contract's owner: malformed
         let bobs = claim(&key(4), 100, vec![item(&hub, &pk(&key(4)), 3, 10_000)], vec![]).posted(&issuer).unwrap();
-        assert_eq!(owed(&bobs, 100, &[], &[], &[]), 0);
-        assert_eq!(super::owed(&Counted { posted: None, b: 1, cid: 7, issuer: &issuer, owner: &owner, unit }, &[], &[], &[]), 0);
+        assert_eq!(owed(&bobs, 100, &[], &[]), 0);
+        assert_eq!(super::owed(&Counted { posted: None, b: 1, issuer: &issuer, owner: &owner, unit }, &[], &[]), 0);
         // the bytes round-trip
         assert_eq!(Claim::from_bytes(&full.to_bytes()), Some(full));
         let bytes = with_fallback.to_bytes();
@@ -925,15 +866,5 @@ mod tests {
         let notes: Vec<Item> = (0..4).map(|i| item(&hub, &pk(&alice), i, 1 << 40)).collect();
         let p = claim(&alice, 1, notes, vec![[1; 32]]).posted(&pk(&hub)).unwrap();
         assert_eq!(Posted::from_bytes(&p.to_bytes()), Some(p));
-    }
-
-    #[test]
-    fn unlocks_read_from_op_return() {
-        let mut s = vec![0x6a, 64];
-        s.extend([1u8; 32]);
-        s.extend([2u8; 32]);
-        assert_eq!(unlocks(&s), Some(vec![[1; 32], [2; 32]]));
-        assert_eq!(unlocks(&[0x6a, 32, 0]), None);
-        assert!(unlocks(&[0x51]).is_none());
     }
 }

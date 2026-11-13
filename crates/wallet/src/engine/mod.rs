@@ -97,6 +97,11 @@ impl ContractSecrets {
     pub(crate) fn wots(&self, label: &str) -> [u8; 32] {
         Seed::from_label(&format!("{}/{label}", self.seed)).derive_bytes("wots")
     }
+    /// The contract's L2 key: its owner, fresh for it, which holds the
+    /// notes its claims take.
+    pub fn l2(&self) -> Keypair {
+        Seed::from_label(&self.seed).keypair("l2")
+    }
     /// Her key in the contract's deposit tree.
     pub fn deposit_key(&self) -> Keypair {
         Seed::from_label(&self.seed).keypair("deposit")

@@ -51,8 +51,11 @@ fn the_mint_is_alices_only_once_the_funding_is_out() {
     assert!(alice.deposits.is_empty());
     assert!(alice.contracts[0].mint.as_ref().unwrap().claimed);
     assert_eq!(alice.balance(), ask.deposit);
-    // the hub's book has it too: spendable
-    alice.send(alice.address(), ask.deposit).unwrap();
+    // the hub's book has it too: spendable (to her wallet's own key, from
+    // the contract's)
+    let own = alice.owners()[0];
+    assert_ne!(own, alice.address());
+    alice.send(own, ask.deposit).unwrap();
     assert_eq!(hub.contracts().iter().filter(|c| c.0.cid() == cid).count(), 1);
     println!("LICHEN M1: the hub's answer lost ({err:#}); contract {cid} opened from the chain and its {} sats claimed with t read from the funding, in {:.1?}", ask.deposit, t.elapsed());
 
@@ -64,7 +67,7 @@ fn the_mint_is_alices_only_once_the_funding_is_out() {
     let (_, locked) = bob.deposits[0].offered.clone().expect("the offer accepted is kept");
     let not_out = bob.claim_mint(&chain, cid).unwrap_err();
     assert!(format!("{not_out:#}").contains("not out"), "{not_out:#}");
-    assert_eq!((locked.note.owner, locked.note.value), (bob.address(), ask.deposit));
+    assert_eq!((locked.note.owner, locked.note.value), (bob.owner_of(&bob.deposits[0].nonce), ask.deposit), "to the contract's key");
     rt.mine(u64::from(deposit_timeout(Net::Regtest))).unwrap();
     let refund = bob.refund(&chain, cid, Amount::from_sat(500)).unwrap();
     rt.mine(1).unwrap();

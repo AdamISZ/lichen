@@ -1,0 +1,481 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage[protrusion=true,expansion=false]{microtype}
+\usepackage[table]{xcolor}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{float}
+\usepackage{hyperref}
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black, citecolor=blue!60!black}
+\usepackage[skip=0.6\baselineskip, indent=0pt]{parskip}
+
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.7em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.6em}{}
+
+\newcommand{\vmax}{V_{\max}}
+\newcommand{\Tc}{T_{\mathrm{close}}}
+\newcommand{\bcorr}{b_{\mathrm{corr}}}
+\newcommand{\tx}[1]{\texttt{#1}}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+
+\renewcommand{\arraystretch}{1.3}
+\makeatletter
+\setlength{\@fptop}{0pt}
+\setlength{\@fpsep}{1.5\baselineskip}
+\setlength{\@fpbot}{0pt plus 1fil}
+\makeatother
+\rowcolors{1}{}{black!5}
+
+\title{\textbf{The grants L2}\\a Lichen L2 without global order\\[2pt]\large early draft}
+\author{waxwing}
+\date{Version 0.1, November 2026\\[2pt]\small a companion to \emph{Lichen}, version 0.5~\cite{lichen}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Lichen~\cite{lichen} enforces an L2's withdrawals through bilateral
+contracts between a hub and each user, settled on Bitcoin by BABE with
+the roles swapped: the user claims, and only the hub proves, if it can,
+that she is owed less. This draft describes a second L2 for those
+contracts, with no sequencer, no global ordering and no anchoring. Notes
+are transparent and signed by the hub; a payment is made atomic by a
+\emph{grant}, an adaptor signature that the payer's own signature
+releases, as in the ecash design of~\cite{ecash} without the blinding.
+An exit posts a compact claim of the user's notes, one-time signed in
+full. The hub answers a claim it can show is too high by posting
+$\bcorr$, what she is owed, and proves it from spends she signed. A
+spend counts against her only if the hub reveals its unlock to her on
+chain, which the hub can do only by completing, in its own transaction,
+a pre-signature she checked before paying. We give the algorithm, the
+transaction graph, the statement the hub proves, and the costs measured
+on regtest: an exit's \tx{request} is 11.7~kvB, the hub's correction
+0.65~kvB, and the statement 1.3M RISC Zero cycles, 2 segments.
+\end{abstract}
+
+\section{Setting}
+
+A Lichen contract (\cite{lichen}, \S3) locks the hub's liquidity and the
+user's deposit in one Bitcoin output, with a cap $\vmax$ in a unit $u$
+($b$ units claimable, $b < 2^{k}$), reserves $r_A$ and $r_H$, and a
+close time $\Tc$. It ends in one of three ways:
+\begin{itemize}[nosep]
+\item \textbf{Fold}: both sign; the user is paid what she withdraws and
+  her reserve.
+\item \textbf{Default}: after $\Tc$, the user is paid her reserve and the
+  hub the rest. She must withdraw or exit before.
+\item \textbf{Exit}: the user posts \tx{request} with a claim of $b$
+  units; the hub either lets it pay or proves her owed less.
+\end{itemize}
+
+The anchored L2 (the reference L2 of~\cite{lichen}) judges a claim
+against a global, anchored history. The grants L2 drops that: the hub's
+book is the only ledger, and nothing is ordered beyond what each spend
+names. What replaces the history is \emph{evidence the user signed}: a
+claim is reduced only by spends she authorized whose completion she was
+given.
+
+\textbf{Contracts and credit.} A user's position on the L2 is defined by
+her contract. Each contract has an L2 key of its own, fresh at the
+opening; the notes owned by that key are what its exit can claim. Notes
+held by any other key (a wallet without a contract, a closed contract's
+key) are the hub's IOUs with no cryptographic backing: credit. A wallet
+moves its notes to its open contract's key with an ordinary payment to
+itself.
+
+\section{Notes and payments}
+
+\subsection{Notes}
+
+A \emph{note} is $(\mathit{id}, \mathit{owner}, v)$: a 32-byte id, an
+owner's x-only key, a value in sats. It is \emph{settled} when its holder
+has the hub's BIP340 signature, under the issuer key $I$, on
+\[
+  \mathrm{digest} = H_{\text{note}}(\mathit{id}_{[0..8]} \,\|\,
+  \mathit{owner} \,\|\, v),
+\]
+the first 8 bytes of the id standing for it (an exit names a note by
+them, \S\ref{sec:claim}). The book keys notes by the full id. Two notes
+of one owner with the same short id and value would share a signature;
+only their owner can grind for that ($2^{32}$ spends) and it only harms
+her.
+
+\subsection{Spends and grants}\label{sec:grant}
+
+A \emph{spend} names input notes and asks for outputs $(o_j, v_j)$ of the
+same total; output $j$'s id is $H(\mathit{sid} \,\|\, j)$, where
+$\mathit{sid}$ hashes the inputs and outputs. No two outputs go to one
+owner (\S\ref{sec:volume}). A payment is one round trip:
+
+\begin{enumerate}[nosep]
+\item \textbf{Grant} (\tx{POST /grant}). The payer sends the unsigned
+  spend. The hub, if its inputs are live, answers with
+  \begin{itemize}[nosep]
+  \item $T = tG$, signed with $\mathit{sid}$, where
+    $t = H(k_{\text{iss}}, \mathit{sid})$;
+  \item an adaptor pre-signature under $T$ on each output note's digest;
+  \item a \emph{reveal} for each input owner with a contract open: an
+    adaptor pre-signature $\sigma' = (R', s')$ under $T$, by the hub's
+    key $P_H$ in that contract, on the contract's \tx{correct}
+    sighash~$m_c$ (\S\ref{sec:reveal}).
+  \end{itemize}
+\item \textbf{Check and sign.} The payer verifies $T$'s signature and
+  every pre-signature, the reveal against her own contract's $m_c$ in
+  particular. She signs $H(\mathit{sid} \,\|\, C)$, where
+  \[
+    C = H_{\text{commit}}(\mathit{sid} \,\|\, T \,\|\, \text{output
+    pre-signatures} \,\|\, \text{reveals})
+  \]
+  is the grant's commitment, with each input's owner key.
+\item \textbf{Record} (\tx{POST /spend}). The hub checks the signatures,
+  marks the inputs spent, enters the outputs in the book and in their
+  owners' mailboxes, and answers with $t$.
+\end{enumerate}
+
+With $t$, every output's pre-signature completes to the hub's ordinary
+signature: the outputs are settled. Before $t$ they are unusable. The
+payer keeps the spend \emph{in flight} until she has $t$. A hub that
+says it never granted a spend is believed for spending its inputs again,
+but not for claiming them: the spend remains a \emph{fallback} of any
+claim of its inputs until a spend she holds $t$ for consumes them.
+
+\textbf{What atomicity means here.} Once the payer signs, the hub may
+record the spend or not. If it records it and gives $t$, both sides are
+paid. If it records it and withholds $t$, it holds her inputs and pays
+no one; the payee has nothing to deliver goods against. The exit
+(\S\ref{sec:exit}) settles that case: the hub can use the spend against
+her claim only by revealing $t$ to her, after which she completes the
+outputs and hands the payee his note. Otherwise the spend doesn't count,
+and her claim is owed its inputs in full.
+
+\subsection{The wallet's policy}
+
+A payment spends all the wallet's notes (the payment out, one change
+note back). Received notes are merged by a payment to itself once there
+are more than 2; more than 4 unmerged means the hub refuses merges, and
+the wallet should exit while every note still fits in a claim. The
+wallet's address is its open contract's key.
+
+\section{The contract}
+
+\subsection{Opening}
+
+The opening follows~\cite{lichen}: the user's deposit to a 2-of-2 with
+a refund after a timeout; the setup (the hub's statement fixed, its
+journal below; the user garbles the BABE instances, the hub keeps some
+by cut-and-choose); the pre-signed graph (\S\ref{sec:graph}); the
+funding, which spends the deposit with the user's adaptor signature
+under the hub's point. The user's deposit is \emph{pre-issued} to her as
+a note under the same point: the funding on chain reveals $t$ and the
+note settles, so the deposit and its L2 balance swap atomically.
+
+The hub refuses a contract whose owner key it has seen before (a
+contract of it, or any note), so a contract's key has no spends from
+before its opening (\S\ref{sec:reveal}).
+
+\textbf{The journal}, the statement's only public input, fixed at the
+opening:
+\[
+  c \,\|\, D \,\|\, H(O_D \,\|\, \mathit{margin}),\qquad
+  D = H\big(H(I \,\|\, \mathit{owner}) \,\|\, 0 \,\|\, W \,\|\, u\big),
+\]
+with $c$ the contract number, $O_D$ the deposit coin, $W$ the work the
+statement asks on top of \tx{request}'s block (ten blocks' at the
+opening's difficulty), $u$ the unit. $D$ binds the issuer and the
+owner: without the owner, a hub could prove against another key and
+count any claim malformed.
+
+\subsection{Withdrawal}
+
+The user hands the hub a claim (\S\ref{sec:claim}) signed with her
+contract key. The hub takes it if the claim is owed in full by its book:
+its notes are spent, and change beyond $b$ is issued back to her. Then
+both sign the fold. If the hub takes the claim and won't fold, her exit
+posts the same claim; a claim on the same contract never counts against
+itself.
+
+\subsection{The dispute graph}\label{sec:graph}
+
+Every transaction has one input, and every link one output carrying the
+value on, plus an anchor for fees; each output has its terminal. The
+links and terminals are pre-signed at the opening.
+
+\begin{small}
+\begin{verbatim}
+contract output
+ |- fold                       both, at a withdrawal
+ |- default (after T_close)    -> Alice r_A, the hub the rest
+ '- request    Alice: one-time signatures on b and on the claim (233 B)
+     |- request_timeout (after w_H)     -> Alice: b, both reserves
+     '- correct  the hub: one-time signature on b_corr, and 8 slots,
+         |       each its signature on correct itself (64 bytes)
+         |- correct_timeout (after w_H) -> Alice: b, both reserves
+         '- assert   the hub: pi (Lamport-signed digits), pi2, pi3
+             |- success (after D2) -> Alice: b_corr's bits, r_A;
+             |                         the hub the rest
+             '- challenge_assert   Alice: the reveal of pi's labels
+                 |- wrongly_challenged_k -> the hub (its proof valid)
+                 '- failure (after D1)   -> Alice: b, both reserves
+\end{verbatim}
+\end{small}
+
+\textbf{Bits.} The terminals pay $b$ in binary: for each bit $i$, an
+output of $u\,2^i$ that Alice spends if bit $i$ of her one-time signed
+$b$ is set, the hub otherwise. \tx{success} pays $\bcorr$ the same way,
+read from the hub's one-time signature in \tx{correct}; a leaf
+\tx{equiv\_corr\_i} gives Alice every bit output if she shows two
+different signatures under that one-time key (an equivocation).
+
+\textbf{Windows} on Mutinynet (30\,s blocks): $w_H$ = 240 blocks (2
+hours) for the hub to correct, and again to assert; $\Delta_2$ = 2,880
+(a day) for her challenge; $\Delta_1$ = 240 for the hub's answer.
+
+\textbf{No penalty.} \tx{success} returns her reserve whatever
+$\bcorr$. A false claim gains her nothing (she is paid what she is
+owed) and costs the hub one dispute; a penalty would also strike an
+honest wallet restored from a stale backup.
+
+\section{The exit}\label{sec:exit}
+
+\subsection{The posted claim}\label{sec:claim}
+
+A claim names settled notes of the contract's key, \emph{fallbacks}
+(the ids of her spends in flight whose inputs are among them) and $b$.
+An exit posts it compact, in exactly 233 bytes:
+
+\begin{center}
+\begin{tabularx}{0.9\linewidth}{lL}
+\toprule
+Bytes & Content \\
+\midrule
+1 & the counts of notes and fallbacks, 4 bits each \\
+46 per note & the id's first 8 bytes, the value (6 bytes), the hub's signature's $R$ \\
+32 & the hub's signatures' $s$, half-aggregated into one \\
+8 per fallback & the spend id's first 8 bytes \\
+the rest & zeros \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The contract ($c$, the deposit, the owner) and $b$ (signed apart) are
+not in it. Four notes and two fallbacks fit, or three and four.
+
+\textbf{Half-aggregation}~\cite{halfagg1,halfagg2}. For the hub's
+signatures $(R_i, s_i)$ on messages $m_i$ under $I$, with weights
+$z_0 = 1$ and $z_i = H(I, R_0, m_0, \dots, R_i, m_i)$, the aggregate is
+$(R_0, \dots, R_{n-1}, s = \sum z_i s_i)$, valid if
+\[
+  sG = \sum_i z_i\,(R_i + e_i I),\qquad e_i = H_{\text{BIP340}}(R_i \,\|\, I \,\|\, m_i).
+\]
+The user computes it from the signatures she holds.
+
+\textbf{Signed in full.} Her one-time (Winternitz) key for the claim,
+fixed at the opening, signs all 233 bytes, so Bitcoin's script checks
+every byte and no one can swap them. A witness item can't be bound any
+cheaper: tapscript has no \tx{OP\_CAT}, so a hash computed in script
+can't be compared with signed digits. The cost is 2 digits a byte and 2
+witness items a digit: with $b$'s signature and the 2-of-2's, 962
+items, inside Bitcoin's 1,000 stack elements. That bounds the claim's
+size.
+
+\textbf{Why not shorter tags.} A MAC tag under a key the hub commits to
+at the opening would be 8 bytes, but the user can't check it, so a hub
+could issue bad tags and later call her notes unissued. A VRF output is
+checkable and short, but the payee's tags would come from the hub after
+$t$, outside the grant's atomicity. The hub's BIP340 signatures are hers
+to check and are released by $t$ with the outputs.
+
+\subsection{What a claim is owed}
+
+The statement counts a posted claim against a set of \emph{cited}
+spends, each given with what she signed: inputs, outputs, $T$, the
+output pre-signatures, the reveals, and her signature. Let \tx{slots} be
+the $R$ values of \tx{correct}'s eight slot signatures.
+
+\begin{enumerate}[nosep]
+\item \textbf{Malformed: owed 0.} The bytes aren't a posted claim (count,
+  zero padding); a note is named twice; the aggregate signature fails
+  under $I$ with the owner as each note's owner; or $b$ exceeds the
+  notes' value in units.
+\item \textbf{Usable spends.} A cited spend counts if her signature
+  verifies on $H(\mathit{sid} \,\|\, C)$, with $C$ recomputed from the
+  data given, and its reveal for her key has a final nonce $R$ among
+  \tx{slots}.
+\item \textbf{Fixed point.} The candidates start as the claim's notes,
+  as (short id, value). Repeat until nothing changes: a usable spend
+  kills the live candidates among its inputs, and if the claim names it
+  a fallback, its output to her (at most one) joins the candidates.
+\item \textbf{Owed:} $\min\big(b,\ \lfloor \sum \text{live candidates} / u
+  \rfloor\big)$.
+\end{enumerate}
+
+\subsection{The hub's statement}
+
+\emph{The claim \tx{request} posts is owed at most the $\bcorr$ that
+\tx{correct} signs.} The private input:
+\begin{itemize}[nosep]
+\item \tx{request}, with its witness, in a block, and the headers from
+  that block on, carrying the contract's work $W$ on it;
+\item \tx{correct}, with its witness, spending \tx{request}'s output, in
+  a block among those headers;
+\item the cited spends (at most 8).
+\end{itemize}
+The statement reads $b$ and the claim from \tx{request}'s signed
+digits, and $\bcorr$ and the slots from \tx{correct}'s. It checks
+$\mathrm{owed} \le \bcorr$, and outputs the journal. The issuer and the
+owner are bound by $D$; every other input is either on chain under the
+headers, or signed by her.
+
+\textbf{Faked evidence only hurts the hub.} Evidence can only lower what
+she is owed, and evidence failing a check kills nothing. So a hub
+feeding the prover bad data leaves her owed more: the bound
+$\mathrm{owed} \le \bcorr$ gets harder to prove, not easier. The spends
+it can use against her are exactly those she signed, with the $T$ and
+reveals she accepted.
+
+\subsection{Reveals: the hub can't use a spend without giving her its
+unlock}\label{sec:reveal}
+
+The difficulty: $t$ must reach the user whenever the hub uses her spend
+against her. In \tx{correct}'s witness, data no signature covers can be
+swapped by whoever gets the transaction mined. A hash lock would need
+its hash fixed in the leaf at the opening, before the spend exists. And
+script can't check $tG = T$.
+
+\textbf{The construction.} \tx{correct}'s sighash $m_c$ is fixed at the
+opening, and \tx{correct} is always posted when the hub disputes her
+claim. Each grant carries the hub's adaptor pre-signature
+$\sigma' = (R', s')$ under the spend's $T$ on $m_c$; its final nonce is
+$R = R' + T$. The user checks
+\[
+  s'G = R' + eP_H,\qquad e = H_{\text{BIP340}}(R \,\|\, P_H \,\|\, m_c),
+\]
+before signing the spend, and her signature commits to $\sigma'$ and
+$T$. The \tx{correct} leaf has eight slots, each
+\[
+  \tx{OP\_SIZE 64 OP\_EQUALVERIFY}\ \langle P_H\rangle\ \tx{OP\_CHECKSIGVERIFY}.
+\]
+To cite a spend, the hub puts the completed signature
+$(R, s' + t)$ in a slot; the other slots take any signature of its on
+$m_c$.
+
+\textbf{Why she then holds $t$.} Bitcoin checked the slot's signature:
+$sG = R + eP_H$. She checked $s'G = R' + eP_H$, with the same $e$,
+since $e$ depends on the final $R$. Subtracting, $(s - s')G = T$: she
+computes $t = s - s'$ from the chain. The statement needs no sighash and
+no $t$: it checks that a slot's $R$ equals the final nonce in the reveal
+she signed.
+
+\textbf{What the hub could try.}
+\begin{itemize}[nosep]
+\item \emph{Sign with another nonce.} It may, but then the statement
+  doesn't count the spend.
+\item \emph{Use the matching nonce on another message.} The hub knows
+  the discrete log of $R$, so it could sign another message with it.
+  For the same transaction, the only other messages come from another
+  sighash type, whose 65-byte signatures carry their type byte. The
+  slot's size check and the statement's both require 64 bytes, the
+  default type. The annex, also in the sighash, is excluded because
+  \tx{correct} carries her signature from the opening, made without
+  one.
+\item \emph{One slot for two spends}, choosing $R'_2 = R'_1 + T_1 - T_2$.
+  Harmless: her checks force $s'_2 = s'_1 + t_1 - t_2$, and she
+  extracts both unlocks from the one signature.
+\item \emph{A spend from before the contract opened}, whose grant has no
+  reveal on this contract's \tx{correct}. Ruled out: the contract's key
+  is fresh, refused by the hub if it has history.
+\end{itemize}
+
+\textbf{The user's side.} After \tx{correct}, her wallet looks in the
+slots for the final nonce of each in-flight spend's reveal. For each
+one found, it computes $t$, completes the outputs, and keeps the payee's
+note to hand him. Her own change is already counted in her claim, as a
+revived fallback.
+
+\subsection{How much evidence a claim can need}\label{sec:volume}
+
+The user can't make the proof fail. Her lever is to make more evidence
+necessary than the statement carries, leaving the hub to correct to a
+higher $\bcorr$. Each useful cited spend kills at least one candidate.
+A claim has at most 4 notes and 4 fallbacks, and with one output per
+owner per spend (the hub's grant policy), each fallback revives at most
+one candidate. So at most 8 spends are ever needed: the 8 slots.
+
+\subsection{The hub's side}
+
+On \tx{request}, the hub reads the posted claim and maps each note and
+fallback to its book (short id and value). It gathers the evidence: for
+each claimed note, the spend that took it, and through fallbacks their
+change in turn. It computes what the claim is owed, with the
+statement's own function.
+\begin{itemize}[nosep]
+\item \textbf{Owed in full:} it takes the claim into its book, and
+  \tx{request\_timeout} pays her.
+\item \textbf{Otherwise:} it posts \tx{correct} with $\bcorr$ = owed and
+  the cited spends' completed reveals in the slots, and takes the claim
+  at that. Once \tx{request}'s block carries $W$, it checks the
+  statement natively, proves it (about 21 minutes on a 4-core server),
+  wraps it in Groth16, and asserts.
+\end{itemize}
+After \tx{success} it sweeps its bit outputs once $\Delta$ has passed.
+
+\section{Costs}
+
+Measured on regtest (the contested exit: a claim of 584 units corrected
+to 365, one spend cited, 12 headers):
+
+\begin{center}
+\begin{tabularx}{0.9\linewidth}{lL}
+\toprule
+Item & Cost \\
+\midrule
+\tx{request} & 11,723 vB (the claim and $b$ one-time signed: 962 witness items) \\
+\tx{correct} & 654 vB (8 slots) \\
+statement & 1,306k user cycles, 2 segments \\
+proof & 973\,s and a 265\,s Groth16 wrap on a 4-core CPU server (the earlier guest, also 2 segments) \\
+payment & one round trip, about 40--100\,ms on regtest \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Open questions}
+
+\begin{itemize}[nosep]
+\item \textbf{The hub and the guest must agree.} Every spend the hub
+  records must be one the statement accepts. The hub should check at
+  intake with the guest's own functions (the two BIP340 implementations
+  are strict, but this is not yet enforced).
+\item \textbf{Fees.} Per payment (the issuer's revenue), and liquidity
+  per unit time, as in the anchored L2.
+\item \textbf{Payees without a contract} hold credit. A payee with one
+  is protected through the payer's wallet when the hub withholds $t$:
+  the payer extracts it from \tx{correct} and hands the note over.
+\item \textbf{Restoring a wallet.} Contract keys derive from the wallet's
+  key and each contract's nonce, so a restore needs the nonces (kept in
+  the wallet file today).
+\item \textbf{The book} is one file rewritten on each change: fine for a
+  testnet, not for volume.
+\item \textbf{Spends of several owners} carry one reveal per input
+  owner's contract; nothing bounds how many such owners a spend has
+  beyond its 16 inputs.
+\end{itemize}
+
+\begin{thebibliography}{9}
+\bibitem{lichen} waxwing, \emph{Lichen}, version 0.5, 2026.
+\bibitem{ecash} m0wer and waxwing, \emph{lichen-ecash}, version 0.2, 2026.
+\bibitem{halfagg1} K.~Chalkias, F.~Garillot, Y.~Kondi, V.~Nikolaenko,
+  \emph{Non-interactive half-aggregation of EdDSA and variants of Schnorr
+  signatures}, CT-RSA 2021.
+\bibitem{halfagg2} Y.~Chen, Y.~Zhao, \emph{Half-aggregation of Schnorr
+  signatures with tight reductions}, ESORICS 2022; J.~Nick, T.~Ruffing,
+  draft BIP, \emph{Half-aggregation of BIP 340 signatures}.
+\bibitem{bip340} P.~Wuille, J.~Nick, T.~Ruffing, \emph{BIP 340: Schnorr
+  signatures for secp256k1}, 2020.
+\end{thebibliography}
+
+\end{document}

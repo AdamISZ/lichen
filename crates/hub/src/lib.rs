@@ -169,6 +169,9 @@ pub(crate) struct Inner {
     /// For tests: a fault in each opening.
     opening_fault: Mutex<OpeningFault>,
     log: Mutex<Vec<String>>,
+    /// Each contract's `correct` sighash, once made: what the grants'
+    /// reveals pre-sign.
+    pub(crate) correct_msgs: Mutex<HashMap<u32, bitcoin::secp256k1::Message>>,
     /// The most the links' floors and anchors take from the hub's reserve
     /// on a dispute it loses (found at the first opening).
     floors: Mutex<Option<u64>>,
@@ -211,7 +214,7 @@ impl Hub {
         let server = Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let server = Arc::new(Mutex::new(Arc::new(server)));
-        let inner = Arc::new(Inner { cfg, chain, book, deployment, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), withhold_unlocks: AtomicBool::new(false), proving: Default::default(), abandon_corrections: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, chain, book, deployment, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), withhold_unlocks: AtomicBool::new(false), proving: Default::default(), abandon_corrections: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), correct_msgs: Mutex::new(HashMap::new()), floors: Mutex::new(None), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             listen(&srv, &i1.stop, |mut req| {
@@ -401,7 +404,11 @@ fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String
         return Ok(serde_json::to_string(&inner.book.unspent_of(&owner(rest)?))?);
     }
     Ok(match (method, path) {
-        (Method::Post, "/grant") => serde_json::to_string(&inner.book.grant(serde_json::from_str(body)?)?)?,
+        (Method::Post, "/grant") => {
+            let spend: lichen_notes::Spend = serde_json::from_str(body)?;
+            let reveals = inner.reveal_keys(&spend)?;
+            serde_json::to_string(&inner.book.grant(spend, &reveals)?)?
+        }
         (Method::Post, "/spend") => {
             let a: lichen_notes::Authorized = serde_json::from_str(body)?;
             let t = inner.book.record(&a.sid, &a.sigs)?;

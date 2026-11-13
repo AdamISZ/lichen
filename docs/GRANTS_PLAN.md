@@ -70,7 +70,8 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
     ├─ request_timeout (after w_H)        → Alice: b
     └─ correct (the hub: b_corr, one-time signed under its key bc)
         │   its fee child (the hub's, SIGHASH_ALL): OP_RETURN with the
-        │   unlocks t of the spends it cites
+        │   unlocks t of the spends it cites (milestone 5: slots in
+        │   correct instead)
         ├─ correct_timeout (after w_H)    → Alice: b (it never proved)
         └─ assert (the hub: π)
             ├─ success (after Δ2)         → Alice: b_corr's bits (read from the
@@ -186,7 +187,8 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
      against another owner and count any claim malformed. `D` now hashes
      the issuer and the owner (`GTerms::d`, `contract_word`), fixed at
      the setup (`HpSetupRequest.owner`).
-   - **One contract per owner**: a note was kept from being claimed
+   - **One contract per owner** (replaced in milestone 5 by a fresh key
+     per contract): a note was kept from being claimed
      through two contracts by her signature on each claim; an exit's
      posted claim no longer carries one. The hub opens one contract at a
      time per owner key, and none for an owner who exited (checked at the
@@ -202,6 +204,53 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
      on the contested test's corrected exit 1,456k user cycles (1,281k
      before: the aggregate signature), 2 segments, so about milestone
      3's 21 minutes to prove.
+5. **Reveals** (2026-11-13): a spend counts against her claim only if
+   the hub reveals its unlock to her, by completing in `correct` a
+   pre-signature she checked before signing the spend; a fresh L2 key per
+   contract; one output per owner per spend. The design is written up in
+   `papers/lichen-grants-v0.1.0.tex` (a draft).
+
+   - **Why**: the fee child's `OP_RETURN` carried two unlocks (Core 29's
+     relay limit), so a claim whose notes three spends took was overpaid.
+     And `t` must reach her whenever the hub uses her spend (else the
+     hub holds her inputs and the payee gets nothing).
+   - **The reveal** (`lichen_notes::Reveal`): each grant carries, for each
+     input owner with a contract open, the hub's adaptor pre-signature
+     under the spend's `T` on that contract's `correct` sighash (fixed at
+     the opening), by the hub's key in it; its commitment, which she
+     signs, includes them. The wallet checks its own before signing
+     (`Grant::verify_reveal`, against `Held.correct_msg`).
+   - **The slots**: `correct`'s leaf ends with 8 of `OP_SIZE 64
+     OP_EQUALVERIFY <P_H> OP_CHECKSIGVERIFY` (`grants::SLOTS`). To cite a
+     spend the hub puts its completed reveal in a slot (`R = R' + T`), the
+     others its plain signature. Bitcoin checked the signature, she
+     checked `s'` on the same message, so `s − s' = t`: she reads it from
+     the chain (`Wallet::revealed`). The statement checks a slot's `R` is
+     her reveal's final nonce: no sighash, no `t`. 64 bytes: no other
+     sighash type (whose message differs); the annex is excluded by her
+     signature on `correct` from the opening. `correct` is 654 vB. The
+     fee child is a plain fee bump again; `others`, `InBlock` and the
+     unlocks are gone from the statement.
+   - **A fresh key per contract**: the wallet derives each contract's L2
+     key from its nonce (`ContractSecrets::l2`); its address is its open
+     contract's key, and it moves its other keys' notes there by a merge.
+     The hub refuses a contract for a key it knows (a contract's, or any
+     note: `Book::knows`), so a contract's key has no spend from before
+     its opening (whose grant would have no reveal on its `correct`), and
+     no claim on another contract names its notes (`others` gone).
+   - **One output per owner** (`Spend::check`): a fallback revives at
+     most one candidate, so a claim (4 notes, 4 fallbacks) needs at most
+     8 cited spends: the slots.
+   - **Tests** (regtest): the contested exits; Alice reads Bob's note
+     from `correct` (her in-flight spend's unlock), Dave Erin's; a key
+     the hub knows refused at the deposit request (payments.rs).
+   - **The guest** rebuilt: image id `1b2e907a…` (r0/guests/README.md);
+     on the contested exit 1,306k user cycles (no `t·G` any more), 2
+     segments.
+   - **Not yet**: the hub checks what it records with its own BIP340
+     code, the guest with `k256`; checking at intake with the guest's
+     functions would make "the hub accepted it" imply "the statement
+     accepts it".
 
 ## Open
 

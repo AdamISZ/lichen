@@ -5,7 +5,7 @@
 //! ```text
 //! request (Alice: b, the claim, each one-time signed)
 //!  ├─ request_timeout (after w_H)      → Alice: b
-//!  └─ correct (the hub: b_corr, its one-time key bc)
+//!  └─ correct (the hub: b_corr, its one-time key bc; its slots)
 //!      ├─ correct_timeout (after w_H)  → Alice: b
 //!      └─ assert (the hub: π1, Lamport)
 //!          ├─ success (after Δ2)       → Alice: b_corr (by bc's
@@ -20,6 +20,12 @@
 //! claim is owed at most `b_corr`: `success` pays it, bit by bit, read
 //! from the hub's one-time signature in `correct`; two signatures under
 //! `bc` give Alice every bit output (`equiv_corr`).
+//!
+//! `correct` also carries [`SLOTS`] signatures by the hub on `correct`
+//! itself (64 bytes each, `SIGHASH_DEFAULT`): to cite a spend of hers
+//! against her claim, the hub completes in a slot its pre-signature on
+//! `correct` from the spend's grant, which reveals the spend's unlock to
+//! her (`lichen_notes::Reveal`); the other slots take any signature.
 //!
 //! `success` and `failure` are the prover's, as in BABE: the prover is
 //! the hub here. Alice garbled the kept instances (`hmsg` their
@@ -41,7 +47,7 @@
 //! changes its id).
 
 use anyhow::{ensure, Context, Result};
-use lichen_withdraw::grants::POSTED_LEN;
+use lichen_withdraw::grants::{POSTED_LEN, SLOTS};
 use lngap_btc::bitcoin::opcodes::all::*;
 use lngap_btc::bitcoin::script::Builder;
 use lngap_btc::bitcoin::transaction::Version;
@@ -166,10 +172,13 @@ impl HubProves {
         self.core().tree(ok_leaf("request", b, tl))
     }
     /// `request`'s output: the hub's `correct`, its one-time signature on
-    /// `b_corr`; or, after `w_H`, `request_timeout`.
+    /// `b_corr` and its [`SLOTS`] signatures on `correct` (each exactly 64
+    /// bytes: the default sighash, the message every reveal pre-signs);
+    /// or, after `w_H`, `request_timeout`.
     pub fn requested(&self) -> Result<TapTree> {
         let (b, tl) = self.signed(after(POST_CSV));
-        let correct = drop_digits(b.wots_verify(&self.spec.bc_key));
+        let hub = self.ctx().key(Role::Hub).payment;
+        let correct = (0..SLOTS).fold(drop_digits(b.wots_verify(&self.spec.bc_key)), |b, _| b.push_opcode(OP_SIZE).push_int(64).push_opcode(OP_EQUALVERIFY).checksigverify(&hub));
         let (t, ttl) = self.signed(after(self.spec.windows.w_h));
         TapTree::new(vec![ok_leaf("correct", correct, tl), ok_leaf("request_timeout", t, ttl)])
     }
@@ -238,7 +247,7 @@ impl HubProves {
     fn shape(&self, name: &str) -> Vec<Vec<u8>> {
         match name {
             "request" => wots_shape([&self.spec.claim_key, &self.spec.b_key]),
-            "correct" => wots_shape([&self.spec.bc_key]),
+            "correct" => vec![vec![0u8; 64]; SLOTS].into_iter().chain(wots_shape([&self.spec.bc_key])).collect(),
             "assert" => vec![vec![0u8; 20]; DIGITS].into_iter().chain([vec![0u8; 64], vec![0u8; 32]]).collect(),
             _ => (0..DIGITS).flat_map(|_| [vec![0u8; 20], vec![0u8; 64]]).collect(),
         }
@@ -286,7 +295,13 @@ impl HubProves {
     /// `challenge_assert`'s sighash in `set`, which the hub's adaptor
     /// pre-signatures sign.
     pub fn challenge_sighash(set: &[Presign]) -> Result<Message> {
-        let p = set.iter().find(|p| p.name == "challenge_assert").context("no challenge_assert")?;
+        Self::link_sighash(set, "challenge_assert")
+    }
+    /// Link `name`'s sighash in `set` (its one input, by its leaf, the
+    /// default sighash): `correct`'s is what each grant's reveal
+    /// pre-signs.
+    pub fn link_sighash(set: &[Presign], name: &str) -> Result<Message> {
+        let p = set.iter().find(|p| p.name == name).with_context(|| format!("no {name}"))?;
         tapscript_sighash(&p.tx, 0, std::slice::from_ref(&p.prevout), &p.leaf)
     }
 
@@ -312,12 +327,18 @@ impl HubProves {
     pub fn b_wire(b: &WotsSig) -> Vec<Vec<u8>> {
         b.consumption_order().into_iter().rev().collect()
     }
+    /// `correct`'s: the slots' signatures, then the hub's on `b_corr`.
+    pub fn correct_wire(b_corr: &WotsSig, slots: &[[u8; 64]]) -> Result<Vec<Vec<u8>>> {
+        ensure!(slots.len() == SLOTS, "{} slot signatures, not {SLOTS}", slots.len());
+        Ok(slots.iter().map(|s| s.to_vec()).chain(Self::b_wire(b_corr)).collect())
+    }
     /// Read `correct`'s arguments (consumption order, below both
-    /// signatures): the hub's signature on `b_corr`.
-    pub fn read_correct(args: &[Vec<u8>]) -> Result<WotsSig> {
+    /// signatures): the hub's signature on `b_corr`, and the slots'.
+    pub fn read_correct(args: &[Vec<u8>]) -> Result<(WotsSig, Vec<[u8; 64]>)> {
         let n = 2 * WotsParams::for_bytes(4).total_digits() as usize;
-        ensure!(args.len() == n, "a correct of {} arguments", args.len());
-        WotsSig::from_consumption_order(WotsParams::for_bytes(4), args)
+        ensure!(args.len() == n + SLOTS, "a correct of {} arguments", args.len());
+        let slots = args[n..].iter().rev().map(|s| s[..].try_into().context("a slot's signature of other than 64 bytes")).collect::<Result<_>>()?;
+        Ok((WotsSig::from_consumption_order(WotsParams::for_bytes(4), &args[..n])?, slots))
     }
     /// `assert`'s: π1's digits, Lamport-signed, then π2 and π3.
     pub fn assert_wire(preimages: &[Preimage], pi2: &[u8], pi3: &[u8]) -> Vec<Vec<u8>> {

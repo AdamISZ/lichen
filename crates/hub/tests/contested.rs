@@ -8,14 +8,15 @@
 //! it as a fallback.
 //!
 //! - C: an honest hub corrects Alice's claim to her change of the spend
-//!   (its unlock in `correct`'s fee child), proves it, and `success` pays
-//!   her that and her reserve; the hub sweeps its bit outputs after `Δ`.
-//!   Bob, paid by the spend, holds his note.
+//!   (cited by completing its grant's reveal in a slot of `correct`),
+//!   proves it, and `success` pays her that and her reserve; the hub
+//!   sweeps its bit outputs after `Δ`. Alice extracts the spend's unlock
+//!   from `correct`: Bob's note, which she can hand him.
 //! - F: a lying hub corrects Carol's claim, which holds in full, to 0 and
 //!   asserts a forged proof: she challenges, it can't answer, `failure`
 //!   pays her claim.
 //! - A: a hub corrects Dave's claim and never proves it:
-//!   `correct_timeout` pays his claim.
+//!   `correct_timeout` pays his claim; Erin's note is revealed to him.
 
 mod common;
 
@@ -77,7 +78,8 @@ fn exits_contested() {
         let cid = u.2.record.cid();
         let plan = u.0.keep_exit_claim(&u.1, cid).unwrap();
         assert_eq!(plan.b, b, "all her notes claimed");
-        u.0.exit(&u.1, &statement(), cid).unwrap()
+        let out = u.0.exit(&u.1, &statement(), cid).unwrap();
+        (out, u.0.revealed(&u.1, &statement(), cid).unwrap())
     };
     let exit = &exit;
     let (c, f, a) = std::thread::scope(|s| {
@@ -86,6 +88,7 @@ fn exits_contested() {
         let a = s.spawn(move || exit(&mut dave));
         (c.join().unwrap(), f.join().unwrap(), a.join().unwrap())
     });
+    let ((c, c_rev), (f, _), (a, a_rev)) = (c, f, a);
     println!("LICHEN the three exits played in {:.1?}", t.elapsed());
 
     // C: corrected to her change, proved, paid by success
@@ -96,17 +99,12 @@ fn exits_contested() {
     }
     let (_, swept) = c.1.expect("C: her bits swept");
     assert!(swept > Amount::from_sat(u64::from(b_corr) * unit / 2), "C: {swept}");
-    assert!(hub_c.log().iter().any(|l| l.contains("the unlocks in")), "the unlock on chain: {:?}", hub_c.log());
+    assert!(hub_c.log().iter().any(|l| l.contains("1 spends revealed in its slots")), "{:?}", hub_c.log());
     println!("LICHEN C: the claim of {b} units corrected to {b_corr} (the spend in flight recorded: her change), proved; success paid her, swept {swept}");
+    let bobs = c_rev.iter().find(|s| s.note.owner == bob.address()).expect("Bob's note revealed to Alice");
+    assert_eq!(*bobs, bob.notes[0], "the note Bob holds");
+    println!("LICHEN C: correct revealed the spend's unlock to Alice: Bob's note, {} sats", bobs.note.value);
     wait("the hub's bit outputs of success", || hub_c.log().iter().any(|l| l.contains("collected the hub's")));
-
-    // no contract again for an owner who exited (her exit's claim isn't
-    // one a statement on another contract could cite): refused before she
-    // pays
-    let mut again = Wallet::open(&env.dir.join("alice.json"), &hub_c.url).unwrap();
-    let ch = env.chain("alice");
-    let err = again.open_contract(&hub_c.url, &ch, &statement(), ask, ch.new_spk().unwrap(), &|_: &bitcoin::Address, _| panic!("asked to pay")).unwrap_err();
-    assert!(format!("{err:#}").contains("exited contract"), "{err:#}");
 
     // F: a forged proof against a claim owed in full
     assert!(matches!(f.0, Outcome::Refuted(_)), "F: {:?}", f.0);
@@ -116,5 +114,6 @@ fn exits_contested() {
     // A: corrected, never proved
     assert!(matches!(a.0, Outcome::HubTimedOut(_)), "A: {:?}", a.0);
     assert!(hub_a.log().iter().any(|l| l.contains("abandoning the correction")), "{:?}", hub_a.log());
+    assert!(a_rev.iter().any(|s| s.note.owner == erin.address() && s.note.value == PAID), "Erin's note revealed to Dave");
     println!("LICHEN A: Dave's claim corrected and never proved: correct_timeout paid his {b} units");
 }

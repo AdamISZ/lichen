@@ -123,7 +123,7 @@ impl Wallet {
             Outcome::Corrected { b_corr, .. } => {
                 let d = HpDisputed::new(&held.record, statement)?;
                 let correct = chain.get_tx(&d.txid("correct")).context("correct")?;
-                let sig = HubProves::read_correct(&link_args(&correct))?;
+                let (sig, _) = HubProves::read_correct(&link_args(&correct))?;
                 for i in (t.low_bits..t.bits).filter(|i| (b_corr >> i) & 1 == 1) {
                     let vout = i - t.low_bits;
                     ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), Sequence::ENABLE_RBF_NO_LOCKTIME, Some((corr_bit_tree(&ctx, i, &d.graph.spec.bc_key)?, format!("alice_corr_bit_{i}"), true))));

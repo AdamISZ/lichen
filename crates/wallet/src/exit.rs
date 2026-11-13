@@ -52,18 +52,50 @@ impl Wallet {
     }
 
     /// Contract `cid`'s exit claim prepared now and kept with it, not
-    /// posted ([`Wallet::exit`] posts the claim kept): our notes, as many
-    /// whole units as they hold, up to the cap.
+    /// posted ([`Wallet::exit`] posts the claim kept): the notes of its
+    /// key (our others' moved to it first, if the hub will), as many whole
+    /// units as they hold, up to the cap.
     pub fn keep_exit_claim(&mut self, _chain: &lichen_chain::Chain, cid: u32) -> Result<ExitPlan> {
         let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
-        let t = self.contracts[k].record.terms;
+        let (t, owner) = (self.contracts[k].record.terms, self.contracts[k].record.l2_address);
         let unit = t.unit.to_sat();
         let _ = self.sync();
-        let units = (self.balance().min(t.v_max().to_sat()) / unit) as u32;
-        ensure!(units > 0, "nothing to claim: {} sats of notes, a unit of {unit}", self.balance());
+        if self.address() == owner {
+            let _ = self.merge();
+        }
+        let held: u64 = self.notes.iter().filter(|s| s.note.owner == owner).map(|s| s.note.value).sum();
+        let units = (held.min(t.v_max().to_sat()) / unit) as u32;
+        ensure!(units > 0, "nothing to claim: {held} sats of notes under the contract's key, a unit of {unit}");
         let p = self.claim_for(cid, units)?;
         self.contracts[k].exit = Some(p.clone());
         self.save()?;
         Ok(p)
+    }
+
+    /// The unlocks `correct` revealed to us (contract `cid`'s dispute, once
+    /// the hub corrected the claim): each spend of ours in flight that the
+    /// hub cited, completed in a slot of `correct`, finished with its `t`.
+    /// Their outputs (the payees' notes too, to hand them), the spends done
+    /// with. Our own outputs stay with the claim (the statement counted
+    /// them as revived change).
+    pub fn revealed(&mut self, chain: &lichen_chain::Chain, statement: &lichen_proto::Statement, cid: u32) -> Result<Vec<lichen_notes::Settled>> {
+        let h = self.contracts.iter().find(|h| h.record.cid() == cid).cloned().with_context(|| format!("no contract {cid}"))?;
+        let d = lichen_proto::hp::HpDisputed::new(&h.record, statement)?;
+        let Some(correct) = chain.get_tx(&d.txid("correct")) else { return Ok(vec![]) };
+        let (_, slots) = lichen_babe::hp::HubProves::read_correct(&lichen_proto::setup::link_args(&correct))?;
+        let owner = h.record.l2_address;
+        let mut outs = vec![];
+        let mut done = vec![];
+        for (i, f) in self.inflight.iter().enumerate() {
+            if let Some(t) = f.grant.revealed(&owner, &slots) {
+                outs.extend(f.grant.open(&self.issuer(), &f.spend, &t)?);
+                done.push(i);
+            }
+        }
+        for i in done.into_iter().rev() {
+            self.inflight.remove(i);
+        }
+        self.save()?;
+        Ok(outs)
     }
 }

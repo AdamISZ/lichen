@@ -245,6 +245,12 @@ impl HpDisputed {
     pub fn txid(&self, name: &str) -> bitcoin::Txid {
         self.set[name].tx.compute_txid()
     }
+    /// Link `name`'s sighash: `correct`'s is what each grant's reveal
+    /// pre-signs, and what its slots sign.
+    pub fn sighash(&self, name: &str) -> Result<bitcoin::secp256k1::Message> {
+        let p = self.set.get(name).with_context(|| format!("no pre-signed {name}"))?;
+        lngap_btc::sighash::tapscript_sighash(&p.tx, 0, std::slice::from_ref(&p.prevout), &p.leaf)
+    }
     /// `request`'s claim: `b` and the posted claim's bytes, from its
     /// arguments.
     pub fn requested(request: &bitcoin::Transaction) -> Result<(u32, Vec<u8>)> {

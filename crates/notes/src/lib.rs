@@ -29,7 +29,7 @@ pub mod book;
 use anyhow::{ensure, Context, Result};
 use bitcoin::key::{Keypair, XOnlyPublicKey};
 use bitcoin::secp256k1::{schnorr, Message, PublicKey, SecretKey, SECP256K1};
-use lngap_btc::adaptor::{adaptor_complete, adaptor_sign, adaptor_verify, AdaptorSig};
+use lngap_btc::adaptor::{adaptor_complete, adaptor_extract, adaptor_sign, adaptor_verify, AdaptorSig};
 use serde::{Deserialize, Serialize};
 use lichen_withdraw::grants as g;
 
@@ -147,7 +147,9 @@ impl Spend {
         self.outputs.iter().enumerate().map(|(j, o)| Note { id: g::output_id(&sid, j as u32), owner: o.owner, value: o.value }).collect()
     }
     /// Well formed: inputs and outputs within bounds, distinct inputs, no
-    /// empty output, the totals equal.
+    /// empty output, no two outputs to one owner (so that the spends a
+    /// claim's evidence needs stay few: a claim's fallback revives one
+    /// output of hers at most), the totals equal.
     pub fn check(&self) -> Result<()> {
         ensure!(!self.inputs.is_empty() && self.inputs.len() <= MAX_INPUTS, "a spend of {} inputs (1 to {MAX_INPUTS})", self.inputs.len());
         ensure!(!self.outputs.is_empty() && self.outputs.len() <= MAX_OUTPUTS, "a spend of {} outputs (1 to {MAX_OUTPUTS})", self.outputs.len());
@@ -156,6 +158,10 @@ impl Spend {
         ids.dedup();
         ensure!(ids.len() == self.inputs.len(), "a spend names an input twice");
         ensure!(self.outputs.iter().all(|o| o.value > 0), "an output of nothing");
+        let mut owners: Vec<&Hash> = self.outputs.iter().map(|o| &o.owner).collect();
+        owners.sort();
+        owners.dedup();
+        ensure!(owners.len() == self.outputs.len(), "two outputs to one owner");
         fn total(mut v: impl Iterator<Item = u64>) -> Result<u64> {
             v.try_fold(0u64, |a, x| a.checked_add(x)).context("a sum that overflows")
         }
@@ -197,8 +203,28 @@ pub fn unlock(issuer: &Keypair, sid: &Hash) -> SecretKey {
     }
 }
 
-/// The hub's grant on a spend: `T`, its signature on `(sid, T)`, and an
-/// adaptor pre-signature under `T` on each output note.
+/// The hub's pre-signature under a grant's `T` on an input owner's
+/// contract's `correct` (its sighash, under the hub's key in that
+/// contract): the hub can cite the spend against her claim only by
+/// completing it in one of `correct`'s slots, which reveals `t` to her.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reveal {
+    #[serde(with = "hex32")]
+    pub owner: Hash,
+    pub presig: Presig,
+}
+
+/// What the hub needs to pre-sign an owner's [`Reveal`]: the owner, its
+/// key in the owner's contract, and that contract's `correct` sighash.
+pub struct RevealKey {
+    pub owner: Hash,
+    pub key: Keypair,
+    pub msg: Message,
+}
+
+/// The hub's grant on a spend: `T`, its signature on `(sid, T)`, an
+/// adaptor pre-signature under `T` on each output note, and on each input
+/// owner's contract's `correct` ([`Reveal`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grant {
     #[serde(with = "hex32")]
@@ -207,27 +233,57 @@ pub struct Grant {
     #[serde(with = "hex64")]
     pub t_sig: [u8; 64],
     pub presigs: Vec<Presig>,
+    #[serde(default)]
+    pub reveals: Vec<Reveal>,
+}
+
+/// A pre-signature as the commitment takes it: `R` (the final nonce)
+/// x-only, the signer's `R'`, `s'` (97 bytes).
+pub fn presig_bytes(p: &Presig) -> [u8; 97] {
+    [p.r_final.serialize().as_slice(), &p.r.serialize(), &p.s_prime.secret_bytes()].concat().try_into().expect("97 bytes")
 }
 
 impl Grant {
     fn t_digest(sid: &Hash, t_point: &PublicKey) -> Hash {
         tagged("lichen/notes/grant", &[sid, &t_point.serialize()])
     }
-    /// The hub's grant on `spend`, unlocked by `t`.
-    pub fn make(issuer: &Keypair, spend: &Spend, t: &SecretKey) -> Grant {
+    /// The hub's grant on `spend`, unlocked by `t`, with a reveal for
+    /// each of `reveals` (the input owners with a contract open).
+    pub fn make(issuer: &Keypair, spend: &Spend, t: &SecretKey, reveals: &[RevealKey]) -> Grant {
         let sid = spend.id();
         let t_point = PublicKey::from_secret_key(SECP256K1, t);
         let presigs = spend.notes().iter().map(|n| Presig::from(&adaptor_sign(issuer, &Message::from_digest(n.digest()), &t_point))).collect();
-        Grant { sid, t_point, t_sig: sign(issuer, &Grant::t_digest(&sid, &t_point)), presigs }
+        let reveals = reveals.iter().map(|r| Reveal { owner: r.owner, presig: Presig::from(&adaptor_sign(&r.key, &r.msg, &t_point)) }).collect();
+        Grant { sid, t_point, t_sig: sign(issuer, &Grant::t_digest(&sid, &t_point)), presigs, reveals }
     }
     /// What the payer signs with the spend: the grant as she checked it.
     pub fn commitment(&self) -> Hash {
-        g::grant_commitment(&self.sid, &self.t_point.serialize(), &self.presig_bytes())
+        g::grant_commitment(&self.sid, &self.t_point.serialize(), &self.presig_bytes(), &self.reveal_bytes())
     }
-    /// Each pre-signature as the commitment takes it: `R'` x-only, `R`,
-    /// `s'` (97 bytes).
+    /// Each output's pre-signature as the commitment takes it.
     pub fn presig_bytes(&self) -> Vec<[u8; 97]> {
-        self.presigs.iter().map(|p| [p.r_final.serialize().as_slice(), &p.r.serialize(), &p.s_prime.secret_bytes()].concat().try_into().expect("97 bytes")).collect()
+        self.presigs.iter().map(presig_bytes).collect()
+    }
+    /// Each reveal as the commitment takes it: the owner, the
+    /// pre-signature.
+    pub fn reveal_bytes(&self) -> Vec<(Hash, [u8; 97])> {
+        self.reveals.iter().map(|r| (r.owner, presig_bytes(&r.presig))).collect()
+    }
+    /// The grant reveals `t` to `owner` through her contract's `correct`
+    /// (sighash `msg`, the hub's key there `hub`): its pre-signature good
+    /// under `T`.
+    pub fn verify_reveal(&self, owner: &Hash, hub: &XOnlyPublicKey, msg: &Message) -> Result<()> {
+        let r = self.reveals.iter().find(|r| r.owner == *owner).context("the grant has no reveal through our contract's correct")?;
+        ensure!(adaptor_verify(hub, msg, &self.t_point, &AdaptorSig::from(&r.presig)), "the grant's reveal through our contract's correct doesn't verify");
+        Ok(())
+    }
+    /// `t`, from a completed signature in `correct` (its slots), if one
+    /// completes `owner`'s reveal.
+    pub fn revealed(&self, owner: &Hash, slots: &[[u8; 64]]) -> Option<SecretKey> {
+        let r = self.reveals.iter().find(|r| r.owner == *owner)?;
+        let sig = slots.iter().find(|s| s[..32] == r.presig.r_final.serialize())?;
+        let t = adaptor_extract(&AdaptorSig::from(&r.presig), &schnorr::Signature::from_slice(sig).ok()?)?;
+        (PublicKey::from_secret_key(SECP256K1, &t) == self.t_point).then_some(t)
     }
     /// The grant is the hub's, on `spend`: `T` signed, and each output's
     /// pre-signature good under `T`.
@@ -370,7 +426,7 @@ mod tests {
         let spend = Spend { inputs: vec![n.note], outputs: vec![Output { owner: xonly(&bob), value: 600 }, Output { owner: xonly(&alice), value: 400 }] };
         spend.check().unwrap();
         let t = unlock(&hub, &spend.id());
-        let g = Grant::make(&hub, &spend, &t);
+        let g = Grant::make(&hub, &spend, &t, &[]);
         g.verify(&issuer, &spend).unwrap();
         // another t opens nothing
         assert!(g.open(&issuer, &spend, &kp(4).secret_key()).is_err());

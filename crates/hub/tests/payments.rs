@@ -35,9 +35,13 @@ fn payments_by_grant() {
     assert!(held.mint.as_ref().unwrap().claimed);
     assert_eq!((alice.balance(), alice.notes.len()), (ask.deposit, 1));
     println!("LICHEN contract {} opened in {:.1?}: Alice holds her deposit, a note of {} sats signed by the hub", held.record.cid(), t.elapsed(), ask.deposit);
-    // one contract at a time per owner key: refused before she pays
-    let err = alice.open_contract(&hub.url, &ch, &statement(), ask, ch.new_spk().unwrap(), &|_: &bitcoin::Address, _| panic!("asked to pay")).unwrap_err();
-    assert!(format!("{err:#}").contains("one at a time"), "{err:#}");
+    // her address is the contract's key, fresh for it: the hub refuses
+    // another contract for a key it knows, before she pays
+    assert_eq!(alice.address(), held.record.l2_address);
+    let req = serde_json::json!({ "alice": held.record.pubs[0].payment, "deposit": ask.deposit, "liquidity": ask.liquidity, "owner": alice.address() });
+    let err = ureq::post(&format!("{}/deposit", hub.url)).send_json(req).unwrap_err();
+    let ureq::Error::Status(_, r) = err else { panic!("{err}") };
+    assert!(r.into_string().unwrap().contains("a fresh key for each contract"));
 
     // Alice pays Bob, who has no contract: final at once
     let bobs_first = {

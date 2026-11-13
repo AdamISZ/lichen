@@ -97,7 +97,7 @@ impl Engine<'_> {
             }
             Next::Taken => return self.lost(d.txid("request")),
         };
-        let b_corr = u32::from_be_bytes(HubProves::read_correct(&link_args(&correct))?.message().try_into().map_err(|_| anyhow::anyhow!("b_corr's signature signs 4 bytes"))?);
+        let b_corr = u32::from_be_bytes(HubProves::read_correct(&link_args(&correct))?.0.message().try_into().map_err(|_| anyhow::anyhow!("b_corr's signature signs 4 bytes"))?);
         let corrected_at = confirmed_at(chain, &d.txid("correct"))?.context("correct")?;
         self.step(format!("the hub corrected the claim to {b_corr} units; it may prove so until block {}", corrected_at + u32::from(w.w_h)));
         let assert = match wait_link(chain, &d.txid("assert"), &OutPoint { txid: d.txid("correct"), vout: 0 }, corrected_at + u32::from(w.w_h))? {

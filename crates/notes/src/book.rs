@@ -54,13 +54,13 @@ struct Taken {
 }
 
 /// What the book holds against a claim (the statement's evidence): the
-/// spends that consumed its notes, or its fallbacks' change to her, and
-/// her claims on other contracts that took them; and its notes still live
-/// (unspent, or taken by a claim on the same contract, never paid).
+/// spends that consumed its notes, or its fallbacks' change to her; and
+/// its notes still live (unspent, or taken by a claim on the same
+/// contract, never paid). A contract's key is its own, so no claim on
+/// another contract names its notes.
 #[derive(Clone, Debug, Default)]
 pub struct Evidence {
     pub cited: Vec<Recorded>,
-    pub others: Vec<Claim>,
     pub live: Vec<Note>,
 }
 
@@ -160,8 +160,8 @@ impl Book {
     }
 
     /// A grant on `spend` (`POST /grant`): its inputs live, its totals
-    /// equal. Asked again, the same grant.
-    pub fn grant(&self, spend: Spend) -> Result<Grant> {
+    /// equal, a reveal for each of `reveals`. Asked again, the same grant.
+    pub fn grant(&self, spend: Spend, reveals: &[crate::RevealKey]) -> Result<Grant> {
         spend.check()?;
         let sid = spend.id();
         let mut s = self.s.lock().unwrap();
@@ -169,7 +169,7 @@ impl Book {
             return Ok(r.grant.clone());
         }
         Book::inputs_live(&s, &spend)?;
-        let g = Grant::make(&self.issuer, &spend, &unlock(&self.issuer, &sid));
+        let g = Grant::make(&self.issuer, &spend, &unlock(&self.issuer, &sid), reveals);
         s.pending.insert(hex::encode(sid), (spend, g.clone()));
         Ok(g)
     }
@@ -203,6 +203,14 @@ impl Book {
         s.recorded.insert(hex::encode(sid), Recorded { spend, grant, sigs: sigs.to_vec(), t });
         self.save(&s)?;
         Ok(t)
+    }
+
+    /// Whether `owner` has any history in the book: a note issued to it,
+    /// or one granted (a contract's key must be fresh: its claims are
+    /// rebutted by spends whose grants reveal through its `correct`).
+    pub fn knows(&self, owner: &Hash) -> bool {
+        let s = self.s.lock().unwrap();
+        s.notes.values().any(|e| e.note.owner == *owner) || s.pending.values().any(|(sp, _)| sp.outputs.iter().any(|o| o.owner == *owner)) || s.mailbox.contains_key(&hex::encode(owner))
     }
 
     /// `owner`'s deliveries from the `from`th on.
@@ -259,15 +267,7 @@ impl Book {
             match &entry.spent {
                 None => ev.live.push(n),
                 Some(Spent::Claim { cid, .. }) if *cid == claim.cid => ev.live.push(n),
-                Some(Spent::Claim { e, .. }) => {
-                    // a claim she signed (a cooperative one: an exit's
-                    // isn't signed with her key)
-                    if let Some(c) = s.claims.get(e).and_then(|t| t.claim.clone()).filter(|c| crate::verify(&c.owner, &c.e(), &c.sig)) {
-                        if !ev.others.contains(&c) {
-                            ev.others.push(c);
-                        }
-                    }
-                }
+                Some(Spent::Claim { .. }) => {}
                 Some(Spent::Spend(sid)) => {
                     let Some(r) = s.recorded.get(sid) else { continue };
                     if ev.cited.iter().any(|c| c.grant.sid == r.grant.sid) {
@@ -326,7 +326,7 @@ mod tests {
         let book = Book::open(dir.join("book.json"), hub).unwrap();
         let n = book.issue(b"mint", xonly(&alice), 1000).unwrap();
         let spend = Spend { inputs: vec![n.note], outputs: vec![Output { owner: xonly(&bob), value: 700 }, Output { owner: xonly(&alice), value: 300 }] };
-        let g = book.grant(spend.clone()).unwrap();
+        let g = book.grant(spend.clone(), &[]).unwrap();
         g.verify(&book.issuer(), &spend).unwrap();
         // the wrong signer is refused, the right one recorded
         let msg = auth_msg(&g.sid, &g.commitment());
@@ -334,7 +334,7 @@ mod tests {
         let t = book.record(&g.sid, &[hex::encode(sign(&alice, &msg))]).unwrap();
         assert_eq!(g.open(&book.issuer(), &spend, &t).unwrap().len(), 2);
         // spent: no second grant on it
-        assert!(book.grant(Spend { inputs: vec![n.note], outputs: vec![Output { owner: xonly(&bob), value: 1000 }] }).is_err());
+        assert!(book.grant(Spend { inputs: vec![n.note], outputs: vec![Output { owner: xonly(&bob), value: 1000 }] }, &[]).is_err());
         let bobs = book.mailbox(&xonly(&bob), 0);
         assert_eq!(bobs.len(), 1);
         assert_eq!(bobs[0].settled.note.value, 700);

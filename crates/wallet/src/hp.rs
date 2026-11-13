@@ -31,7 +31,7 @@ impl Wallet {
     /// the others opened in her request.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn hp_opening(&self, hub: &str, statement: &Statement, cid: u32, deposit: bitcoin::OutPoint, unit: u64, s: &ContractSecrets, net: Net) -> Result<HpOpening> {
-        let owner = self.address();
+        let owner = lichen_notes::xonly(&s.l2());
         let setup: HpSetup = hub_call(&format!("{hub}/hp/setup"), Some(serde_json::to_string(&HpSetupRequest { cid, deposit, unit, owner })?), false)?;
         ensure!(setup.cid == cid && setup.unit == unit && setup.deposit == deposit && setup.owner == owner, "the setup is for another contract, unit, deposit or owner");
         check_setup(&setup)?;

@@ -129,7 +129,7 @@ impl Inner {
     fn sweep_corr_bits(&self, record: &Record) -> Result<Bits> {
         let d = HpDisputed::new(record, &self.cfg.statement)?;
         let correct = self.chain.get_tx(&d.txid("correct")).context("correct")?;
-        let sig = HubProves::read_correct(&link_args(&correct))?;
+        let (sig, _) = HubProves::read_correct(&link_args(&correct))?;
         let b_corr = u32::from_be_bytes(sig.message().try_into().map_err(|_| anyhow::anyhow!("b_corr's signature signs 4 bytes"))?);
         let built = self.built(record)?;
         let core = built.core();

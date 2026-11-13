@@ -28,14 +28,14 @@ use lichen_proto::setup::{dealing_from_hex, link_args, shares_from_hex, Opened};
 use lichen_proto::hp::{check_commit, HpCommit, HpDisputed, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
 use lichen_proto::{Checkpoint, Presig, Record};
 use lichen_withdraw::grants;
-use lngap_btc::adaptor::AdaptorSig;
+use lngap_btc::adaptor::{adaptor_complete, AdaptorSig};
 use lngap_btc::keys::Seed;
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use serde::{Deserialize, Serialize};
 
 use super::{confirmed_at, State as Outer};
-use crate::Inner;
+use crate::{contract_keys, Inner};
 
 fn contract_seed(seed: &str, cid: u32) -> Seed {
     Seed::from_label(&format!("{seed}/contract/{cid}/hp"))
@@ -70,9 +70,6 @@ pub(crate) struct Prepared {
     /// The instances not kept, opened (at the opening).
     #[serde(default)]
     opened: Vec<Opened>,
-    /// A dispute's `correct`: its fee child carrying the unlocks.
-    #[serde(default)]
-    correct_child: Option<bitcoin::Txid>,
 }
 
 impl Inner {
@@ -95,19 +92,43 @@ impl Inner {
         Ok(lichen_proto::hp::journal(setup.cid, &d, &setup.deposit, setup.margin))
     }
 
-    /// Whether `owner` may open a contract: none of its others open (a
-    /// note could be claimed through both), and none it exited by (its
-    /// exit's claim isn't one the statement could cite against a claim
-    /// through another: the posted claim isn't signed with her key).
+    /// Whether `owner` may open a contract: a key fresh for it, no
+    /// contract's before and no note's. A claim is rebutted by the spends
+    /// that took its notes, and a spend counts only through a reveal its
+    /// grant made on this contract's `correct`: a spend before the opening
+    /// has none.
     pub(crate) fn check_owner(&self, owner: &lichen_ledger::Hash) -> Result<()> {
-        let mine: Vec<crate::Open> = self.open.lock().unwrap().values().filter(|o| o.record.l2_address == *owner).cloned().collect();
-        for o in mine {
-            let cid = o.record.cid();
-            ensure!(o.closed.is_some(), "this owner's contract {cid} is open: one at a time");
-            let d = HpDisputed::new(&o.record, &self.cfg.statement)?;
-            ensure!(self.chain.get_tx(&d.txid("request")).is_none(), "this owner exited contract {cid}: a new key for another");
+        if let Some(o) = self.open.lock().unwrap().values().find(|o| o.record.l2_address == *owner) {
+            anyhow::bail!("this owner key has contract {} already: a fresh key for each contract", o.record.cid());
         }
+        ensure!(!self.book.knows(owner), "this owner key has notes already: a fresh key for each contract");
         Ok(())
+    }
+
+    /// The reveals a grant on `spend` makes: for each input owner with a
+    /// contract open, a pre-signature under `T` by the hub's key in that
+    /// contract on its `correct`.
+    pub(crate) fn reveal_keys(&self, spend: &lichen_notes::Spend) -> Result<Vec<lichen_notes::RevealKey>> {
+        let mut owners: Vec<lichen_ledger::Hash> = spend.inputs.iter().map(|n| n.owner).collect();
+        owners.sort();
+        owners.dedup();
+        let open: Vec<Record> = self.open.lock().unwrap().values().filter(|o| o.closed.is_none() && owners.contains(&o.record.l2_address)).map(|o| o.record.clone()).collect();
+        open.iter()
+            .map(|r| {
+                Ok(lichen_notes::RevealKey { owner: r.l2_address, key: contract_keys(&self.cfg.seed, r.cid()).payment, msg: self.correct_msg(r)? })
+            })
+            .collect()
+    }
+
+    /// Contract `record`'s `correct` sighash (kept once made).
+    pub(crate) fn correct_msg(&self, record: &Record) -> Result<bitcoin::secp256k1::Message> {
+        let cid = record.cid();
+        if let Some(m) = self.correct_msgs.lock().unwrap().get(&cid) {
+            return Ok(*m);
+        }
+        let m = HpDisputed::new(record, &self.cfg.statement)?.sighash("correct")?;
+        self.correct_msgs.lock().unwrap().insert(cid, m);
+        Ok(m)
     }
 
     /// The setup for contract `cid` (`POST /hp/setup`): the statement fixed
@@ -138,7 +159,7 @@ impl Inner {
             lamport: hub_lamport(&self.cfg.seed, cid).public(),
             adaptor: hub_adaptor(&self.cfg.seed, cid).public(),
         };
-        self.hp_save(cid, &Prepared { setup: setup.clone(), commit: None, kept: vec![], uploaded: Default::default(), opened: vec![], correct_child: None })?;
+        self.hp_save(cid, &Prepared { setup: setup.clone(), commit: None, kept: vec![], uploaded: Default::default(), opened: vec![] })?;
         Ok(setup)
     }
 
@@ -276,20 +297,14 @@ pub(crate) enum State {
     Challenged(Box<HpDisputed>, u32, bool),
 }
 
-/// What the hub holds against a claim ([`Inner::assess`]).
+/// What the hub holds against a claim ([`Inner::assess`]): what it's
+/// owed, the spends cited, and for each the signature that completes its
+/// reveal in a slot of `correct`.
 #[derive(Default)]
 pub(crate) struct Assessed {
     pub owed: u32,
     pub cited: Vec<grants::Cited>,
-    pub unlocks: Vec<[u8; 32]>,
-    pub others: Vec<Vec<u8>>,
-}
-
-/// An `OP_RETURN` pushing `data` (at most 75 bytes).
-fn op_return(data: &[u8]) -> bitcoin::ScriptBuf {
-    let mut v = vec![0x6a, data.len() as u8];
-    v.extend(data);
-    bitcoin::ScriptBuf::from_bytes(v)
+    pub slots: Vec<[u8; 64]>,
 }
 
 fn bb(s: State) -> Option<Outer> {
@@ -442,26 +457,33 @@ impl Inner {
     pub(crate) fn assess(&self, record: &Record, b: u32, posted: Option<&grants::Posted>, full: Option<&lichen_notes::Claim>) -> Assessed {
         let owner = record.l2_address;
         let mut a = Assessed::default();
-        let counted = grants::Counted { posted, b, cid: record.cid(), issuer: &self.book.issuer(), owner: &owner, unit: record.terms.unit.to_sat() };
+        let counted = grants::Counted { posted, b, issuer: &self.book.issuer(), owner: &owner, unit: record.terms.unit.to_sat() };
         let Some(claim) = full else {
-            a.owed = grants::owed(&counted, &[], &[], &[]);
+            a.owed = grants::owed(&counted, &[], &[]);
             return a;
         };
         let ev = self.book.evidence(claim);
-        for r in ev.cited.iter().take(grants::MAX_UNLOCKS) {
+        // a spend counts through its reveal on this contract's correct:
+        // the hub's signature in a slot completing it
+        for r in &ev.cited {
             let Some(i) = r.spend.inputs.iter().position(|n| n.owner == owner) else { continue };
             let Some(sig) = r.sigs.get(i).and_then(|s| hex::decode(s).ok()).and_then(|v| v.try_into().ok()) else { continue };
+            let Some(rev) = r.grant.reveals.iter().find(|x| x.owner == owner) else { continue };
+            if a.slots.len() == grants::SLOTS {
+                break;
+            }
+            a.slots.push(*adaptor_complete(&AdaptorSig::from(&rev.presig), &r.t).as_ref());
             a.cited.push(grants::Cited {
                 inputs: r.spend.inputs.iter().map(|n| n.g()).collect(),
                 outputs: r.spend.outputs.iter().map(|o| (o.owner, o.value)).collect(),
                 t_point: r.grant.t_point.serialize(),
                 presigs: r.grant.presig_bytes(),
+                reveals: r.grant.reveal_bytes(),
                 sig,
             });
-            a.unlocks.push(r.t.secret_bytes());
         }
-        a.others = ev.others.iter().take(grants::MAX_CITED).map(|c| c.to_bytes()).collect();
-        a.owed = grants::owed(&counted, &a.cited, &a.unlocks, &a.others);
+        let rs: Vec<[u8; 32]> = a.slots.iter().map(|s| s[..32].try_into().unwrap()).collect();
+        a.owed = grants::owed(&counted, &a.cited, &rs);
         a
     }
 
@@ -490,16 +512,18 @@ impl Inner {
         }
         self.note(format!("contract {cid}: the claim of {b} units is owed {b_corr}{}: correcting it", match &claim {
             None => " (malformed)".to_string(),
-            Some(_) => format!(" ({} spends and {} claims of hers cited)", a.cited.len(), a.others.len()),
+            Some(_) => format!(" ({} spends of hers cited)", a.cited.len()),
         }));
-        let wire = HubProves::b_wire(&hub_bc(&self.cfg.seed, cid).sign(&b_corr.to_be_bytes())?);
+        // the slots: each cited spend's reveal completed, the rest the
+        // hub's plain signature on correct
+        let msg = self.correct_msg(record)?;
+        let plain = *bitcoin::secp256k1::SECP256K1.sign_schnorr_no_aux_rand(&msg, &contract_keys(&self.cfg.seed, cid).payment).as_ref();
+        let mut slots = a.slots.clone();
+        slots.resize(grants::SLOTS, plain);
+        let wire = HubProves::correct_wire(&hub_bc(&self.cfg.seed, cid).sign(&b_corr.to_be_bytes())?, &slots)?;
         let tx = d.finish("correct", wire)?;
-        let extra: Vec<bitcoin::TxOut> = (!a.unlocks.is_empty()).then(|| bitcoin::TxOut { value: bitcoin::Amount::ZERO, script_pubkey: op_return(&a.unlocks.concat()) }).into_iter().collect();
-        let (at, child) = self.post_with(cid, &tx, &extra)?;
-        let mut p = self.hp_prepared(cid)?;
-        p.correct_child = child;
-        self.hp_save(cid, &p)?;
-        self.note(format!("contract {cid}: corrected to {b_corr} units ({} vB){}", tx.vsize(), child.map_or(String::new(), |c| format!(", the unlocks in {c}"))));
+        let at = self.post(cid, &tx)?;
+        self.note(format!("contract {cid}: corrected to {b_corr} units ({} vB){}", tx.vsize(), if a.slots.is_empty() { String::new() } else { format!(", {} spends revealed in its slots", a.slots.len()) }));
         Ok(Some(at))
     }
 
@@ -523,16 +547,9 @@ impl Inner {
         let req_height = self.chain.block_height(&req_block)?.context("the request's block")?;
         let mut headers = vec![request.header];
         headers.extend(self.chain.headers_after(&req_block, (self.chain.height()? - req_height) as usize)?);
-        let child = match self.hp_prepared(record.cid())?.correct_child {
-            None => None,
-            Some(txid) => {
-                let b = lichen_proto::exit::in_block(&self.chain, &txid)?;
-                Some(grants::InBlock { tx: b.tx, header: self.chain.header(&b.block)?, index: b.index, path: b.path, coinbase: b.coinbase, coinbase_path: b.coinbase_path })
-            }
-        };
         let (b, posted, claim) = self.posted_claim(d)?;
         let a = self.assess(record, b, posted.as_ref(), claim.as_ref());
-        Ok(Ok(grants::GrantsInput { c: record.cid(), deposit: lichen_proto::setup::statement_outpoint(&k.deposit), margin: k.margin, terms, request, correct, child, headers, cited: a.cited, others: a.others }))
+        Ok(Ok(grants::GrantsInput { c: record.cid(), deposit: lichen_proto::setup::statement_outpoint(&k.deposit), margin: k.margin, terms, request, correct, headers, cited: a.cited }))
     }
 
     /// Prove the statement for a corrected dispute and assert it: checked

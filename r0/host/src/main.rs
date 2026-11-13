@@ -173,7 +173,7 @@ fn hp_input(input: &str) -> Result<Hp> {
     let bytes = read(input)?;
     let hub = lichen_withdraw::grants::GrantsInput::from_bytes(&bytes).map_err(|r| anyhow::anyhow!("the hub's input: {r:?}"))?;
     let journal = lichen_withdraw::grants::check(&hub).map_err(|r| anyhow::anyhow!("the hub's statement rejects the input: {r:?}"))?;
-    eprintln!("lichen-r0: contract {}: the claim is owed at most the correction ({} spends, {} claims cited, {} headers)", hub.c, hub.cited.len(), hub.others.len(), hub.headers.len());
+    eprintln!("lichen-r0: contract {}: the claim is owed at most the correction ({} spends cited, {} headers)", hub.c, hub.cited.len(), hub.headers.len());
     Ok(Hp { bytes, journal: journal.to_vec() })
 }
 
