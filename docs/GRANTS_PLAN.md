@@ -452,3 +452,18 @@ fallback prefix (`revived` holds full sids today, so one prefix could
 revive two spends). Needs a guest rebuild. v0.2.0's Algorithm 1 has it.
 v0.2.0 (papers/lichen-grants-v0.2.0) is the countersigned design, a
 proposal; v0.1.1 stays as the built design until one is chosen.
+
+### Capacity levers for v0.2 (2026-11-13)
+
+The user asked whether notes could share the contract's key to shrink
+them: they already do (`Q` carries no owner; the statement takes `O_c`
+from `J`). A posted note is 16 (id) + 6 (value) + 32 (`r` of the hub's
+signature, the issuance evidence). In v0.2 the binding limit is `ack`'s
+3 unlocks (32 B, 8 items a byte), not the notes. Levers:
+- **16-byte unlock seeds**: `z_S = [H(k_iss, sid)]_16`, `t_S =
+  H_unlock(z_S)`; publish `z_S`, the statement checks `H(z_S)·G = T_X`;
+  `ack` then holds 6 unlocks (2^128 to invert).
+- Then the posted claim binds again (`request` ≤ ~242 B of `Q`): with
+  54-byte notes, 3 notes and 3 fallbacks. **BLS** issuance signatures
+  (one 48-byte aggregate, a note 22 B) would allow 6 notes, at a
+  BLS12-381 pairing in the guest and BLS in wallets.
