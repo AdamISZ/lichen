@@ -523,6 +523,38 @@ the contract-born mint (no adaptor at the opening, no cross-group
 proof). Main open question: BLS verification in RISC Zero, a hub cost
 only. Still a proposal; v0.1.1 is the built design.
 
+### Building v0.4.1 (the user, 2026-11-13)
+
+The user approved building papers/lichen-grants-v0.4.1, replacing the
+v0.1 code. Proofs run on the mock statement at first. Order, by risk:
+
+1. **The script graph** (done 2026-11-13): `lichen_babe::countersigned`
+   (`hp.rs` stays until the hub and wallet move over). `ack` is
+   `digits_equal`: the hub's signature, its digits parked on the
+   altstack, then hers, each digit `ROLL`ed up and `EQUALVERIFY`d. ln-gap's
+   payout code (`bit_tree`, `payout`, `pay_alice`, `wots_shape`) is now
+   generic over the Winternitz chain, so `K_b` is SHA-256 (ln-gap
+   e97ddde). Test `crates/babe/tests/countersigned.rs`, regtest under
+   standard policy: every link relayed at its floor; `accept`, `success`,
+   `request_timeout` and `ack_timeout` mined, and their bit outputs spent
+   by each leaf (set, clear after δ, `equiv_corr`, `equiv_b` on SHA-256);
+   an `ack` countersigning another `b_corr`, or a `U` one bit off, refused
+   (`OP_EQUALVERIFY`). Measured, against the paper's estimates:
+
+   | link | vsize | items | est. |
+   |---|---|---|---|
+   | `request` | 8,891 | 578 | 8.8 kvB, 578 |
+   | `correct` | 3,611 | 284 | 3.5 kvB, 284 |
+   | `ack` | 8,025 | 566 | 7.7 kvB, 566 |
+   | `assert` | 7,725 | 258 | (v0.1's) |
+
+   **The hub's reserve must cover the floors**: the five links at 1
+   sat/vB, about 21.5k sats with their anchors. A 20k reserve fails
+   `payout_less`; check what deployments set.
+2. **BLS notes** in the hub, wallet and book.
+3. **The guest**: Algorithm 1 with set semantics; BLS with fixed-base
+   tables and prepared constants; no `from_bytes_wide`.
+
 ### BLS in RISC Zero, measured (2026-11-13)
 
 RISC Zero 3.0.6, the executor on the Mac (cycles are exact; nothing

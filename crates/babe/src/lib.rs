@@ -18,6 +18,7 @@
 //! [`risc0`]); the transactions, on ln-gap's skeleton, are [`hp`]'s.
 
 pub mod circuit;
+pub mod countersigned;
 pub mod field;
 pub mod gadget;
 pub mod garble;
