@@ -467,3 +467,12 @@ signature, the issuance evidence). In v0.2 the binding limit is `ack`'s
   54-byte notes, 3 notes and 3 fallbacks. **BLS** issuance signatures
   (one 48-byte aggregate, a note 22 B) would allow 6 notes, at a
   BLS12-381 pairing in the guest and BLS in wallets.
+- **BLS, in detail** (the user's lever: it takes out the bulk): one
+  signer, so the aggregate verifies in 2 pairings for any `n`
+  (`e(σ, g2) = e(Σ H(m_i), I2)`); no rogue keys; repeats already
+  rejected. Atomicity: a BLS adaptor is a signature under `I2 + T2`,
+  `σ' = (k_iss + t)·H(m)`, `σ = σ' − t·H(m)`; grants BLS throughout
+  (`τ` on `(sid, T2)`, the statement checks `t·g2 = T2`). The mint ties
+  `t_0` to Bitcoin's secp adaptor on the funding: a cross-group DLEQ
+  (as in Monero–Bitcoin swaps) before she signs, off chain, once per
+  contract. Unmeasured: hash-to-curve and 2 pairings in RISC Zero.
