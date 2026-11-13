@@ -328,3 +328,12 @@ the paper fixed. The user is reading v0.1.1 first; decide then.
   verify (her keys aren't in the journal) and slots only Bitcoin
   checked, so it needs them mined; binding her keys in `J` would free
   `request`, not `correct`.
+- §5.4: place the reveal among adaptor forms. Usually either the
+  publisher isn't the key holder (can't swap the nonce) or the nonce is
+  joint (MuSig2, an adaptor on a partial). Here the hub holds the key
+  and publishes: the DLC-oracle form, nonce committed in advance (the
+  grant, in `α`), the consumer (the statement) accepting only that
+  nonce, read from the *mined* `correct` (acceptance tied to
+  publication). It works because the hub wants the spend counted;
+  declining is allowed and is exactly the case where she's owed her
+  inputs.
