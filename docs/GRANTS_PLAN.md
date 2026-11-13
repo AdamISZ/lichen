@@ -420,6 +420,14 @@ bound by its opponent's one-time signature, script forcing equality):
   move by Alice in a window, before `assert`; her tower holds the `ack`
   key (harmless: script forces equality; silence accepts `b_corr`), a
   dent in "keyless tower".
+- **Only the hub proves.** Alice signs (`request`; `ack`, mechanical,
+  script-forced equal), never proves: the original countersignature
+  design with the roles swapped (there the hub countersigned and Alice
+  proved). One BABE instance, its cryptography unchanged. The one-sided
+  `owed ≤ b_corr` suffices: too low, the hub can't prove (`ack`'s
+  timeout or `failure` pays `b`); too high hurts only the hub; no `ack`
+  accepts `b_corr`, no proof; a published `t` with `t·G ≠ T` doesn't
+  count, hurting only the hub.
 - To analyse: the byte budget against the claim's limits; knowledge
   soundness as in babe-amount-authenticated (C4); with the collision
   fix.
