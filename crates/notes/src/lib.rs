@@ -18,7 +18,8 @@
 //!   good. `t` derives from the hub's key and the spend ([`unlock`]).
 //! - **A claim** ([`Claim`]): settled notes of the contract's owner, and an
 //!   amount `b` in the contract's units, signed by the owner: what a
-//!   cooperative withdrawal hands the hub, and what an exit posts.
+//!   cooperative withdrawal hands the hub; an exit posts it compact
+//!   (`lichen_withdraw::grants::Posted`).
 //!
 //! The hub keeps its [`book::Book`]: every note issued, which are spent and
 //! by what, and each owner's mailbox of notes to collect.
@@ -39,8 +40,8 @@ pub type Hash = [u8; 32];
 /// The most inputs, and outputs, a spend takes.
 pub const MAX_INPUTS: usize = 16;
 pub const MAX_OUTPUTS: usize = 16;
-/// The most notes a claim takes (what fits in `request`'s posted bytes),
-/// and the most fallbacks.
+/// The most notes a claim takes, and the most fallbacks (fewer of both
+/// fit what an exit posts: `lichen_withdraw::grants::fits`).
 pub const MAX_CLAIM_NOTES: usize = g::MAX_NOTES;
 pub const MAX_FALLBACKS: usize = g::MAX_FALLBACKS;
 
@@ -316,7 +317,7 @@ impl Claim {
         c.sig = sign(owner, &c.e());
         c
     }
-    /// `E`: what the owner signs, and an exit's one-time key signs.
+    /// `E`: what the owner signs.
     pub fn e(&self) -> Hash {
         self.g().fingerprint()
     }
@@ -334,7 +335,7 @@ impl Claim {
         ensure!(self.notes.iter().all(|s| s.note.owner == self.owner), "a note of the claim isn't the owner's");
         self.g().holds(issuer, owner, unit).with_context(|| format!("the claim doesn't hold: by another owner, a note not settled or named twice, its signature, or worth less than {} units of {unit}", self.b))
     }
-    /// Its bytes, as an exit posts them.
+    /// Its bytes, as a cooperative withdrawal hands them over.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.g().to_bytes()
     }
@@ -401,8 +402,12 @@ mod tests {
         assert_eq!(c.check(&issuer, 1000, &dep, &xonly(&alice), 1000).unwrap(), 10_000);
         // more units than the notes hold
         assert!(c.check(&issuer, 1000, &dep, &xonly(&alice), 1200).is_err());
-        // the most notes fit in what an exit posts (15 items of 80 bytes)
+        // what an exit posts of it: its notes' signatures aggregated
+        let posted = c.g().posted(&issuer).unwrap();
+        assert!(posted.holds(9, &issuer, &xonly(&alice), 1000));
+        assert_eq!(posted.to_bytes().len(), g::POSTED_LEN);
+        // the most notes fit, with two fallbacks
         let many: Vec<Settled> = (0..MAX_CLAIM_NOTES as u8).map(|i| issue(&hub, Note { id: [i; 32], owner: xonly(&alice), value: 1 })).collect();
-        assert!(Claim::new(&alice, 1, dep, 0, many, &[[1; 32], [2; 32], [3; 32], [4; 32]]).to_bytes().len() <= 15 * 80);
+        assert!(Claim::new(&alice, 1, dep, 0, many, &[[1; 32], [2; 32]]).g().posted(&issuer).is_some());
     }
 }

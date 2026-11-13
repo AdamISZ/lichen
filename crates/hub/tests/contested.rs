@@ -67,6 +67,12 @@ fn exits_contested() {
     let unit = alice.2.record.terms.unit.to_sat();
     let b = (ask.deposit / unit) as u32;
     let t = Instant::now();
+    // Alice's request, at its size (its claim one-time signed in full)
+    alice.0.progress = Some(std::sync::Arc::new(|m: String| {
+        if m.starts_with("requesting") {
+            println!("LICHEN alice: {m}");
+        }
+    }));
     let exit = |u: &mut (Wallet, lichen_chain::Chain, lichen_wallet::Held)| {
         let cid = u.2.record.cid();
         let plan = u.0.keep_exit_claim(&u.1, cid).unwrap();
@@ -93,6 +99,14 @@ fn exits_contested() {
     assert!(hub_c.log().iter().any(|l| l.contains("the unlocks in")), "the unlock on chain: {:?}", hub_c.log());
     println!("LICHEN C: the claim of {b} units corrected to {b_corr} (the spend in flight recorded: her change), proved; success paid her, swept {swept}");
     wait("the hub's bit outputs of success", || hub_c.log().iter().any(|l| l.contains("collected the hub's")));
+
+    // no contract again for an owner who exited (her exit's claim isn't
+    // one a statement on another contract could cite): refused before she
+    // pays
+    let mut again = Wallet::open(&env.dir.join("alice.json"), &hub_c.url).unwrap();
+    let ch = env.chain("alice");
+    let err = again.open_contract(&hub_c.url, &ch, &statement(), ask, ch.new_spk().unwrap(), &|_: &bitcoin::Address, _| panic!("asked to pay")).unwrap_err();
+    assert!(format!("{err:#}").contains("exited contract"), "{err:#}");
 
     // F: a forged proof against a claim owed in full
     assert!(matches!(f.0, Outcome::Refuted(_)), "F: {:?}", f.0);

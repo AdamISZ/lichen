@@ -91,8 +91,23 @@ impl Inner {
     }
     /// The journal of the contract of `setup`.
     fn hp_journal_of(&self, setup: &HpSetup) -> Result<[u8; lichen_withdraw::hp::JOURNAL_LEN]> {
-        let d = lichen_proto::contract_word(&self.deployment, setup.checkpoint.as_ref(), bitcoin::Amount::from_sat(setup.unit))?;
+        let d = lichen_proto::contract_word(&self.deployment, setup.checkpoint.as_ref(), bitcoin::Amount::from_sat(setup.unit), &setup.owner)?;
         Ok(lichen_proto::hp::journal(setup.cid, &d, &setup.deposit, setup.margin))
+    }
+
+    /// Whether `owner` may open a contract: none of its others open (a
+    /// note could be claimed through both), and none it exited by (its
+    /// exit's claim isn't one the statement could cite against a claim
+    /// through another: the posted claim isn't signed with her key).
+    pub(crate) fn check_owner(&self, owner: &lichen_ledger::Hash) -> Result<()> {
+        let mine: Vec<crate::Open> = self.open.lock().unwrap().values().filter(|o| o.record.l2_address == *owner).cloned().collect();
+        for o in mine {
+            let cid = o.record.cid();
+            ensure!(o.closed.is_some(), "this owner's contract {cid} is open: one at a time");
+            let d = HpDisputed::new(&o.record, &self.cfg.statement)?;
+            ensure!(self.chain.get_tx(&d.txid("request")).is_none(), "this owner exited contract {cid}: a new key for another");
+        }
+        Ok(())
     }
 
     /// The setup for contract `cid` (`POST /hp/setup`): the statement fixed
@@ -103,10 +118,11 @@ impl Inner {
         ensure!(self.deposits.lock().unwrap().contains_key(&cid), "no deposit asked for contract {cid}");
         ensure!(req.unit >= 1, "a unit of 0");
         if let Ok(p) = self.hp_prepared(cid) {
-            ensure!(p.setup.deposit == req.deposit && p.setup.unit == req.unit, "contract {cid}'s setup is for another deposit or unit");
+            ensure!(p.setup.deposit == req.deposit && p.setup.unit == req.unit && p.setup.owner == req.owner, "contract {cid}'s setup is for another deposit, unit or owner");
             return Ok(p.setup);
         }
         self.check_deposit(cid, &req.deposit)?;
+        self.check_owner(&req.owner)?;
         let (n, m) = cut_and_choose(self.cfg.network);
         let setup = HpSetup {
             cid,
@@ -118,6 +134,7 @@ impl Inner {
             checkpoint: Some(Checkpoint::tip(&self.chain)?),
             unit: req.unit,
             deposit: req.deposit,
+            owner: req.owner,
             lamport: hub_lamport(&self.cfg.seed, cid).public(),
             adaptor: hub_adaptor(&self.cfg.seed, cid).public(),
         };
@@ -164,10 +181,11 @@ impl Inner {
     /// instance uploaded, the others opened, their shares on her dealing
     /// and each rebuilt to its commitment. The record's and the offer's
     /// (the pre-signatures to come, [`Inner::hp_presign`]).
-    pub(crate) fn hp_open_keys(&self, cid: u32, req: &HpRequest, deposit: &OutPoint, t_close: u32, unit: bitcoin::Amount) -> Result<(HpKeys, HpOffer, Option<Checkpoint>)> {
+    pub(crate) fn hp_open_keys(&self, cid: u32, req: &HpRequest, deposit: &OutPoint, owner: &lichen_ledger::Hash, t_close: u32, unit: bitcoin::Amount) -> Result<(HpKeys, HpOffer, Option<Checkpoint>)> {
         let mut p = self.hp_prepared(cid)?;
         let s = p.setup.clone();
-        ensure!(s.unit == unit.to_sat() && s.deposit == *deposit, "the setup is for another unit or deposit than the opening's");
+        ensure!(s.unit == unit.to_sat() && s.deposit == *deposit && s.owner == *owner, "the setup is for another unit, deposit or owner than the opening's");
+        self.check_owner(owner)?;
         let commit = p.commit.clone().context("no instances committed")?;
         ensure!(p.kept.iter().all(|i| p.uploaded.contains_key(i)), "not every kept instance uploaded");
         let want: Vec<u32> = (1..=s.n).filter(|i| !p.kept.contains(i)).collect();
@@ -191,7 +209,7 @@ impl Inner {
         let windows = lichen_proto::hp::windows(self.cfg.network, t_close);
         let keys = HpKeys {
             b_key: commit.b_key,
-            e_key: commit.e_key,
+            claim_key: commit.claim_key,
             bc_key: hub_bc(&self.cfg.seed, cid).public(),
             hub_lamport: s.lamport,
             hub_adaptor: s.adaptor,
@@ -288,7 +306,7 @@ impl Inner {
     pub(super) fn hp_claimed_b(&self, record: &Record) -> Result<(u32, Vec<Vec<u8>>)> {
         let d = HpDisputed::new(record, &self.cfg.statement)?;
         let req = self.chain.get_tx(&d.txid("request")).context("the request")?;
-        let (b, _, _) = HubProves::read_request(&link_args(&req))?;
+        let (b, _) = HubProves::read_request(&link_args(&req))?;
         let v = u32::from_be_bytes(b.message().try_into().map_err(|_| anyhow::anyhow!("b's signature signs 4 bytes"))?);
         Ok((v, HubProves::b_wire(&b)))
     }
@@ -402,27 +420,33 @@ impl Inner {
         }
     }
 
-    /// The claim `request` posts, as the statement reads it: `b`, and the
-    /// claim if well formed (as she signed it, `E` and `b`, of this
-    /// contract), else None.
-    fn posted_claim(&self, d: &HpDisputed) -> Result<(u32, Option<lichen_notes::Claim>)> {
+    /// The claim `request` posts, as the statement reads it: `b`, the
+    /// posted claim if its bytes are one, and the claim in full as the
+    /// book has its notes and fallbacks (its signature not hers: an exit
+    /// carries none).
+    fn posted_claim(&self, d: &HpDisputed) -> Result<(u32, Option<grants::Posted>, Option<lichen_notes::Claim>)> {
         let record = &d.record;
         let req = self.chain.get_tx(&d.txid("request")).context("the request")?;
-        let (b, e, posted) = HubProves::read_request(&link_args(&req))?;
-        let b = u32::from_be_bytes(b.message().try_into().map_err(|_| anyhow::anyhow!("b's signature signs 4 bytes"))?);
-        let e: [u8; 32] = e.message().try_into().map_err(|_| anyhow::anyhow!("E's signature signs 32 bytes"))?;
-        let claim = lichen_notes::Claim::from_bytes(&posted).ok().filter(|c| c.e() == e && c.b == b && c.cid == record.cid() && c.deposit == record.hp().deposit);
-        Ok((b, claim))
+        let (b, bytes) = HpDisputed::requested(&req)?;
+        let posted = grants::Posted::from_bytes(&bytes);
+        let unit = record.terms.unit.to_sat();
+        let full = posted.as_ref().filter(|p| p.holds(b, &self.book.issuer(), &record.l2_address, unit)).map(|p| self.book.claim_of(p, record.cid(), record.hp().deposit, b, &record.l2_address));
+        Ok((b, posted, full))
     }
 
-    /// What the hub holds against `claim`, of contract `record`: what it's
-    /// owed by the statement's own count, and the evidence as the
-    /// statement takes it (two spends at most: their unlocks fill the
-    /// `OP_RETURN`).
-    pub(crate) fn assess(&self, record: &Record, claim: Option<&lichen_notes::Claim>) -> Assessed {
+    /// What the hub holds against a claim of `b` units on contract
+    /// `record`: what it's owed by the statement's own count (of
+    /// `posted`), and the evidence (from `full`, the claim as the book has
+    /// it) as the statement takes it (two spends at most: their unlocks
+    /// fill the `OP_RETURN`).
+    pub(crate) fn assess(&self, record: &Record, b: u32, posted: Option<&grants::Posted>, full: Option<&lichen_notes::Claim>) -> Assessed {
         let owner = record.l2_address;
         let mut a = Assessed::default();
-        let Some(claim) = claim else { return a };
+        let counted = grants::Counted { posted, b, cid: record.cid(), issuer: &self.book.issuer(), owner: &owner, unit: record.terms.unit.to_sat() };
+        let Some(claim) = full else {
+            a.owed = grants::owed(&counted, &[], &[], &[]);
+            return a;
+        };
         let ev = self.book.evidence(claim);
         for r in ev.cited.iter().take(grants::MAX_UNLOCKS) {
             let Some(i) = r.spend.inputs.iter().position(|n| n.owner == owner) else { continue };
@@ -437,7 +461,7 @@ impl Inner {
             a.unlocks.push(r.t.secret_bytes());
         }
         a.others = ev.others.iter().take(grants::MAX_CITED).map(|c| c.to_bytes()).collect();
-        a.owed = grants::owed(Some(&claim.g()), &self.book.issuer(), &owner, record.terms.unit.to_sat(), &a.cited, &a.unlocks, &a.others);
+        a.owed = grants::owed(&counted, &a.cited, &a.unlocks, &a.others);
         a
     }
 
@@ -450,8 +474,8 @@ impl Inner {
         let record = &d.record;
         let cid = record.cid();
         let unit = record.terms.unit.to_sat();
-        let (b, claim) = self.posted_claim(d)?;
-        let a = self.assess(record, claim.as_ref());
+        let (b, posted, claim) = self.posted_claim(d)?;
+        let a = self.assess(record, b, posted.as_ref(), claim.as_ref());
         // a lying hub (tests) corrects a claim owed in full to nothing
         let forge = self.forge_assertions.load(std::sync::atomic::Ordering::Relaxed);
         let b_corr = if forge { 0 } else { a.owed };
@@ -506,8 +530,8 @@ impl Inner {
                 Some(grants::InBlock { tx: b.tx, header: self.chain.header(&b.block)?, index: b.index, path: b.path, coinbase: b.coinbase, coinbase_path: b.coinbase_path })
             }
         };
-        let (_, claim) = self.posted_claim(d)?;
-        let a = self.assess(record, claim.as_ref());
+        let (b, posted, claim) = self.posted_claim(d)?;
+        let a = self.assess(record, b, posted.as_ref(), claim.as_ref());
         Ok(Ok(grants::GrantsInput { c: record.cid(), deposit: lichen_proto::setup::statement_outpoint(&k.deposit), margin: k.margin, terms, request, correct, child, headers, cited: a.cited, others: a.others }))
     }
 

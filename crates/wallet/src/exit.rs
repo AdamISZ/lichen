@@ -21,15 +21,17 @@ use crate::Wallet;
 pub struct ExitPlan {
     /// The amount claimed, in the contract's units.
     pub b: u32,
-    /// `E`, hex.
-    pub e: String,
-    /// What `request` posts ([`lichen_notes::Claim`]'s bytes), hex.
+    /// The claim ([`lichen_notes::Claim`]'s bytes, signed with our key):
+    /// what a cooperative withdrawal hands the hub, hex.
+    pub claim: String,
+    /// What `request` posts of it (`lichen_withdraw::grants::Posted`'s
+    /// bytes, one-time signed there), hex.
     pub posted: String,
 }
 
 impl ExitPlan {
-    pub fn e(&self) -> Result<[u8; 32]> {
-        hex::decode(&self.e)?.try_into().map_err(|_| anyhow::anyhow!("E of other than 32 bytes"))
+    pub fn claim(&self) -> Result<lichen_notes::Claim> {
+        lichen_notes::Claim::from_bytes(&hex::decode(&self.claim)?)
     }
     pub fn posted(&self) -> Result<Vec<u8>> {
         Ok(hex::decode(&self.posted)?)

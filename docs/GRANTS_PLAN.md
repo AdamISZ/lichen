@@ -12,8 +12,9 @@ chain prover, anchoring, acknowledgments, shielded notes.
 ## The design
 
 - **A note** is `(id, owner, value)`, settled by the hub's BIP340
-  signature (`lichen_notes::Settled`). Any value: a wallet merges its
-  notes.
+  signature (`lichen_notes::Settled`) on its id's first 8 bytes, owner
+  and value (what an exit posts names it by). Any value: a wallet merges
+  its notes.
 - **A spend** names its input notes and asks for outputs of the same
   total; its outputs' ids derive from its id.
 - **A grant**: the payer sends the unsigned spend (`POST /grant`); the hub
@@ -29,10 +30,10 @@ chain prover, anchoring, acknowledgments, shielded notes.
   adaptor point: the note settles when the funding reveals `t`, the same
   swap as the anchored L2's locked mint.
 - **A claim** (`lichen_notes::Claim`): settled notes of the contract's
-  owner and `b` units, signed by the owner; posted in `request` (up to 8
-  notes, in its 1,200 bytes). A cooperative withdrawal hands the same
-  claim to the hub, which takes it (its notes spent, the change beyond
-  `b` back to the owner) and folds.
+  owner and `b` units, signed by the owner. A cooperative withdrawal
+  hands it to the hub, which takes it (its notes spent, the change beyond
+  `b` back to the owner) and folds; an exit posts it compact, one-time
+  signed in `request` (milestone 4).
 - **The wallet's policy**: a payment spends all its notes (the payment
   and one change out); received notes are merged once there are more than
   2 (`KEEP_NOTES`); more than 4 unmerged (`ALARM_NOTES`) means the hub is
@@ -65,7 +66,7 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
    reads it from the chain, from a new link.
 
    ```text
-   request (Alice: b, E, the claim)
+   request (Alice: b, the claim, one-time signed)
     ├─ request_timeout (after w_H)        → Alice: b
     └─ correct (the hub: b_corr, one-time signed under its key bc)
         │   its fee child (the hub's, SIGHASH_ALL): OP_RETURN with the
@@ -81,12 +82,13 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
    ```
 
    - **The claim** (`lichen_withdraw::grants::Claim`, shared by wallet,
-     hub and statement): settled notes (at most 8), fallbacks (at most 4:
-     the ids of her spends in flight whose inputs are among the notes),
-     `b` in units; her signature on its fingerprint `E`.
-   - **Owed** (`grants::owed`): 0 for a malformed claim (not as posted
-     under her one-time signatures, a note not settled under the issuer
-     or not the owner's, her signature, `b` above the notes). Else the
+     hub and statement): settled notes, fallbacks (the ids of her spends
+     in flight whose inputs are among the notes), `b` in units; her
+     signature on its fingerprint `E`. An exit posts it compact
+     (milestone 4).
+   - **Owed** (`grants::owed`): 0 for a malformed claim (its encoding, a
+     note named twice, the hub's signatures on the notes, `b` above the
+     notes). Else the
      candidates not killed, in units, at most `b`. The candidates start as
      the notes; a cited spend she signed (with its grant's commitment)
      whose unlock is in the fee child (`t·G = T`) kills those among its
@@ -111,8 +113,9 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
      (`hub_corr_bit_i`, after `Δ`). A cooperative claim is taken only if
      owed in full.
    - **Why the fee child**: data in a witness can be swapped by anyone
-     (the request's hole); an output under the hub's `SIGHASH_ALL` can't.
-     83 bytes of `OP_RETURN` (Core 29's limit): two unlocks.
+     unless a signature in the script covers it; an output under the
+     hub's `SIGHASH_ALL` can't be. 83 bytes of `OP_RETURN` (Core 29's
+     limit): two unlocks.
    - **`b_corr` binds the payout**: `success`'s bit outputs read the
      hub's one-time signature (from `correct`); two different signatures
      under `bc` (an equivocation) give Alice every bit output
@@ -120,8 +123,7 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
    - **No penalty**: `success` returns her reserve whatever `b_corr`. A
      false claim gains her nothing (she's paid what she's owed) and costs
      the hub one dispute per contract; a penalty would also strike honest
-     mistakes (a stale backup, the malleable posted bytes until
-     milestone 4).
+     mistakes (a stale backup).
    - **The wallet**: a spend stays a fallback of any claim of its inputs
      until a spend we hold `t` for consumes them, whatever the hub says (a
      hub that recorded it and said otherwise could cite it). A claim goes
@@ -130,7 +132,8 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
      her change and paid by `success`; a forged correction to 0, refuted;
      a correction never proved, paid by `correct_timeout`.
 3. **The real guest** (2026-11-12): `r0/hp-guest` proves `grants::check`
-   on this branch (image id `fc24dc37…`, r0/guests/README.md); `lichen-r0
+   on this branch (image id `fc24dc37…`, rebuilt for milestone 4,
+   r0/guests/README.md); `lichen-r0
    hp|exec-hp|hp-proof <input> [<out>]`, `r0/hp-prover.sh`, `r0/hp-remote.sh`
    without a chain receipt. The hub on the real statement proves in the
    background as the anchored L2's did (`LICHEN_HP_PROVER`, files in
@@ -140,11 +143,65 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
    cores, CPU) in 973 s and wrapped in Groth16 in 265 s, about 21 minutes,
    inside Mutinynet's `w_H` (2 h) after `correct`. The seal verifies under
    BABE's `Kind::Risc0` for the contract's journal and no other.
-4. **Hardening**: the claim signed in full in `request` (its posted bytes
-   are malleable today: anyone may swap them, and a claim not matching
-   its `E` is malformed); compact item encoding (hub-assigned ids and
-   MAC tags); the stack-element budget (about 2 per signed digit, 1,000
-   in all).
+4. **Hardening** (2026-11-13): the posted claim can't be swapped, the
+   statement binds the owner, a note is claimed through one contract.
+
+   - **The hole**: `request` posted the claim's bytes in witness items no
+     signature covered, with her one-time signature on `E` beside them.
+     Whoever got a `request` into a block (a miner, or the hub through
+     one) could swap the bytes, keeping the txid; a claim not matching
+     its `E` was malformed, owed 0, and the hub won with a valid proof.
+   - **Signed in full**: her one-time key (fixed at the opening, as `b`'s
+     is) signs the posted claim's every byte, so Bitcoin's script checks
+     them; `E` and the unsigned items are gone. Script can't hash a
+     witness item into something it compares with signed digits (no
+     `OP_CAT`), so the bytes themselves are signed: 2 digits a byte, 2
+     witness items a digit, and Bitcoin's 1,000 stack elements bound it.
+   - **The posted claim** (`grants::Posted`, `POSTED_LEN` = 233 bytes):
+     the counts, then per note its id's first 8 bytes, its value (6
+     bytes) and its signature's `R`; the hub's signatures' `s`
+     half-aggregated into one (Chalkias et al.; Nick and Ruffing's draft
+     BIP: `s·G = Σ z_i (R_i + e_i P)`, the weights `z_i` hashing the key,
+     messages and `R`s so far); per fallback its id's first 8 bytes;
+     zeros. The contract (`c`, deposit, owner) and `b` (signed apart)
+     aren't in it. Four notes and two fallbacks fit, or three and four
+     (`grants::fits`); the wallet merges above 4 notes, and if its spends
+     in flight still don't fit, claims the largest notes that do. `b`'s
+     and the claim's signatures and the 2-of-2's are 962 witness items;
+     `request` is 11,717 vB (about 2.5 kvB before).
+   - **Short ids**: the hub signs a note's id's first 8 bytes (the full
+     id stays the book's key). Two notes of one owner with the same short
+     id and value share a signature: only their owner can grind for that
+     (2^32 spends), and it only hurts her (one claimed, a spend of the
+     other kills it). A spend kills a candidate of the same short id and
+     value.
+   - **Why not MAC tags** (the first plan): she can't check a tag under
+     the hub's key, so a hub could issue bad ones and later call the
+     notes unissued. A VRF's output would be checkable and short, but the
+     payee's tags would come from the hub after `t`, outside the grant's
+     atomicity. The hub's BIP340 signatures are hers to check and are
+     unlocked by `t` with the outputs.
+   - **The owner bound**: `D` was the issuer's deployment alone, and the
+     statement took the owner from the hub's input: a hub could prove
+     against another owner and count any claim malformed. `D` now hashes
+     the issuer and the owner (`GTerms::d`, `contract_word`), fixed at
+     the setup (`HpSetupRequest.owner`).
+   - **One contract per owner**: a note was kept from being claimed
+     through two contracts by her signature on each claim; an exit's
+     posted claim no longer carries one. The hub opens one contract at a
+     time per owner key, and none for an owner who exited (checked at the
+     deposit request, before she pays, and again at the opening). A
+     cooperative withdrawal's claim is signed with her key, so a later
+     contract's statement still cites it. Lifting the exit rule: she
+     signs her earlier exits' claims with her key at the next opening,
+     or the wallet takes a fresh key per contract.
+   - **Tests** (regtest): the contested exits as in milestone 2, the
+     request at full size; a second contract while one is open refused
+     (payments.rs), and one after an exit (contested.rs).
+   - **The guest** rebuilt: image id `efe219a1…` (r0/guests/README.md);
+     on the contested test's corrected exit 1,456k user cycles (1,281k
+     before: the aggregate signature), 2 segments, so about milestone
+     3's 21 minutes to prove.
 
 ## Open
 

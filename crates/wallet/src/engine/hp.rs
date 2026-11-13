@@ -41,14 +41,14 @@ impl ContractSecrets {
     pub fn hp_b(&self) -> WotsSecret {
         WotsSecret::from_entropy(WotsParams::for_bytes(4), self.wots("hp/b"))
     }
-    /// Her one-time key for `E`, the claim's fingerprint (32 bytes).
-    pub fn hp_e(&self) -> WotsSecret {
-        WotsSecret::from_entropy(WotsParams::for_bytes(32), self.wots("hp/e"))
+    /// Her one-time key for the posted claim (its
+    /// [`lichen_withdraw::grants::POSTED_LEN`] bytes).
+    pub fn hp_claim(&self) -> WotsSecret {
+        WotsSecret::from_entropy(WotsParams::for_bytes(lichen_withdraw::grants::POSTED_LEN as u32), self.wots("hp/claim"))
     }
-    /// `request`'s wire: her signatures on `b` and `E`, and the claim
-    /// posted.
-    pub fn request_wire(&self, b: u32, e: &[u8; 32], posted: &[u8]) -> Result<Vec<Vec<u8>>> {
-        HubProves::request_wire(&self.hp_b().sign(&b.to_be_bytes())?, &self.hp_e().sign(e)?, posted)
+    /// `request`'s wire: her signatures on the posted claim and on `b`.
+    pub fn request_wire(&self, b: u32, posted: &[u8]) -> Result<Vec<Vec<u8>>> {
+        HubProves::request_wire(&self.hp_b().sign(&b.to_be_bytes())?, &self.hp_claim().sign(posted)?)
     }
     /// Her signature on `b` as the payout's leaves take it.
     pub fn b_wire(&self, b: u32) -> Result<Vec<Vec<u8>>> {
@@ -80,7 +80,7 @@ impl Engine<'_> {
             ensure!(!stall.stalled(chain.height()?), "the chain stalled before the contract's funding was deep enough to request");
             std::thread::sleep(Duration::from_millis(200));
         }
-        let wire = self.signer.contract().request_wire(b, &plan.e()?, &plan.posted()?)?;
+        let wire = self.signer.contract().request_wire(b, &plan.posted()?)?;
         let tx = d.finish("request", wire)?;
         self.step(format!("requesting {b} units ({} sats), {} ({} vB)", u64::from(b) * record.terms.unit.to_sat(), d.txid("request"), tx.vsize()));
         let at = self.post_link(chain, "request", tx)?;

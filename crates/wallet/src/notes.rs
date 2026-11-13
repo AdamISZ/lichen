@@ -172,11 +172,12 @@ impl Wallet {
         }
         Ok(())
     }
-    /// A claim of `units` of contract `cid`'s unit: all our notes (merged
-    /// first if they're too many for one claim), signed for the contract.
-    /// Its notes leave the wallet with it: the hub spends them when it
-    /// takes the claim, and returns what they hold beyond `units` as
-    /// change.
+    /// A claim of `units` of contract `cid`'s unit: our notes (merged
+    /// first if they're too many for one claim; if still too many with
+    /// their spends in flight, the largest that fit what an exit posts),
+    /// signed for the contract. Its notes leave the wallet with it: the hub
+    /// spends them when it takes the claim, and returns what they hold
+    /// beyond `units` as change.
     pub(crate) fn claim_for(&mut self, cid: u32, units: u32) -> Result<ExitPlan> {
         let record = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?.record.clone();
         // a hub that won't answer (a spend in flight, the mailbox) mustn't
@@ -191,18 +192,29 @@ impl Wallet {
         ensure!(self.balance() >= want, "the balance is {} sats, short of {want}", self.balance());
         // every spend of ours not known recorded whose inputs the claim
         // takes: a fallback
-        let ids: Vec<Hash> = self.notes.iter().map(|s| s.note.id).collect();
-        let fallbacks: Vec<Hash> = self.inflight.iter().filter(|f| f.spend.inputs.iter().any(|n| ids.contains(&n.id))).map(|f| f.grant.sid).collect();
-        ensure!(fallbacks.len() <= lichen_notes::MAX_FALLBACKS, "{} spends of these notes in flight, more than a claim takes", fallbacks.len());
-        let claim = Claim::new(&self.kp(), cid, record.hp().deposit, units, self.notes.clone(), &fallbacks);
-        let gone: Vec<Hash> = self.notes.iter().map(|s| s.note.id).collect();
-        self.notes.clear();
+        let fallbacks_of = |notes: &[Settled]| -> Vec<Hash> {
+            let ids: Vec<Hash> = notes.iter().map(|s| s.note.id).collect();
+            self.inflight.iter().filter(|f| f.spend.inputs.iter().any(|n| ids.contains(&n.id))).map(|f| f.grant.sid).collect()
+        };
+        let mut chosen = self.notes.clone();
+        chosen.sort_by_key(|s| std::cmp::Reverse(s.note.value));
+        while chosen.len() > 1 && !lichen_withdraw::grants::fits(chosen.len(), fallbacks_of(&chosen).len()) {
+            chosen.pop();
+        }
+        let fallbacks = fallbacks_of(&chosen);
+        ensure!(lichen_withdraw::grants::fits(chosen.len(), fallbacks.len()), "{} spends of a note in flight, more than a claim posts", fallbacks.len());
+        let total: u64 = chosen.iter().map(|s| s.note.value).sum();
+        ensure!(total >= want, "the notes an exit can post hold {total} sats, short of {want}");
+        let claim = Claim::new(&self.kp(), cid, record.hp().deposit, units, chosen.clone(), &fallbacks);
+        let posted = claim.g().posted(&self.issuer()).context("the claim's notes aren't the hub's")?;
+        let gone: Vec<Hash> = chosen.iter().map(|s| s.note.id).collect();
+        self.notes.retain(|s| !gone.contains(&s.note.id));
         self.spent.extend(gone);
         self.save()?;
-        Ok(ExitPlan { b: units, e: hex::encode(claim.e()), posted: hex::encode(claim.to_bytes()) })
+        Ok(ExitPlan { b: units, claim: hex::encode(claim.to_bytes()), posted: hex::encode(posted.to_bytes()) })
     }
     /// The notes a claim kept with contract `cid` takes.
     pub fn claimed_notes(&self, cid: u32) -> Vec<Note> {
-        self.contracts.iter().find(|h| h.record.cid() == cid).and_then(|h| h.exit.as_ref()).and_then(|p| p.posted().ok()).and_then(|b| Claim::from_bytes(&b).ok()).map(|c| c.notes.into_iter().map(|s| s.note).collect()).unwrap_or_default()
+        self.contracts.iter().find(|h| h.record.cid() == cid).and_then(|h| h.exit.as_ref()).and_then(|p| p.claim().ok()).map(|c| c.notes.into_iter().map(|s| s.note).collect()).unwrap_or_default()
     }
 }

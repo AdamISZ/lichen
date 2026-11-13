@@ -446,6 +446,9 @@ impl Inner {
     /// A deposit address for a contract to come: its number, and the hub's
     /// key in the deposit's tree.
     fn deposit(&self, req: DepositRequest) -> Result<DepositOffer> {
+        if let Some(owner) = &req.owner {
+            self.check_owner(owner)?;
+        }
         // the ask told: what the opening would refuse for want of coins,
         // refused before she pays rather than after (a deposit then waits
         // for its refund). Against everything the wallet holds, as some
@@ -517,11 +520,11 @@ impl Inner {
         let v_max = scaled.v_max().to_sat();
         // the dispute's keys: Alice's, checked, and the hub's; the
         // statement fixed at the setup, its checkpoint with it
-        let (dispute, mut offer_keys, checkpoint) = self.hp_open_keys(cid, &req.dispute, &req.deposit_coin.0, t_close, scaled.unit)?;
+        let (dispute, mut offer_keys, checkpoint) = self.hp_open_keys(cid, &req.dispute, &req.deposit_coin.0, &req.l2_address, t_close, scaled.unit)?;
         let mut record = Record {
             statement: self.cfg.statement.id().to_string(),
             network: self.cfg.network,
-            deployment: lichen_proto::contract_word(&self.deployment, checkpoint.as_ref(), scaled.unit)?,
+            deployment: lichen_proto::contract_word(&self.deployment, checkpoint.as_ref(), scaled.unit, &req.l2_address)?,
             checkpoint,
             // a reserve to measure the floors under (any amount above them:
             // they depend on the links' sizes, not on the amounts; the cap
@@ -697,7 +700,8 @@ impl Inner {
         ensure!(claim.b == b, "the claim is of {} units, the withdrawal {b}", claim.b);
         let unit = record.terms.unit.to_sat();
         let total = claim.check(&self.book.issuer(), cid, &record.hp().deposit, &record.l2_address, unit)?;
-        let owed = self.assess(record, Some(&claim)).owed;
+        let posted = claim.g().posted(&self.book.issuer()).context("the claim doesn't fit what an exit posts")?;
+        let owed = self.assess(record, b, Some(&posted), Some(&claim)).owed;
         ensure!(owed == b, "the claim is owed {owed} units, not {b}: its notes are spent");
         let change = self.book.take_claim(&claim, u64::from(b) * unit)?;
         self.note(format!("contract {cid}: the user's withdrawal claim of {b} units taken ({total} sats of notes{})", change.map_or(String::new(), |c| format!(", {} sats of change back to her", c.note.value))));

@@ -31,13 +31,14 @@ impl Wallet {
     /// the others opened in her request.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn hp_opening(&self, hub: &str, statement: &Statement, cid: u32, deposit: bitcoin::OutPoint, unit: u64, s: &ContractSecrets, net: Net) -> Result<HpOpening> {
-        let setup: HpSetup = hub_call(&format!("{hub}/hp/setup"), Some(serde_json::to_string(&HpSetupRequest { cid, deposit, unit })?), false)?;
-        ensure!(setup.cid == cid && setup.unit == unit && setup.deposit == deposit, "the setup is for another contract, unit or deposit");
+        let owner = self.address();
+        let setup: HpSetup = hub_call(&format!("{hub}/hp/setup"), Some(serde_json::to_string(&HpSetupRequest { cid, deposit, unit, owner })?), false)?;
+        ensure!(setup.cid == cid && setup.unit == unit && setup.deposit == deposit && setup.owner == owner, "the setup is for another contract, unit, deposit or owner");
         check_setup(&setup)?;
         ensure!(setup.margin == lichen_proto::hp::margin(net), "the hub's margin, {} blocks, isn't the network's", setup.margin);
         let (n, m) = (setup.n, setup.m);
         ensure!(soundness(n, m) >= min_soundness(net), "keeping {m} of {n} instances: a cheating garbler escapes with odds of 1 in 2^{}, not 2^{}", soundness(n, m), min_soundness(net));
-        let d = lichen_proto::contract_word(&self.deployment, setup.checkpoint.as_ref(), bitcoin::Amount::from_sat(unit))?;
+        let d = lichen_proto::contract_word(&self.deployment, setup.checkpoint.as_ref(), bitcoin::Amount::from_sat(unit), &owner)?;
         let journal = lichen_proto::hp::journal(cid, &d, &deposit, setup.margin);
         let kind = statement.hp_kind()?;
         let (vk, public) = (kind.verifying_key(), kind.public_inputs(&journal));
@@ -53,7 +54,7 @@ impl Wallet {
             c
         });
         self.say(format!("garbled in {:.1?}", start.elapsed()));
-        let commit = HpCommit { cid, b_key: s.hp_b().public(), e_key: s.hp_e().public(), commitments, dealing: dealing_to_hex(&dealt) };
+        let commit = HpCommit { cid, b_key: s.hp_b().public(), claim_key: s.hp_claim().public(), commitments, dealing: dealing_to_hex(&dealt) };
         let kept: HpKept = hub_call(&format!("{hub}/hp/commit"), Some(serde_json::to_string(&commit)?), false)?;
         let mut k = kept.kept.clone();
         k.sort_unstable();
@@ -93,7 +94,7 @@ impl Wallet {
         let (windows, presigs) = (offer.hp_windows, offer.hp_presigs.clone());
         HpKeys {
             b_key: s.hp_b().public(),
-            e_key: s.hp_e().public(),
+            claim_key: s.hp_claim().public(),
             bc_key: offer.bc_key.clone(),
             hub_lamport: o.setup.lamport.clone(),
             hub_adaptor: o.setup.adaptor.clone(),

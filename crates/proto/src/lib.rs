@@ -274,6 +274,11 @@ pub struct DepositRequest {
     pub deposit: u64,
     #[serde(default)]
     pub liquidity: u64,
+    /// Her L2 key, the contract's owner: one contract at a time, and none
+    /// after an exit (the grants L2), refused now rather than after she
+    /// pays.
+    #[serde(default)]
+    pub owner: Option<[u8; 32]>,
 }
 
 /// The hub's answer: the contract's number, its key in the deposit's
@@ -485,14 +490,16 @@ pub fn headers_for(chain: &lichen_chain::Chain, from: &Hash, work: u128) -> Resu
 
 /// The journal's `D` a contract pins: the deployment's id, or in an
 /// anchored deployment (a genesis seal) the contract's, of the genesis
-/// seal, the checkpoint's `W` and the contract's unit too.
-pub fn contract_word(d: &Deployment, checkpoint: Option<&Checkpoint>, unit: Amount) -> Result<Hash> {
+/// seal, the checkpoint's `W` and the contract's unit too; in the grants
+/// L2 (no seal, a checkpoint) the contract's, of the issuer and `owner`.
+pub fn contract_word(d: &Deployment, checkpoint: Option<&Checkpoint>, unit: Amount, owner: &Hash) -> Result<Hash> {
     match (d.seal, checkpoint) {
         (None, None) => Ok(d.id()),
         (Some(seal), Some(c)) => Ok(lichen_ledger::lichen_withdraw_contract_id(&d.id(), &seal, c.work(), unit.to_sat())),
         (Some(_), None) => bail!("an anchored deployment's contract needs a checkpoint"),
-        // the grants L2: no seal, the checkpoint's work all the same
-        (None, Some(c)) => Ok(lichen_ledger::lichen_withdraw_contract_id(&d.id(), &lichen_ledger::OutPoint { txid: [0; 32], vout: 0 }, c.work(), unit.to_sat())),
+        // the grants L2: the issuer's and the owner's, no seal, the
+        // checkpoint's work all the same
+        (None, Some(c)) => Ok(lichen_withdraw::grants::GTerms { issuer: d.hub, owner: *owner, work: c.work(), unit: unit.to_sat() }.d()),
     }
 }
 

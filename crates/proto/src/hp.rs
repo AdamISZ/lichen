@@ -41,6 +41,8 @@ pub struct HpSetupRequest {
     pub cid: u32,
     pub deposit: bitcoin::OutPoint,
     pub unit: u64,
+    /// The contract's owner (its L2 key), which `D` binds.
+    pub owner: Hash,
 }
 
 /// The hub's setup: what its statement is (the checkpoint, the unit, the
@@ -55,18 +57,19 @@ pub struct HpSetup {
     pub checkpoint: Option<Checkpoint>,
     pub unit: u64,
     pub deposit: bitcoin::OutPoint,
+    pub owner: Hash,
     pub lamport: LamportPub,
     pub adaptor: Vec<[XOnlyPublicKey; VALUES]>,
 }
 
 /// Alice's commitment to her instances (`POST /hp/commit`): her keys
-/// for `b` and `E`, each instance's hash (hex), and the dealing's
+/// for `b` and the posted claim, each instance's hash (hex), and the dealing's
 /// commitments ([`crate::setup::dealing_to_hex`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HpCommit {
     pub cid: u32,
     pub b_key: WotsPublic,
-    pub e_key: WotsPublic,
+    pub claim_key: WotsPublic,
     pub commitments: Vec<String>,
     pub dealing: String,
 }
@@ -98,9 +101,9 @@ pub struct HpOffer {
 /// The keys a contract keeps (in its [`Record`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HpKeys {
-    /// Alice's one-time keys for `b` and `E`.
+    /// Alice's one-time keys for `b` and the posted claim.
     pub b_key: WotsPublic,
-    pub e_key: WotsPublic,
+    pub claim_key: WotsPublic,
     /// The hub's one-time key for `b_corr`.
     pub bc_key: WotsPublic,
     /// The hub's Lamport key for π1 and its adaptor keys.
@@ -171,7 +174,7 @@ impl Record {
             params: params(self.network),
             pubs: self.pubs.clone(),
             b_key: k.b_key.clone(),
-            e_key: k.e_key.clone(),
+            claim_key: k.claim_key.clone(),
             bc_key: k.bc_key.clone(),
             lamport: k.hub_lamport.clone(),
             adaptor: k.hub_adaptor.clone(),
@@ -196,7 +199,7 @@ pub fn journal(c: u32, d: &Hash, deposit: &bitcoin::OutPoint, margin: u32) -> [u
 /// `n` instances.
 pub fn check_commit(c: &HpCommit, n: u32) -> Result<()> {
     ensure!(c.b_key.params == WotsParams::for_bytes(4) && c.b_key.digits.len() == 10, "a key for b of other parameters");
-    ensure!(c.e_key.params == WotsParams::for_bytes(32), "a key for E of other parameters");
+    ensure!(c.claim_key.params == WotsParams::for_bytes(lichen_withdraw::grants::POSTED_LEN as u32), "a key for the claim of other parameters");
     ensure!(c.commitments.len() == n as usize, "{} commitments for {n} instances", c.commitments.len());
     Ok(())
 }
@@ -242,13 +245,12 @@ impl HpDisputed {
     pub fn txid(&self, name: &str) -> bitcoin::Txid {
         self.set[name].tx.compute_txid()
     }
-    /// `request`'s claim: `b`, `E` and the claim's bytes, from its
+    /// `request`'s claim: `b` and the posted claim's bytes, from its
     /// arguments.
-    pub fn requested(request: &bitcoin::Transaction) -> Result<(u32, [u8; 32], Vec<u8>)> {
-        let (b, e, posted) = lichen_babe::hp::HubProves::read_request(&crate::setup::link_args(request))?;
+    pub fn requested(request: &bitcoin::Transaction) -> Result<(u32, Vec<u8>)> {
+        let (b, c) = lichen_babe::hp::HubProves::read_request(&crate::setup::link_args(request))?;
         let b = u32::from_be_bytes(b.message().try_into().map_err(|_| anyhow::anyhow!("b's signature signs 4 bytes"))?);
-        let e = e.message().try_into().map_err(|_| anyhow::anyhow!("E's signature signs 32 bytes"))?;
-        Ok((b, e, posted))
+        Ok((b, c.message()))
     }
     /// What `assert` put on chain: π1's digits (read under the hub's
     /// Lamport key), their preimages, and the proof, if its points are

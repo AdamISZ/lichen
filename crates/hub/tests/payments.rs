@@ -35,6 +35,9 @@ fn payments_by_grant() {
     assert!(held.mint.as_ref().unwrap().claimed);
     assert_eq!((alice.balance(), alice.notes.len()), (ask.deposit, 1));
     println!("LICHEN contract {} opened in {:.1?}: Alice holds her deposit, a note of {} sats signed by the hub", held.record.cid(), t.elapsed(), ask.deposit);
+    // one contract at a time per owner key: refused before she pays
+    let err = alice.open_contract(&hub.url, &ch, &statement(), ask, ch.new_spk().unwrap(), &|_: &bitcoin::Address, _| panic!("asked to pay")).unwrap_err();
+    assert!(format!("{err:#}").contains("one at a time"), "{err:#}");
 
     // Alice pays Bob, who has no contract: final at once
     let bobs_first = {

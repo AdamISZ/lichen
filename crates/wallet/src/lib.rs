@@ -375,7 +375,7 @@ impl Wallet {
         // the deposit: an address of the hub's and ours, paid, confirmed
         let nonce = hex::encode(fresh_rho());
         let dep_kp = self.deposit_key(&nonce);
-        let offer: DepositOffer = hub_call(&format!("{hub}/deposit"), Some(serde_json::to_string(&DepositRequest { alice: dep_kp.x_only_public_key().0, deposit: ask.deposit, liquidity: ask.liquidity })?), false)?;
+        let offer: DepositOffer = hub_call(&format!("{hub}/deposit"), Some(serde_json::to_string(&DepositRequest { alice: dep_kp.x_only_public_key().0, deposit: ask.deposit, liquidity: ask.liquidity, owner: Some(self.address()) })?), false)?;
         // the refund's timeout is the network's: a hub naming a longer one
         // could lock the deposit up for as long
         ensure!(offer.timeout == lichen_proto::deposit_timeout(net), "the hub's deposit refund waits {} blocks, not the network's {}", offer.timeout, lichen_proto::deposit_timeout(net));
@@ -454,7 +454,7 @@ impl Wallet {
         let mut record = Record {
             statement: statement.id().to_string(),
             network: net,
-            deployment: lichen_proto::contract_word(&d, offer.checkpoint.as_ref(), t.unit)?,
+            deployment: lichen_proto::contract_word(&d, offer.checkpoint.as_ref(), t.unit, &self.address())?,
             checkpoint: offer.checkpoint,
             terms: t,
             pubs: [req.alice.clone(), offer.hub.clone()],
@@ -720,7 +720,7 @@ impl Wallet {
         let paid = bitcoin::Amount::from_sat(u64::from(units) * unit);
         let fold = c.fold(held.record.funding, paid, FOLD_FEE)?;
         let alice_sig = fold.sign(&self.contract_keys(&held.nonce).payment)?;
-        let req = WithdrawRequest { cid, b: units, claim: plan.map(|p| p.posted).unwrap_or_default(), alice_sig };
+        let req = WithdrawRequest { cid, b: units, claim: plan.map(|p| p.claim).unwrap_or_default(), alice_sig };
         let done: Folded = hub_call(&format!("{hub}/withdraw"), Some(serde_json::to_string(&req)?), false)?;
         // the hub's txid must be the fold's
         ensure!(done.txid == fold.tx.compute_txid(), "the hub answered {} for the fold, not its txid {}", done.txid, fold.tx.compute_txid());

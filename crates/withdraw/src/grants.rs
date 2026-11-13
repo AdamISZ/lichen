@@ -1,5 +1,5 @@
-//! The grants L2's statement (docs/GRANTS_PLAN.md, milestone 2): "the
-//! claim posted in `request` is owed at most `b_corr`", the hub's
+//! The grants L2's statement (docs/GRANTS_PLAN.md, milestones 2 and 4):
+//! "the claim posted in `request` is owed at most `b_corr`", the hub's
 //! correction, one-time signed in `correct`. And the hashes and encodings
 //! the notes, spends, grants and claims are made of: one implementation,
 //! for the wallet, the hub (`lichen_notes`) and the guest.
@@ -8,41 +8,68 @@
 //!   hub's BIP340 signature on each), fallbacks (the ids of spends in
 //!   flight whose inputs are among the notes: if the hub shows one
 //!   recorded, the claimant's change of it counts instead), `b` in the
-//!   contract's units, the owner's signature on its fingerprint `E`.
-//! - **Owed**: 0 for a malformed claim (not as posted under her one-time
-//!   signatures, a note not settled or not hers, her signature, `b` above
-//!   the notes); else the notes not killed, plus the change of the
-//!   fallbacks revived, in units, at most `b`. A note is killed by a
-//!   spend she signed (with its grant's commitment) whose unlock `t` the
-//!   hub put on chain (`t·G = T`), or by another claim she signed naming
-//!   it; a killing spend's change is revived if the claim names it a
-//!   fallback.
+//!   contract's units, the owner's signature on its fingerprint `E`: what
+//!   a cooperative withdrawal hands the hub.
+//! - **The posted claim** ([`Posted`]): what an exit posts, its
+//!   [`POSTED_LEN`] bytes one-time signed in full in `request` (so no one
+//!   can swap them): each note by the first 8 bytes of its id, its value
+//!   and its signature's `R`, the signatures' `s` half-aggregated into
+//!   one; each fallback by its first 8 bytes. The contract (`c`, its
+//!   deposit, its owner) and `b` (signed apart) aren't in it.
+//! - **Owed**: 0 for a malformed claim (its encoding, a note named twice,
+//!   the hub's aggregate signature, `b` above the notes); else the notes
+//!   not killed, plus the change of the fallbacks revived, in units, at
+//!   most `b`. A note is killed by a spend she signed (with its grant's
+//!   commitment) whose unlock `t` the hub put on chain (`t·G = T`), or by
+//!   another claim she signed naming it; a killing spend's change is
+//!   revived if the claim names it a fallback.
 //! - **The statement** holds iff `owed ≤ b_corr`. It reads `request` (the
 //!   contract output's spend), `correct` (`request`'s), and the hub's
 //!   child of `correct` (its `OP_RETURN`: the unlocks), each in a block of
 //!   the headers given, which carry the contract's work on `request`'s
-//!   block. Its journal is the hub-proves one, fixed at the opening.
+//!   block. Its journal is the hub-proves one, fixed at the opening; its
+//!   `D` binds the issuer and the contract's owner.
 
 use alloc::vec::Vec;
+use k256::elliptic_curve::ops::Reduce;
+use k256::elliptic_curve::point::DecompressPoint;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::elliptic_curve::subtle::Choice;
 use k256::elliptic_curve::PrimeField;
 use k256::schnorr::{Signature, VerifyingKey};
+use k256::{AffinePoint, ProjectivePoint, Scalar, U256};
 use lichen_validity::btc::{self, Header};
 use lichen_validity::OutPoint;
 use sha2::{Digest, Sha256};
 
 use crate::codec::{R, W};
-use crate::hp::{journal, requested, signed_message, checksum_digits, JOURNAL_LEN};
+use crate::hp::{journal, signed_message, checksum_digits, JOURNAL_LEN};
 use crate::{contract_id, deployment_id, work_on, Hash, Reject, Request};
 
-/// The most notes, fallbacks, cited spends and other claims a statement
-/// takes.
-pub const MAX_NOTES: usize = 8;
+/// The most notes and fallbacks a claim takes (the posted claim fits
+/// fewer of both: [`fits`]), and the most cited spends and other claims a
+/// statement takes.
+pub const MAX_NOTES: usize = 4;
 pub const MAX_FALLBACKS: usize = 4;
 pub const MAX_CITED: usize = 4;
 /// The unlocks the hub's child of `correct` carries: two, in an
 /// `OP_RETURN` of 64 bytes (Core 29 relays 83).
 pub const MAX_UNLOCKS: usize = 2;
+
+/// The posted claim's length: its one-time signature (2 digits a byte, 2
+/// witness items a digit), `b`'s, and the 2-of-2's fill `request`'s
+/// stack to about 960 of Bitcoin's 1,000 elements: four notes and two
+/// fallbacks, or three and four.
+pub const POSTED_LEN: usize = 233;
+/// A posted note: its id's first 8 bytes, its value (6 bytes), its
+/// signature's `R`.
+const SHORT_LEN: usize = 8 + 6 + 32;
+
+/// Whether a claim of `notes` notes and `fallbacks` fallbacks fits the
+/// posted claim.
+pub fn fits(notes: usize, fallbacks: usize) -> bool {
+    (1..=MAX_NOTES).contains(&notes) && fallbacks <= MAX_FALLBACKS && 1 + notes * SHORT_LEN + 32 + fallbacks * 8 <= POSTED_LEN
+}
 
 // ----- the hashes -----
 
@@ -58,6 +85,18 @@ pub fn tagged(tag: &str, parts: &[&[u8]]) -> Hash {
     s.finalize().into()
 }
 
+/// A note's short id: its id's first 8 bytes, what the hub's signature
+/// and a posted claim name it by.
+pub type Short8 = [u8; 8];
+pub fn short(id: &Hash) -> Short8 {
+    id[..8].try_into().unwrap()
+}
+
+/// What the hub signs to issue a note: its short id, owner and value.
+pub fn note_digest(id: &Short8, owner: &Hash, value: u64) -> Hash {
+    tagged("lichen/notes/note", &[id, owner, &value.to_be_bytes()])
+}
+
 /// A note: `(id, owner, value)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Note {
@@ -67,9 +106,9 @@ pub struct Note {
 }
 
 impl Note {
-    /// What the hub signs to issue it.
+    /// What the hub signs to issue it ([`note_digest`]).
     pub fn digest(&self) -> Hash {
-        tagged("lichen/notes/note", &[&self.id, &self.owner, &self.value.to_be_bytes()])
+        note_digest(&short(&self.id), &self.owner, self.value)
     }
 }
 
@@ -107,6 +146,74 @@ pub fn verify(pk: &Hash, msg: &Hash, sig: &[u8; 64]) -> bool {
     k.verify_raw(msg, &s).is_ok()
 }
 
+// ----- half-aggregated signatures -----
+
+/// BIP340's tagged hash.
+fn bip340_hash(tag: &str, parts: &[&[u8]]) -> Hash {
+    let t: Hash = Sha256::digest(tag.as_bytes()).into();
+    let mut s = Sha256::new();
+    s.update(t);
+    s.update(t);
+    for p in parts {
+        s.update(p);
+    }
+    s.finalize().into()
+}
+
+fn reduce(h: &Hash) -> Scalar {
+    <Scalar as Reduce<U256>>::reduce_bytes(&(*h).into())
+}
+
+/// The point with x-coordinate `x` and an even y (BIP340's `lift_x`).
+fn lift_x(x: &[u8; 32]) -> Option<ProjectivePoint> {
+    Option::<AffinePoint>::from(AffinePoint::decompress(&(*x).into(), Choice::from(0))).map(ProjectivePoint::from)
+}
+
+/// The aggregation's weights: 1 for the first signature, then a hash of
+/// the key, each message and `R` so far (the half-aggregation of BIP340
+/// signatures, Chalkias et al.; Nick and Ruffing's draft BIP).
+fn weights(pk: &Hash, msgs: &[Hash], rs: &[[u8; 32]]) -> Vec<Scalar> {
+    let mut parts: Vec<&[u8]> = alloc::vec![pk.as_slice()];
+    let mut z = alloc::vec![Scalar::ONE];
+    for i in 0..rs.len() {
+        parts.push(&rs[i]);
+        parts.push(&msgs[i]);
+        if i > 0 {
+            z.push(reduce(&tagged("lichen/notes/half-agg", &parts)));
+        }
+    }
+    z
+}
+
+/// Half-aggregate `pk`'s BIP340 signatures `sigs` on `msgs`: each `R`,
+/// and one `s`. None if a signature's `s` isn't a scalar.
+pub fn aggregate(pk: &Hash, msgs: &[Hash], sigs: &[[u8; 64]]) -> Option<(Vec<[u8; 32]>, [u8; 32])> {
+    let rs: Vec<[u8; 32]> = sigs.iter().map(|s| s[..32].try_into().unwrap()).collect();
+    let z = weights(pk, msgs, &rs);
+    let mut s = Scalar::ZERO;
+    for (sig, z) in sigs.iter().zip(&z) {
+        let si: Scalar = Option::from(Scalar::from_repr(<[u8; 32]>::try_from(&sig[32..]).unwrap().into()))?;
+        s += si * z;
+    }
+    Some((rs, s.to_bytes().into()))
+}
+
+/// Whether `(rs, s)` aggregates `pk`'s signatures on `msgs`:
+/// `s·G = Σ z_i (R_i + e_i P)`.
+pub fn verify_aggregate(pk: &Hash, msgs: &[Hash], rs: &[[u8; 32]], s: &[u8; 32]) -> bool {
+    if msgs.len() != rs.len() || rs.is_empty() {
+        return false;
+    }
+    let (Some(p), Some(s)) = (lift_x(pk), Option::<Scalar>::from(Scalar::from_repr((*s).into()))) else { return false };
+    let mut sum = ProjectivePoint::IDENTITY;
+    for ((r, m), z) in rs.iter().zip(msgs).zip(weights(pk, msgs, rs)) {
+        let Some(rp) = lift_x(r) else { return false };
+        let e = reduce(&bip340_hash("BIP0340/challenge", &[r, pk, m]));
+        sum += (rp + p * e) * z;
+    }
+    ProjectivePoint::GENERATOR * s == sum
+}
+
 // ----- the claim -----
 
 /// A settled note in a claim: its id, value and the hub's signature (its
@@ -135,7 +242,7 @@ impl Claim {
     pub fn note(&self, i: &Item) -> Note {
         Note { id: i.id, owner: self.owner, value: i.value }
     }
-    /// `E`: what the owner signs, and an exit's one-time key signs.
+    /// `E`: what the owner signs.
     pub fn fingerprint(&self) -> Hash {
         let mut parts: Vec<Vec<u8>> = alloc::vec![self.cid.to_be_bytes().to_vec(), self.deposit.to_bytes().to_vec(), self.b.to_be_bytes().to_vec(), self.owner.to_vec()];
         parts.push((self.notes.len() as u32).to_be_bytes().to_vec());
@@ -145,7 +252,7 @@ impl Claim {
         let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
         tagged("lichen/notes/claim", &refs)
     }
-    /// Its bytes, as an exit posts them.
+    /// Its bytes, as a cooperative withdrawal hands them over.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut v = Vec::new();
         v.extend(self.cid.to_be_bytes());
@@ -187,20 +294,21 @@ impl Claim {
         let sig = r.take().ok()?;
         r.0.is_empty().then_some(Claim { cid, deposit, b: bb, owner, notes, fallbacks, sig })
     }
-    /// The claim shows itself whole: by `owner`, its notes distinct, each
-    /// settled under `issuer`, its fallbacks distinct, her signature on
-    /// `E`, `b` within the notes' value in units of `unit`. Their value.
+    /// The claim shows itself whole: by `owner`, its notes distinct (by
+    /// short id), each settled under `issuer`, its fallbacks distinct,
+    /// her signature on `E`, `b` within the notes' value in units of
+    /// `unit`, and it fits the posted claim. Their value.
     pub fn holds(&self, issuer: &Hash, owner: &Hash, unit: u64) -> Option<u64> {
-        if self.owner != *owner || self.notes.is_empty() || unit == 0 {
+        if self.owner != *owner || !fits(self.notes.len(), self.fallbacks.len()) || unit == 0 {
             return None;
         }
         for (k, i) in self.notes.iter().enumerate() {
-            if self.notes[..k].iter().any(|j| j.id == i.id) || !verify(issuer, &self.note(i).digest(), &i.sig) {
+            if self.notes[..k].iter().any(|j| short(&j.id) == short(&i.id)) || i.value >> 48 != 0 || !verify(issuer, &self.note(i).digest(), &i.sig) {
                 return None;
             }
         }
         for (k, f) in self.fallbacks.iter().enumerate() {
-            if self.fallbacks[..k].contains(f) {
+            if self.fallbacks[..k].iter().any(|g| short(g) == short(f)) {
                 return None;
             }
         }
@@ -210,7 +318,98 @@ impl Claim {
         let total = self.notes.iter().try_fold(0u64, |a, i| a.checked_add(i.value))?;
         (u64::from(self.b) <= total / unit).then_some(total)
     }
+    /// What an exit posts of it: its notes short, the hub's (`issuer`'s)
+    /// signatures half-aggregated. None if it doesn't fit, or a signature
+    /// isn't one.
+    pub fn posted(&self, issuer: &Hash) -> Option<Posted> {
+        if !fits(self.notes.len(), self.fallbacks.len()) || self.notes.iter().any(|i| i.value >> 48 != 0) {
+            return None;
+        }
+        let msgs: Vec<Hash> = self.notes.iter().map(|i| self.note(i).digest()).collect();
+        let sigs: Vec<[u8; 64]> = self.notes.iter().map(|i| i.sig).collect();
+        let (rs, s) = aggregate(issuer, &msgs, &sigs)?;
+        let notes = self.notes.iter().zip(rs).map(|(i, r)| ShortItem { id: short(&i.id), value: i.value, r }).collect();
+        Some(Posted { notes, s, fallbacks: self.fallbacks.iter().map(short).collect() })
+    }
 }
+
+/// A note as a claim posts it: its short id, its value, its signature's
+/// `R`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShortItem {
+    pub id: Short8,
+    pub value: u64,
+    pub r: [u8; 32],
+}
+
+/// The claim an exit posts ([`POSTED_LEN`] bytes, one-time signed in
+/// `request`): its notes, the hub's signatures' `s` aggregated, the
+/// fallbacks' short ids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Posted {
+    pub notes: Vec<ShortItem>,
+    pub s: [u8; 32],
+    pub fallbacks: Vec<Short8>,
+}
+
+impl Posted {
+    /// Its [`POSTED_LEN`] bytes: the counts (4 bits each), the notes, `s`,
+    /// the fallbacks, zeros.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut v = alloc::vec![((self.notes.len() as u8) << 4) | self.fallbacks.len() as u8];
+        for n in &self.notes {
+            v.extend(n.id);
+            v.extend(&n.value.to_be_bytes()[2..]);
+            v.extend(n.r);
+        }
+        v.extend(self.s);
+        for f in &self.fallbacks {
+            v.extend(f);
+        }
+        v.resize(POSTED_LEN, 0);
+        v
+    }
+    /// The posted claim, if its bytes are one: a fitting count, zeros
+    /// after.
+    pub fn from_bytes(b: &[u8]) -> Option<Posted> {
+        let (n, f) = ((*b.first()? >> 4) as usize, (b[0] & 15) as usize);
+        if b.len() != POSTED_LEN || !fits(n, f) {
+            return None;
+        }
+        let mut r = R(&b[1..]);
+        let mut notes = Vec::new();
+        for _ in 0..n {
+            let id: Short8 = r.take().ok()?;
+            let v: [u8; 6] = r.take().ok()?;
+            let mut value = [0u8; 8];
+            value[2..].copy_from_slice(&v);
+            notes.push(ShortItem { id, value: u64::from_be_bytes(value), r: r.take().ok()? });
+        }
+        let s = r.take().ok()?;
+        let fallbacks = (0..f).map(|_| r.take().ok()).collect::<Option<Vec<Short8>>>()?;
+        r.0.iter().all(|&z| z == 0).then_some(Posted { notes, s, fallbacks })
+    }
+    /// It shows itself whole: its notes distinct, settled under `issuer`
+    /// to `owner` (the aggregate signature), its fallbacks distinct, `b`
+    /// within the notes' value in units of `unit`.
+    pub fn holds(&self, b: u32, issuer: &Hash, owner: &Hash, unit: u64) -> bool {
+        for (k, n) in self.notes.iter().enumerate() {
+            if self.notes[..k].iter().any(|m| m.id == n.id) {
+                return false;
+            }
+        }
+        for (k, f) in self.fallbacks.iter().enumerate() {
+            if self.fallbacks[..k].contains(f) {
+                return false;
+            }
+        }
+        let msgs: Vec<Hash> = self.notes.iter().map(|n| note_digest(&n.id, owner, n.value)).collect();
+        let rs: Vec<[u8; 32]> = self.notes.iter().map(|n| n.r).collect();
+        let total: u64 = self.notes.iter().map(|n| n.value).sum();
+        unit != 0 && u64::from(b) <= total / unit && verify_aggregate(issuer, &msgs, &rs, &self.s)
+    }
+}
+
 
 // ----- the statement's input -----
 
@@ -266,10 +465,11 @@ pub struct GTerms {
 }
 
 impl GTerms {
-    /// `D`: the deployment (the issuer's), no genesis seal, the work `W`,
-    /// the unit.
+    /// `D`: the issuer and the contract's owner (the journal binds both:
+    /// the statement reads her notes as the owner's), no genesis seal,
+    /// the work `W`, the unit.
     pub fn d(&self) -> Hash {
-        contract_id(&deployment_id(&self.issuer, &self.issuer), &OutPoint { txid: [0; 32], vout: 0 }, self.work, self.unit)
+        contract_id(&deployment_id(&self.issuer, &self.owner), &OutPoint { txid: [0; 32], vout: 0 }, self.work, self.unit)
     }
 }
 
@@ -379,36 +579,65 @@ fn point_of(t: &[u8; 32]) -> Option<[u8; 33]> {
     p.to_encoded_point(true).as_bytes().try_into().ok()
 }
 
+/// `request`'s witness (bottom first): Alice's one-time signature on the
+/// posted claim ([`POSTED_LEN`] bytes), then on `b` (4), each a hash and
+/// a digit a digit, below the 2-of-2's two signatures, the script and the
+/// control block. `b` and the posted claim's bytes.
+pub fn requested(witness: &[&[u8]]) -> Option<(u32, Vec<u8>)> {
+    let c_items = 2 * (2 * POSTED_LEN + checksum_digits(POSTED_LEN));
+    let b_items = 2 * (8 + checksum_digits(4));
+    if witness.len() != c_items + b_items + 4 {
+        return None;
+    }
+    let posted = signed_message(&witness[..c_items], POSTED_LEN)?;
+    let b = signed_message(&witness[c_items..c_items + b_items], 4)?;
+    Some((u32::from_be_bytes(b.try_into().ok()?), posted))
+}
+
+/// A posted claim of `b` units on contract `cid` as the statement counts
+/// it: the owner's, the hub's key `issuer`, the contract's `unit`.
+#[derive(Clone, Copy, Debug)]
+pub struct Counted<'a> {
+    pub posted: Option<&'a Posted>,
+    pub b: u32,
+    pub cid: u32,
+    pub issuer: &'a Hash,
+    pub owner: &'a Hash,
+    pub unit: u64,
+}
+
 /// What the claim is owed, in units, by the evidence: the cited spends
 /// (each signed by her; counting if its `T`'s unlock is among `unlocks`)
 /// and the other claims she signed (on other contracts: one on this
 /// contract was never paid, the payout being the posted claim's).
 ///
-/// The candidates are the claim's notes; a cited spend kills those among
-/// its inputs, and if the claim names it a fallback, its outputs to her
-/// join the candidates (a later spend of hers may kill them in turn).
-/// Owed: the candidates not killed, in units, at most `b`.
-pub fn owed(claim: Option<&Claim>, issuer: &Hash, owner: &Hash, unit: u64, cited: &[Cited], unlocks: &[[u8; 32]], others: &[Vec<u8>]) -> u32 {
-    let Some(claim) = claim else { return 0 };
-    if claim.holds(issuer, owner, unit).is_none() {
+/// The candidates are the claim's notes (by short id and value); a cited
+/// spend kills those among its inputs, and if the claim names it a
+/// fallback, its outputs to her join the candidates (a later spend of
+/// hers may kill them in turn). Owed: the candidates not killed, in
+/// units, at most `b`.
+pub fn owed(c: &Counted, cited: &[Cited], unlocks: &[[u8; 32]], others: &[Vec<u8>]) -> u32 {
+    let Some(claim) = c.posted else { return 0 };
+    if !claim.holds(c.b, c.issuer, c.owner, c.unit) {
         return 0;
     }
-    let mut cands: Vec<(Hash, u64)> = claim.notes.iter().map(|i| (i.id, i.value)).collect();
-    let mut dead: Vec<Hash> = Vec::new();
-    let usable: Vec<(Hash, &Cited)> = cited.iter().filter(|c| c.signed_by(owner) && unlocks.iter().any(|t| point_of(t) == Some(c.t_point))).map(|c| (c.sid(), c)).collect();
+    let owner = c.owner;
+    let mut cands: Vec<(Short8, u64)> = claim.notes.iter().map(|n| (n.id, n.value)).collect();
+    let mut dead: Vec<(Short8, u64)> = Vec::new();
+    let usable: Vec<(Hash, &Cited)> = cited.iter().filter(|x| x.signed_by(owner) && unlocks.iter().any(|t| point_of(t) == Some(x.t_point))).map(|x| (x.sid(), x)).collect();
     let mut revived: Vec<Hash> = Vec::new();
     loop {
         let mut more = false;
-        for (sid, c) in &usable {
-            let killed: Vec<Hash> = c.inputs.iter().map(|n| n.id).filter(|id| cands.iter().any(|(x, _)| x == id) && !dead.contains(id)).collect();
+        for (sid, x) in &usable {
+            let killed: Vec<(Short8, u64)> = x.inputs.iter().filter(|n| n.owner == *owner).map(|n| (short(&n.id), n.value)).filter(|k| cands.contains(k) && !dead.contains(k)).collect();
             if killed.is_empty() {
                 continue;
             }
             more = true;
             dead.extend(killed);
-            if claim.fallbacks.contains(sid) && !revived.contains(sid) {
+            if claim.fallbacks.contains(&short(sid)) && !revived.contains(sid) {
                 revived.push(*sid);
-                cands.extend(c.outputs.iter().enumerate().filter(|(_, (o, _))| o == owner).map(|(j, (_, v))| (output_id(sid, j as u32), *v)));
+                cands.extend(x.outputs.iter().enumerate().filter(|(_, (o, _))| o == owner).map(|(j, (_, v))| (short(&output_id(sid, j as u32)), *v)));
             }
         }
         if !more {
@@ -417,13 +646,13 @@ pub fn owed(claim: Option<&Claim>, issuer: &Hash, owner: &Hash, unit: u64, cited
     }
     for o in others {
         let Some(other) = Claim::from_bytes(o) else { continue };
-        if other.owner != *owner || other.cid == claim.cid || !verify(owner, &other.fingerprint(), &other.sig) {
+        if other.owner != *owner || other.cid == c.cid || !verify(owner, &other.fingerprint(), &other.sig) {
             continue;
         }
-        dead.extend(other.notes.iter().map(|i| i.id));
+        dead.extend(other.notes.iter().map(|i| (short(&i.id), i.value)));
     }
-    let live: u64 = cands.iter().filter(|(id, _)| !dead.contains(id)).fold(0u64, |a, (_, v)| a.saturating_add(*v));
-    claim.b.min(u32::try_from(live / unit).unwrap_or(u32::MAX))
+    let live: u64 = cands.iter().filter(|k| !dead.contains(k)).fold(0u64, |a, (_, v)| a.saturating_add(*v));
+    c.b.min(u32::try_from(live / c.unit).unwrap_or(u32::MAX))
 }
 
 /// The hub's statement: the claim `request` posts is owed at most the
@@ -442,8 +671,8 @@ pub fn check(input: &GrantsInput) -> Result<[u8; JOURNAL_LEN], Reject> {
     if work_on(&header.hash(), &input.headers[1..]).is_none_or(|w| w < t.work) {
         return Err(Reject::Depth);
     }
-    let r = requested(&witness).ok_or(Reject::Posted)?;
-    let claim = Claim::from_bytes(&r.posted).filter(|c| c.fingerprint() == r.e && c.b == r.b && c.cid == input.c && c.deposit == input.deposit);
+    let (b, bytes) = requested(&witness).ok_or(Reject::Posted)?;
+    let posted = Posted::from_bytes(&bytes);
     // correct: request's spend, in a block of the headers
     let request_id = txid_of(&input.request.tx).ok_or(Reject::Posted)?;
     let in_headers = |h: &[u8; 80]| input.headers.contains(h);
@@ -471,7 +700,8 @@ pub fn check(input: &GrantsInput) -> Result<[u8; JOURNAL_LEN], Reject> {
             tx.outputs.iter().find_map(|(_, s)| unlocks(s)).ok_or(Reject::Posted)?
         }
     };
-    if owed(claim.as_ref(), &t.issuer, &t.owner, t.unit, &input.cited, &unlocks, &input.others) > b_corr {
+    let counted = Counted { posted: posted.as_ref(), b, cid: input.c, issuer: &t.issuer, owner: &t.owner, unit: t.unit };
+    if owed(&counted, &input.cited, &unlocks, &input.others) > b_corr {
         return Err(Reject::Holds);
     }
     Ok(journal(input.c, &t.d(), &input.deposit, input.margin))
@@ -608,6 +838,29 @@ mod tests {
     }
 
     #[test]
+    fn signatures_half_aggregate() {
+        let hub = key(1);
+        let msgs: Vec<Hash> = (0..4u8).map(|i| [i; 32]).collect();
+        let sigs: Vec<[u8; 64]> = msgs.iter().map(|m| sign(&hub, m)).collect();
+        let (rs, s) = aggregate(&pk(&hub), &msgs, &sigs).unwrap();
+        assert!(verify_aggregate(&pk(&hub), &msgs, &rs, &s));
+        // one message changed, the order changed, another key: no
+        let mut other = msgs.clone();
+        other[2] = [9; 32];
+        assert!(!verify_aggregate(&pk(&hub), &other, &rs, &s));
+        let (mut rs2, mut m2) = (rs.clone(), msgs.clone());
+        rs2.swap(0, 1);
+        m2.swap(0, 1);
+        assert!(!verify_aggregate(&pk(&hub), &m2, &rs2, &s));
+        assert!(!verify_aggregate(&pk(&key(2)), &msgs, &rs, &s));
+        // a signature not the hub's spoils it
+        let mut bad = sigs.clone();
+        bad[3] = sign(&key(2), &msgs[3]);
+        let (rs, s) = aggregate(&pk(&hub), &msgs, &bad).unwrap();
+        assert!(!verify_aggregate(&pk(&hub), &msgs, &rs, &s));
+    }
+
+    #[test]
     fn what_a_claim_is_owed() {
         let (hub, alice) = (key(1), key(2));
         let (issuer, owner) = (pk(&hub), pk(&alice));
@@ -616,44 +869,62 @@ mod tests {
         let t = [11u8; 32];
         // her spend of n1 in flight: 50,000 to Bob, 20,000 back to her
         let s = spend(&alice, vec![Note { id: n1.id, owner, value: n1.value }], 50_000, &t);
-        let with_fallback = claim(&alice, 1000, vec![n1, n2], vec![s.sid()]);
-        let owed = |c: &Claim, cited: &[Cited], unlocks: &[[u8; 32]], others: &[Vec<u8>]| super::owed(Some(c), &issuer, &owner, unit, cited, unlocks, others);
+        let with_fallback = claim(&alice, 1000, vec![n1, n2], vec![s.sid()]).posted(&issuer).unwrap();
+        let owed = |p: &Posted, b: u32, cited: &[Cited], unlocks: &[[u8; 32]], others: &[Vec<u8>]| super::owed(&Counted { posted: Some(p), b, cid: 7, issuer: &issuer, owner: &owner, unit }, cited, unlocks, others);
         // nothing cited: all of it
-        assert_eq!(owed(&with_fallback, &[], &[], &[]), 1000);
+        assert_eq!(owed(&with_fallback, 1000, &[], &[], &[]), 1000);
         // the spend recorded and its unlock on chain: n1 dead, her change revived
-        assert_eq!(owed(&with_fallback, &[s.clone()], &[t], &[]), 500);
+        assert_eq!(owed(&with_fallback, 1000, core::slice::from_ref(&s), &[t], &[]), 500);
         // without its unlock on chain the spend doesn't count
-        assert_eq!(owed(&with_fallback, &[s.clone()], &[[12; 32]], &[]), 1000);
+        assert_eq!(owed(&with_fallback, 1000, core::slice::from_ref(&s), &[[12; 32]], &[]), 1000);
         // not declared a fallback: no change revived
-        let without = claim(&alice, 1000, vec![n1, n2], vec![]);
-        assert_eq!(owed(&without, &[s.clone()], &[t], &[]), 300);
+        let full = claim(&alice, 1000, vec![n1, n2], vec![]);
+        let without = full.posted(&issuer).unwrap();
+        assert_eq!(owed(&without, 1000, core::slice::from_ref(&s), &[t], &[]), 300);
         // a spend not signed by her doesn't count
         let mut forged = s.clone();
         forged.sig = sign(&key(3), &[0; 32]);
-        assert_eq!(owed(&with_fallback, &[forged], &[t], &[]), 1000);
-        // another claim of hers naming n2 kills it; the same claim doesn't
+        assert_eq!(owed(&with_fallback, 1000, &[forged], &[t], &[]), 1000);
+        // another claim of hers naming n2 kills it; one on the same
+        // contract was never paid: no kill
         let other = Claim { cid: 8, ..claim(&alice, 300, vec![n2], vec![]) };
         let other = Claim { sig: sign(&alice, &other.fingerprint()), ..other };
-        assert_eq!(owed(&without, &[], &[], &[other.to_bytes()]), 700);
-        assert_eq!(owed(&without, &[], &[], &[without.to_bytes()]), 1000);
-        // another claim on the same contract was never paid: no kill
-        let same = claim(&alice, 300, vec![n2], vec![]);
-        assert_eq!(owed(&without, &[], &[], &[same.to_bytes()]), 1000);
+        assert_eq!(owed(&without, 1000, &[], &[], &[other.to_bytes()]), 700);
+        assert_eq!(owed(&without, 1000, &[], &[], &[full.to_bytes()]), 1000);
         // her revived change spent on: dead too
         let change = Note { id: output_id(&s.sid(), 1), owner, value: 20_000 };
         let t2 = [13u8; 32];
         let s2 = spend(&alice, vec![change], 20_000, &t2);
-        assert_eq!(owed(&with_fallback, &[s.clone(), s2.clone()], &[t, t2], &[]), 300);
-        // malformed: a note not settled, her signature, b above the notes
-        let bad_note = claim(&alice, 100, vec![Item { sig: [0; 64], ..n1 }], vec![]);
-        assert_eq!(owed(&bad_note, &[], &[], &[]), 0);
-        let unsigned = Claim { sig: [0; 64], ..without.clone() };
-        assert_eq!(owed(&unsigned, &[], &[], &[]), 0);
-        let too_much = claim(&alice, 1001, vec![n1, n2], vec![]);
-        assert_eq!(owed(&too_much, &[], &[], &[]), 0);
-        assert_eq!(super::owed(None, &issuer, &owner, unit, &[], &[], &[]), 0);
+        assert_eq!(owed(&with_fallback, 1000, &[s.clone(), s2.clone()], &[t, t2], &[]), 300);
+        // malformed: a note not settled, b above the notes, a note twice
+        let bad_note = Claim { notes: vec![Item { sig: sign(&key(3), &[0; 32]), ..n1 }], ..full.clone() }.posted(&issuer).unwrap();
+        assert_eq!(owed(&bad_note, 100, &[], &[], &[]), 0);
+        assert_eq!(owed(&without, 1001, &[], &[], &[]), 0);
+        let twice = Posted { notes: vec![without.notes[0], without.notes[0]], ..without.clone() };
+        assert_eq!(owed(&twice, 1, &[], &[], &[]), 0);
+        // another owner's claim, under the contract's owner: malformed
+        let bobs = claim(&key(4), 100, vec![item(&hub, &pk(&key(4)), 3, 10_000)], vec![]).posted(&issuer).unwrap();
+        assert_eq!(owed(&bobs, 100, &[], &[], &[]), 0);
+        assert_eq!(super::owed(&Counted { posted: None, b: 1, cid: 7, issuer: &issuer, owner: &owner, unit }, &[], &[], &[]), 0);
         // the bytes round-trip
-        assert_eq!(Claim::from_bytes(&with_fallback.to_bytes()), Some(with_fallback));
+        assert_eq!(Claim::from_bytes(&full.to_bytes()), Some(full));
+        let bytes = with_fallback.to_bytes();
+        assert_eq!(bytes.len(), POSTED_LEN);
+        assert_eq!(Posted::from_bytes(&bytes), Some(with_fallback));
+        // trailing bytes not zero: not a posted claim
+        let mut junk = bytes.clone();
+        junk[POSTED_LEN - 1] = 1;
+        assert_eq!(Posted::from_bytes(&junk), None);
+    }
+
+    #[test]
+    fn the_posted_claim_fits() {
+        assert!(fits(4, 2) && fits(3, 4) && fits(1, 0));
+        assert!(!fits(4, 3) && !fits(0, 0) && !fits(5, 0) && !fits(1, 5));
+        let (hub, alice) = (key(1), key(2));
+        let notes: Vec<Item> = (0..4).map(|i| item(&hub, &pk(&alice), i, 1 << 40)).collect();
+        let p = claim(&alice, 1, notes, vec![[1; 32]]).posted(&pk(&hub)).unwrap();
+        assert_eq!(Posted::from_bytes(&p.to_bytes()), Some(p));
     }
 
     #[test]

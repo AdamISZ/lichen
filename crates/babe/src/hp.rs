@@ -3,7 +3,7 @@
 //! asserts a proof that her claim is false or lets her timeout pay her.
 //!
 //! ```text
-//! request (Alice: b, E, the claim)
+//! request (Alice: b, the claim, each one-time signed)
 //!  ├─ request_timeout (after w_H)      → Alice: b
 //!  └─ correct (the hub: b_corr, its one-time key bc)
 //!      ├─ correct_timeout (after w_H)  → Alice: b
@@ -31,16 +31,17 @@
 //! and pin the hub's own (papers/lichen-babe §7). It is TRUC (version
 //! 3), which bounds what could pin with it.
 //!
-//! The contract output's `request` leaf carries her signatures on `b`
-//! and `E`, and the claim posted below them (the hub's statement reads
-//! it, `lichen_withdraw::hp`). Every transaction has one input: the
+//! The contract output's `request` leaf carries her one-time signatures
+//! on `b` and on the claim ([`POSTED_LEN`] bytes, signed in full so that
+//! no one can swap them; the hub's statement reads its digits,
+//! `lichen_withdraw::grants`). Every transaction has one input: the
 //! value flows through one chain from the contract output, and each
 //! output of the chain has its terminal (a terminal can't pay into a
 //! pre-signed transaction: its broadcaster adds a fee input, which
 //! changes its id).
 
 use anyhow::{ensure, Context, Result};
-use lichen_withdraw::hp::{posted_items, POSTED_ITEM, POSTED_ITEMS};
+use lichen_withdraw::grants::POSTED_LEN;
 use lngap_btc::bitcoin::opcodes::all::*;
 use lngap_btc::bitcoin::script::Builder;
 use lngap_btc::bitcoin::transaction::Version;
@@ -96,8 +97,8 @@ fn drop_n(b: Builder, n: usize) -> Builder {
     }
 }
 
-/// `E`'s 64 digits (32 bytes).
-const E_DIGITS: usize = 64;
+/// The posted claim's digits.
+const CLAIM_DIGITS: usize = 2 * POSTED_LEN;
 
 /// A contract of the swapped game: what both parties build its graph
 /// from.
@@ -108,9 +109,9 @@ pub struct Spec {
     /// Alice's keys, then the hub's.
     pub pubs: [PartyPubKeys; 2],
     /// Alice's one-time keys for `b` (the payout's bit outputs read it)
-    /// and for `E`.
+    /// and for the posted claim.
     pub b_key: WotsPublic,
-    pub e_key: WotsPublic,
+    pub claim_key: WotsPublic,
     /// The hub's one-time key for `b_corr` (`correct`; `success`'s bit
     /// outputs read it).
     pub bc_key: WotsPublic,
@@ -133,7 +134,7 @@ pub struct HubProves {
 impl HubProves {
     pub fn new(spec: Spec) -> Result<HubProves> {
         ensure!(spec.b_key.params == WotsParams::for_bytes(4), "the key for b signs a 4-byte word");
-        ensure!(spec.e_key.params == WotsParams::for_bytes(32), "the key for E signs 32 bytes");
+        ensure!(spec.claim_key.params == WotsParams::for_bytes(POSTED_LEN as u32), "the key for the claim signs {POSTED_LEN} bytes");
         ensure!(spec.bc_key.params == WotsParams::for_bytes(4), "the key for b_corr signs a 4-byte word");
         ensure!(spec.lamport.0.len() == DIGITS && spec.adaptor.len() == DIGITS, "a Lamport and an adaptor key set per digit of π1");
         ensure!(!spec.hmsg.is_empty(), "a kept instance at least");
@@ -155,13 +156,13 @@ impl HubProves {
     }
 
     /// The contract output's tree: `fold`, `default`, and `request` (after
-    /// `to_self_delay`): her signatures on `b` and `E`, the claim posted
-    /// below them, unchecked (the hub's statement reads it).
+    /// `to_self_delay`): her signatures on `b` and on the claim (the hub's
+    /// statement reads its digits).
     pub fn tree(&self) -> Result<TapTree> {
         let d = self.spec.params.to_self_delay;
         let (b, tl) = self.signed(if d > 0 { after(d) } else { (Builder::new(), Timelock::NONE) });
         let b = drop_digits(b.wots_verify(&self.spec.b_key));
-        let b = drop_n(drop_n(b.wots_verify(&self.spec.e_key), E_DIGITS), POSTED_ITEMS);
+        let b = drop_n(b.wots_verify(&self.spec.claim_key), CLAIM_DIGITS);
         self.core().tree(ok_leaf("request", b, tl))
     }
     /// `request`'s output: the hub's `correct`, its one-time signature on
@@ -233,14 +234,10 @@ impl HubProves {
             _ => Role::Hub,
         }
     }
-    /// A witness of link `name`'s shape, for its floor: `request` with the
-    /// largest claim.
+    /// A witness of link `name`'s shape, for its floor.
     fn shape(&self, name: &str) -> Vec<Vec<u8>> {
         match name {
-            "request" => {
-                let posted = vec![0u8; POSTED_ITEMS * POSTED_ITEM];
-                posted_items(&posted).expect("fits").into_iter().map(<[u8]>::to_vec).chain(wots_shape([&self.spec.e_key, &self.spec.b_key])).collect()
-            }
+            "request" => wots_shape([&self.spec.claim_key, &self.spec.b_key]),
             "correct" => wots_shape([&self.spec.bc_key]),
             "assert" => vec![vec![0u8; 20]; DIGITS].into_iter().chain([vec![0u8; 64], vec![0u8; 32]]).collect(),
             _ => (0..DIGITS).flat_map(|_| [vec![0u8; 20], vec![0u8; 64]]).collect(),
@@ -295,21 +292,19 @@ impl HubProves {
 
     // ----- the links' witnesses, below both signatures -----
 
-    /// `request`'s: the claim as posted (in [`POSTED_ITEMS`] items of up
-    /// to [`POSTED_ITEM`] bytes, its first items), then her signatures on
-    /// `E` and on `b`.
-    pub fn request_wire(b: &WotsSig, e: &WotsSig, posted: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let items = posted_items(posted).with_context(|| format!("a claim of {} bytes posted", posted.len()))?;
-        Ok(items.into_iter().map(<[u8]>::to_vec).chain(e.consumption_order().into_iter().rev()).chain(b.consumption_order().into_iter().rev()).collect())
+    /// `request`'s: her signatures on the claim and on `b`.
+    pub fn request_wire(b: &WotsSig, claim: &WotsSig) -> Result<Vec<Vec<u8>>> {
+        ensure!(claim.message().len() == POSTED_LEN, "a claim of {} bytes posted", claim.message().len());
+        Ok(claim.consumption_order().into_iter().rev().chain(b.consumption_order().into_iter().rev()).collect())
     }
     /// Read `request`'s arguments (consumption order, below both
-    /// signatures): her signatures on `b` and `E`, and the claim as posted.
-    pub fn read_request(args: &[Vec<u8>]) -> Result<(WotsSig, WotsSig, Vec<u8>)> {
-        let (nb, ne) = (2 * WotsParams::for_bytes(4).total_digits() as usize, 2 * WotsParams::for_bytes(32).total_digits() as usize);
-        ensure!(args.len() == nb + ne + POSTED_ITEMS, "a request of {} arguments", args.len());
+    /// signatures): her signatures on `b` and on the claim.
+    pub fn read_request(args: &[Vec<u8>]) -> Result<(WotsSig, WotsSig)> {
+        let (nb, nc) = (2 * WotsParams::for_bytes(4).total_digits() as usize, 2 * WotsParams::for_bytes(POSTED_LEN as u32).total_digits() as usize);
+        ensure!(args.len() == nb + nc, "a request of {} arguments", args.len());
         let b = WotsSig::from_consumption_order(WotsParams::for_bytes(4), &args[..nb])?;
-        let e = WotsSig::from_consumption_order(WotsParams::for_bytes(32), &args[nb..nb + ne])?;
-        Ok((b, e, args[nb + ne..].iter().rev().flatten().copied().collect()))
+        let c = WotsSig::from_consumption_order(WotsParams::for_bytes(POSTED_LEN as u32), &args[nb..])?;
+        Ok((b, c))
     }
     /// Her signature on `b` as the payout's leaves take it (bottom first:
     /// each digit's hash, then the digit); the hub's on `b_corr` likewise,

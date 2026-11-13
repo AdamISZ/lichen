@@ -227,6 +227,18 @@ impl Book {
         self.s.lock().unwrap().recorded.get(&hex::encode(sid)).cloned()
     }
 
+    /// A posted claim (an exit's) of `b` units of contract `cid` in full,
+    /// as the book has it: each note it names (by short id and value) and
+    /// each fallback (a spend recorded, by short id); those it doesn't
+    /// have left out. Its signature isn't hers (an exit carries none).
+    pub fn claim_of(&self, posted: &lichen_withdraw::grants::Posted, cid: u32, deposit: bitcoin::OutPoint, b: u32, owner: &Hash) -> Claim {
+        use lichen_withdraw::grants::short;
+        let s = self.s.lock().unwrap();
+        let notes = posted.notes.iter().filter_map(|n| s.notes.values().find(|e| e.note.owner == *owner && short(&e.note.id) == n.id && e.note.value == n.value)).map(|e| issue(&self.issuer, e.note)).collect();
+        let fallbacks = posted.fallbacks.iter().filter_map(|f| s.recorded.values().find(|r| short(&r.grant.sid) == *f)).map(|r| hex::encode(r.grant.sid)).collect();
+        Claim { cid, deposit, b, owner: *owner, notes, fallbacks, sig: [0; 64] }
+    }
+
     /// The evidence against `claim`: from its notes, the spend or claim
     /// that took each, and through a spend it names a fallback, that
     /// spend's outputs to her in turn.
@@ -248,7 +260,9 @@ impl Book {
                 None => ev.live.push(n),
                 Some(Spent::Claim { cid, .. }) if *cid == claim.cid => ev.live.push(n),
                 Some(Spent::Claim { e, .. }) => {
-                    if let Some(c) = s.claims.get(e).and_then(|t| t.claim.clone()) {
+                    // a claim she signed (a cooperative one: an exit's
+                    // isn't signed with her key)
+                    if let Some(c) = s.claims.get(e).and_then(|t| t.claim.clone()).filter(|c| crate::verify(&c.owner, &c.e(), &c.sig)) {
                         if !ev.others.contains(&c) {
                             ev.others.push(c);
                         }
