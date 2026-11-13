@@ -483,3 +483,18 @@ signature, the issuance evidence). In v0.2 the binding limit is `ack`'s
   `t_0` to Bitcoin's secp adaptor on the funding: a cross-group DLEQ
   (as in Monero–Bitcoin swaps) before she signs, off chain, once per
   contract. Unmeasured: hash-to-curve and 2 pairings in RISC Zero.
+
+### HASH160 or SHA-256 chains for her one-time keys (2026-11-13)
+
+No capacity at stake: Bitcoin's limit is 1,000 stack *items*, and a
+digit is two items either way. Only her four keys (`K_Q`, `K_b`,
+`A_corr`, `A_U`) matter: the guest verifies only hers; the hub's
+`K_corr`, `K_U` stay HASH160. SHA-256 costs bytes (32-byte preimages
+and script elements, witness-discounted): `request` about +2.5 kvB
+(+25%), `ack` about +1.4 kvB (+12%), in contested exits only. It saves
+the guest's RIPEMD-160 (no accelerator): about 4,900 calls, 15–25M
+cycles est., to ~1M. BLS (est. 30–50M) likely dominates; SHA-256 would
+still cut about a third. Decide after one short lichen-vps run timing
+6 aggregated BLS signatures and a few hundred RIPEMD-160 calls. v0.3.0
+says "about 60% more" on chain: wrong (raw preimage size, no witness
+discount); fix in the next version.
