@@ -522,3 +522,37 @@ SHA-256 chains for her four one-time keys (the hub's stay HASH160);
 the contract-born mint (no adaptor at the opening, no cross-group
 proof). Main open question: BLS verification in RISC Zero, a hub cost
 only. Still a proposal; v0.1.1 is the built design.
+
+### BLS in RISC Zero, measured (2026-11-13)
+
+RISC Zero 3.0.6, the executor on the Mac (cycles are exact; nothing
+proved), `bls12_381` fork `v0.8.0-risczero.1` (hash-to-curve needs
+`sha2` 0.9), an aggregate of upstream-made signatures (a wrong message
+fails it):
+
+| step | cycles |
+|---|---|
+| decompress `I` (G2) / `σ` (G1) | 1.41M / 1.05M |
+| hash-to-curve, one note (G1; G2 would be 2.77M) | 0.89M |
+| `G2Prepared`, each of `I` and `−g2` | 1.21M |
+| multi Miller loop, 2 pairs | 6.63M |
+| final exponentiation | 10.94M |
+| `t·g2`, double-and-add / 4-bit fixed-base table | 7.25M / 0.86M |
+| 3,200 SHA-256 / 100 HASH160 | 1.56M / 0.31M |
+
+As first written (n = 4): 62.6M, 63 segments, the seeds 35M of it.
+With the obvious fixes (fixed-base table for `g2` as constants; compare
+`t·g2` compressed with `T` instead of decompressing `T`; `I` and `−g2`
+prepared as constants of a per-deployment guest): about 29M for the
+whole statement (BLS ≈ 24M, her SHA-256 one-time signatures ≈ 1.6M,
+four BIP340 `α` checks est. ≈ 2M). Proving at the old rates: ~4 h on
+lichen-vps (4 cores, ~490 s a segment), ~30 min on the M4 Pro; a CUDA
+GPU minutes. Further: the final exponentiation (11M) can be replaced
+by a hinted check (Novakovic–Eagen, "On proving pairings", 2024).
+
+**A bug in the fork**: `Scalar::from_bytes_wide` in the zkVM build
+returns the right value times `R` (`d0 * R + d1 * R2` under `//TODO:
+untested`, in a non-Montgomery representation): it disagrees with
+upstream. Derive scalars with canonical `from_bytes` (a 254-bit value)
+or report it to RISC Zero first. The scratch project:
+the session's scratchpad `blsbench/` (host + guest), not kept.
