@@ -380,3 +380,16 @@ could go.
 mining Ω on a private fork proves a fake `correct`): ten blocks' work
 is about ten blocks' revenue on mainnet, nothing on a testnet. Ω should
 scale with `V_max`; state it.
+
+Corrected (the user, same day): `request` needs no chain. Its `P` and
+`b` are amount-authenticated as in lichen v0.5 §(BABE with
+authenticated amounts): her one-time keys bound in `J`, her signatures
+checked by the statement; the anchored L2 reads `request` from the
+chain only because it judges claims as of their time, and the grants
+L2 has no time. What does need the chain is `correct`: `b_corr` and the
+slots are the *prover's own* exit-time values, and a prover's signature
+can't bind its value to its own private witness (an equivocation under
+`K_corr` is seen only if Alice sees both; a revealing slot in the
+witness reveals nothing). So: headers on `correct`'s block, not
+`request`'s; dropping the chain entirely needs the hub not to choose
+exit-time values (or `b_corr` as a BABE verifier input, changing BABE).
