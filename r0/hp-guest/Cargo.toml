@@ -8,15 +8,15 @@ name = "hp"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-# the toolchain of risczero/risc0-guest-builder:r0.1.88.0
-rust-version = "1.88"
+# the toolchain of risczero/risc0-guest-builder:r0.1.97.0
+rust-version = "1.97"
 
 [workspace]
 resolver = "3"
 
 [dependencies]
 lichen-withdraw = { path = "../../crates/withdraw" }
-risc0-zkvm = { version = "=3.0.6", default-features = false, features = ["std"] }
+risc0-zkvm = { version = "=3.1.0", default-features = false, features = ["std"] }
 
 # RISC Zero's accelerated crypto: the paths and spent-set openings are
 # SHA-256, the claim's and acknowledgments' signatures and the sequencer's
