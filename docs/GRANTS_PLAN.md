@@ -321,3 +321,10 @@ the paper fixed. The user is reading v0.1.1 first; decide then.
 - Open questions already in v0.1.1 to check in code: reveals from the
   moment `N_0` is spendable; taking the claim and its evidence as one
   step of the book.
+- §4.2: the work renamed (Ω, not W: W is Winternitz); `u` (sats per
+  unit of `b`) in the notation section and recalled at the journal; a
+  paragraph on why the statement takes `request` and `correct` from
+  blocks with Ω work on top: it reads one-time-signed digits it doesn't
+  verify (her keys aren't in the journal) and slots only Bitcoin
+  checked, so it needs them mined; binding her keys in `J` would free
+  `request`, not `correct`.
