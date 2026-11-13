@@ -514,3 +514,11 @@ the contract's existence: funding confirmed ⇒ the contract and its
 encryption, no second curve at the opening; M1 trivial. Cost: a flag
 bit and `v_0` in `J`. The hub must not record spends of `N_0` before
 the funding confirms (its own risk). Proposed for the next version.
+
+### Taken in papers/lichen-grants-v0.4.0 (the user, 2026-11-13)
+
+Capacity 4 (`μ + n + f ≤ 4`: `Q` 137 bytes, `U` 4 seeds, 64 bytes);
+SHA-256 chains for her four one-time keys (the hub's stay HASH160);
+the contract-born mint (no adaptor at the opening, no cross-group
+proof). Main open question: BLS verification in RISC Zero, a hub cost
+only. Still a proposal; v0.1.1 is the built design.

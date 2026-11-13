@@ -74,7 +74,7 @@
 
 \title{\textbf{The grants L2}\\a Lichen L2 without global order\\[2pt]\large early draft: the countersigned exit, with BLS notes}
 \author{waxwing}
-\date{Version 0.3, November 2026\\[2pt]\small a companion to \emph{Lichen}, version 0.5~\cite{lichen}}
+\date{Version 0.4, November 2026\\[2pt]\small a companion to \emph{Lichen}, version 0.5~\cite{lichen}}
 
 \begin{document}
 \maketitle
@@ -88,21 +88,21 @@ with no sequencer, no global ordering and no anchoring. Notes are
 transparent and signed by the hub with BLS. A payment is made atomic
 by a \emph{grant}: the outputs' signatures encrypted under a one-time
 point $T$ that the hub opens only after the payer has signed, as in
-the ecash design of~\cite{ecash} without the blinding. An exit pays $b$, the user's
-claim, or $\bcorr$, the hub's correction, according to what the user
-signed. The hub posts $\bcorr$ with the unlocks of the spends it holds
-against her; to contest, she countersigns what it posted, and the hub
-then proves $\owed \le \bcorr$ from her signatures alone. Every value
-that enters the statement at exit time is under her one-time
-signature, so the statement reads nothing from the chain: no headers,
-no work, no inclusion proofs.
+the ecash design of~\cite{ecash} without the blinding. An exit pays
+$b$, the user's claim, or $\bcorr$, the hub's correction, according to
+what the user signed. The hub posts $\bcorr$ with the unlocks of the
+spends it holds against her; to contest, she countersigns what it
+posted, and the hub then proves $\owed \le \bcorr$ from her signatures
+alone. Every value that enters the statement at exit time is under her
+one-time signature, so the statement reads nothing from the chain: no
+headers, no work, no inclusion proofs.
 
-Version 0.1 described the exit as built, which took the hub's values
-from blocks with work on top; version 0.2 proposed the countersigned
-exit. This version signs notes with BLS, so a claim carries one
-aggregate signature, 22 bytes a note, and publishes unlocks as 16-byte
-seeds: an exit takes up to seven notes and fallbacks. It is a proposal,
-not yet built.
+A claim names up to four notes and fallbacks, each note in 22 bytes
+under one aggregate BLS signature. The deposit's note is born with the
+contract, so the opening needs no swap. The open question is the
+statement's cost: BLS verification in RISC Zero, unmeasured, paid by
+the hub alone. This version is a proposal, not yet built; version 0.1
+describes the exit as built.
 \end{abstract}
 
 \tableofcontents
@@ -179,18 +179,6 @@ its notes to its open contract's key with an ordinary payment to itself.
 even $y$, $s = k + e(R, P, m)\,d$. $\Vfy_P(m, (r, s))$ holds iff $sG =
 \mathsf{lift}(r) + e(\mathsf{lift}(r), P, m)P$. 64 bytes.
 
-\textbf{Adaptor signatures} under a point $T$ (secp256k1; used only
-for the opening's funding, \S\ref{sec:opening}):
-\begin{itemize}[nosep]
-\item $\PSign_d(m, T) = \mu = (r, R', s')$: a nonce $k$ (deterministic
-  in $d$, $m$, $T$ and a counter), $R' = kG$, retried until $R = R' + T$
-  has even $y$; then $r = \xo{R}$ and $s' = k + e(R, P, m)\,d$.
-\item $\PVfy_P(m, T, \mu)$ holds iff $R' + T$ has even $y$, $\xo{R' +
-  T} = r$, and $s'G = R' + e(\mathsf{lift}(r), P, m)P$.
-\item $\Compl(\mu, t) = (r, s' + t)$: a BIP340 signature by $P$ on $m$
-  when $tG = T$. $\Extr(\mu, (r, s)) = s - s'$.
-\end{itemize}
-
 \textbf{BLS}~\cite{bls} with key $k$, $K = k\,g_2$:
 \begin{itemize}[nosep]
 \item $\BSign_k(m) = k\,\Hg(m) \in G_1$; $\BVfy_K(m, \sigma)$ iff
@@ -213,15 +201,15 @@ signature. That is impossible for a unique signature such as
 BLS~\cite{erwig}: the signer computes the signature itself, so
 extraction would let it solve any instance it was handed. Here
 $\rho - \BSign_k(m) = t\,\Hg(m)$, from which $t$ is a discrete log. The
-design never extracts from a note's signature: $t$ always travels in
-the clear (\S\ref{sec:payment}, \S\ref{sec:correct}). The one
-extraction, at the opening, is from a secp256k1 Schnorr signature on
-Bitcoin.
+design never extracts anything: $t$ always travels in the clear
+(\S\ref{sec:payment}, \S\ref{sec:correct}).
 
 \textbf{One-time signatures.} $\Wots_K(x)$ is a Winternitz signature
 under the one-time key $K$ on the bytes $x$: 4-bit digits (2 a byte)
 plus checksum digits, each digit given as 2 witness items (a hash
-preimage and the digit itself), the hash HASH160. Script verifies it
+preimage and the digit itself). The chains are SHA-256 for Alice's keys, which the
+statement verifies (RISC Zero accelerates SHA-256), and HASH160 for the
+hub's, which only script reads. Script verifies it
 digit by digit, so the digits on the stack are authenticated by the
 signature, and script can compare them with other digits. A key fixed
 in a leaf at the opening signs once; two different signatures under it
@@ -243,7 +231,6 @@ $\KQ$, $\Kb$ & contract $c$, hers & one-time: the posted claim $Q$ and $b$, in \
 $\Kcorr$, $\KU$ & contract $c$, the hub's & one-time: $\bcorr$ and the unlocks $U$, in \tx{correct} \\
 $\Acorr$, $\AU$ & contract $c$, hers & one-time: her countersignatures on $\bcorr$ and $U$, in \tx{ack} \\
 $z_S$, $t_S$, $T_S = t_S g_2$ & spend $S$ & the spend's unlock: a 16-byte seed $z_S$, its scalar $t_S$, derived by the hub \\
-$t_0$, $T_0 = t_0G$, $T_{0,2} = t_0 g_2$ & the opening of $c$ & the unlock of the mint, her deposit's note: one scalar on both curves \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -318,8 +305,8 @@ Its \emph{commitment}, and the message each input's owner signs, are
   \alpha = \Ht{auth}(\sid, C).
 \]
 The \emph{unlock} the hub hands over is the seed $z_S$; whoever holds it
-computes $t_S$. A seed is 16 bytes, half a scalar, which doubles what an
-exit can publish (\S\ref{sec:costs}); finding $z_S$ from $T_S$ takes
+computes $t_S$. A seed is 16 bytes, half a scalar, which halves what an
+exit publishes (\S\ref{sec:costs}); finding $z_S$ from $T_S$ takes
 $2^{128}$ work.
 \end{definition}
 
@@ -443,7 +430,7 @@ if it has none. It refuses to pay itself any other way.
 
 \textbf{Receiving offline.} Payments accumulate in the mailbox while
 Bob is away, each one settled. Only those his exit can claim are
-protected: at most 7 notes (\S\ref{sec:claim}), his largest, until he
+protected: at most 4 notes (\S\ref{sec:claim}), his largest, until he
 merges. A merge is a spend, so it needs the hub; a hub that turns
 hostile while he holds more leaves the rest as credit.
 
@@ -451,43 +438,38 @@ hostile while he holds more leaves the rest as credit.
 
 \subsection{Opening}\label{sec:opening}
 
-The opening follows~\cite{lichen}, with the user's deposit and her L2
-balance swapped atomically (Figure~\ref{fig:opening}):
+The opening follows~\cite{lichen} (Figure~\ref{fig:opening}). Her
+deposit becomes an L2 balance through the \emph{mint}, a note the
+contract itself vouches for:
 \begin{enumerate}[nosep]
 \item Alice derives a fresh key $a_c$, $\Oc = a_cG$, and pays her
-  deposit $v_D$ to a coin $O_D$: a 2-of-2 of hers ($a_D$) and the
-  hub's, or her refund alone after a timeout.
+  deposit $v_D$ to a coin $O_D$: a 2-of-2 of hers and the hub's, or her
+  refund alone after a timeout.
 \item She asks for a contract with owner $\Oc$. The hub refuses an $\Oc$
   it has seen before: the owner of a contract, or of any note, pending
   or issued.
 \item The setup (\cite{lichen}): the statement fixed by its journal $J$
-  (\S\ref{sec:journal}), which binds her one-time keys; the BABE
-  instances garbled by Alice and kept by the hub by cut-and-choose.
+  (\S\ref{sec:journal}), which binds her one-time keys and the mint's
+  value $v_0$, her deposit less the opening's fee; the BABE instances
+  garbled by Alice and kept by the hub by cut-and-choose.
 \item The hub's offer: the funding $F$, spending $O_D$ and the hub's
-  coins into the contract output; its pre-signatures on the graph; and
-  the \emph{mint}, the note
-  \[
-    N_0 = \big(\Ht{issue}(\texttt{"mint"} \,\|\, \be{c}{4} \,\|\,
-    \mathrm{txid}(F)),\ \Oc,\ v_0\big),
-  \]
-  $v_0$ her deposit less the opening's fee, pre-issued as $\rho_0 =
-  \Enc_{\kiss}(\delta(N_0), T_{0,2})$. The hub's $t_0 < 2^{252}$, fresh for
-  this $F$, is one scalar on both curves: $T_0 = t_0G$ and $T_{0,2} =
-  t_0 g_2$, with a cross-group proof $\pi_0$ that they share it
-  (a discrete-log equality across groups~\cite{dleqx}).
-\item Alice checks $\EVfy_I(\delta(N_0), T_{0,2}, \rho_0)$, $\pi_0$ and
-  $v_0$, signs the graph, and pre-signs $F$'s spend of $O_D$ under the
-  secp256k1 point: $\mu_F = \PSign_{a_D}(m_F, T_0)$, $m_F$ that input's
-  sighash.
-\item The hub completes $\sigma_F = \Compl(\mu_F, t_0)$, adds its own
-  signature and broadcasts $F$.
-\item Alice reads $\sigma_F$ from $F$'s witness: $t_0 = \Extr(\mu_F,
-  \sigma_F)$, a Schnorr extraction, and $\sigma_0 = \Dec(\rho_0, t_0)$.
-  $N_0$ is settled; the hub enters it in the book.
+  coins into the contract output, and its pre-signatures on the graph.
+\item Alice signs the graph and $F$'s spend of $O_D$.
+\item The hub adds its signature and broadcasts $F$.
 \end{enumerate}
-If the hub never broadcasts $F$, nothing settles $N_0$, and Alice
-refunds $O_D$ after its timeout. If $F$ confirms, $t_0$ is on chain
-whether or not the hub answers.
+\textbf{The mint} is the note
+\[
+  N_0 = \big(\Ht{issue}(\texttt{"mint"} \,\|\, \be{c}{4}),\ \Oc,\ v_0\big).
+\]
+It has no signature: its evidence is the contract, whose journal binds
+$v_0$, and a claim includes it by a flag (\S\ref{sec:claim}). The hub
+enters it in its book once $F$ confirms, and her spends of it are
+granted like any other. So the swap is atomic by the contract's
+existence: if $F$ confirms, the contract exists and $N_0$ with it; if
+it never confirms, there is neither, and Alice refunds $O_D$ after its
+timeout. Nothing needs to be extracted, and a lost answer from the hub
+costs her nothing: $F$ on chain is enough. The hub must not record a
+spend of $N_0$ before $F$ confirms, which is its own risk.
 
 \begin{figure}[!tbp]
 \centering
@@ -506,26 +488,25 @@ whether or not the hub answers.
 \draw[msg] (LA|-y) -- node[lbl, above] {request: $O_D$; owner $\Oc$, fresh} (LH|-y);
 \node[box, anchor=north] (b1) at ($(LH|-y)+(0,-0.3)$) {$\Oc$ unseen: owns no contract,\\ no note};
 \coordinate (y) at ($(b1.south)+(0,-0.8)$);
-\draw[msg, <->] (LA|-y) -- node[lbl, above] {setup: the journal $J$ (her one-time keys); BABE} (LH|-y);
-\coordinate (y) at ($(y)+(0,-1.4)$);
-\draw[msg] (LH|-y) -- node[lbl, above] {offer: $F$; graph pre-signatures; $N_0$;\\ $T_0$, $T_{0,2}$, $\pi_0$; $\rho_0 = \Enc_{\kiss}(\delta(N_0), T_{0,2})$} (LA|-y);
-\node[box, anchor=north] (b2) at ($(LA|-y)+(0,-0.3)$) {$\EVfy_I(\delta(N_0), T_{0,2}, \rho_0)$; $\pi_0$; $v_0$\\ sign the graph\\ $\mu_F = \PSign_{a_D}(m_F, T_0)$};
-\coordinate (y) at ($(b2.south)+(0,-0.8)$);
-\draw[msg] (LA|-y) -- node[lbl, above] {graph signatures, $\mu_F$} (LH|-y);
-\node[box, anchor=north] (b3) at ($(LH|-y)+(0,-0.3)$) {$\sigma_F = \Compl(\mu_F, t_0)$\\ and its own signature on $F$};
-\coordinate (y) at ($(b3.south)+(0,-0.8)$);
-\draw[msg] (LH|-y) -- node[lbl, above] {$F$, its witness holding $\sigma_F$} (LB|-y);
-\coordinate (y) at ($(y)+(0,-1.0)$);
-\draw[msg, dashed] (LB|-y) -- node[lbl, above, pos=0.75] {$\sigma_F$, read from the chain} (LA|-y);
-\node[box, anchor=north] (b4) at ($(LA|-y)+(0,-0.3)$) {$t_0 = \Extr(\mu_F, \sigma_F)$\\ $\sigma_0 = \Dec(\rho_0, t_0)$: $N_0$ settled};
+\draw[msg, <->] (LA|-y) -- node[lbl, above] {setup: $J$ (her one-time keys, $v_0$); BABE} (LH|-y);
+\coordinate (y) at ($(y)+(0,-1.1)$);
+\draw[msg] (LH|-y) -- node[lbl, above] {offer: $F$; graph pre-signatures} (LA|-y);
+\coordinate (y) at ($(y)+(0,-1.1)$);
+\draw[msg] (LA|-y) -- node[lbl, above] {graph signatures; her signature on $F$} (LH|-y);
+\coordinate (y) at ($(y)+(0,-1.1)$);
+\draw[msg] (LH|-y) -- node[lbl, above] {$F$} (LB|-y);
+\coordinate (y) at ($(y)+(0,-1.1)$);
+\draw[msg, dashed] (LB|-y) -- node[lbl, above] {$F$ confirmed} (LH|-y);
+\node[box, anchor=north] (b3) at ($(LH|-y)+(0,-0.3)$) {$N_0$ into the book, live};
+\draw[msg, dashed] (LB|-y) -- node[lbl, above, pos=0.75] {$F$ confirmed} (LA|-y);
+\node[box, anchor=north] (b4) at ($(LA|-y)+(0,-0.3)$) {$N_0 = (\Ht{issue}(\texttt{"mint"} \| c), \Oc, v_0)$\\ hers: the contract vouches for it};
 \coordinate (end) at ($(b4.south)+(0,-0.3)$);
 \begin{scope}[on background layer]
 \foreach \l in {LA,LH,LB} \draw[life] (\l) -- (\l|-end);
 \end{scope}
 \end{tikzpicture}
-\caption{The opening: the deposit and the mint $N_0$ swap through one
-scalar $t_0$, an adaptor secret on Bitcoin's curve and an encryption
-key on BLS12-381.}
+\caption{The opening: the mint $N_0$ exists exactly when the contract
+does, so the deposit and the L2 balance need no swap.}
 \label{fig:opening}
 \end{figure}
 
@@ -535,15 +516,15 @@ The statement's only public input, fixed at the opening, is
 \begin{align*}
   J &= \be{c}{4} \,\|\, D,\\
   D &= \mathrm{SHA256}\big(\texttt{"lichen/grants/contract"} \,\|\,
-  I^{(96)} \,\|\, \xo{\Oc} \,\|\, \be{u}{8} \,\|\, \kappa\big),\\
+  I^{(96)} \,\|\, \xo{\Oc} \,\|\, \be{u}{8} \,\|\, \be{v_0}{8} \,\|\, \kappa\big),\\
   \kappa &= \mathrm{SHA256}\big(\KQ \,\|\, \Kb \,\|\, \Acorr \,\|\, \AU\big),
 \end{align*}
 $\kappa$ hashing Alice's four one-time public keys (each the list of its
-chains' ends). $D$ binds the issuer, the owner, the unit, and the keys
-under which every exit-time value reaches the statement
-(\S\ref{sec:statement}). Without the owner, a hub could prove against
-another key and call every claim malformed; without the unit, it could
-prove at another $u$.
+chains' ends). $D$ binds the issuer, the owner, the unit, the mint's
+value, and the keys under which every exit-time value reaches the
+statement (\S\ref{sec:statement}). Without the owner, a hub could prove
+against another key and call every claim malformed; without the unit,
+it could prove at another $u$.
 
 \subsection{The dispute graph}\label{sec:graph}
 
@@ -662,33 +643,35 @@ same contract never counts against itself.
 \subsection{The claim}\label{sec:claim}
 
 \begin{definition}
-A \emph{claim} on contract $c$ is $(b;\ N_1, \dots, N_n;\ \sid_1, \dots,
-\sid_f)$ with $n \ge 1$ and $n + f \le 7$: settled notes of $\Oc$, with
-distinct short ids, each with $\sigma_{N_i}$; $f$
-\emph{fallbacks}, the ids of her spends in flight that take any of the
-$N_i$, with distinct $\pre{\sid_l}{8}$; and $b \le \lfloor \sum_i v_i /
-u\rfloor$.
+A \emph{claim} on contract $c$ is $(b;\ \mu;\ N_1, \dots, N_n;\ \sid_1,
+\dots, \sid_f)$: a flag $\mu \in \{0, 1\}$, whether it includes the mint
+$N_0$; settled notes of $\Oc$ other than the mint, with distinct short
+ids, each with $\sigma_{N_i}$; $f$ \emph{fallbacks}, the ids of her
+spends in flight that take any of its notes, with distinct
+$\pre{\sid_l}{8}$; with $\mu + n \ge 1$, $\mu + n + f \le 4$, and $b \le
+\lfloor (\mu v_0 + \sum_i v_i) / u\rfloor$.
 \end{definition}
 
-$n + f \le 7$ is the exit's capacity: at most 7 spends ever need citing
-(\S\ref{sec:volume}), and \tx{ack} has room for 7 unlock seeds
-(\S\ref{sec:costs}). The wallet picks the largest of $\Oc$'s notes that
-fit with the fallbacks they need, and sets $b$ to what she withdraws.
+$\mu + n + f \le 4$ is the exit's capacity: at most 4 spends ever need
+citing (\S\ref{sec:volume}), and \tx{correct} publishes 4 unlock seeds.
+The wallet picks the largest of $\Oc$'s notes that fit with the
+fallbacks they need, and sets $b$ to what she withdraws.
 
 \textbf{The posted claim} $Q$ is what \tx{request} carries, exactly
-$L_Q = 203$ bytes:
+$L_Q = 137$ bytes:
 \[
-  Q = \be{16n + f}{1} \,\big\|\, \mathop{\big\|}_{i=1}^{n}
+  Q = \be{64\mu + 8n + f}{1} \,\big\|\, \mathop{\big\|}_{i=1}^{n}
   \big(\pre{\mathit{id}_i}{16} \,\|\, \be{v_i}{6}\big)
   \,\big\|\, \sigma^{(48)} \,\big\|\, \mathop{\big\|}_{l=1}^{f} \pre{\sid_l}{8}
   \,\big\|\, 0^{\ast}:
 \]
-the counts; per note its short id and value, 22 bytes; the aggregate
-$\sigma$ of the hub's signatures on them; each fallback's first 8
-bytes; zeros to $L_Q$. Seven notes take $1 + 7 \cdot 22 + 48 = 203$
-bytes, the most. The contract ($c$, $\Oc$, $u$) is not in
-$Q$: the statement takes it from the journal. $b$ is not in $Q$:
-\tx{request} signs it under its own key (\S\ref{sec:bits}).
+the flag and counts; per note its short id and value, 22 bytes; the
+aggregate $\sigma$ of the hub's signatures on them (the identity if $n
+= 0$); each fallback's first 8 bytes; zeros to $L_Q$. Four signed notes
+take $1 + 4 \cdot 22 + 48 = 137$ bytes, the most. The mint, the
+contract ($c$, $\Oc$, $u$) and $v_0$ are not in $Q$: the statement
+takes them from the journal. $b$ is not in $Q$: \tx{request} signs it
+under its own key (\S\ref{sec:bits}).
 
 \textbf{Aggregation.} With $m_i = \delta(N_i) =
 \Ht{note}(\pre{\mathit{id}_i}{16}, \Oc, \be{v_i}{8})$, Alice sets $\sigma
@@ -710,14 +693,16 @@ the hub chose to cite: hers, unless a later cited spend kills it.
 
 \textbf{\tx{request}'s witness}: $\Wots_{\KQ}(Q)$ and
 $\Wots_{\Kb}(\be{b}{4})$, under the 2-of-2's two signatures: $2(2 \cdot
-203 + 4) + 2(8 + 2) + 2 = 842$ stack items, inside Bitcoin's 1,000.
+137 + 4) + 2(8 + 2) + 2 = 578$ stack items, well inside Bitcoin's
+1,000.
 
 \subsection{The hub's correction}\label{sec:correct}
 
 When \tx{request} appears, the hub:
 \begin{enumerate}[nosep]
 \item reads $b$ and $Q$ from \tx{request}'s witness, and maps each posted
-  note $(\iota_i, v_i)$ to its book (owner $\Oc$) and each fallback
+  note $(\iota_i, v_i)$, and the mint if flagged, to its book (owner
+  $\Oc$), and each fallback
   $\pre{\sid_l}{8}$ to a recorded spend;
 \item gathers the evidence: for each claimed note the recorded spend that
   took it, and through a spend the claim names a fallback, that spend's
@@ -730,9 +715,9 @@ When \tx{request} appears, the hub:
 \item if $x = b$: does nothing, and \tx{request\_timeout} pays $b$;
 \item otherwise posts \tx{correct} with $\bcorr = x$ and
   \[
-    U = z_{S_1} \,\|\, \cdots \,\|\, z_{S_q} \,\|\, 0^{16(7 - q)},
+    U = z_{S_1} \,\|\, \cdots \,\|\, z_{S_q} \,\|\, 0^{16(4 - q)},
   \]
-  the unlock seeds of the $q \le 7$ spends it cites, 112 bytes, each
+  the unlock seeds of the $q \le 4$ spends it cites, 64 bytes, each
   under its one-time key: $\Wots_{\Kcorr}(\be{\bcorr}{4})$ and
   $\Wots_{\KU}(U)$.
 \end{enumerate}
@@ -768,8 +753,8 @@ countersigned.}
 \textbf{Private input}: $(I, \Oc, u)$; her four one-time public keys;
 the four signatures $\Wots_{\KQ}(Q)$, $\Wots_{\Kb}(\be{b}{4})$,
 $\Wots_{\Acorr}(\be{\bcorr}{4})$, $\Wots_{\AU}(U)$ (from \tx{request}'s
-and \tx{ack}'s witnesses); and the cited spends $X_1, \dots, X_q$, $q \le
-7$, each what she signed:
+and \tx{ack}'s witnesses); $v_0$; and the cited spends $X_1, \dots,
+X_q$, $q \le 4$, each what she signed:
 \[
   X = \big(S_X,\ T_X^{(96)},\ \rho_0^{(48)}, \dots, \rho_{k-1}^{(48)},\
   \sigma_X\big).
@@ -777,7 +762,7 @@ and \tx{ack}'s witnesses); and the cited spends $X_1, \dots, X_q$, $q \le
 
 \textbf{Checks}, in order (any failure rejects; no proof):
 \begin{enumerate}[nosep]
-\item The keys hash to $\kappa$, and $\be{c}{4} \,\|\, D = J$.
+\item The keys hash to $\kappa$, and $\be{c}{4} \,\|\, D = J$ (with $v_0$).
 \item The four one-time signatures verify under her keys. Their digits
   give $Q$, $b$, $\bcorr$ and $U$.
 \item $\owed(Q, b, I, \Oc, u, (X_q), U) \le \bcorr$ (Algorithm~1).
@@ -786,16 +771,16 @@ and \tx{ack}'s witnesses); and the cited spends $X_1, \dots, X_q$, $q \le
 
 \begin{algobox}{Algorithm 1: $\owed(Q, b, I, O, u, (X_q), U)$, in units}
 \textbf{Malformed: return 0} if any of:
-$Q$ doesn't parse (counts outside $n \ge 1$, $n + f \le 7$; nonzero padding);
+$Q$ doesn't parse (counts outside $\mu + n \ge 1$, $\mu + n + f \le 4$; nonzero padding);
 two notes with one short id, or two fallbacks with one prefix;
 $e(\sigma, g_2) \ne e(\sum_i \Hg(m_i), I)$ with $m_i = \Ht{note}(\iota_i, O, \be{v_i}{8})$;
-$b > \lfloor \sum_i v_i / u\rfloor$.\\[3pt]
+$b > \lfloor (\mu v_0 + \sum_i v_i) / u\rfloor$.\\[3pt]
 \textbf{Usable spends.} $X$ is \emph{usable} iff, with $\sid_X = \sid(S_X)$,
 $C_X$ recomputed from $X$'s bytes and $\alpha_X = \Ht{auth}(\sid_X, C_X)$:
 \quad (a) $\Vfy_O(\alpha_X, \sigma_X)$, and
 \quad (b) some nonzero 16-byte word $z$ of $U$ has $t\,g_2 = T_X$, $t$ its scalar.\\
 $\mathcal{X}$ is the list of usable $X$, in order.\\[3pt]
-\textbf{Fixed point.} Candidates, a \emph{set} $K \leftarrow \{(\iota_i, v_i)\}_{i \le n}$; dead $Z \leftarrow \emptyset$; revived prefixes $V \leftarrow \emptyset$.\\
+\textbf{Fixed point.} Candidates, a \emph{set} $K \leftarrow \{(\iota_i, v_i)\}_{i \le n}$, plus $(\pre{\mathit{id}_0}{16}, v_0)$ if $\mu = 1$; dead $Z \leftarrow \emptyset$; revived prefixes $V \leftarrow \emptyset$.\\
 \textbf{repeat}\\
 \quad \textbf{for} $X \in \mathcal{X}$:\\
 \quad\quad $\lambda \leftarrow \{(\pre{\mathit{id}}{16}, v) : (\mathit{id}, o, v) \text{ an input of } S_X,\ o = O\} \cap K \setminus Z$\\
@@ -864,20 +849,20 @@ the unlock itself as one-time-signed digits can be countersigned, and
 the statement checks $t_S g_2 = T_X$ directly. So the grant loses its
 reveals, the hub needs no pre-signatures per contract, and nothing
 about \tx{correct}'s sighash enters a payment. Publishing the 16-byte
-seed $z_S$ rather than the 32-byte $t_S$ halves the bytes, and the
-bytes of $U$ are what \tx{ack} runs out of (\S\ref{sec:costs}).
+seed $z_S$ rather than the 32-byte $t_S$ halves the bytes, and \tx{ack}
+carries every byte of $U$ twice (\S\ref{sec:costs}).
 
 \subsection{How much evidence a claim can need}\label{sec:volume}
 
 \begin{proposition}\label{prop:volume}
-For any posted claim, at most $n + f \le 7$ cited spends change
-Algorithm~1's result; so $U$'s 7 seeds always suffice.
+For any posted claim, at most $\mu + n + f \le 4$ cited spends change
+Algorithm~1's result; so $U$'s 4 seeds always suffice.
 \end{proposition}
 \begin{proof}
 A spend changes the result only if it kills a candidate. $K$ starts with
-$n$ entries and grows only on a revival, once per fallback prefix, by
+$\mu + n$ entries and grows only on a revival, once per fallback prefix, by
 that spend's outputs to $O$: at most one, since the hub grants no spend
-with two outputs to one owner. So $|K| \le n + f$, and each useful
+with two outputs to one owner. So $|K| \le \mu + n + f$, and each useful
 spend kills an entry no earlier one did.
 \end{proof}
 
@@ -1004,56 +989,53 @@ She exits with $b = 1000$ and $Q = (N_1, N_2;\ \text{fallback }
 
 \section{Costs}\label{sec:costs}
 
-Estimates, scaled from version 0.1's measurements (about 12 vB per
-witness item of one-time signatures, with their scripts); none of this
-is built.
+Estimates, scaled from version 0.1's measurements: about 12 vB per
+witness item of one-time signatures with HASH160 chains, their scripts
+included, and about 15 with SHA-256 (32-byte preimages and script
+elements instead of 20, at the witness discount). None of this is
+built.
 
 \begin{center}
 \begin{tabularx}{\linewidth}{lL}
 \toprule
 Item & Cost (est.) \\
 \midrule
-\tx{request} & 842 stack items, about 10 kvB ($Q$ is 203 bytes, for 7 notes) \\
-\tx{correct} & $2(8 + 2) + 2(224 + 3) + 2 = 476$ items, about 5.7 kvB (0.65 in v0.1) \\
-\tx{ack} & twice \tx{correct}'s signatures, 950 items, about 11.4 kvB; new \\
-statement & no headers, no transaction parsing. Her four one-time signatures: about 660 HASH160 chains, roughly 4,900 HASH160 calls; RIPEMD-160 has no RISC Zero accelerator, so perhaps 15--25M cycles. The BLS aggregate: two pairings and up to 7 hash-to-curve; the seeds: up to 7 scalar multiplications in $G_2$; RISC Zero has accelerated BLS12-381 forks, unmeasured here, perhaps 30--50M. Against 1.3M in v0.1: proving hours rather than minutes on a 4-core server \\
-payment & one round trip, as in v0.1; the wallet checks $\tau$ and each encrypted signature, 2 pairings apiece, about a millisecond each with \tx{blst} \\
+\tx{request} & $Q$ (137 bytes) and $b$ under her SHA-256 keys: 578 stack items, about 8.8 kvB \\
+\tx{correct} & $\bcorr$ and $U$ (64 bytes) under the hub's HASH160 keys: $2(8 + 2) + 2(128 + 3) + 2 = 284$ items, about 3.5 kvB \\
+\tx{ack} & the hub's signatures again (282 items, HASH160) and hers on the same values (282, SHA-256): 566 items, about 7.7 kvB \\
+statement & no headers, no transaction parsing. Her four one-time signatures: about 430 SHA-256 chains, some 3,200 compressions, accelerated: about 1M cycles. Up to 4 BIP340 checks of $\alpha$ (accelerated). The BLS aggregate: two pairings and up to 4 hash-to-curve; the seeds: up to 4 scalar multiplications in $G_2$; RISC Zero has accelerated BLS12-381 forks, unmeasured here, perhaps 30--50M cycles, against 1.3M for all of v0.1's statement \\
+payment & one round trip; the wallet checks $\tau$ and each encrypted signature, 2 pairings apiece, about a millisecond each with \tx{blst} \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-\textbf{Why 7 seeds.} \tx{ack} carries two one-time signatures on
-every byte, 8 stack items a byte. $\bcorr$ and $U$ with 7 seeds (112
-bytes) make 950 items; an eighth would need 1,078, past Bitcoin's
-1,000. With 32-byte unlocks (version 0.2) only 3 fit. Seven notes then
-fit \tx{request} too, because a BLS note is 22 bytes; with Schnorr
-notes (54 bytes) only 3 or 4 would.
+\textbf{Why seeds.} \tx{ack} carries two one-time signatures on every
+byte, 8 stack items a byte. With 4 seeds (64 bytes) it uses 566 of
+Bitcoin's 1,000 items; with 4 full scalars (128 bytes) it would need
+1,078.
 
-\textbf{The statement's cost} is the one-time signatures. With SHA-256
-chains instead of HASH160 (accelerated in RISC Zero) it would be small,
-at the price of 32-byte preimages in every witness, about 60\% more
-on chain. $w_H$ for \tx{assert} must cover the proving time.
+\textbf{Who pays.} The statement's cost is the hub's alone: only the
+hub proves, and only when it corrects a claim and she contests. $w_H$
+for \tx{assert} must cover its proving time. The user's costs are a
+wallet's: BIP340 signatures, a few pairings per payment, and her moves
+on chain, \tx{request} and perhaps \tx{ack}.
 
 \section{Open questions}\label{sec:open}
 
 \begin{itemize}[nosep]
+\item \textbf{BLS in the guest.} Two pairings, up to four
+  hash-to-curve and four $G_2$ multiplications on RISC Zero's
+  accelerated BLS12-381 forks: to measure. It sets the hub's proving
+  time and so $w_H$; it costs the user nothing.
 \item \textbf{A keyless contest.} \tx{ack} needs Alice's keys within
   $w_A$ (\S\ref{sec:who}). Can a tower countersign without being able
   to sign other values off chain?
-\item \textbf{Capacity.} $n + f \le 7$ bounds a claim, and so what an
-  offline receiver has protected. Pairs of \tx{correct} and \tx{ack}
-  would carry 7 more seeds each, at a window apiece.
-\item \textbf{The guest's BLS cost}: two pairings, hash-to-curve and
-  $G_2$ multiplications on RISC Zero's accelerated BLS12-381 forks, to
-  measure.
-\item \textbf{The cross-group proof} at the opening: its size and time,
-  and the bound $t_0 < 2^{252}$ that both curves' orders allow.
-\item \textbf{HASH160 or SHA-256 chains}: proving time against witness
-  size (\S\ref{sec:costs}).
+\item \textbf{Capacity.} $\mu + n + f \le 4$ bounds a claim, and so what
+  an offline receiver has protected. Seeds leave room in \tx{ack} for
+  more (7 fit); four keeps the transactions small.
 \item \textbf{The hub and the guest must agree.} Every spend the hub
-  records must be one the statement accepts. The hub checks with
-  libsecp256k1, the guest with \tx{k256}; the hub should check at intake
-  with the guest's own functions.
+  records must be one the statement accepts. The hub should check at
+  intake with the guest's own functions.
 \item \textbf{Taking the claim and the evidence at once}, as one step
   of the book (\S\ref{sec:correct}, step 4).
 \item \textbf{Fees.} Per payment (the issuer's revenue), and liquidity
@@ -1077,8 +1059,7 @@ on chain. $w_H$ for \tx{assert} must cover the proving time.
 \bibitem{erwig} A.~Erwig, S.~Faust, K.~Hostáková, M.~Maitra, S.~Riahi,
   \emph{Two-party adaptor signatures from identification schemes}, PKC
   2021 (the impossibility for unique signatures; to check).
-\bibitem{dleqx} S.~Noether, \emph{Discrete logarithm equality across
-  groups}, MRL-0010, 2018.
+
 \bibitem{bip340} P.~Wuille, J.~Nick, T.~Ruffing, \emph{BIP 340: Schnorr
   signatures for secp256k1}, 2020.
 \end{thebibliography}
