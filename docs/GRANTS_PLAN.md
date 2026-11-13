@@ -304,6 +304,11 @@ the paper fixed. The user is reading v0.1.1 first; decide then.
 ### Pending for papers/lichen-grants-v0.1.2
 
 - The posted claim renamed `Q` (not `P`: `P` is every public key).
+- Figure 3: show the equivocation leaves (an inset of one bit output):
+  on `b`'s bit outputs and the reserve output, `equiv_b_i` (the hub's,
+  two signatures under `K_b`; her reserve waits Δ); on `success`'s,
+  `equiv_corr_i` (hers, two under `K_corr`; the hub's bit leaf waits Δ).
+  None for `K_P`: its signature is only read, never presented again.
 
 - `C`'s reveals indexed `o^(1), μ^(1), …, o^(r), μ^(r)` (not `o_1`,
   which is input 1's owner); the slot's reveal in Algorithm 1 and §5.2
