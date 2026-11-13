@@ -1,4 +1,4 @@
-//! The statement BABE encrypts under, for real: a RISC Zero 3.0 Groth16
+//! The statement BABE encrypts under, for real: a RISC Zero 3.1 Groth16
 //! proof of the receipt claim "the guest `image_id` halted with exit code
 //! 0 and wrote `journal`". The key, the public inputs and the claim are
 //! ln-gap's (`lngap_zk::groth16`), here in arkworks' types.
@@ -50,13 +50,14 @@ mod tests {
     use ark_groth16::Groth16;
     use ark_snark::SNARK;
 
-    /// ln-gap's vector: a receipt of its placeholder guest on (9, 42), the
-    /// seal as RISC Zero writes it.
-    const SEAL: &str = "1c6a455ff5b8f2d3c0ca9eb31802250955c88065d11fec7b691f18b8210d9855128d7fd898e6113182af26563e6efd40445a16a4bd3cdaa51c24647c933edb4c1d187c8d5467a0feb82a85d379f644065673cd0bf743bf1dfe790a4f5fa4cc9f103f6ec5c6a9f044d4d13c7929af31348ad0958d809a5a57b71f1cb1808283d02a926437b087dedb1c0a27ceab343029468584c20edee5954ba81aa0846e2c5806044b9bfbbc563a93d941cf9b21a482d734cf625ea31aff8a6f92d13c8cecdb1034347d87372b0e061ae70beb1707bb523574a4fc5757b0a560a7592dd83b520e14d5bc1097c394158e0158ca467e750c46bb93b6c9f7e1aa4d6ed0025860d2";
+    /// ln-gap's vector (its `tests/data/withdraw-9-42.hex`): a RISC Zero 3.1
+    /// receipt of its withdrawal guest on (9, 42), the seal as RISC Zero
+    /// writes it.
+    const SEAL: &str = "0ba8e7d2d9c2827cb8235019a650a7afc68995e98244023b6ce345bab42394ce257d716d952235c977936cb9b3eb54f3f57ff337ca939c1b1f574bbff50f4ee404d594f91d4acf9545ef1b55f828f00acd6910d0d013b55447bb59220b671d8909f3f293908350d1373205c65280d53f3c3cf42ce50d36caa47a8475e82a3b42027938696128aeba14fb4f42253c7ca89d697751a0f31da6947506c56a3758501480fae8b4a8946e142162907a4f4ea3fc40544e2681d720c99c1d70035997510c55e58beb1602c2466d584be32d91b19d61fdbc47ddbd9e130a37796c807c4d2945323d6a971598cb1569ddcefafeb858373ff11cbcc924a316b09283d166af";
     /// The same proof decoded independently, from ln-gap's compressed
     /// points (FairgateLabs' encoding); its image id, its journal.
-    const POINTS: &str = "55980d21b8181f697bec1fd16580c85509250218b39ecac0d3f2b8f55f456a1cd0838280b11c1fb7575a9a808d95d08a3431af29793cd1d444f0a9c6c56e3f109fcca45f4f0a79fe1dbf43f70bcd73560644f679d3852ab8fea067548d7c189d523bd82d59a760a5b05757fca4743552bb0717eb0be71a060e2b37877d343410";
-    const ID: &str = "c2bf393e7d9cbb53a5b6f0c1bc9767d42c04f632a9824a572eb7a5d6d77cd250";
+    const POINTS: &str = "ce9423b4ba45e36c3b024482e99589c6afa750a6195023b87c82c2d9d2e7a80b423b2ae875847aa4ca360de52cf43c3c3fd58052c6053237d150839093f2f309891d670b2259bb4754b513d0d01069cd0af028f8551bef4595cf4a1df994d5844d7c806c79370a139ebddd47bcfd619db1912de34b586d46c20216eb8be5558c";
+    const ID: &str = "c7971df34f391e8fbfe45012e93372dca29d9524b28004a3ed3b75de217eb541";
 
     #[test]
     fn a_seal_decodes_to_the_same_points_and_verifies() {

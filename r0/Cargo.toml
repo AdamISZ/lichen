@@ -2,7 +2,7 @@
 # workspace of its own, as ln-gap's r0: RISC Zero's crates are heavy, and
 # the main workspace needs only their verifier (the sequencer's). The
 # guest (r0/guest) is a workspace of its own too, for RISC Zero's
-# toolchain. Pinned to RISC Zero 3.0.6, as ln-gap's withdrawal guest.
+# toolchain. Pinned to RISC Zero 3.1.0, as ln-gap's withdrawal guest.
 [workspace]
 resolver = "2"
 members = ["host"]

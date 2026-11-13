@@ -1,7 +1,7 @@
 # The operator's image, one for every service but the node
 # (deploy/docker-compose.yml): the hub (`lichen-hub`), the L2's sequencer
 # (`lichen-sequencer`), the wallet (`lichen`, for deploy/smoke.sh), and
-# the prover `lichen-r0` (RISC Zero 3.0.6, in process) with the committed
+# the prover `lichen-r0` (RISC Zero 3.1.0, in process) with the committed
 # guests it reads, which proves the chain (r0/chain-prover.sh). A Groth16
 # wrap runs RISC Zero's prover image, through the host's Docker (its
 # socket mounted). Build context: a directory holding lichen/ and ln-gap/

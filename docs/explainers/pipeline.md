@@ -193,7 +193,7 @@ unconditionally.
 The recursion programs are identified by *control ids*. The set of
 allowed ones is committed to by a Merkle root, the *control root*, which
 is fixed per RISC Zero release. That's why the version is pinned:
-lichen uses RISC Zero 3.0.6.
+lichen uses RISC Zero 3.1.0.
 
 **Where and how long.** RISC Zero 3.x proves on the CPU, or on an
 NVIDIA GPU with CUDA (`lichen-r0` built with `--features cuda`); it has
@@ -364,7 +364,7 @@ hub, and her window for it, `Δ2`, is a day on Mutinynet.
 ## Practical notes
 
 - **Pin RISC Zero** to the release whose constants the verifiers carry:
-  3.0.x (lichen uses 3.0.6). The image id depends on the toolchain too,
+  3.1.x (lichen uses 3.1.0). The image id depends on the toolchain too,
   so build the guests in the builder image (`r0/build-guest.sh`).
 - **The hub's prover** is `r0/hp-prover.sh` (`LICHEN_HP_PROVER`; the
   deployment's image carries it): `lichen-r0 hp-proof` proves the
