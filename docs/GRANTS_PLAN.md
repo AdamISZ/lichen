@@ -498,3 +498,19 @@ still cut about a third. Decide after one short lichen-vps run timing
 6 aggregated BLS signatures and a few hundred RIPEMD-160 calls. v0.3.0
 says "about 60% more" on chain: wrong (raw preimage size, no witness
 discount); fix in the next version.
+
+### A contract-born mint: no cross-group proof (2026-11-13)
+
+With BLS notes, v0.3.0's mint needs `t_0` on both curves and a
+cross-group DLEQ (else the hub hands an unrelated `T_{0,2}`: the funding
+reveals `t_0`, her note never decrypts). Instead: the journal's `D`
+also binds `v_0` (her deposit less the fee, known when the statement
+is fixed); `N_0 = (H_issue("mint" || c), O_c, v_0)`; one flag bit in
+`Q`'s count byte says the claim includes it, and the statement adds it
+as a candidate with no signature; a spend of `N_0` she signed kills it
+as any note; the hub books `N_0` once the funding confirms. Atomic by
+the contract's existence: funding confirmed ⇒ the contract and its
+`v_0` ⇒ `N_0` claimable; never funded ⇒ nothing. No adaptor, no
+encryption, no second curve at the opening; M1 trivial. Cost: a flag
+bit and `v_0` in `J`. The hub must not record spends of `N_0` before
+the funding confirms (its own risk). Proposed for the next version.
