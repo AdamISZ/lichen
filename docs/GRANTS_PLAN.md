@@ -262,3 +262,62 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
   (the hub's grant and record are idempotent); a hub restarted in between
   forgets its pending grants, and the spend is dropped, its inputs still
   the payer's.
+
+### Undecided: short-id collisions (found 2026-11-13, reading v0.1.1)
+
+A note is named by its id's first 8 bytes (in its digest, so in the
+hub's signature, and in the posted claim). A *payer* controls `sid`
+(e.g. her change key, unchecked), so two of her payments to Bob of the
+same `v` can be ground to share `(ι, v)` in about 2^32 hashes. Bob,
+offline, then holds two notes with one digest; his wallet's claim names
+both (`claim_for` doesn't dedupe), `Posted::holds` calls it malformed,
+and he is owed **0**, every note in the claim lost. v0.1.1 wrongly says
+only the owner can grind and it only harms her. A targeted collision
+with a note Bob already holds is 2^64: out of reach.
+
+The options (the posted claim is bound by Bitcoin's 1,000 stack items:
+4 items a byte, 962 used, about 9 bytes spare; a claim is 1 + n·(id +
+6 + 32) + 32 + 8f ≤ 233):
+
+| short id | a note | 4 notes | 3 notes | birthday |
+|---|---|---|---|---|
+| 8 B (now) | 46 | 2 fallbacks | 4 | 2^32, minutes |
+| 12 B | 50 | 0 fallbacks | 4 | 2^48, GPU-hours: a colluding hub's reach |
+| 16 B | 54 | doesn't fit (249) | 4 | 2^64 |
+
+(a 5-byte value or `b` folded into the claim saves a few bytes: not
+enough for 16-byte ids and 4 notes.)
+
+1. **Count once (recommended)**: the statement counts a repeated
+   `(ι, v)` once instead of owed 0; the wallet never posts two notes
+   with one short id, flags a received note whose short id it holds as
+   unprotected (credit) until merged (both spent together). Bob's
+   existing notes are safe (2^64); grinding buys only a second payment
+   his wallet shows as unprotected on arrival. Keeps 4 notes. Bob
+   can't gain by colliding his own: counted once.
+2. **16-byte ids**: collisions out of reach; a claim takes 3 notes (and
+   4 fallbacks), so 3 protected notes between merges, not 4.
+
+Either: a guest rebuild (lichen-vps), a regtest test of the grind, and
+the paper fixed. The user is reading v0.1.1 first; decide then.
+
+### Pending for papers/lichen-grants-v0.1.2
+
+- `C`'s reveals indexed `o^(1), μ^(1), …, o^(r), μ^(r)` (not `o_1`,
+  which is input 1's owner); the slot's reveal in Algorithm 1 and §5.2
+  not written `μ^(q)` as if the grant's q-th; sorting a grant's reveals
+  by owner would make a re-asked grant deterministic.
+- Figure 1 step 1: `V = Σ v_i` defined, `(o_A, V − v)`; the change output
+  left out when `v = V`.
+- Figure 1 step 3: for each output, `σ'_j = Complete(ρ_j, t_S)`; `N'_j`
+  into the book, live; `(N'_j, σ'_j)` into `o'_j`'s mailbox (settled
+  notes, not adaptors: self-contained, nothing of the grant leaked to
+  the payee, the mailbox's one format).
+- §3.1: the grinding claim corrected (above), and whichever option is
+  chosen.
+- Offline receiving: protected only up to 4 notes per contract between
+  merges (a merge needs the hub); Bob is paid when he holds `σ'_0`, and
+  the payer can always produce it (`ρ_0`, `t_S`).
+- Open questions already in v0.1.1 to check in code: reveals from the
+  moment `N_0` is spendable; taking the claim and its evidence as one
+  step of the book.
