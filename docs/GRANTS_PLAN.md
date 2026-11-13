@@ -440,3 +440,15 @@ bound by its opponent's one-time signature, script forcing equality):
 - To analyse: the byte budget against the claim's limits; knowledge
   soundness as in babe-amount-authenticated (C4); with the collision
   fix.
+
+### Bug in the built `owed` (found writing v0.2.0, 2026-11-13)
+
+`grants::owed` keeps candidates as a list: a claim posting a spend's
+inputs, its change note *and* the spend as a fallback gets the change
+revived as a second copy, counted twice (unspent, so no spend can kill
+it): a cheating claimant gains her change. Fix: candidates a set (with
+16-byte short ids, equal entries are one note), revivals keyed by
+fallback prefix (`revived` holds full sids today, so one prefix could
+revive two spends). Needs a guest rebuild. v0.2.0's Algorithm 1 has it.
+v0.2.0 (papers/lichen-grants-v0.2.0) is the countersigned design, a
+proposal; v0.1.1 stays as the built design until one is chosen.
