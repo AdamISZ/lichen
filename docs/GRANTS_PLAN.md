@@ -470,8 +470,15 @@ signature, the issuance evidence). In v0.2 the binding limit is `ack`'s
 - **BLS, in detail** (the user's lever: it takes out the bulk): one
   signer, so the aggregate verifies in 2 pairings for any `n`
   (`e(σ, g2) = e(Σ H(m_i), I2)`); no rogue keys; repeats already
-  rejected. Atomicity: a BLS adaptor is a signature under `I2 + T2`,
-  `σ' = (k_iss + t)·H(m)`, `σ = σ' − t·H(m)`; grants BLS throughout
+  rejected. Atomicity: **not an adaptor** (adaptors with extraction are
+  impossible for unique signatures such as BLS: the signer computes `σ`
+  itself, so extraction would solve any instance; Erwig et al., PKC
+  2021, I believe) but a verifiably encrypted signature (BGLS 2003): a
+  signature under `I2 + T2`, `σ' = (k_iss + t)·H(m)`, `σ = σ' − t·H(m)`;
+  the pair gives `t·H(m)`, never `t`. v0.2 never extracts from a note's
+  signature (`t` travels in the clear: step 4, `U`, the mailbox's
+  completed signatures); the opening's extraction is from the funding's
+  secp Schnorr signature, unchanged. Grants BLS throughout
   (`τ` on `(sid, T2)`, the statement checks `t·g2 = T2`). The mint ties
   `t_0` to Bitcoin's secp adaptor on the funding: a cross-group DLEQ
   (as in Monero–Bitcoin swaps) before she signs, off chain, once per
