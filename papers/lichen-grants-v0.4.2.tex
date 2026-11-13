@@ -905,6 +905,59 @@ only, because the hub chooses $\bcorr$ and bears the burden:
   which hurts only the hub.
 \end{itemize}
 
+\subsection{A note: countersigning a commitment}\label{sec:commit}
+
+Script reads the countersigned values only to check that the two
+signatures agree, and $\bcorr$ also to pay it out, bit by bit. Every
+other value is read by the statement alone. So the hub could post, in
+place of a large input $Y$, a 32-byte commitment $R = H(Y)$, a hash or
+a Merkle root, and Alice countersign $R$. Then $Y$ enters the
+statement as private input, which checks $H(Y) = R$. Whatever the
+size of $Y$, \tx{ack} carries a fixed number of digits.
+
+Alice countersigns $R$ without being able to check it, and needn't. If
+the hub commits to something it can't open, or can't open to a $Y$
+that proves, \tx{ack\_timeout} or \tx{failure} pays her $b$. Authenticity
+is not what $R$ gives: data in $Y$ that the statement can't
+authenticate (by her signatures, or the hub's BLS) is still worth only
+what the predicate makes of it. What $R$ gives is \emph{binding}: one
+$Y$ per exit, fixed before the proof.
+
+Four conditions:
+\begin{itemize}[nosep]
+\item \textbf{Collision resistance, at 256 bits.} The hub chooses $Y$,
+  so the threat is not a preimage but the hub holding two openings of
+  one $R$. A 160-bit $R$ leaves it $2^{80}$ work offline. A Merkle tree
+  needs leaves and nodes hashed under distinct tags.
+\item \textbf{Open all of $Y$, or only what hurts the hub.} If the
+  statement checks Merkle paths, the hub picks which leaves to show,
+  and drops any that would raise $\owed$. Paths are safe only for
+  leaves that can only lower it, as spends do. Otherwise the statement
+  hashes all of $Y$, at about 490 cycles a block (\S\ref{sec:costs}).
+\item \textbf{The opener is the prover.} Only data the hub chose may
+  be committed this way. Had Alice posted $H(Q)$ for $Q$, she could
+  withhold $Q$; the hub could not prove, and she would collect $b$.
+  So $Q$ stays in the clear.
+\item \textbf{Not where publishing is the point.} $U$ must be on chain
+  in full: the atomicity of \S\ref{sec:payment} is that the hub counts a
+  spend against her only by publishing its seed, which pays the
+  receiver. With $H(U)$ countersigned, the seed would reach the
+  statement privately and the receiver never. Nor can $U$ go raw beside
+  $R$: script can hash the bytes, but not split the hash into the
+  digits it would compare (no \texttt{OP\_CAT}).
+\end{itemize}
+Values the statement can authenticate itself, such as her signatures
+$\psi_X$, need no commitment: they are private input already.
+
+In this version the countersigned values are $\bcorr$ and $U$, the two
+exceptions, so the device saves nothing here. It matters for a design
+in which the hub's correction rests on a large input of its own
+choosing, not self-authenticating, read only by the statement: there
+it makes the countersignature's cost independent of the input's size.
+A zkVM's journal digest and BitVM2's committed intermediate
+states~\cite{bitvm2} commit the same way; the countersignature is what
+makes such a commitment bind the prover.
+
 \subsection{Unlocks, not reveals}\label{sec:unlocks}
 
 Version 0.1 put each unlock on chain as a BIP340 signature in a slot of
@@ -1171,6 +1224,9 @@ on chain, \tx{request} and perhaps \tx{ack}.
 \bibitem{rfc9380} A.~Faz-Hern\'andez, S.~Scott, N.~Sullivan,
   R.~S.~Wahby, C.~A.~Wood, \emph{Hashing to elliptic curves}, RFC 9380,
   2023.
+\bibitem{bitvm2} R.~Linus, L.~Aumayr, A.~Zamyatin, A.~Pelosi,
+  Z.~Avarikioti, M.~Maffei, \emph{BitVM2: Bridging Bitcoin to second
+  layers}, 2024.
 \end{thebibliography}
 
 \end{document}
