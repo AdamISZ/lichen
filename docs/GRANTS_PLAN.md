@@ -304,6 +304,10 @@ the paper fixed. The user is reading v0.1.1 first; decide then.
 ### Pending for papers/lichen-grants-v0.1.2
 
 - The posted claim renamed `Q` (not `P`: `P` is every public key).
+- §5.1 "b is signed apart": say where and why: `request` signs it
+  separately, `W_{K_b}(<b>_4)`, because each bit output paying it reads
+  its bits from that signature (a 4-byte word: ~20 items, not the
+  claim's ~940).
 - Figure 3: show the equivocation leaves (an inset of one bit output):
   on `b`'s bit outputs and the reserve output, `equiv_b_i` (the hub's,
   two signatures under `K_b`; her reserve waits Δ); on `success`'s,
