@@ -303,6 +303,8 @@ the paper fixed. The user is reading v0.1.1 first; decide then.
 
 ### Pending for papers/lichen-grants-v0.1.2
 
+- The posted claim renamed `Q` (not `P`: `P` is every public key).
+
 - `C`'s reveals indexed `o^(1), μ^(1), …, o^(r), μ^(r)` (not `o_1`,
   which is input 1's owner); the slot's reveal in Algorithm 1 and §5.2
   not written `μ^(q)` as if the grant's q-th; sorting a grant's reveals
