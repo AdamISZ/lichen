@@ -751,3 +751,24 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
    grant could then complete the notes without the hub publishing, which
    breaks atomicity. Hashing spreads 16 bytes over a full scalar, so
    recovering t means guessing z, at 2^128 work.
+3. **The chain as court and bulletin board (the user).** §6.7 says who
+   must be online, but not, in plain terms, when anyone has to read the
+   chain. Add a short paragraph there, and maybe a sentence in §1:
+   - Users read the chain only when something is stuck. Nothing can be
+     published against them, since every exit starts with the user's
+     own `request` and the hub's only unilateral path is `default`
+     after T_close.
+   - A user reads the chain in three cases. (a) Her own exit, which she
+     started. (b) A stuck incoming payment: ask the payer for z_S first,
+     and if that fails, find it in the U of the payer's `correct`. This
+     needs no knowledge of the payer's contract: test each `correct`'s
+     seed against T_S, one t·G each. This is the payers-exit-first wait.
+     (c) The deadline T_close, which needs a clock, not watching.
+   - Only the hub watches continuously.
+   - Contrast with Lightning, where the chain is a standing threat. Here
+     it is consulted on demand, and a wallet can ignore it by default.
+4. **"The new note counts" means b_corr (the user asked).** In §4.1, say
+   instead: "she is owed the new note's value: the hub's b_corr is
+   ⌊v_out/u⌋, which it can prove". For her own exit she never needs the
+   new note's signature. Publishing z_S is what completes the payment
+   for the counterparty, as in an atomic swap.
