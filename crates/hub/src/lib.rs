@@ -1,6 +1,6 @@
-//! The hub: opens contracts with users, issues their deposits as notes,
-//! makes their payments (the grants L2: `lichen_notes`, its book), pays
-//! withdrawals and answers disputes.
+//! The hub: opens contracts with users, opens their accounts at their
+//! deposits, makes their payments (the grants L2, one note per account:
+//! `lichen_notes`, its book), pays withdrawals and answers disputes.
 //!
 //! HTTP (JSON): `GET /info`, the opening's cut-and-choose (`POST
 //! /hp/setup`, `POST /hp/commit`, and `POST /hp/instance/<cid>/<i>`, an
@@ -8,14 +8,11 @@
 //! [`OpenOffer`]), `POST /accept` ([`Accept`] to [`Opened`]), `POST
 //! /withdraw` ([`WithdrawRequest`] to [`Folded`]: the cooperative
 //! withdrawal, Alice's claim taken into the book, then the fold).
-//! Payments: `POST /grant` (a [`lichen_notes::Spend`] to its
-//! [`lichen_notes::Grant`]), `POST /spend` ([`lichen_notes::Authorized`]
-//! to `{"t"}`), `GET /mailbox/<owner>?from=<n>` (the notes made for an
-//! owner, in order), `GET /notes/<owner>` (an owner's unspent notes). An
-//! offer pre-issues the deposit under the funding's adaptor point, so
-//! the note is Alice's once the funding is out (see `lichen_proto`); a
-//! watcher broadcasts, after `T_close`, the default of any contract still
-//! open.
+//! Payments (`lichen_notes::proto`): `POST /pay`, `GET /incoming/<owner>`,
+//! `POST /half`, `GET /payment/<id>`, `POST /sign`, `POST /cancel`, `GET
+//! /account/<owner>`. A contract's account opens at its mint, note 0, once
+//! its funding is out; a watcher broadcasts, after `T_close`, the default
+//! of any contract still open.
 
 mod dispute;
 
@@ -169,9 +166,6 @@ pub(crate) struct Inner {
     /// For tests: a fault in each opening.
     opening_fault: Mutex<OpeningFault>,
     log: Mutex<Vec<String>>,
-    /// Each contract's `correct` sighash, once made: what the grants'
-    /// reveals pre-sign.
-    pub(crate) correct_msgs: Mutex<HashMap<u32, bitcoin::secp256k1::Message>>,
     /// The most the links' floors and anchors take from the hub's reserve
     /// on a dispute it loses (found at the first opening).
     floors: Mutex<Option<u64>>,
@@ -214,7 +208,7 @@ impl Hub {
         let server = Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let server = Arc::new(Mutex::new(Arc::new(server)));
-        let inner = Arc::new(Inner { cfg, chain, book, deployment, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), withhold_unlocks: AtomicBool::new(false), proving: Default::default(), abandon_corrections: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), correct_msgs: Mutex::new(HashMap::new()), floors: Mutex::new(None), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, chain, book, deployment, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), withhold_unlocks: AtomicBool::new(false), proving: Default::default(), abandon_corrections: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             listen(&srv, &i1.stop, |mut req| {
@@ -395,26 +389,35 @@ fn listen(server: &Mutex<Arc<Server>>, stop: &AtomicBool, mut handle: impl FnMut
 
 fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String> {
     let (path, query) = url.split_once('?').unwrap_or((url, ""));
+    let _ = query;
     let owner = |rest: &str| -> Result<lichen_notes::Hash> { hex::decode(rest).ok().and_then(|v| v.try_into().ok()).context("an owner: 64 hex digits") };
-    if let (Method::Get, Some(rest)) = (method, path.strip_prefix("/mailbox/")) {
-        let from = query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == "from").map_or(Ok(0), |(_, v)| v.parse::<usize>()).context("from: a number")?;
-        return Ok(serde_json::to_string(&inner.book.mailbox(&owner(rest)?, from))?);
+    let release = !inner.withhold_unlocks.load(Ordering::Relaxed);
+    if let (Method::Get, Some(rest)) = (method, path.strip_prefix("/incoming/")) {
+        return Ok(serde_json::to_string(&inner.book.incoming(&owner(rest)?))?);
     }
-    if let (Method::Get, Some(rest)) = (method, path.strip_prefix("/notes/")) {
-        return Ok(serde_json::to_string(&inner.book.unspent_of(&owner(rest)?))?);
+    if let (Method::Get, Some(rest)) = (method, path.strip_prefix("/account/")) {
+        return Ok(serde_json::to_string(&inner.book.account(&owner(rest)?))?);
     }
+    if let (Method::Get, Some(id)) = (method, path.strip_prefix("/payment/")) {
+        return Ok(serde_json::to_string(&inner.book.payment(id).with_context(|| format!("no payment {id}"))?)?);
+    }
+    use lichen_notes::proto::{CancelRequest, HalfRequest, PayRequest, SignRequest};
     Ok(match (method, path) {
-        (Method::Post, "/grant") => {
-            let spend: lichen_notes::Spend = serde_json::from_str(body)?;
-            let reveals = inner.reveal_keys(&spend)?;
-            serde_json::to_string(&inner.book.grant(spend, &reveals)?)?
+        (Method::Post, "/pay") => {
+            let r: PayRequest = serde_json::from_str(body)?;
+            serde_json::to_string(&inner.book.pay(r.half, r.to, r.amount)?)?
         }
-        (Method::Post, "/spend") => {
-            let a: lichen_notes::Authorized = serde_json::from_str(body)?;
-            let t = inner.book.record(&a.sid, &a.sigs)?;
-            // a hub that withholds unlocks (tests): recorded, the answer lost
-            ensure!(!inner.withhold_unlocks.load(Ordering::Relaxed), "the hub withholds its answer");
-            serde_json::json!({ "t": hex::encode(t.secret_bytes()) }).to_string()
+        (Method::Post, "/half") => {
+            let r: HalfRequest = serde_json::from_str(body)?;
+            serde_json::to_string(&inner.book.half(&r.id, r.half)?)?
+        }
+        (Method::Post, "/sign") => {
+            let r: SignRequest = serde_json::from_str(body)?;
+            serde_json::to_string(&inner.book.sign(&r.id, &r.owner, &r.psi, release)?)?
+        }
+        (Method::Post, "/cancel") => {
+            let r: CancelRequest = serde_json::from_str(body)?;
+            serde_json::to_string(&inner.book.cancel(&r.id, &r.owner, &r.sig, release)?)?
         }
         (Method::Get, "/info") => serde_json::to_string(&inner.info())?,
         (Method::Post, "/deposit") => serde_json::to_string(&inner.deposit(serde_json::from_str(body)?)?)?,
@@ -526,13 +529,15 @@ impl Inner {
         let scaled = terms(cid, &req, t_close, 0)?;
         let v_max = scaled.v_max().to_sat();
         // the dispute's keys: Alice's, checked, and the hub's; the
-        // statement fixed at the setup, its checkpoint with it
-        let (dispute, mut offer_keys, checkpoint) = self.hp_open_keys(cid, &req.dispute, &req.deposit_coin.0, &req.l2_address, t_close, scaled.unit)?;
+        // statement fixed at the setup
+        let v0 = req.deposit - req.fee;
+        let (dispute, mut offer_keys) = self.hp_open_keys(cid, &req.dispute, &req.deposit_coin.0, &req.l2_address, v0, scaled.unit)?;
+        let d_word = lichen_proto::hp::contract(cid, &dispute.issuer, &req.l2_address, scaled.unit.to_sat(), v0, &dispute.alice_keys).d();
         let mut record = Record {
             statement: self.cfg.statement.id().to_string(),
             network: self.cfg.network,
-            deployment: lichen_proto::contract_word(&self.deployment, checkpoint.as_ref(), scaled.unit, &req.l2_address)?,
-            checkpoint,
+            deployment: d_word,
+            checkpoint: None,
             // a reserve to measure the floors under (any amount above them:
             // they depend on the links' sizes, not on the amounts; the cap
             // isn't, for a small one); the real one below
@@ -583,17 +588,13 @@ impl Inner {
         self.hp_presign(&mut record, &mut offer_keys, &set)?;
         // what the hub keeps from her stays its own
         let shown: HashMap<String, Vec<u8>> = record.hub_sigs.iter().filter(|(n, _)| !c.withheld(n)).map(|(n, s)| (n.clone(), s.clone())).collect();
-        // D, pre-issued to Alice under this funding's adaptor point: hers
-        // once the funding is out (its completed deposit signature is t)
+        // the funding's adaptor point: Alice's signature on her deposit's
+        // spend is locked to it, so the funding puts t on chain
         let t = mint_adaptor(&self.cfg.seed, cid, &req.l2_address, &record.funding.txid);
         let mint_point = PublicKey::from_secret_key(SECP256K1, &t);
-        let fault = *self.opening_fault.lock().unwrap();
-        let d = record.minted() - u64::from(fault == OpeningFault::ShortMint);
-        use bitcoin::hashes::Hash as _;
-        let tag = [b"mint".as_slice(), &cid.to_be_bytes(), &record.funding.txid.to_byte_array()].concat();
-        let (mint, mint_presig) = self.book.pre_issue(&tag, req.l2_address, d, &mint_point);
-        self.note(format!("contract {cid}: offered; {d} sats pre-issued to the user (a fee of {} for {} sats of liquidity), hers once the funding is out", req.fee, req.liquidity));
-        let offer = OpenOffer { cid, t_close, reserve_hub, hub, dispute: offer_keys, funding, hub_coins, hub_sigs: shown, mint_point, mint, mint_presig, checkpoint: record.checkpoint };
+        ensure!(*self.opening_fault.lock().unwrap() != OpeningFault::ShortMint || record.minted() == 0, "contract {cid}: a short mint (a test's fault) has no meaning on accounts");
+        self.note(format!("contract {cid}: offered; its account opens at {} sats once the funding is out (a fee of {} for {} sats of liquidity)", record.minted(), req.fee, req.liquidity));
+        let offer = OpenOffer { cid, t_close, reserve_hub, hub, dispute: offer_keys, funding, hub_coins, hub_sigs: shown, mint_point, checkpoint: None };
         let replaced = self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t, made: std::time::Instant::now() });
         if let Some(old) = replaced {
             let _ = self.chain.unlock(&old.offer.hub_coins.iter().map(|c| c.0).collect::<Vec<_>>());
@@ -652,8 +653,8 @@ impl Inner {
             }
         };
         self.note(format!("contract {}: opened (deposit {} sats, cap {} sats); funding broadcast", a.cid, o.record.terms.deposit, o.record.terms.v_max().to_sat()));
-        // its deposit's note, in the book: t is on chain now
-        self.book.activate(p.offer.mint)?;
+        // its account, opened at the mint: the funding is out
+        self.book.open_account(o.record.l2_address, o.record.minted())?;
         self.open.lock().unwrap().insert(a.cid, o);
         self.deposits.lock().unwrap().remove(&a.cid);
         let _ = std::fs::remove_file(self.cfg.dir.join("deposits").join(format!("{}.json", a.cid)));
@@ -684,7 +685,7 @@ impl Inner {
             // would pay her at T_close, so there's no claim to record
             ensure!(o.record.terms.reserve_alice >= CLOSE_DUST, "contract {}: a fold of nothing pays the user nothing (no reserve): the default closes it", w.cid);
         } else {
-            self.take_claim(&o.record, w.b, &hex::decode(&w.claim).context("the claim's hex")?)?;
+            self.take_claim(&o.record, w.b, &hex::decode(&w.claim).context("the claim's hex")?, w.rest_to)?;
         }
         // a refusing hub (tests) records the claim first: the user's worst
         // case, her notes retired and no fold
@@ -696,22 +697,27 @@ impl Inner {
         Ok(Folded { txid })
     }
 
-    /// Alice's claim (`posted`, its bytes) of `b` units from contract
-    /// `record`, checked and taken into the book: of this contract, hers,
-    /// its notes settled, owed `b` units in full (by the book: its notes,
-    /// or a fallback's change, unspent). The change beyond `b` goes to her
-    /// mailbox.
-    fn take_claim(&self, record: &Record, b: u32, posted: &[u8]) -> Result<()> {
+    /// Alice's claim (`posted`: `Q`'s bytes) of `b` units from contract
+    /// `record`, checked and taken into the book: of her account's live
+    /// note, owed `b` units in full. The account closes; what its note held
+    /// beyond `u·b` is credited to `rest_to` (a key of hers, no contract).
+    fn take_claim(&self, record: &Record, b: u32, posted: &[u8], rest_to: Option<lichen_notes::Hash>) -> Result<()> {
         let cid = record.cid();
-        let claim = lichen_notes::Claim::from_bytes(posted)?;
-        ensure!(claim.b == b, "the claim is of {} units, the withdrawal {b}", claim.b);
+        let q = lichen_notes::core::Claim::from_bytes(posted).context("not a claim's bytes")?;
+        let owner = record.l2_address;
+        let live = self.book.account(&owner);
+        ensure!(!live.closed, "the account is closed");
+        ensure!(live.busy.is_none(), "a payment is pending on the account: finish or cancel it first");
+        ensure!(live.live.claim() == q, "the claim isn't of the account's live note");
         let unit = record.terms.unit.to_sat();
-        let total = claim.check(&self.book.issuer(), cid, &record.hp().deposit, &record.l2_address, unit)?;
-        let posted = claim.g().posted(&self.book.issuer()).context("the claim doesn't fit what an exit posts")?;
-        let owed = self.assess(record, b, Some(&posted), Some(&claim)).owed;
-        ensure!(owed == b, "the claim is owed {owed} units, not {b}: its notes are spent");
-        let change = self.book.take_claim(&claim, u64::from(b) * unit)?;
-        self.note(format!("contract {cid}: the user's withdrawal claim of {b} units taken ({total} sats of notes{})", change.map_or(String::new(), |c| format!(", {} sats of change back to her", c.note.value))));
+        let owed = self.assess(record, b, Some(&q), self.book.evidence(&owner, q.k)).owed;
+        ensure!(owed == b, "the claim is owed {owed} units, not {b}");
+        self.book.take_claim(cid, &owner, &q)?;
+        let rest = live.live.note.v - u64::from(b) * unit;
+        if let (Some(to), true) = (rest_to, rest > 0) {
+            self.book.credit(&to, rest)?;
+        }
+        self.note(format!("contract {cid}: the user's withdrawal claim of {b} units taken (note {} of {} sats{})", q.k, live.live.note.v, if rest > 0 { format!(", {rest} sats left as credit") } else { String::new() }));
         Ok(())
     }
 

@@ -38,7 +38,6 @@ use bitcoin::secp256k1::{schnorr, Message, PublicKey, SecretKey, XOnlyPublicKey}
 use bitcoin::{Amount, OutPoint, Transaction, TxOut, Txid};
 use lngap_btc::adaptor::AdaptorSig;
 use lngap_channel::{ChannelParams, PartyPubKeys};
-use lngap_lamport::winternitz::WotsPublic;
 use lngap_btc::taptree::TapTree;
 use lngap_sessions::contract::{Presign, Signed};
 use lngap_sessions::session::Terms;
@@ -306,12 +305,9 @@ pub struct OpenOffer {
     /// The prevouts of the hub's inputs.
     pub hub_coins: Vec<(OutPoint, TxOut)>,
     pub hub_sigs: HashMap<String, Vec<u8>>,
-    /// `T`, the adaptor point of this funding transaction.
+    /// `T`, the adaptor point of this funding transaction (Alice's
+    /// signature on her deposit's spend is locked to it).
     pub mint_point: PublicKey,
-    /// `D`, pre-issued to Alice's L2 key under `T`: settled once the
-    /// funding puts `t` on chain (the grants L2, `lichen_notes`).
-    pub mint: lichen_notes::Note,
-    pub mint_presig: lichen_notes::Presig,
     /// In an anchored deployment, the contract's checkpoint.
     #[serde(default)]
     pub checkpoint: Option<Checkpoint>,
@@ -398,10 +394,9 @@ pub const DEFAULT_FEE: Amount = Amount::from_sat(2_000);
 /// (a sealed note of `b` sats to the hub with memo `cid`), with her
 /// signature on the fold.
 /// A cooperative withdrawal (`POST /withdraw`): Alice's claim of `b`
-/// units from contract `cid` ([`lichen_withdraw::hp::Claim`]'s bytes, hex:
-/// her notes by position, her signatures on its `E`), which the hub
-/// records on the L2, retiring the notes, and her signature on the fold
-/// paying her `b` units. At `b` 0, no claim: an early close, the fold
+/// units from contract `cid` (`Q`'s bytes, hex: her account's live note),
+/// which the hub takes into its book, closing the account, and her
+/// signature on the fold paying her `b` units. At `b` 0, no claim: an early close, the fold
 /// paying her reserve alone.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WithdrawRequest {
@@ -410,6 +405,10 @@ pub struct WithdrawRequest {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub claim: String,
     pub alice_sig: Vec<u8>,
+    /// Where what the claimed note holds beyond `u·b` goes, as credit (a
+    /// key of hers with no contract).
+    #[serde(default)]
+    pub rest_to: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -497,9 +496,10 @@ pub fn contract_word(d: &Deployment, checkpoint: Option<&Checkpoint>, unit: Amou
         (None, None) => Ok(d.id()),
         (Some(seal), Some(c)) => Ok(lichen_ledger::lichen_withdraw_contract_id(&d.id(), &seal, c.work(), unit.to_sat())),
         (Some(_), None) => bail!("an anchored deployment's contract needs a checkpoint"),
-        // the grants L2: the issuer's and the owner's, no seal, the
-        // checkpoint's work all the same
-        (None, Some(c)) => Ok(lichen_withdraw::grants::GTerms { issuer: d.hub, owner: *owner, work: c.work(), unit: unit.to_sat() }.d()),
+        (None, Some(_)) => {
+            let _ = (unit, owner);
+            bail!("the grants L2's contracts have no checkpoint: their D is the journal's (hp::contract)")
+        }
     }
 }
 
@@ -566,13 +566,13 @@ impl Record {
     }
 }
 
-/// A contract's graph ([`lichen_babe::hp::HubProves`]): the contract
-/// output with its fold, default and dispute (ln-gap's skeleton,
-/// [`Core`]), the dispute's links and terminals, the payout.
-pub struct Built(pub Box<lichen_babe::hp::HubProves>);
+/// A contract's graph ([`lichen_babe::countersigned::Countersigned`]):
+/// the contract output with its fold, default and dispute (ln-gap's
+/// skeleton, [`Core`]), the dispute's links and terminals, the payout.
+pub struct Built(pub Box<lichen_babe::countersigned::Countersigned>);
 
 impl Built {
-    pub fn graph(&self) -> &lichen_babe::hp::HubProves {
+    pub fn graph(&self) -> &lichen_babe::countersigned::Countersigned {
         &self.0
     }
     pub fn core(&self) -> Core<'_> {
@@ -598,11 +598,11 @@ impl Built {
     /// Whether a party keeps its signature on `name` from the other: the
     /// hub, on `wrongly_challenged`.
     pub fn withheld(&self, name: &str) -> bool {
-        lichen_babe::hp::HubProves::withheld(name)
+        lichen_babe::countersigned::Countersigned::withheld(name)
     }
     /// The key Alice signs `b` with in a dispute; the payout's bit outputs
     /// read it.
-    pub fn b_key(&self) -> &WotsPublic {
+    pub fn b_key(&self) -> &lngap_lamport::winternitz::Wots256Public {
         &self.0.spec.b_key
     }
     /// What the heaviest of Alice's terminal transactions (in the

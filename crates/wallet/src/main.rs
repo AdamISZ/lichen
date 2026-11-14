@@ -47,17 +47,26 @@ enum Cmd {
     Init,
     /// The wallet's L2 address: its key, which payers pay.
     Address,
-    /// Our notes' total, after collecting what the hub holds for us (and
-    /// merging our notes into one if there are more than two).
+    /// What our accounts hold, as the hub has them.
     Balance,
-    /// Our notes, one a line.
+    /// Our accounts, one a line: the live note, a payment pending.
     Notes,
-    /// Pay an L2 address (32 bytes, hex): all our notes in, the payment and
-    /// our change out, final when the hub answers.
-    Send { to: String, amount: u64 },
-    /// Our notes as the hub's book has them (a wallet restored from its
-    /// file, or a check).
-    Restore,
+    /// Pay an L2 address (32 bytes, hex) from our open contract's account.
+    /// The payee must be online (`receive`): waits up to `--wait` seconds
+    /// for it, then cancels.
+    Send {
+        to: String,
+        amount: u64,
+        #[arg(long, default_value_t = 60)]
+        wait: u64,
+    },
+    /// Take payments to our open contract's account, for `--wait` seconds.
+    Receive {
+        #[arg(long, default_value_t = 60)]
+        wait: u64,
+    },
+    /// Cancel the payment pending on our open contract's account.
+    Cancel,
     /// Open a contract with the hub: deposit `deposit` sats, with
     /// `liquidity` sats of inbound (what you can receive beyond your
     /// balance), a reserve of `reserve` sats. Prints the hub's fee for the
@@ -219,23 +228,54 @@ fn main() -> Result<()> {
         Cmd::Address => println!("{}", hex::encode(w.address())),
         Cmd::Balance => {
             let new = w.sync()?;
-            if let Some(sid) = w.merge()? {
-                println!("merged our notes into one ({})", hex::encode(sid));
-            }
-            println!("{} sats in {} notes{}", w.balance(), w.notes.len(), if new > 0 { format!(" ({new} new)") } else { String::new() });
+            println!("{} sats{}", w.balance(), if new > 0 { format!(" ({new} changed)") } else { String::new() });
         }
         Cmd::Notes => {
             w.sync()?;
-            for s in &w.notes {
-                println!("{} {}", hex::encode(s.note.id), s.note.value);
+            for a in w.accounts.values() {
+                let n = a.live.note;
+                println!("{} note {} of {} sats{}", hex::encode(n.owner), n.k, n.v, a.pending.as_ref().map_or(String::new(), |p| format!(", payment {} pending ({} {} sats{})", p.id, if p.payer { "paying" } else { "receiving" }, p.amount, if p.signed { ", signed" } else { "" })));
             }
         }
-        Cmd::Send { ref to, amount } => {
+        Cmd::Send { ref to, amount, wait } => {
             let to: [u8; 32] = hex::decode(to)?.try_into().ok().context("an address is 32 bytes, hex")?;
-            let sid = w.send(to, amount)?;
-            println!("paid {amount} sats: spend {}, final", hex::encode(sid));
+            let id = w.pay(to, amount)?;
+            println!("payment {id} proposed: waiting for the payee");
+            let start = std::time::Instant::now();
+            loop {
+                for s in w.progress()? {
+                    match s {
+                        lichen_wallet::notes::Step::Done(_, n) => {
+                            println!("paid {amount} sats: our note {} of {} sats", n.note.k, n.note.v);
+                            return Ok(());
+                        }
+                        lichen_wallet::notes::Step::Cancelled(..) => anyhow::bail!("the payment was cancelled"),
+                        lichen_wallet::notes::Step::Signed(_) => println!("signed: waiting for the hub's seed"),
+                    }
+                }
+                if start.elapsed().as_secs() >= wait {
+                    println!("no answer in {wait} s: cancelling");
+                    println!("{:?}", w.cancel()?);
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
         }
-        Cmd::Restore => println!("{} notes, {} sats", w.restore_notes()?, w.balance()),
+        Cmd::Receive { wait } => {
+            let start = std::time::Instant::now();
+            while start.elapsed().as_secs() < wait {
+                if let Some(id) = w.receive()? {
+                    println!("taking payment {id}");
+                }
+                for s in w.progress()? {
+                    if let lichen_wallet::notes::Step::Done(id, n) = s {
+                        println!("payment {id} received: our note {} of {} sats", n.note.k, n.note.v);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        }
+        Cmd::Cancel => println!("{:?}", w.cancel()?),
         Cmd::Open { deposit, liquidity, reserve, ref payout, resume } => {
             let chain = chain(&a)?;
             let ask = lichen_wallet::Ask { deposit, liquidity, reserve };
@@ -277,8 +317,8 @@ fn main() -> Result<()> {
                 println!("  fee budget  {}", addr(&w.fees(&h.nonce, h.record.network).spk()));
                 let k = h.record.hp();
                 let win = k.hp_windows;
-                println!("  windows     {} blocks for the hub's assertion, {} for the user's challenge, {} for its answer", win.w_h, win.delta2, win.delta1);
-                println!("  hub proves  {} instances of the user's kept of {}, margin {} blocks", k.kept.len(), k.n, k.margin);
+                println!("  windows     {} blocks for each of the hub's moves, {} for the user's ack, {} for her challenge, {} for its answer", win.w_h, win.w_a, win.delta2, win.delta1);
+                println!("  hub proves  {} instances of the user's kept of {}", k.kept.len(), k.n);
                 if let Some(p) = &h.exit {
                     println!("  claim       {} units ({} sats), kept for its exit", p.b, u64::from(p.b) * t.unit.to_sat());
                 }
@@ -295,7 +335,7 @@ fn main() -> Result<()> {
         }
         Cmd::ClaimMint { contract } => {
             w.claim_mint(&chain(&a)?, contract)?;
-            println!("contract {contract}'s deposit is ours: a note of {} sats", w.balance());
+            println!("contract {contract}'s account is open: {} sats", w.balance());
         }
         Cmd::Refund { contract, fee } => {
             let txid = w.refund(&chain(&a)?, contract, bitcoin::Amount::from_sat(fee))?;

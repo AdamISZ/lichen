@@ -1,29 +1,29 @@
-//! Exits contested (docs/GRANTS_PLAN.md, milestone 2): the hub answers a
-//! claim it can correct with `correct`, signing `b_corr`, and proves "she
-//! is owed at most `b_corr`" (the mock statement's proof, the statement
-//! checked natively first).
+//! Exits contested on the countersigned graph (papers/lichen-grants-v0.5.6,
+//! §6), on the mock statement (checked natively first).
 //!
-//! Each user's spend is recorded by a hub that withholds its answer: the
-//! spend stays in flight in her wallet, and her exit claims her notes with
-//! it as a fallback.
+//! Each payer's payment is recorded by a hub that withholds the seed: both
+//! parties are in flight, and the payer's exit claims the note the payment
+//! takes.
 //!
-//! - C: an honest hub corrects Alice's claim to her change of the spend
-//!   (cited by completing its grant's reveal in a slot of `correct`),
-//!   proves it, and `success` pays her that and her reserve; the hub
-//!   sweeps its bit outputs after `Δ`. Alice extracts the spend's unlock
-//!   from `correct`: Bob's note, which she can hand him.
-//! - F: a lying hub corrects Carol's claim, which holds in full, to 0 and
-//!   asserts a forged proof: she challenges, it can't answer, `failure`
-//!   pays her claim.
-//! - A: a hub corrects Dave's claim and never proves it:
-//!   `correct_timeout` pays his claim; Erin's note is revealed to him.
+//! - C (accepted): the hub corrects Alice's claim to what the payment left
+//!   her, citing it, its seed in `U`. Alice completes her new note from
+//!   `U`, finds the correction right, and accepts: after `w_A`, `accept`
+//!   pays her `b_corr`. Bob completes his new note from the same seed, read
+//!   from the chain.
+//! - P (proved): the same for Dave paying Erin, but Dave contests (a test's
+//!   switch): he countersigns the hub's values in `ack`, the hub proves its
+//!   statement from his four signatures, and `success` pays `b_corr`.
+//! - F (forged): a lying hub corrects Carol's claim, owed in full, to 0 and
+//!   asserts a forged proof: she contests, challenges, it can't answer,
+//!   and `failure` pays her claim.
 
 mod common;
 
 use std::time::{Duration, Instant};
 
 use bitcoin::Amount;
-use common::{statement, wait, Env};
+use common::{pay, statement, Env};
+use lichen_notes::Note;
 use lichen_wallet::dispute::Outcome;
 use lichen_wallet::{Ask, Wallet};
 
@@ -34,7 +34,7 @@ fn exits_contested() {
     let mut env = Env::new("contested");
     env.mine_every(Duration::from_millis(250));
     let ask = Ask { deposit: 400_000, liquidity: 1_000_000, reserve: 20_000 };
-    let (hub_c, hub_f, hub_a) = (env.hub("hub-c", |_| {}), env.hub("hub-f", |_| {}), env.hub("hub-a", |_| {}));
+    let (hub_c, hub_f, hub_p) = (env.hub("hub-c", |_| {}), env.hub("hub-f", |_| {}), env.hub("hub-p", |_| {}));
     let rt = &env.rt;
     let open = |name: &str, hub: &lichen_hub::Hub| {
         let ch = env.chain(name);
@@ -46,74 +46,75 @@ fn exits_contested() {
         println!("LICHEN {name} opened contract {} on {}", held.record.cid(), hub.url);
         (w, ch, held)
     };
-    let (mut alice, mut carol, mut dave) = (open("alice", &hub_c), open("carol", &hub_f), open("dave", &hub_a));
+    let (mut alice, mut carol, mut dave) = (open("alice", &hub_c), open("carol", &hub_f), open("dave", &hub_p));
     let mut bob = Wallet::create(&env.dir.join("bob.json"), &hub_c.url).unwrap();
-    let erin = Wallet::create(&env.dir.join("erin.json"), &hub_a.url).unwrap();
+    let mut erin = Wallet::create(&env.dir.join("erin.json"), &hub_p.url).unwrap();
 
-    // Alice pays Bob, Dave pays Erin: recorded, the answers withheld
-    for (hub, payer, to) in [(&hub_c, &mut alice.0, bob.address()), (&hub_a, &mut dave.0, erin.address())] {
+    // Alice pays Bob, Dave pays Erin: recorded, the seed withheld
+    for (hub, payer, payee) in [(&hub_c, &mut alice.0, &mut bob), (&hub_p, &mut dave.0, &mut erin)] {
         hub.set_withhold_unlocks(true);
-        payer.send(to, PAID).unwrap_err();
-        assert_eq!(payer.inflight.len(), 1, "the spend in flight");
-        hub.set_withhold_unlocks(false);
+        pay(payer, payee, PAID).unwrap();
+        let me = payer.address();
+        assert!(payer.account(&me).pending.is_some_and(|p| p.signed), "the payer in flight");
+        assert!(payee.account(&payee.address()).pending.is_some_and(|p| p.signed), "the payee in flight");
     }
-    bob.sync().unwrap();
-    assert_eq!(bob.balance(), PAID, "the spend recorded: Bob's note");
-    // the spends stay in flight: the hubs withhold from here on
-    hub_c.set_withhold_unlocks(true);
-    hub_a.set_withhold_unlocks(true);
     hub_f.set_forge_assertions(true);
-    hub_a.set_abandon_corrections(true);
+    dave.0.contest = true;
 
     let unit = alice.2.record.terms.unit.to_sat();
     let b = (ask.deposit / unit) as u32;
     let t = Instant::now();
-    // Alice's request, at its size (its claim one-time signed in full)
-    alice.0.progress = Some(std::sync::Arc::new(|m: String| {
-        if m.starts_with("requesting") {
-            println!("LICHEN alice: {m}");
-        }
-    }));
+    alice.0.progress = Some(std::sync::Arc::new(|m: String| println!("LICHEN alice: {m}")));
     let exit = |u: &mut (Wallet, lichen_chain::Chain, lichen_wallet::Held)| {
         let cid = u.2.record.cid();
         let plan = u.0.keep_exit_claim(&u.1, cid).unwrap();
-        assert_eq!(plan.b, b, "all her notes claimed");
+        assert_eq!(plan.b, b, "her whole note claimed (the one the payment takes)");
         let out = u.0.exit(&u.1, &statement(), cid).unwrap();
-        (out, u.0.revealed(&u.1, &statement(), cid).unwrap())
+        (out, u.0.unlock_of(&u.1, &statement(), cid).unwrap())
     };
     let exit = &exit;
-    let (c, f, a) = std::thread::scope(|s| {
-        let c = s.spawn(move || exit(&mut alice));
-        let f = s.spawn(move || exit(&mut carol));
-        let a = s.spawn(move || exit(&mut dave));
-        (c.join().unwrap(), f.join().unwrap(), a.join().unwrap())
+    let (c, f, p) = std::thread::scope(|s| {
+        let c = s.spawn(|| exit(&mut alice));
+        let f = s.spawn(|| exit(&mut carol));
+        let p = s.spawn(|| exit(&mut dave));
+        (c.join().unwrap(), f.join().unwrap(), p.join().unwrap())
     });
-    let ((c, c_rev), (f, _), (a, a_rev)) = (c, f, a);
     println!("LICHEN the three exits played in {:.1?}", t.elapsed());
-
-    // C: corrected to her change, proved, paid by success
     let b_corr = ((ask.deposit - PAID) / unit) as u32;
-    match &c.0 {
-        Outcome::Corrected { b_corr: got, .. } => assert_eq!(*got, b_corr, "her change, in units"),
+
+    // C: corrected to what the payment left her, accepted
+    let ((c_out, c_swept), c_seed) = c;
+    match c_out {
+        Outcome::Corrected { b_corr: got, .. } => assert_eq!(got, b_corr, "her new note, in units"),
         o => panic!("C: {o:?}"),
     }
-    let (_, swept) = c.1.expect("C: her bits swept");
+    let (_, swept) = c_swept.expect("C: her bits swept");
     assert!(swept > Amount::from_sat(u64::from(b_corr) * unit / 2), "C: {swept}");
-    assert!(hub_c.log().iter().any(|l| l.contains("1 spends revealed in its slots")), "{:?}", hub_c.log());
-    println!("LICHEN C: the claim of {b} units corrected to {b_corr} (the spend in flight recorded: her change), proved; success paid her, swept {swept}");
-    let bobs = c_rev.iter().find(|s| s.note.owner == bob.address()).expect("Bob's note revealed to Alice");
-    assert_eq!(*bobs, bob.notes[0], "the note Bob holds");
-    println!("LICHEN C: correct revealed the spend's unlock to Alice: Bob's note, {} sats", bobs.note.value);
-    wait("the hub's bit outputs of success", || hub_c.log().iter().any(|l| l.contains("collected the hub's")));
+    let me = alice.0.address();
+    assert_eq!(alice.0.note_of(&me), Note { owner: me, k: 1, v: ask.deposit - PAID }, "her new note, completed from U");
+    assert!(hub_c.log().iter().any(|l| l.contains("her last step cited")), "{:?}", hub_c.log());
+    assert!(!hub_c.log().iter().any(|l| l.contains("asserted")), "accepted: nothing to prove");
+    // Bob completes his note with the seed from the chain
+    let z = c_seed.expect("C: U on chain");
+    bob.complete_with(&z).unwrap();
+    let bob_addr = bob.address();
+    assert_eq!(bob.note_of(&bob_addr), Note { owner: bob_addr, k: 1, v: PAID });
+    println!("LICHEN C: Alice's claim of {b} units corrected to {b_corr} (her step in flight cited, its seed in U), accepted; Bob's note of {PAID} settled from the same seed");
+
+    // P: contested, proved, paid by success
+    let ((p_out, _), p_seed) = p;
+    match p_out {
+        Outcome::Corrected { b_corr: got, .. } => assert_eq!(got, b_corr),
+        o => panic!("P: {o:?}"),
+    }
+    assert!(hub_p.log().iter().any(|l| l.contains("asserted")), "{:?}", hub_p.log());
+    erin.complete_with(&p_seed.expect("P: U on chain")).unwrap();
+    assert_eq!(erin.balance(), PAID);
+    println!("LICHEN P: Dave contested the correction; the hub proved it from his four signatures, success paid {b_corr} units; Erin's note settled from U");
 
     // F: a forged proof against a claim owed in full
-    assert!(matches!(f.0, Outcome::Refuted(_)), "F: {:?}", f.0);
-    assert!(hub_f.log().iter().any(|l| l.contains("is owed 0") || l.contains("corrected to 0")), "{:?}", hub_f.log());
-    println!("LICHEN F: the lying hub corrected Carol's claim to 0 with a forged proof: failure paid her {b} units");
-
-    // A: corrected, never proved
-    assert!(matches!(a.0, Outcome::HubTimedOut(_)), "A: {:?}", a.0);
-    assert!(hub_a.log().iter().any(|l| l.contains("abandoning the correction")), "{:?}", hub_a.log());
-    assert!(a_rev.iter().any(|s| s.note.owner == erin.address() && s.note.value == PAID), "Erin's note revealed to Dave");
-    println!("LICHEN A: Dave's claim corrected and never proved: correct_timeout paid his {b} units");
+    let ((f_out, _), _) = f;
+    assert!(matches!(f_out, Outcome::Refuted(_)), "F: {f_out:?}");
+    assert!(hub_f.log().iter().any(|l| l.contains("corrected to 0")), "{:?}", hub_f.log());
+    println!("LICHEN F: the lying hub corrected Carol's claim to 0 with a forged proof: she contested and challenged, failure paid her {b} units");
 }

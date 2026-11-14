@@ -3,14 +3,14 @@
 //! Alice, Bob, Carol, Dave and Erin each open a contract with the hub.
 //! Bob pays Alice a whole number of her contract's units.
 //!
-//! - A: Alice withdraws that amount: her claim of all her notes, signed
-//!   for the contract, which the hub takes (the notes spent, what they
-//!   hold beyond the amount back to her as change), then folds at once:
-//!   the amount and her reserve on chain.
-//! - B: Bob withdraws part of his balance, the rest back to him as change.
+//! - A: Alice withdraws that amount: her claim of her account's live
+//!   note, which the hub takes (the account closed, what the note holds
+//!   beyond the amount credited to her wallet's own key), then folds at
+//!   once: the amount and her reserve on chain.
+//! - B: Bob withdraws part of his balance, the rest credited likewise.
 //!   Asked again, the closed contract refuses.
 //! - C: Carol closes early with nothing withdrawn (`b` 0): no claim, her
-//!   reserve back at once, her tokens left on the L2.
+//!   reserve back at once, her account left on the L2.
 //! - D, E: after T_close, Dave posts his default himself (the hub held
 //!   its), then the hub posts Erin's: their reserves back.
 
@@ -50,9 +50,10 @@ fn withdraw_by_claim_and_default() {
     let a_unit = users[0].2.record.terms.unit.to_sat();
     let paid = 73 * a_unit;
     let alice_addr = users[0].0.address();
-    users[1].0.send(alice_addr, paid).unwrap();
-    users[0].0.sync().unwrap();
+    let (a, rest) = users.split_at_mut(1);
+    common::pay(&mut rest[0].0, &mut a[0].0, paid).unwrap();
     assert_eq!(users[0].0.balance(), 400_000 + paid);
+    assert_eq!(users[0].0.address(), alice_addr);
 
     // ===== A: Alice withdraws exactly the note Bob paid =====
     {
@@ -64,7 +65,7 @@ fn withdraw_by_claim_and_default() {
         let fold = rt.get_tx(&txid).unwrap();
         let gained = ch.balance().unwrap() - before;
         assert_eq!(gained, Amount::from_sat(paid) + h.record.terms.reserve_alice, "the note's value and her reserve");
-        assert_eq!((w.balance(), w.notes.len()), (400_000, 1), "the rest back to her as change, one note");
+        assert_eq!(w.balance(), 400_000, "the rest credited to her wallet's key");
         assert!(hub.log().iter().any(|l| l.contains("withdrawal claim of 73 units taken")), "{:?}", hub.log());
         println!("LICHEN A: Alice's claim of {paid} sats taken, the hub folded at once ({} vB, {:.1?}): she gained {gained} on chain, 400,000 sats back as change", fold.vsize(), t.elapsed());
     }
@@ -81,7 +82,7 @@ fn withdraw_by_claim_and_default() {
         rt.mine(1).unwrap();
         assert!(rt.get_tx(&txid).is_ok());
         assert_eq!(ch.balance().unwrap() - before, Amount::from_sat(want) + h.record.terms.reserve_alice, "30,000 rounded down to the unit, and his reserve");
-        assert_eq!(w.balance(), left - want, "the rest back to him as change");
+        assert_eq!(w.balance(), left - want, "the rest credited to his wallet's key");
         assert!(w.withdraw(&env.chain("hub"), &hub.url, &statement(), h.record.cid(), 1_000).is_err(), "closed");
         println!("LICHEN B: Bob claimed {want} sats and the hub folded ({:.1?}); {} sats back to him as change", t.elapsed(), left - want);
     }
@@ -94,7 +95,7 @@ fn withdraw_by_claim_and_default() {
         rt.mine(1).unwrap();
         let gained = ch.balance().unwrap() - before;
         assert_eq!(gained, h.record.terms.reserve_alice, "Carol's reserve alone");
-        assert_eq!(w.balance(), 100_000, "no claim: her notes stay hers");
+        assert_eq!(w.balance(), 100_000, "no claim: her account stays hers");
         assert!(hub.contracts().iter().any(|c| c.0.cid() == h.record.cid() && c.1 == Some(txid)));
         println!("LICHEN C: Carol closed her contract with nothing withdrawn: her reserve ({gained}) back before T_close, her 100,000 sats still on the L2");
     }

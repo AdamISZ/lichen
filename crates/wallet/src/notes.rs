@@ -1,50 +1,81 @@
-//! The wallet's notes on the grants L2 (`lichen_notes`): collected from
-//! the hub's mailbox, paid by grants, merged so that it holds few.
+//! The wallet's accounts on the grants L2 (papers/lichen-grants-v0.5.6):
+//! one note per key, numbered in sequence, and payments made by joint
+//! spends that both parties sign (`lichen_notes`).
 //!
-//! A payment spends all our notes at once: the payment and our change come
-//! out, so after it we hold one note. Notes received since are merged into
-//! one by a payment to ourselves once there are more than
-//! [`KEEP_NOTES`]: an exit claims every note it needs in one `request`,
-//! and a hub that won't merge them is a hub to leave
-//! ([`ALARM_NOTES`]).
+//! The wallet holds, per key, its live note ([`Acct`]) and at most one
+//! payment pending ([`Pending`]): Rule 2, one pending signature per
+//! account. It signs only a step from the note it holds (Rule 3): its half
+//! names its live note and the value it expects. A payment's steps:
+//!
+//! - the payer: [`Wallet::pay`] (`POST /pay`, its half);
+//! - the payee: [`Wallet::receive`] (`GET /incoming`, `POST /half`);
+//! - both: [`Wallet::progress`], once the hub has granted it: check the
+//!   grant (its pre-signature on our new note; the other side's owner the
+//!   one we deal with), sign `α`; once recorded, complete the new note with
+//!   the seed.
+//!
+//! A party in flight (signed, no seed) keeps its old note: an exit claims
+//! it, and if the hub cites the spend it must publish the seed
+//! ([`Wallet::complete`]). [`Wallet::cancel`] asks the hub to give up the
+//! payment: the seed if it was recorded, else a reissue of the note one
+//! step on.
 //!
 //! Each contract has an L2 key of its own, fresh at its opening: its
-//! claims take the notes paid to it, and a spend of them is cited against
-//! them only by completing the grant's reveal on its `correct` (checked
-//! here before we sign). The wallet's address is its contract's key; the
-//! notes of its other keys (its own, a closed contract's) are moved to it.
-//!
-//! A spend is kept before it goes ([`InFlight`]): until the hub answers
-//! with `t`, its inputs may be spent or not. Finishing it again asks the
-//! same (the hub's grant and record are idempotent). A hub that says it
-//! has no grant on it is taken at its word for spending the inputs again,
-//! but not for claiming them: the spend stays a fallback of any claim of
-//! its inputs until a spend of ours that we hold `t` for consumes them (a
-//! hub that recorded it and said otherwise could cite it against us).
+//! account starts at its mint, note 0. The wallet's address is its open
+//! contract's key.
 
-use anyhow::{ensure, Context, Result};
-use bitcoin::secp256k1::SecretKey;
-use lichen_notes::{auth_msg, sign, Authorized, Claim, Delivery, Grant, Hash, Note, Output, Settled, Spend, MAX_CLAIM_NOTES, MAX_INPUTS};
+use anyhow::{bail, ensure, Context, Result};
+use lichen_notes::proto::{cancel_msg, sides_from, Account, CancelRequest, HalfRequest, PayRequest, Payment, Side, SignRequest, State};
+use lichen_notes::{sign, Grant, Half, Hash, Note, Seed, Settled};
 use serde::{Deserialize, Serialize};
 
 use crate::exit::ExitPlan;
 use crate::{hub_call, Wallet};
 
-/// The notes the wallet keeps before merging them into one.
-pub const KEEP_NOTES: usize = 2;
-/// Notes left unmerged past which the hub is refusing merges, or worse:
-/// stop taking payments, and exit while every note fits in a claim.
-pub const ALARM_NOTES: usize = 4;
-
-/// A spend we signed, not yet answered with its unlock.
+/// A payment pending on one of our accounts.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct InFlight {
-    pub spend: Spend,
-    pub grant: Grant,
-    pub sigs: Vec<String>,
-    /// The hub said it has no grant on it: not asked again.
+pub struct Pending {
+    pub id: String,
+    /// Our half, and whether we pay (else we're paid).
+    pub half: Half,
+    pub payer: bool,
+    /// The other party, and the amount.
+    #[serde(with = "lichen_notes::hex32")]
+    pub peer: Hash,
+    pub amount: u64,
+    /// Once granted and signed: the sides and the grant, as we signed them.
     #[serde(default)]
-    pub abandoned: bool,
+    pub sides: Option<[Side; 2]>,
+    #[serde(default)]
+    pub grant: Option<Grant>,
+    #[serde(default)]
+    pub signed: bool,
+}
+
+impl Pending {
+    /// Our index among the sides.
+    fn index(&self) -> Option<usize> {
+        self.sides.map(|s| usize::from(s[0].owner != self.half.owner))
+    }
+}
+
+/// One of our accounts: its live note, a payment pending.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Acct {
+    pub live: Settled,
+    #[serde(default)]
+    pub pending: Option<Pending>,
+}
+
+/// What a step of a payment came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Signed; the seed awaited.
+    Signed(String),
+    /// Done: our new note settled.
+    Done(String, Settled),
+    /// Cancelled: our note as it stands now.
+    Cancelled(String, Settled),
 }
 
 impl Wallet {
@@ -52,194 +83,206 @@ impl Wallet {
     pub fn issuer(&self) -> Hash {
         self.deployment.hub
     }
-    /// What our notes hold.
+    /// What our accounts hold.
     pub fn balance(&self) -> u64 {
-        self.notes.iter().map(|s| s.note.value).sum()
+        self.accounts.values().map(|a| a.live.note.v).sum()
     }
-    /// A note for us, kept if new: settled by the hub, ours, not one we
-    /// spent.
-    fn add_note(&mut self, s: Settled) -> Result<bool> {
-        ensure!(s.verify(&self.issuer()), "a note not signed by the hub: {}", hex::encode(s.note.id));
-        ensure!(self.owners().contains(&s.note.owner), "a note of someone else's: {}", hex::encode(s.note.id));
-        if self.notes.iter().any(|x| x.note.id == s.note.id) || self.spent.contains(&s.note.id) {
-            return Ok(false);
-        }
-        self.notes.push(s);
-        Ok(true)
+    /// Our account under `owner`: its live note, the empty note if none.
+    pub fn account(&self, owner: &Hash) -> Acct {
+        self.accounts.get(&hex::encode(owner)).cloned().unwrap_or(Acct { live: Settled::first(*owner, 0), pending: None })
     }
-    /// Collect what the hub's mailbox holds for us, after finishing our
-    /// spends in flight. How many notes are new.
+    fn set_account(&mut self, a: Acct) {
+        self.accounts.insert(hex::encode(a.live.note.owner), a);
+    }
+    /// The live note of our open contract's account.
+    pub fn live(&self) -> Settled {
+        self.account(&self.address()).live
+    }
+
+    /// Our accounts as the hub has them: a later note of the hub's that is
+    /// no less than ours (a credit, a reissue, a step we missed the end of)
+    /// taken; then each pending payment moved on. How many changed.
     pub fn sync(&mut self) -> Result<usize> {
-        self.settle_inflight()?;
-        let mut new = 0;
+        let mut n = 0;
         for owner in self.owners() {
-            let k = hex::encode(owner);
-            let from = self.mailboxes.get(&k).copied().unwrap_or(0);
-            let ds: Vec<Delivery> = hub_call(&format!("{}/mailbox/{k}?from={from}", self.hub), None, true)?;
-            for d in &ds {
-                if self.add_note(d.settled.clone())? {
-                    new += 1;
-                }
-            }
-            if !ds.is_empty() {
-                self.mailboxes.insert(k, from + ds.len());
+            let a: Account = hub_call(&format!("{}/account/{}", self.hub, hex::encode(owner)), None, true)?;
+            let mut mine = self.account(&owner);
+            if a.live.note.owner == owner && a.live.note.k > mine.live.note.k && a.live.note.v >= mine.live.note.v && a.live.verify(&self.issuer()) && mine.pending.is_none() {
+                mine.live = a.live;
+                self.set_account(mine);
+                n += 1;
             }
         }
+        n += self.progress()?.len();
         self.save()?;
-        Ok(new)
+        Ok(n)
     }
-    /// Our notes as the hub's book has them, unspent (a wallet restored
-    /// from its file, or from its key): each checked, the mailbox read
-    /// past what they include.
-    pub fn restore_notes(&mut self) -> Result<usize> {
-        self.settle_inflight()?;
-        self.notes.clear();
-        for owner in self.owners() {
-            let k = hex::encode(owner);
-            let theirs: Vec<Settled> = hub_call(&format!("{}/notes/{k}", self.hub), None, true)?;
-            let all: Vec<Delivery> = hub_call(&format!("{}/mailbox/{k}?from=0", self.hub), None, true)?;
-            for s in theirs {
-                self.spent.retain(|id| *id != s.note.id);
-                self.add_note(s)?;
-            }
-            self.mailboxes.insert(k, all.len());
-        }
-        self.save()?;
-        Ok(self.notes.len())
-    }
-    /// Pay `amount` to `to`: all our notes in, the payment and our change
-    /// out. The spend's id.
-    pub fn send(&mut self, to: Hash, amount: u64) -> Result<Hash> {
-        ensure!(amount > 0, "nothing to send");
-        self.sync()?;
-        let total = self.balance();
-        ensure!(total >= amount, "the balance is {total} sats, short of {amount}");
-        ensure!(to != self.address(), "a payment to ourselves: merge instead");
-        let mut outputs = vec![Output { owner: to, value: amount }];
-        if total > amount {
-            outputs.push(Output { owner: self.address(), value: total - amount });
-        }
-        self.pay(outputs)
-    }
-    /// Merge our notes into one under our address, by a payment to
-    /// ourselves, if we hold more than [`KEEP_NOTES`] or any under another
-    /// key of ours. Its id if it did.
-    pub fn merge(&mut self) -> Result<Option<Hash>> {
+
+    /// Pay `amount` sats to `to` from our open contract's account (`POST
+    /// /pay`): the payment's id. The payee must be online to take it.
+    pub fn pay(&mut self, to: Hash, amount: u64) -> Result<String> {
         let me = self.address();
-        if self.notes.len() <= KEEP_NOTES && self.notes.iter().all(|s| s.note.owner == me) {
+        let mut a = self.account(&me);
+        ensure!(a.pending.is_none(), "a payment is pending on our account: finish or cancel it first");
+        ensure!(amount > 0 && amount <= a.live.note.v, "a payment of {amount} sats from {}", a.live.note.v);
+        ensure!(to != me, "a payment to ourselves");
+        let half = Half::of(&a.live.note, a.live.note.v - amount);
+        // kept before it goes: a lost answer leaves it proposed at the hub
+        a.pending = Some(Pending { id: lichen_notes::book::payment_id(&half), half, payer: true, peer: to, amount, sides: None, grant: None, signed: false });
+        self.set_account(a.clone());
+        self.save()?;
+        let p: Payment = hub_call(&format!("{}/pay", self.hub), Some(serde_json::to_string(&PayRequest { half, to, amount })?), true)?;
+        ensure!(p.id == a.pending.as_ref().unwrap().id, "the hub named the payment {}", p.id);
+        Ok(p.id)
+    }
+
+    /// Take the first payment to our open contract's account (`GET
+    /// /incoming`, `POST /half`), if we have none pending: its id.
+    pub fn receive(&mut self) -> Result<Option<String>> {
+        let me = self.address();
+        let mut a = self.account(&me);
+        if a.pending.is_some() {
             return Ok(None);
         }
-        let total = self.balance();
-        self.pay(vec![Output { owner: self.address(), value: total }]).map(Some)
-    }
-    /// Spend all our notes (at most [`MAX_INPUTS`]) to `outputs`: the
-    /// hub's grant checked, signed with the spend, kept, then recorded.
-    fn pay(&mut self, outputs: Vec<Output>) -> Result<Hash> {
-        ensure!(!self.notes.is_empty(), "no notes to spend");
-        ensure!(self.notes.len() <= MAX_INPUTS, "{} notes, more than a spend takes ({MAX_INPUTS})", self.notes.len());
-        let spend = Spend { inputs: self.notes.iter().map(|s| s.note).collect(), outputs };
-        spend.check()?;
-        let grant: Grant = hub_call(&format!("{}/grant", self.hub), Some(serde_json::to_string(&spend)?), true)?;
-        grant.verify(&self.issuer(), &spend).context("the hub's grant")?;
-        // for each of our contracts open whose notes it spends: the reveal
-        // through its correct, so that the hub can't cite the spend against
-        // our claim without giving us t
-        for h in self.contracts.iter().filter(|h| h.closed.is_none() && h.payout.is_none() && spend.inputs.iter().any(|n| n.owner == h.record.l2_address)) {
-            let Some(m) = h.correct_msg.as_deref().and_then(|m| hex::decode(m).ok()).and_then(|v| <[u8; 32]>::try_from(v).ok()) else { continue };
-            grant.verify_reveal(&h.record.l2_address, &h.record.pubs[1].payment, &bitcoin::secp256k1::Message::from_digest(m)).context("the hub's grant")?;
-        }
-        let msg = auth_msg(&grant.sid, &grant.commitment());
-        let sigs = spend.inputs.iter().map(|n| Ok(hex::encode(sign(&self.kp_of(&n.owner)?, &msg)))).collect::<Result<Vec<String>>>()?;
-        // kept before it goes: until the hub answers, the inputs may be
-        // spent, and the grant opens our change once it does
-        self.inflight.push(InFlight { spend, grant, sigs, abandoned: false });
+        let incoming: Vec<Payment> = hub_call(&format!("{}/incoming/{}", self.hub, hex::encode(me)), None, true)?;
+        let Some(p) = incoming.into_iter().find(|p| p.to == me && p.amount > 0) else { return Ok(None) };
+        let v_out = a.live.note.v.checked_add(p.amount).filter(|v| *v < lichen_notes::VALUE_LIMIT).context("a payment too large")?;
+        let half = Half::of(&a.live.note, v_out);
+        a.pending = Some(Pending { id: p.id.clone(), half, payer: false, peer: p.from, amount: p.amount, sides: None, grant: None, signed: false });
+        self.set_account(a);
         self.save()?;
-        self.finish(self.inflight.len() - 1)
+        let _: Payment = hub_call(&format!("{}/half", self.hub), Some(serde_json::to_string(&HalfRequest { id: p.id.clone(), half })?), true)?;
+        self.say(format!("taking a payment of {} sats from {}", p.amount, &hex::encode(p.from)[..12]));
+        Ok(Some(p.id))
     }
-    /// Finish spend in flight `i`: recorded at the hub, its `t` opening the
-    /// outputs; its inputs gone, our outputs kept.
-    fn finish(&mut self, i: usize) -> Result<Hash> {
-        let f = self.inflight[i].clone();
-        let r: serde_json::Value = hub_call(&format!("{}/spend", self.hub), Some(serde_json::to_string(&Authorized { sid: f.grant.sid, sigs: f.sigs.clone() })?), true)?;
-        let t: [u8; 32] = r.get("t").and_then(|t| t.as_str()).and_then(|t| hex::decode(t).ok()).and_then(|v| v.try_into().ok()).context("the hub's answer has no unlock")?;
-        let t = SecretKey::from_slice(&t).context("the unlock")?;
-        let outs = f.grant.open(&self.issuer(), &f.spend, &t).context("the unlock doesn't open the grant")?;
-        let gone: Vec<Hash> = f.spend.inputs.iter().map(|n| n.id).collect();
-        self.notes.retain(|s| !gone.contains(&s.note.id));
-        self.spent.extend(gone.iter().copied());
-        let mine = self.owners();
-        for o in outs.into_iter().filter(|o| mine.contains(&o.note.owner)) {
-            self.add_note(o)?;
-        }
-        self.inflight.remove(i);
-        // a spend abandoned whose inputs this one consumed can't have been
-        // recorded: done with
-        self.inflight.retain(|x| !(x.abandoned && x.spend.inputs.iter().any(|n| gone.contains(&n.id))));
-        self.save()?;
-        Ok(f.grant.sid)
-    }
-    /// Each spend in flight finished, or dropped if the hub has no grant on
-    /// it (never recorded: its inputs are still ours).
-    fn settle_inflight(&mut self) -> Result<()> {
-        while let Some(i) = self.inflight.iter().position(|f| !f.abandoned) {
-            match self.finish(i) {
-                Ok(_) => {}
-                Err(e) if format!("{e:#}").contains("no grant on that spend") => {
-                    self.inflight[i].abandoned = true;
-                    self.save()?;
+
+    /// Move each pending payment on, as the hub shows it: sign it once
+    /// granted (the grant checked), complete it once recorded, apply a
+    /// cancel. The steps taken.
+    pub fn progress(&mut self) -> Result<Vec<Step>> {
+        let mut steps = vec![];
+        let pending: Vec<Hash> = self.accounts.values().filter(|a| a.pending.is_some()).map(|a| a.live.note.owner).collect();
+        for owner in pending {
+            let a = self.account(&owner);
+            let pend = a.pending.clone().expect("pending");
+            let p: Payment = match hub_call(&format!("{}/payment/{}", self.hub, pend.id), None, true) {
+                Ok(p) => p,
+                Err(e) => {
+                    self.say(format!("payment {}: {e:#}", pend.id));
+                    continue;
                 }
-                Err(e) => return Err(e.context("a spend in flight")),
+            };
+            match p.state {
+                State::Proposed => {}
+                State::Granted if !pend.signed => steps.push(self.sign_payment(&owner, &p)?),
+                State::Granted => {}
+                State::Recorded => {
+                    if !pend.signed {
+                        steps.push(self.sign_payment(&owner, &p)?);
+                    }
+                    if let Some(z) = &p.seed {
+                        let z = lichen_notes::seed_hex(z)?;
+                        steps.push(self.complete(&owner, &z)?);
+                    }
+                }
+                State::Cancelled => steps.push(self.cancelled(&owner, &p)?),
             }
         }
-        Ok(())
+        self.save()?;
+        Ok(steps)
     }
-    /// A claim of `units` of contract `cid`'s unit: the notes of its key
-    /// (our other keys' moved to it first, and merged if too many for one
-    /// claim; if still too many with their spends in flight, the largest
-    /// that fit what an exit posts), signed with its key. Its notes leave the wallet with it: the hub
-    /// spends them when it takes the claim, and returns what they hold
-    /// beyond `units` as change.
+
+    /// Sign payment `p` on our account `owner`, its grant checked: the
+    /// sides hold our half and the other party's owner; the pre-signature
+    /// on our new note verifies.
+    fn sign_payment(&mut self, owner: &Hash, p: &Payment) -> Result<Step> {
+        let mut a = self.account(owner);
+        let mut pend = a.pending.clone().context("nothing pending")?;
+        ensure!(p.id == pend.id && p.amount == pend.amount, "payment {} isn't the one pending", p.id);
+        let sides = p.sides.context("the payment's sides")?;
+        let grant = p.grant.clone().context("the payment's grant")?;
+        let i = usize::from(sides[0].owner != pend.half.owner);
+        ensure!(sides[i].owner == pend.half.owner && sides[i].h == pend.half.digest(), "the spend doesn't hold our half");
+        ensure!(sides[1 - i].owner == pend.peer, "the spend's other side isn't the party we deal with");
+        let next = pend.half.next()?;
+        grant.verify(&self.issuer(), i, &next)?;
+        let alpha = grant.alpha(&sides_from(&sides));
+        let psi = sign(&self.kp_of(owner)?, &alpha);
+        pend.sides = Some(sides);
+        pend.grant = Some(grant);
+        pend.signed = true;
+        a.pending = Some(pend.clone());
+        self.set_account(a);
+        // kept before it goes: from here we're in flight
+        self.save()?;
+        let _: Payment = hub_call(&format!("{}/sign", self.hub), Some(serde_json::to_string(&SignRequest { id: pend.id.clone(), owner: *owner, psi })?), true)?;
+        Ok(Step::Signed(pend.id))
+    }
+
+    /// Complete our pending payment on account `owner` with seed `z` (from
+    /// the hub, the other party, or `correct`): our new note settled and
+    /// live.
+    pub fn complete(&mut self, owner: &Hash, z: &Seed) -> Result<Step> {
+        let mut a = self.account(owner);
+        let pend = a.pending.clone().context("nothing pending")?;
+        let (grant, i) = (pend.grant.clone().context("not signed")?, pend.index().context("not signed")?);
+        let next = pend.half.next()?;
+        let s = grant.complete(&self.issuer(), i, &next, z)?;
+        a.live = s;
+        a.pending = None;
+        self.set_account(a);
+        self.save()?;
+        self.say(format!("payment {}: {} {} sats, note {} of {} sats", pend.id, if pend.payer { "paid" } else { "received" }, pend.amount, s.note.k, s.note.v));
+        Ok(Step::Done(pend.id, s))
+    }
+
+    /// Whether `z` opens the grant of our pending payment on `owner`.
+    pub fn opens(&self, owner: &Hash, z: &Seed) -> bool {
+        self.account(owner).pending.and_then(|p| p.grant).is_some_and(|g| g.opens(z))
+    }
+
+    fn cancelled(&mut self, owner: &Hash, p: &Payment) -> Result<Step> {
+        let mut a = self.account(owner);
+        if let Some(r) = p.reissued.iter().find(|r| r.note.owner == *owner) {
+            ensure!(r.verify(&self.issuer()) && r.note.k == a.live.note.k + 1 && r.note.v == a.live.note.v, "a reissue not of our note");
+            a.live = *r;
+        }
+        a.pending = None;
+        let live = a.live;
+        self.set_account(a);
+        self.save()?;
+        Ok(Step::Cancelled(p.id.clone(), live))
+    }
+
+    /// Ask the hub to cancel the payment pending on our open contract's
+    /// account (`POST /cancel`): recorded, its seed completes it; otherwise
+    /// it is refused from now on, and our note reissued if we signed.
+    pub fn cancel(&mut self) -> Result<Step> {
+        let me = self.address();
+        let pend = self.account(&me).pending.context("no payment pending")?;
+        let sig = sign(&self.kp_of(&me)?, &cancel_msg(&pend.id));
+        let p: Payment = hub_call(&format!("{}/cancel", self.hub), Some(serde_json::to_string(&CancelRequest { id: pend.id.clone(), owner: me, sig })?), true)?;
+        match (p.state, &p.seed) {
+            (State::Recorded, Some(z)) => self.complete(&me, &lichen_notes::seed_hex(z)?),
+            (State::Cancelled, _) => self.cancelled(&me, &p),
+            _ => bail!("payment {} not cancelled: {:?}", p.id, p.state),
+        }
+    }
+
+    /// The exit claim of contract `cid`'s account, `units` of its unit:
+    /// its live note (in flight, the note the spend takes: the step, if the
+    /// hub cites it, counts by itself).
     pub(crate) fn claim_for(&mut self, cid: u32, units: u32) -> Result<ExitPlan> {
         let record = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?.record.clone();
-        // a hub that won't answer (a spend in flight, the mailbox) mustn't
-        // hold off the claim: what's unknown is a fallback
-        if let Err(e) = self.sync() {
-            self.step(format!("claiming without a sync: {e:#}"));
-        }
-        let owner = record.l2_address;
-        if self.address() == owner && (self.notes.len() > MAX_CLAIM_NOTES || self.notes.iter().any(|s| s.note.owner != owner)) {
-            if let Err(e) = self.merge() {
-                self.step(format!("merging before the claim: {e:#}"));
-            }
-        }
-        let want = u64::from(units) * record.terms.unit.to_sat();
-        let held: u64 = self.notes.iter().filter(|s| s.note.owner == owner).map(|s| s.note.value).sum();
-        ensure!(held >= want, "the contract's key holds {held} sats, short of {want}");
-        // every spend of ours not known recorded whose inputs the claim
-        // takes: a fallback
-        let fallbacks_of = |notes: &[Settled]| -> Vec<Hash> {
-            let ids: Vec<Hash> = notes.iter().map(|s| s.note.id).collect();
-            self.inflight.iter().filter(|f| f.spend.inputs.iter().any(|n| ids.contains(&n.id))).map(|f| f.grant.sid).collect()
-        };
-        let mut chosen: Vec<Settled> = self.notes.iter().filter(|s| s.note.owner == owner).cloned().collect();
-        chosen.sort_by_key(|s| std::cmp::Reverse(s.note.value));
-        while chosen.len() > 1 && !lichen_withdraw::grants::fits(chosen.len(), fallbacks_of(&chosen).len()) {
-            chosen.pop();
-        }
-        let fallbacks = fallbacks_of(&chosen);
-        ensure!(lichen_withdraw::grants::fits(chosen.len(), fallbacks.len()), "{} spends of a note in flight, more than a claim posts", fallbacks.len());
-        let total: u64 = chosen.iter().map(|s| s.note.value).sum();
-        ensure!(total >= want, "the notes an exit can post hold {total} sats, short of {want}");
-        let claim = Claim::new(&self.kp_of(&owner)?, cid, record.hp().deposit, units, chosen.clone(), &fallbacks);
-        let posted = claim.g().posted(&self.issuer()).context("the claim's notes aren't the hub's")?;
-        let gone: Vec<Hash> = chosen.iter().map(|s| s.note.id).collect();
-        self.notes.retain(|s| !gone.contains(&s.note.id));
-        self.spent.extend(gone);
-        self.save()?;
-        Ok(ExitPlan { b: units, claim: hex::encode(claim.to_bytes()), posted: hex::encode(posted.to_bytes()) })
+        let live = self.account(&record.l2_address).live;
+        let v = if live.note.k == 0 { record.hp().v0 } else { live.note.v };
+        ensure!(u64::from(units) * record.terms.unit.to_sat() <= v, "the account holds {v} sats, short of {units} units");
+        let q = hex::encode(live.claim().to_bytes());
+        Ok(ExitPlan { b: units, claim: q.clone(), posted: q })
     }
-    /// The notes a claim kept with contract `cid` takes.
-    pub fn claimed_notes(&self, cid: u32) -> Vec<Note> {
-        self.contracts.iter().find(|h| h.record.cid() == cid).and_then(|h| h.exit.as_ref()).and_then(|p| p.claim().ok()).map(|c| c.notes.into_iter().map(|s| s.note).collect()).unwrap_or_default()
+
+    /// A note of ours, as the hub signed it (tests, front ends).
+    pub fn note_of(&self, owner: &Hash) -> Note {
+        self.account(owner).live.note
     }
 }

@@ -1,10 +1,10 @@
-//! The wallet's part of a hub-proves contract (docs/HUB_PROVES_PLAN.md,
-//! `lichen_proto::hp`): its opening, in which she garbles for the hub's
-//! statement, commits to her instances and uploads the ones the hub
-//! keeps. (Her claims are of notes: [`crate::notes`].)
+//! The wallet's part of a contract's opening (`lichen_proto::hp`): she
+//! fixes her four one-time keys, so the statement's journal, garbles for
+//! the hub's statement, commits to her instances and uploads the ones the
+//! hub keeps.
 
 use anyhow::{ensure, Context, Result};
-use lichen_babe::hp::HubProves;
+use lichen_babe::countersigned::Countersigned;
 use lichen_babe::setup::{instance, par, VALUES};
 use lichen_proto::setup::{dealing_to_hex, min_soundness, shares_to_hex, soundness, Opened};
 use lichen_proto::hp::{check_setup, HpCommit, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
@@ -30,16 +30,16 @@ impl Wallet {
     /// input secrets dealt, committed to; the ones the hub keeps uploaded,
     /// the others opened in her request.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn hp_opening(&self, hub: &str, statement: &Statement, cid: u32, deposit: bitcoin::OutPoint, unit: u64, s: &ContractSecrets, net: Net) -> Result<HpOpening> {
+    pub(crate) fn hp_opening(&self, hub: &str, statement: &Statement, cid: u32, deposit: bitcoin::OutPoint, unit: u64, v0: u64, s: &ContractSecrets, net: Net) -> Result<HpOpening> {
         let owner = lichen_notes::xonly(&s.l2());
-        let setup: HpSetup = hub_call(&format!("{hub}/hp/setup"), Some(serde_json::to_string(&HpSetupRequest { cid, deposit, unit, owner })?), false)?;
-        ensure!(setup.cid == cid && setup.unit == unit && setup.deposit == deposit && setup.owner == owner, "the setup is for another contract, unit, deposit or owner");
+        let setup: HpSetup = hub_call(&format!("{hub}/hp/setup"), Some(serde_json::to_string(&HpSetupRequest { cid, deposit, unit, owner, v0 })?), false)?;
+        ensure!(setup.cid == cid && setup.unit == unit && setup.deposit == deposit && setup.owner == owner && setup.v0 == v0, "the setup is for another contract, unit, deposit, owner or mint");
+        ensure!(setup.issuer == self.deployment.hub, "the setup's issuer isn't the deployment's");
         check_setup(&setup)?;
-        ensure!(setup.margin == lichen_proto::hp::margin(net), "the hub's margin, {} blocks, isn't the network's", setup.margin);
         let (n, m) = (setup.n, setup.m);
         ensure!(soundness(n, m) >= min_soundness(net), "keeping {m} of {n} instances: a cheating garbler escapes with odds of 1 in 2^{}, not 2^{}", soundness(n, m), min_soundness(net));
-        let d = lichen_proto::contract_word(&self.deployment, setup.checkpoint.as_ref(), bitcoin::Amount::from_sat(unit), &owner)?;
-        let journal = lichen_proto::hp::journal(cid, &d, &deposit, setup.margin);
+        let keys = s.alice_keys();
+        let journal = lichen_proto::hp::contract(cid, &setup.issuer, &owner, unit, v0, &keys).journal();
         let kind = statement.hp_kind()?;
         let (vk, public) = (kind.verifying_key(), kind.public_inputs(&journal));
         let (dealer, dealt) = dealing(s, n, m);
@@ -54,7 +54,7 @@ impl Wallet {
             c
         });
         self.say(format!("garbled in {:.1?}", start.elapsed()));
-        let commit = HpCommit { cid, b_key: s.hp_b().public(), claim_key: s.hp_claim().public(), commitments, dealing: dealing_to_hex(&dealt) };
+        let commit = HpCommit { cid, keys, commitments, dealing: dealing_to_hex(&dealt) };
         let kept: HpKept = hub_call(&format!("{hub}/hp/commit"), Some(serde_json::to_string(&commit)?), false)?;
         let mut k = kept.kept.clone();
         k.sort_unstable();
@@ -80,10 +80,10 @@ impl Wallet {
     /// The hub's offer checked against her opening: its windows the
     /// network's, its pre-signatures on `challenge_assert` (in `set`)
     /// under its adaptor keys, adapted to her dealing's points.
-    pub(crate) fn hp_check_offer(net: Net, t_close: u32, s: &ContractSecrets, o: &HpOpening, offer: &HpOffer, set: &[Presign]) -> Result<()> {
-        ensure!(offer.hp_windows == lichen_proto::hp::windows(net, t_close), "the hub's windows {:?}, not the network's", offer.hp_windows);
+    pub(crate) fn hp_check_offer(net: Net, _t_close: u32, s: &ContractSecrets, o: &HpOpening, offer: &HpOffer, set: &[Presign]) -> Result<()> {
+        ensure!(offer.hp_windows == lichen_proto::hp::windows(net), "the hub's windows {:?}, not the network's", offer.hp_windows);
         let (_, dealt) = dealing(s, o.setup.n, o.setup.m);
-        let msg = HubProves::challenge_sighash(set)?;
+        let msg = Countersigned::link_sighash(set, "challenge_assert")?;
         let presigs: Vec<[lngap_btc::adaptor::AdaptorSig; VALUES]> = offer.hp_presigs.iter().map(|p| p.each_ref().map(lngap_btc::adaptor::AdaptorSig::from)).collect();
         ensure!(lichen_babe::reveal::check_presigs(&o.setup.adaptor, &msg, &lichen_babe::reveal::points(&dealt), &presigs), "the hub's adaptor pre-signatures on challenge_assert");
         Ok(())
@@ -93,17 +93,18 @@ impl Wallet {
     pub(crate) fn hp_keys(s: &ContractSecrets, o: &HpOpening, offer: &HpOffer) -> HpKeys {
         let (windows, presigs) = (offer.hp_windows, offer.hp_presigs.clone());
         HpKeys {
-            b_key: s.hp_b().public(),
-            claim_key: s.hp_claim().public(),
-            bc_key: offer.bc_key.clone(),
+            alice_keys: s.alice_keys(),
+            corr_key: offer.corr_key.clone(),
+            u_key: offer.u_key.clone(),
             hub_lamport: o.setup.lamport.clone(),
             hub_adaptor: o.setup.adaptor.clone(),
             n: o.setup.n,
             kept: o.kept.clone(),
             hmsg: o.hmsg.clone(),
             hp_windows: windows,
-            margin: o.setup.margin,
             deposit: o.setup.deposit,
+            issuer: o.setup.issuer,
+            v0: o.setup.v0,
             hub_presigs: presigs,
         }
     }

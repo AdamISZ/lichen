@@ -16,7 +16,7 @@ use lichen_chain::NodeWallet;
 use lichen_proto::{anchor_vout, sign_anchor, Built, Record};
 use lngap_btc::sighash::sign_tapscript;
 use lngap_btc::witness::tapscript_witness;
-use lichen_babe::hp::{corr_bit_tree, HubProves};
+use lichen_babe::countersigned::{corr_bit_tree, Countersigned};
 use lichen_proto::hp::HpDisputed;
 use lichen_proto::setup::link_args;
 use lngap_btc::taptree::TapTree;
@@ -33,8 +33,8 @@ pub(crate) enum State {
     /// A payout is posted, spending the output of `link` (first seen
     /// spent at `since`): the hub collects its bit outputs, then closes.
     /// The user won (a timeout, `failure`): those of the bits clear in her
-    /// `b`; `corrected` (`success`): those clear in the hub's `b_corr`,
-    /// after `Δ`.
+    /// `b`; `corrected` (`accept`, `success`): those clear in the hub's
+    /// `b_corr`, after `Δ`.
     Collect { link: Txid, since: u32, corrected: bool },
     Done,
 }
@@ -93,7 +93,7 @@ impl Inner {
     /// with nothing collected.
     fn collect(&self, record: &Record, link: Txid, since: u32, corrected: bool) -> Result<Option<State>> {
         let cid = record.cid();
-        let swept = if corrected { self.sweep_corr_bits(record)? } else { self.sweep_bits(record)? };
+        let swept = if corrected { self.sweep_corr_bits(record, link)? } else { self.sweep_bits(record)? };
         let delta = if corrected { u32::from(self.built(record)?.core().ctx().params.delta) } else { 0 };
         match swept {
             Bits::None => self.note(format!("contract {cid}: no bit outputs of the hub's (every bit of the payout is set)")),
@@ -123,31 +123,32 @@ impl Inner {
         self.sweep(record, trees, &b_wire, Sequence::ENABLE_RBF_NO_LOCKTIME)
     }
 
-    /// Sweep its bit outputs of `success`: for each bit clear in the hub's
-    /// signed `b_corr` (in `correct`), by its leaf `hub_corr_bit_i`, after
-    /// `Δ` (until then, not yet).
-    fn sweep_corr_bits(&self, record: &Record) -> Result<Bits> {
+    /// Sweep its bit outputs of a payout of `b_corr` (`accept`, spending
+    /// `correct`'s output, or `success`, `assert`'s: `link`): for each bit
+    /// clear in the hub's signed `b_corr` (in `correct`), by its leaf
+    /// `hub_corr_bit_i`, after `Δ` (until then, not yet).
+    fn sweep_corr_bits(&self, record: &Record, link: Txid) -> Result<Bits> {
         let d = HpDisputed::new(record, &self.cfg.statement)?;
         let correct = self.chain.get_tx(&d.txid("correct")).context("correct")?;
-        let (sig, _) = HubProves::read_correct(&link_args(&correct))?;
+        let (sig, _) = Countersigned::read_correct(&link_args(&correct))?;
         let b_corr = u32::from_be_bytes(sig.message().try_into().map_err(|_| anyhow::anyhow!("b_corr's signature signs 4 bytes"))?);
         let built = self.built(record)?;
         let core = built.core();
         let (t, ctx) = (core.terms, core.ctx());
         let delta = ctx.params.delta;
-        // success's txid is known once posted with its fee coin
-        let a_op = OutPoint { txid: d.txid("assert"), vout: 0 };
-        let from = confirmed_at(self, &a_op.txid)?.context("the assertion")?;
-        let Some(success) = self.chain.spender(&a_op, from)? else { return Ok(Bits::NotYet) };
-        if self.chain.confirmations(&success)? <= u32::from(delta) {
+        // the payout's txid is known once posted with its fee coin
+        let a_op = OutPoint { txid: link, vout: 0 };
+        let from = confirmed_at(self, &a_op.txid)?.context("the payout's link")?;
+        let Some(payout) = self.chain.spender(&a_op, from)? else { return Ok(Bits::NotYet) };
+        if self.chain.confirmations(&payout)? <= u32::from(delta) {
             return Ok(Bits::NotYet);
         }
         let mut trees = vec![];
         for i in (t.low_bits..t.bits).filter(|i| (b_corr >> i) & 1 == 0) {
-            let tree = corr_bit_tree(&ctx, i, &d.graph.spec.bc_key)?;
+            let tree = corr_bit_tree(&ctx, i, &d.graph.spec.corr_key)?;
             trees.push((tree.script_pubkey(), tree, format!("hub_corr_bit_{i}")));
         }
-        self.sweep(record, trees, &HubProves::b_wire(&sig), Sequence::from_height(delta))
+        self.sweep(record, trees, &Countersigned::word_wire(&sig), Sequence::from_height(delta))
     }
 
     /// Sweep to the hub's wallet the outputs of `trees` on chain, each by

@@ -14,7 +14,7 @@ use lngap_sessions::contract::{anchor_tree_for, Presign};
 use lngap_btc::sighash::sign_tapscript;
 use lngap_btc::witness::tapscript_witness;
 use lngap_sessions::session::{bit_tree, reserve_tree};
-use lichen_babe::hp::{corr_bit_tree, HubProves};
+use lichen_babe::countersigned::{corr_bit_tree, Countersigned};
 use lichen_proto::hp::HpDisputed;
 use lichen_proto::setup::link_args;
 
@@ -52,6 +52,16 @@ impl Store for HeldStore<'_> {
     fn exit(&self) -> Option<crate::exit::ExitPlan> {
         self.w.contracts[self.k].exit.clone()
     }
+    fn unlocked(&mut self, z: &lichen_notes::Seed) -> Result<Option<u64>> {
+        let owner = self.w.contracts[self.k].record.l2_address;
+        if !self.w.opens(&owner, z) {
+            return Ok(None);
+        }
+        match self.w.complete(&owner, z)? {
+            crate::notes::Step::Done(_, s) => Ok(Some(s.note.v)),
+            _ => Ok(None),
+        }
+    }
 }
 
 impl Wallet {
@@ -83,7 +93,7 @@ impl Wallet {
         self.ensure_open(chain, k)?;
         let held = self.contracts[k].clone();
         let signer = WalletSigner { secrets: self.secrets(&held.nonce), network: held.record.network };
-        let opts = Options { progress: self.progress.clone(), pause_after: self.pause_after, unchecked_claims: self.unchecked_claims };
+        let opts = Options { progress: self.progress.clone(), pause_after: self.pause_after, unchecked_claims: self.unchecked_claims, contest: self.contest };
         let outcome = Engine { signer: &signer, store: &mut HeldStore { w: self, k }, opts }.run(chain, &held.record, statement, b)?;
         if outcome.payout().is_none() {
             return Ok((outcome, None));
@@ -118,17 +128,18 @@ impl Wallet {
         let mut ins: Vec<SweepIn> = vec![];
         let at_delta = Sequence::from_height(delta);
         let (b_wire, wait) = match &outcome {
-            // success: the bits set in the hub's b_corr, by its signature
-            // (in correct), at once; her reserve came to her payout address
+            // accept, success: the bits set in the hub's b_corr, by its
+            // signature (in correct), at once; her reserve came to her
+            // payout address
             Outcome::Corrected { b_corr, .. } => {
                 let d = HpDisputed::new(&held.record, statement)?;
                 let correct = chain.get_tx(&d.txid("correct")).context("correct")?;
-                let (sig, _) = HubProves::read_correct(&link_args(&correct))?;
+                let (sig, _) = Countersigned::read_correct(&link_args(&correct))?;
                 for i in (t.low_bits..t.bits).filter(|i| (b_corr >> i) & 1 == 1) {
                     let vout = i - t.low_bits;
-                    ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), Sequence::ENABLE_RBF_NO_LOCKTIME, Some((corr_bit_tree(&ctx, i, &d.graph.spec.bc_key)?, format!("alice_corr_bit_{i}"), true))));
+                    ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), Sequence::ENABLE_RBF_NO_LOCKTIME, Some((corr_bit_tree(&ctx, i, &d.graph.spec.corr_key)?, format!("alice_corr_bit_{i}"), true))));
                 }
-                (HubProves::b_wire(&sig), 0)
+                (Countersigned::word_wire(&sig), 0)
             }
             // her outputs: the bits set in b, then the reserves
             _ => {

@@ -16,8 +16,8 @@
 //!   by its claim, unresolved;
 //! - `verify-chain <receipt>`: check a chain receipt; print its journal;
 //! - `hp <hub input> <out>`: prove the hub's statement, the grants L2's
-//!   (`lichen_withdraw::grants`, docs/GRANTS_PLAN.md), on its input (its
-//!   bytes, `GrantsInput::to_bytes`); writes the succinct receipt;
+//!   (`lichen_withdraw::accounts`, papers/lichen-grants-v0.5.6), on its
+//!   input (its bytes, `Input::to_bytes`); writes the succinct receipt;
 //!   `exec-hp <hub input>` runs the guest without proving (its cycles);
 //! - `wrap <receipt> <out>`: the Groth16 receipt of a succinct receipt of
 //!   the hub's statement (x86 Linux with Docker: RISC Zero's gnark step);
@@ -171,9 +171,9 @@ struct Hp {
 
 fn hp_input(input: &str) -> Result<Hp> {
     let bytes = read(input)?;
-    let hub = lichen_withdraw::grants::GrantsInput::from_bytes(&bytes).map_err(|r| anyhow::anyhow!("the hub's input: {r:?}"))?;
-    let journal = lichen_withdraw::grants::check(&hub).map_err(|r| anyhow::anyhow!("the hub's statement rejects the input: {r:?}"))?;
-    eprintln!("lichen-r0: contract {}: the claim is owed at most the correction ({} spends cited, {} headers)", hub.c, hub.cited.len(), hub.headers.len());
+    let hub = lichen_withdraw::accounts::Input::from_bytes(&bytes).map_err(|r| anyhow::anyhow!("the hub's input: {r:?}"))?;
+    let journal = lichen_withdraw::accounts::check(&hub).map_err(|r| anyhow::anyhow!("the hub's statement rejects the input: {r:?}"))?;
+    eprintln!("lichen-r0: contract {}: the claim is owed at most the correction ({} spend cited)", hub.contract.c, usize::from(hub.cited.is_some()));
     Ok(Hp { bytes, journal: journal.to_vec() })
 }
 

@@ -24,14 +24,15 @@ pub enum Outcome {
     /// Stopped on request (`pause_after`); run again to resume.
     Paused,
     /// The hub didn't correct her claim (`request_timeout`), or corrected
-    /// it and never proved so (`correct_timeout`): paid her claim (its
-    /// txid).
+    /// it, she contested, and it never proved (`ack_timeout`): paid her
+    /// claim (its txid).
     HubTimedOut(Txid),
     /// The hub's assertion was false, it couldn't answer her challenge,
     /// and `failure` paid her.
     Refuted(Txid),
-    /// The hub corrected her claim to `b_corr` units and proved it:
-    /// `success` (its txid) paid her that, and her reserve.
+    /// The hub corrected her claim to `b_corr` units, and she accepted
+    /// (`accept`) or it proved so (`success`): that payout (its txid) paid
+    /// her `b_corr`, and her reserve.
     Corrected { success: Txid, b_corr: u32 },
     /// The hub answered her challenge (or took the contract otherwise).
     Lost,
@@ -69,6 +70,11 @@ pub trait Store {
     fn set_lost(&mut self, txid: Txid) -> Result<()>;
     /// The exit's claim, prepared before `request`.
     fn exit(&self) -> Option<crate::exit::ExitPlan>;
+    /// The unlock `correct` posted: if it opens the payment in flight on
+    /// the contract's account, that payment completed (our new note
+    /// settled; the seed is the counterparty's to have too). The new
+    /// note's value, if so.
+    fn unlocked(&mut self, z: &lichen_notes::Seed) -> Result<Option<u64>>;
 }
 
 /// The wallet's own Bitcoin key for payouts, derived from its key apart
@@ -201,6 +207,10 @@ pub struct Options {
     /// For tests: challenge the hub's assertion even if its proof is
     /// valid.
     pub unchecked_claims: bool,
+    /// For tests: contest the hub's correction (countersign it in `ack`)
+    /// even if it is what we reckon we're owed, so that the hub must
+    /// prove.
+    pub contest: bool,
 }
 
 /// One dispute: Alice's side of it.

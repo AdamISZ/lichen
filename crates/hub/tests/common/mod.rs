@@ -122,3 +122,26 @@ impl Drop for Env {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
+
+/// A payment of `amount` from `a` to `b`, both online: each party's steps
+/// in turn until both are done (or `release` off: both signed, the seed
+/// withheld, both in flight).
+pub fn pay(a: &mut lichen_wallet::Wallet, b: &mut lichen_wallet::Wallet, amount: u64) -> anyhow::Result<String> {
+    use lichen_wallet::notes::Step;
+    let id = a.pay(b.address(), amount)?;
+    let got = b.receive()?;
+    anyhow::ensure!(got.as_deref() == Some(id.as_str()), "the payee took {got:?}, not {id}");
+    let (mut a_done, mut b_done) = (false, false);
+    for _ in 0..6 {
+        for s in a.progress()? {
+            a_done |= matches!(s, Step::Done(..));
+        }
+        for s in b.progress()? {
+            b_done |= matches!(s, Step::Done(..));
+        }
+        if a_done && b_done {
+            break;
+        }
+    }
+    Ok(id)
+}

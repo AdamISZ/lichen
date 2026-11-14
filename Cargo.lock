@@ -1875,6 +1875,7 @@ dependencies = [
  "lichen-ledger",
  "lichen-withdraw",
  "lngap-btc",
+ "lngap-lamport",
  "serde",
  "serde_json",
  "sha2",
