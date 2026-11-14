@@ -679,3 +679,39 @@ Results:
   est.).
 - Cancel reissues at k + 1, so the cancelled spend (k_in = k) never
   supersedes the reissue.
+
+### Pending for papers/lichen-grants-v0.5.5 (2026-11-14)
+
+Noted, not yet written. Batch these with whatever else the user finds
+while reading v0.5.4.
+
+1. **Drop o from h(η).** h(η) = H_half(k_in, v_in, v_out, λ). The owners
+   appear only in δ(S) = H_spend(o1, h(η1), o2, h(η2)), each tied to
+   its half by position. They have to be in the clear there: the
+   statement checks the counterparty's ψ under the key Alice approved
+   (Rule 1), and the payer checks that the payee is her invoice's o_B.
+2. **The hub checks amounts only for itself (the user).** This is a
+   general Lichen principle, and v0.4 has it too. In fig. 1, "values
+   balance" is the hub's own check. Nobody else needs it, and the
+   statement never checks conservation across the two halves.
+   - If the hub gives one party too much, it prints money at its own
+     expense: it has signed that note.
+   - If it gives a party too little, that party doesn't co-sign (Rule 3:
+     each owner checks its own v_out).
+   - Whatever the hub signs alone, such as a mint or a reissue, can only
+     add to a claim. Supersession needs the owner's ψ. A reissue that
+     comes short just isn't claimed: she claims note k, where the worst
+     case is the cancelled S, which she signed.
+
+   Where: a short statement in §2 or at Rules (§4.2), pointed to from
+   the fig. 1 box. It's the same idea as the "leaves only hurt the hub"
+   condition in v0.4's countersigning note (§5.6).
+3. **Maybe, Open questions: rules at exit.** The statement could enforce
+   predicates committed at contract setup. A cited spend counts only if
+   it meets them, so they limit only what the hub can debit. They're
+   bilateral, have no clock but the chain's, and carry no global facts.
+   Example: a vault floor F. Going below F needs a MuSig2 or FROST key
+   (one BIP340 check, so no extra proving). This only helps when the
+   user's key is stolen: the hub may ignore the rule, but then it pays
+   the thief itself. The user found it "interesting" and wasn't sure
+   it's useful, so at most one paragraph.
