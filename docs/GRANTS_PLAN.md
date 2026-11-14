@@ -1011,13 +1011,18 @@ pays from it), never funded (no account), refused, and resumed too late.
 
 **Step 7 done (2026-11-14).** The guest on `accounts::check`, image
 `0e3809e4…` (r0/guests/README.md). On the contested test's proved exit
-(P, one step cited): 2,681k user cycles, 3 segments, about twice v0.4's
-1,306k, most of it probably her four Winternitz signatures on SHA-256
-chains (not profiled). Proved for real: the STARK on the Mac (14 cores,
+(P, one step cited): 2,681k user cycles, 3 segments (v0.4 never had a
+guest; the last one, v0.1's milestone 5, was 1,306k and checked no
+one-time signatures). Profiled (RISC0_PPROF_OUT, 2,820k with paging):
+her four Winternitz signatures 1,749k (62%: 206 chains, Q 151, b 10,
+b_corr 10, U 35, about 1,500 hashes at ~1,100 cycles each, mostly the
+`sha2` crate's per-call padding, state set-up and copies around the
+accelerator); three BIP340 checks (the claim's, the cited spend's two)
+532k and `t·G` 145k; parsing the input 136k. Proved for real: the STARK on the Mac (14 cores,
 CPU) in 179 s, the Groth16 wrap on lichen-vps in 264 s. The seal
 verifies under BABE's `Kind::Risc0` for the contract's 36-byte journal,
 and not for a journal with one bit flipped. On lichen-vps alone the
-proof would take about 25 minutes (v0.4's 2 segments took 16, plus the
+proof would take about 25 minutes (v0.1's 2 segments took 16, plus the
 wrap), still inside Mutinynet's `w_H` (2 h).
 
 **lichen-gui v0.6.0 (2026-11-14, local).** For v0.5's payments by joint
