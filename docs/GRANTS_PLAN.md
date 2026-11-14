@@ -525,7 +525,7 @@ only. Still a proposal; v0.1.1 is the built design.
 
 ### Building v0.4.1 (the user, 2026-11-13)
 
-The user approved building papers/lichen-grants-v0.4.1 (now v0.4.2, which
+The user approved building papers/lichen-grants-v0.4.1 (now v0.4.3, which
 adds only a note on countersigning a commitment, §5.6), replacing the
 v0.1 code. Proofs run on the mock statement at first. Order, by risk:
 
@@ -649,7 +649,7 @@ incoming payment in flight waits for the payer's exit. It's bounded by
 one pending payment per user. Whether the statement can bind a spend's
 use to the payee's contract being open is an open question.
 
-**v0.5.1: sequence numbers (2026-11-14; now v0.5.2, which reworded the storage point: the hub keeps O(1) per account, O(N) for N users, against v0.4 keeping every spend).** A note is (o, k, v): owner,
+**v0.5.1: sequence numbers (2026-11-14; now v0.5.3, which reworded the storage point: the hub keeps O(1) per account, O(N) for N users, against v0.4 keeping every spend).** A note is (o, k, v): owner,
 number, value. Every account starts at 0 (a contract key with its mint,
 any other key with the empty note), and a spend steps both accounts to
 k + 1. Halves name their input by (o, k_in, v_in).
