@@ -54,6 +54,11 @@ in 2m13s (a 20,000-sat deposit paid from `users`, 19,500 minted);
 5,000 sats to a wallet with no contract and 2,000 back, about 1.3 s each
 including the containers' start; 9,864 sats (18 units) withdrawn, fold
 `dbd9e766…70e14b` (213 vB), the rest credited to the wallet's account.
+Then the desktop GUI (lichen-gui v0.6.0, the same library as the APK)
+through its Mutinynet preset, on Esplora: contract 1001 opened in 2m38s;
+3,000 sats to the CLI wallet in 7.5 s through the relay, 1,000 back,
+taken by the GUI's refresh; a send to a wallet not listening cancelled
+after a minute; 16,988 sats (31 units) withdrawn, fold `0839f77d…397fec`.
 
 The v0.1 hub below can't be restarted as it was (v0.5's holds port
 18320): to post its contract 1000's default, re-run it without `-p`;
