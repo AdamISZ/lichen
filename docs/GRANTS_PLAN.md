@@ -781,3 +781,14 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
    role in one line: the hub posts it in `correct`, and the statement
    derives t from U by the same rule as t_S from z_S. Consider moving it
    to §6.2, where U first matters, and leaving §3.3 at z_S.
+6. **Rule 1 is about atomicity (the user).** Rewrite §4.2's Rule 1 so
+   that it says:
+   - Publishing z_S settles a new note only for a party that holds its
+     ρ. Each ψ is the statement's evidence that its signer does, because
+     α commits to T_S, ρ₁ and ρ₂, and a wallet signs only after checking
+     its own ρ.
+   - With ψ_A alone, the hub could cite S against Alice and publish z_S
+     while Bob never received ρ_B. Alice would be debited and Bob not
+     credited: the step becomes one-sided.
+   - So S counts against either owner only with both ψ together, never
+     with each checked separately or with only the exiting party's.
