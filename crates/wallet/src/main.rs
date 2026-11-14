@@ -234,6 +234,10 @@ fn main() -> Result<()> {
             w.sync()?;
             for a in w.accounts.values() {
                 let n = a.live.note;
+                if a.closed {
+                    println!("{} closed (claimed: on chain, or credited to another account)", hex::encode(n.owner));
+                    continue;
+                }
                 println!("{} note {} of {} sats{}", hex::encode(n.owner), n.k, n.v, a.pending.as_ref().map_or(String::new(), |p| format!(", payment {} pending ({} {} sats{})", p.id, if p.payer { "paying" } else { "receiving" }, p.amount, if p.signed { ", signed" } else { "" })));
             }
         }
