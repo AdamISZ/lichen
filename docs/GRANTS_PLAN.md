@@ -51,7 +51,7 @@ with its crates' versions. First: grants-v0.5.1 (design v0.5; app 0.5.1;
 the app's earlier grants builds were 0.5.0 and 0.6.0, untagged).
 
 **v0.5 since 2026-11-14** on lichen-hub: the container `lichen-grants5-hub`
-(image `lichen:grants5`, from `~/lichen-grants` at 5c09eb2), on the
+(image `lichen:grants5`, from `~/lichen-grants` at 5c09eb2; since 2026-11-15 `lichen:grants-0.5.1`, at grants-v0.5.1, the same book, the old container kept stopped as `lichen-grants5-hub-old`), on the
 Mutinynet node's compose network, its wallet `grants` (0.08 BTC sent from
 `hub`, txid `65f5fe6d…0ab972`), its book in
 `~/lichen-grants/deploy/state/mutinynet/hub5`, port 18320, behind
