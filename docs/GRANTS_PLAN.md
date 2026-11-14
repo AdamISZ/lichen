@@ -41,6 +41,17 @@ chain prover, anchoring, acknowledgments, shielded notes.
 
 ## Deployed
 
+**Stopped 2026-11-14 (the user): superseded by v0.5.** The container is
+kept, with its state; its route returns 502s. Its one open contract, 1000
+(the user's emulator run, a 20,000-sat deposit), closes by default after
+T_close, block 3,604,195 (Mutinynet was at 3,589,654 that day). To post
+it, `docker start lichen-grants-hub` after that block: its watcher posts
+the default within seconds. Then stop it again. Deposit 1001 was asked
+for and never opened; any refund is the user's wallet's. The hub's
+`grants` wallet (0.0395 BTC) stays on the node for the v0.5 deployment.
+
+The original deployment, for the record:
+
 On lichen-hub since 2026-11-12, beside the anchored L2's deployment: the
 container `lichen-grants-hub` (image `lichen:grants`, from the `grants`
 worktree `~/lichen-grants`), on the Mutinynet node's compose network,
