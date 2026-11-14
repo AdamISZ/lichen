@@ -41,6 +41,24 @@ chain prover, anchoring, acknowledgments, shielded notes.
 
 ## Deployed
 
+**v0.5 since 2026-11-14** on lichen-hub: the container `lichen-grants5-hub`
+(image `lichen:grants5`, from `~/lichen-grants` at 5c09eb2), on the
+Mutinynet node's compose network, its wallet `grants` (0.08 BTC sent from
+`hub`, txid `65f5fe6d…0ab972`), its book in
+`~/lichen-grants/deploy/state/mutinynet/hub5`, port 18320, behind
+`https://thimbly.org/lichen/grants/hub`. On the mock statement. Issuer
+key `bf791a47b2938dce253f150a601c1b2955a35a028304bb0779c391b4bef8a8f3`
+(lichen-gui's Mutinynet preset pins it). Checked with CLI wallets in
+one-off containers on the box (`~/g5check/run.sh`): contract 1000 opened
+in 2m13s (a 20,000-sat deposit paid from `users`, 19,500 minted);
+5,000 sats to a wallet with no contract and 2,000 back, about 1.3 s each
+including the containers' start; 9,864 sats (18 units) withdrawn, fold
+`dbd9e766…70e14b` (213 vB), the rest credited to the wallet's account.
+
+The v0.1 hub below can't be restarted as it was (v0.5's holds port
+18320): to post its contract 1000's default, re-run it without `-p`;
+its watcher needs no port.
+
 **Stopped 2026-11-14 (the user): superseded by v0.5.** The container is
 kept, with its state; its route returns 502s. Its one open contract, 1000
 (the user's emulator run, a 20,000-sat deposit), closes by default after
