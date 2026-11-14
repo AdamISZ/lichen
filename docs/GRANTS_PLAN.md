@@ -796,3 +796,8 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
      enforces it: the statement, against the hub; the wallet, for its
      owner. Nothing relies on the hub." This ties back to §1's "the hub
      checks amounts for itself".
+7. **Fig. 1: who sees which half (the user).** η_A in step 1 reads as if
+   it contradicted "halves hide balances from the counterparty". Label
+   steps 1 and 3 "(to the hub only)", and add to the caption: "Each
+   party's full half goes only to the hub; the other party gets its
+   digest (step 4)."
