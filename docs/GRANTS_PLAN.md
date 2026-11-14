@@ -649,7 +649,7 @@ incoming payment in flight waits for the payer's exit. It's bounded by
 one pending payment per user. Whether the statement can bind a spend's
 use to the payee's contract being open is an open question.
 
-**v0.5.1: sequence numbers (2026-11-14; now v0.5.5, which reworded the storage point and added §9, payment volume against Lightning: the hub keeps O(1) per account, O(N) for N users, against v0.4 keeping every spend).** A note is (o, k, v): owner,
+**v0.5.1: sequence numbers (2026-11-14; now v0.5.6, which reworded the storage point and added §9, payment volume against Lightning: the hub keeps O(1) per account, O(N) for N users, against v0.4 keeping every spend).** A note is (o, k, v): owner,
 number, value. Every account starts at 0 (a contract key with its mint,
 any other key with the empty note), and a spend steps both accounts to
 k + 1. Halves name their input by (o, k_in, v_in).
@@ -737,7 +737,10 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
    the thief itself. The user found it "interesting" and wasn't sure
    it's useful, so at most one paragraph.
 
-### Pending for papers/lichen-grants-v0.5.6 (2026-11-14)
+### Taken in papers/lichen-grants-v0.5.6 (2026-11-14)
+
+All nine are in v0.5.6 (23 pages). The user then judged the design
+coherent and asked to build it, abandoning the v0.4 build.
 
 1. **One width for values: ⟨v⟩₆ everywhere (the user).** v0.5.5 hashes
    v in 8 bytes (δ(N), h(η)'s v_in and v_out, the journal's v₀) but

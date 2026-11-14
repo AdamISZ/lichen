@@ -132,7 +132,8 @@ ways:
 The hub's book is the only ledger, and nothing is ordered across
 accounts. What a global history would otherwise provide is \emph{evidence
 the user signed}: a claim is reduced only by a spend she authorized and
-whose unlock the hub publishes.
+whose unlock the hub publishes. Users need the chain only for that,
+when something is stuck (\S\ref{sec:state}).
 
 \textbf{Contracts and credit.} A user's participation is defined by her
 contract. Contract $c$ has an L2 key $\Oc$ of its own, fresh at the
@@ -250,9 +251,16 @@ wallet's key and the contract's nonce.
 \begin{definition}
 A \emph{note} is $N = (o, k, v)$: an owner, a sequence number $0 \le k <
 2^{32}$, and a value $0 \le v < 2^{48}$ sats. Its digest is $\delta(N) =
-\Ht{note}(o, \be{k}{4}, \be{v}{8})$. It is \emph{settled} when its
+\Ht{note}(o, \be{k}{4}, \be{v}{6})$. It is \emph{settled} when its
 holder has $\sigma_N = \Sign_{\kiss}(\delta(N))$.
 \end{definition}
+
+\textbf{Values are in sats, 6 bytes.} Every value in the L2 is $v <
+2^{48}$ sats and is encoded in 6 bytes, in digests and on chain alike.
+The unit $u$ applies only to the amounts $b$ paid out on chain, so
+$u\,b \le v < 2^{48} = 2^{32} \cdot 2^{16}$: six bytes cover every
+payout of a 4-byte $b$ for any unit up to 65,536 sats. Payments below a
+unit are ordinary payments; rounding happens once, at exit.
 
 \textbf{Every account starts at 0.} A contract key's note 0 is its
 \emph{mint}, $(\Oc, 0, v_0)$, which the contract vouches for
@@ -278,8 +286,8 @@ A \emph{half} for owner $o$ is $\eta = (o,\ \kin,\ \vin,\ \vout,\
 \lambda)$: $o$'s note $(o, \kin, \vin)$, the value $\vout$ it leaves
 with, and a 16-byte blinding $\lambda$ that $o$ chooses. Its digest is
 \[
-  h(\eta) = \Ht{half}\big(o,\ \be{\kin}{4},\ \be{\vin}{8},\
-  \be{\vout}{8},\ \lambda\big),
+  h(\eta) = \Ht{half}\big(o,\ \be{\kin}{4},\ \be{\vin}{6},\
+  \be{\vout}{6},\ \lambda\big),
 \]
 and its \emph{step} gives $o$ the note $(o, \kin + 1, \vout)$.
 
@@ -346,12 +354,6 @@ $\alpha$, which covers the other's as bytes. So both sign one grant:
 the same $T_S$, and so the same unlock, opens both new notes. The seed
 $z_S$ is derived from the spend, so the hub keeps no secret per spend.
 
-\begin{definition}
-An exit's \emph{unlock} $U$ is one 16-byte seed: that of the spend the
-hub cites against the claim, or zeros if it cites none
-(\S\ref{sec:volume}).
-\end{definition}
-
 \section{A payment}\label{sec:payment}
 
 \subsection{Live receipt}\label{sec:live}
@@ -403,8 +405,8 @@ are online.
 \coordinate (y) at ($(b4.south)+(0,-0.6)$);
 \draw[msg] (LH|-y) -- node[lbl, above] {6.\ $z_S$} (LA|-y);
 \draw[msg] (LH|-y) -- node[lbl, above] {6.\ $z_S$} (LB|-y);
-\node[box, anchor=north] (b5) at ($(LA|-y)+(0,-0.3)$) {$\sigma'_A = \Compl(\rho_A, t_S)$};
-\node[box, anchor=north] (b6) at ($(LB|-y)+(0,-0.3)$) {$\sigma'_B = \Compl(\rho_B, t_S)$};
+\node[box, anchor=north] (b5) at ($(LA|-y)+(0,-0.3)$) {$\sigma_A = \Compl(\rho_A, t_S)$};
+\node[box, anchor=north] (b6) at ($(LB|-y)+(0,-0.3)$) {$\sigma_B = \Compl(\rho_B, t_S)$};
 \coordinate (end) at ($(b5.south)+(0,-0.3)$);
 \begin{scope}[on background layer]
 \foreach \l in {LA,LH,LB} \draw[life] (\l) -- (\l|-end);
@@ -425,18 +427,30 @@ other side completed.
 \textbf{In flight.} From its signature until it holds $z_S$, a party
 keeps its old note and $(S, \Gamma)$. It needs nothing else. Its claim
 names the old note, and if the hub uses $S$ against that claim, it must
-publish $z_S$, and the new note counts (\S\ref{sec:algo}).
+publish $z_S$, and both new notes count. The claimant is owed her new
+note's value: the hub's correction is $\bcorr = \lfloor \vout/u
+\rfloor$, which it can prove (\S\ref{sec:algo}); she needs no signature
+on the new note for that. The counterparty's new note settles from the
+published seed, as in an atomic swap.
 
 \subsection{Rules}\label{sec:rules}
 
+Each rule is named by who enforces it: the statement, against the hub;
+the wallet, for its owner. Nothing relies on the hub, which checks only
+for itself (\S\ref{sec:setting}).
+
 \textbf{Rule 1 (the statement): a spend counts only with both owners'
-signatures.} A cited spend is usable only if $\psi_1$ and $\psi_2$ both
-verify on $\alpha$ (\S\ref{sec:statement}). Without it, the hub could
-take $\psi_A$ alone, cite $S$ against Alice, and publish $z_S$ to a Bob
-who never signed, and so may not hold the grant: she would be debited
-and no one paid. With it, $S$ counts against no one until both have
-signed; and both signers hold the grant, so whichever exit publishes
-$z_S$ settles both new notes.
+signatures, together.} Publishing $z_S$ settles a new note only for a
+party that holds its pre-signature. Each $\psi$ is the statement's
+evidence that its signer does: $\alpha$ commits to $T_S$, $\rho_1$ and
+$\rho_2$, and a wallet signs only after checking its own $\rho$ and
+keeping the grant. Without the rule, the hub could take $\psi_A$ alone,
+cite $S$ against Alice and publish $z_S$, while Bob never received
+$\rho_B$: Alice debited, Bob not credited, the step made one-sided. So a
+cited spend is usable only if $\psi_1$ and $\psi_2$ both verify on
+$\alpha$ (\S\ref{sec:statement}), never with each checked apart or with
+the claimant's alone. Then $S$ counts against no one until both have
+signed, and whichever exit publishes $z_S$ settles both new notes.
 
 \textbf{Rule 2 (the wallet): one pending signature per account.} A
 wallet never signs a spend while another it signed is pending. If Bob
@@ -481,19 +495,35 @@ Once both have signed, the hub may record $S$ or not.
 So both parties are protected the same way: each one's step counts only
 if the other's does.
 
-\textbf{Settling into a closed contract.} One gap remains. Suppose the
-hub records $S$, withholds $z_S$, and Bob exits first. The hub doesn't
-cite $S$ against him (it would raise what he is owed), so he is paid his
-old note. Later the hub cites $S$ against Alice: she is debited $a$, and
-Bob's new note settles under a key whose contract has closed, as credit.
-The hub keeps $a$. Order is what matters: had Alice exited first, $S$
-would either have been cited, settling Bob's note while his contract was
-open, or not, leaving both whole. So the rule for a halt is
-\textbf{payers exit first}: a payee with an incoming payment in flight
-waits for its payer's exit to pass \tx{correct} (or its window), as long
-as its own close allows. Both are online parties to the payment, so they
-can arrange it. At stake: at most one payment per account, and only one
-the hub has deliberately left pending.
+\textbf{Evidence of payment.} A payee without $z_S$ has not been paid,
+and delivers nothing. A payer debited for $S$ always holds $z_S$: she
+gets it at step 6, or, if the hub counts $S$ against her at exit, from
+its \tx{correct}, since citing $S$ means publishing its seed. She also
+holds $\rho_B$, a part of the grant she signed. So whenever she has
+paid, she can complete Bob's note herself by handing him $z_S$.
+
+\textbf{Settling into a closed contract.} What can still go wrong is
+timing: $z_S$ may reach Bob only after his contract has closed, when his
+new note is credit. A hub can arrange it by withholding $z_S$ until Bob
+has exited, then citing $S$ at Alice's exit: it keeps $a$. Two wallet
+timeouts, set against the dispute's windows, close this. Let $c$ be the
+time for a \tx{request} to confirm.
+\begin{itemize}[nosep]
+\item \textbf{The payer's, $p$.} A wallet in flight for longer than $p$
+  exits. The hub must then decide on $S$ within $w_H$: publish $z_S$ in
+  \tx{correct}, or never count $S$ against her, since her account
+  closes at its old balance.
+\item \textbf{The payee's, $L$.} A wallet signs no incoming payment
+  after $\Tc - L$, with $L > p + w_H + 2c$, and doesn't withdraw or exit
+  while an incoming payment is pending unless $\Tc - c$ forces it.
+\end{itemize}
+Then every payment Bob accepted is decided while his contract is open,
+with time left to claim the new note. Choosing $p$ and $L$ is a
+practical matter: $p$ trades a payer's patience with a slow hub against
+exits, $L$ shortens the time a contract can receive, and an invoice can
+carry the payee's last day for receiving. A payee colluding with the
+hub harms only the two of them: the payer is debited only when $z_S$
+exists, and $z_S$ completes the payee's note.
 
 \section{The contract}\label{sec:contract}
 
@@ -572,7 +602,7 @@ The statement's only public input, fixed at the opening, is
 \begin{align*}
   J &= \be{c}{4} \,\|\, D,\\
   D &= \mathrm{SHA256}\big(\texttt{"lichen/grants/contract"} \,\|\,
-  \xo{\Piss} \,\|\, \xo{\Oc} \,\|\, \be{u}{8} \,\|\, \be{v_0}{8} \,\|\,
+  \xo{\Piss} \,\|\, \xo{\Oc} \,\|\, \be{u}{8} \,\|\, \be{v_0}{6} \,\|\,
   \kappa\big),\\
   \kappa &= \mathrm{SHA256}\big(\KQ \,\|\, \Kb \,\|\, \Acorr \,\|\, \AU\big),
 \end{align*}
@@ -603,16 +633,16 @@ the graph.
 \node[term] (fo) at (1*\dx, -1*\dy)  {fold};
 \node[term] (de) at (1*\dx, -2*\dy)  {default};
 \node[link] (rq) at (1*\dx, -3*\dy)  {request};
-\node[term] (rt) at (2*\dx, -4*\dy)  {request\_timeout};
+\node[term] (rt) at (2*\dx, -4*\dy)  {request\_timeout$^\dagger$};
 \node[link] (co) at (2*\dx, -5*\dy)  {correct};
-\node[term] (ac) at (3*\dx, -6*\dy)  {accept};
+\node[term] (ac) at (3*\dx, -6*\dy)  {accept$^\dagger$};
 \node[link] (ak) at (3*\dx, -7*\dy)  {ack};
-\node[term] (at) at (4*\dx, -8*\dy)  {ack\_timeout};
+\node[term] (at) at (4*\dx, -8*\dy)  {ack\_timeout$^\dagger$};
 \node[link] (as) at (4*\dx, -9*\dy)  {assert};
-\node[term] (su) at (5*\dx, -10*\dy) {success};
+\node[term] (su) at (5*\dx, -10*\dy) {success$^\dagger$};
 \node[link] (ch) at (5*\dx, -11*\dy) {challenge\_assert};
 \node[term] (wc) at (6*\dx, -12*\dy) {wrongly\_challenged\_$k$};
-\node[term] (fa) at (6*\dx, -13*\dy) {failure};
+\node[term] (fa) at (6*\dx, -13*\dy) {failure$^\dagger$};
 \foreach \p/\q in {c/fo,c/de,c/rq,rq/rt,rq/co,co/ac,co/ak,ak/at,ak/as,as/su,as/ch,ch/wc,ch/fa}
   \draw ($(\p.south west)+(0.25,0)$) |- (\q.west);
 \node[ann] at (\ax, 0)         {Alice's deposit and the hub's liquidity};
@@ -647,7 +677,8 @@ the graph.
 \caption{Above, a contract's graph: solid boxes carry the value on,
 dashed ones are terminals; each edge is a pre-signed spend of its
 parent's output, with its poster and witness, or its relative
-timelock. Below, one bit output of a payout: the signer of $x$ waits
+timelock. Below: each bit output of a $\dagger$ terminal's payout, one
+per bit position $i$, worth $u\,2^i$ sats. The signer of $x$ waits
 $\Delta$, so the other party can show an equivocation first.}
 \label{fig:graph}
 \end{figure}
@@ -728,6 +759,15 @@ $\Wots_{\Kb}(\be{b}{4})$, under the 2-of-2's two signatures: $2(2 \cdot
 74 + 3) + 2(8 + 2) + 2 = 324$ stack items, well inside Bitcoin's 1,000.
 
 \subsection{The hub's correction}\label{sec:correct}
+
+\begin{definition}
+An exit's \emph{unlock} is $U \in \{0,1\}^{128}$: $U = z_S$ if the hub
+cites spend $S$ against the claim, and $U = 0^{16}$ if it cites none.
+\end{definition}
+
+The hub posts $U$ in \tx{correct}; the statement derives its scalar $t$
+from $U$ by the rule that gives $t_S$ from $z_S$ (\S\ref{sec:grant}).
+One seed is always enough (\S\ref{sec:volume}).
 
 When \tx{request} appears, the hub:
 \begin{enumerate}[nosep]
@@ -975,6 +1015,23 @@ Lightning's sense, and no harm in going offline with a payment in
 flight. The hub must be online for payments and for \tx{correct} and
 \tx{assert}.
 
+\textbf{When anyone reads the chain.} The chain is a court and a
+bulletin board, consulted only when something is stuck. Nothing can be
+published against a user: every exit starts with her own \tx{request}.
+So a wallet can ignore the chain by default, and reads it in three
+cases:
+\begin{itemize}[nosep]
+\item her own exit, which she started and follows to its end;
+\item a stuck incoming payment: the payee asks the payer for $z_S$, and
+  failing that finds it in the $U$ of the payer's \tx{correct}. It
+  needs no knowledge of the payer's contract: it tests the seed of each
+  \tx{correct} the hub posts against $T_S$, one $t\,G$ apiece;
+\item the close $\Tc$, which needs a clock, not watching.
+\end{itemize}
+Only the hub watches continuously, to answer each \tx{request} within
+$w_H$. In Lightning the chain is a standing threat, guarded against at
+all times; here it is consulted on demand.
+
 \textbf{The countersignature takes keys.} \tx{ack} is signed with
 $\Acorr$ and $\AU$. A tower can hold them, but not without trust. On
 chain a tower can't misuse them (script forces equality), but off chain
@@ -1080,8 +1137,8 @@ payment Bob never accepted. What has to be added:
   will never complete and needs a reissue of his own. Every pending
   spend can strand both its parties.
 \item \textbf{Settling into a closed contract} (\S\ref{sec:atomic})
-  becomes likelier: a payment is pending for as long as its payee is
-  away, not for a round trip.
+  needs longer timeouts: a payment is pending for as long as its payee
+  is away, not for a round trip, and $p$ and $L$ must cover it.
 \end{enumerate}
 
 None of this changes the exit, the statement or Algorithm~1: the cost is
@@ -1116,7 +1173,12 @@ hub's book & per account: the live note, the spend that made it, any spend in fl
 
 \textbf{Why a seed.} \tx{ack} carries two one-time signatures on every
 byte of $U$, 8 stack items a byte. A 16-byte seed, from which the
-statement derives $t$, takes half the items of the 32-byte scalar.
+statement derives $t$, takes half the items of the 32-byte scalar. The
+scalar can't simply be short: with $t < 2^{128}$, the kangaroo method
+finds $t$ from $T$ in about $2^{64}$ steps, and anyone holding a grant
+could then complete both new notes without the hub publishing anything,
+which ends atomicity. Hashing the seed spreads its 16 bytes over a
+full-size scalar, so finding $t$ means guessing $z$: $2^{128}$ work.
 
 \textbf{Who pays.} The statement's cost is the hub's alone: only the
 hub proves, and only when it corrects a claim and she contests. $w_H$
@@ -1263,9 +1325,9 @@ have to commit to.
 \section{Open questions}\label{sec:open}
 
 \begin{itemize}[nosep]
-\item \textbf{Settling into a closed contract} (\S\ref{sec:atomic}): is
-  \emph{payers exit first} enough, or can the statement bind a spend's
-  use to the payee's contract being open?
+\item \textbf{Settling into a closed contract} (\S\ref{sec:atomic}):
+  wallet timeouts close it in practice. Could the statement bind a
+  spend's use to the payee's contract being open, with no timeouts?
 \item \textbf{A keyless contest.} \tx{ack} needs her keys within $w_A$
   (\S\ref{sec:state}). Can a tower countersign without being able to
   sign other values off chain?
