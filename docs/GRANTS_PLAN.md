@@ -792,3 +792,7 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
      credited: the step becomes one-sided.
    - So S counts against either owner only with both ψ together, never
      with each checked separately or with only the exiting party's.
+   - Open §4.2 with a sentence on the labels: "Each rule is named by who
+     enforces it: the statement, against the hub; the wallet, for its
+     owner. Nothing relies on the hub." This ties back to §1's "the hub
+     checks amounts for itself".
