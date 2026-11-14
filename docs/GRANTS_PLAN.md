@@ -800,9 +800,11 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
    user).** Replace §4.3's paragraph. "Payers exit first" was a bit off.
    - **Evidence.** The payee is not paid without z_S, and delivers
      nothing. A debited payer always holds z_S: either from step 6, or
-     from her own `correct`, since citing S means publishing it. With
-     ψ_B it is her proof of payment, and she can complete Bob's note by
-     handing z_S over. So step 6 should send ψ_B to Alice with z_S.
+     from her own `correct`, since citing S means publishing it. It is
+     her proof of payment: she can complete Bob's note by handing z_S
+     (and ρ_B, which she holds too) to him. She doesn't need ψ_B (the
+     user): Rule 1 holds it for her, and Bob settles from Γ alone. ψ_B
+     would only be evidence for a third party, which is out of scope.
    - **The gap is timing.** z_S may reach Bob after his contract has
      closed.
    - **Two wallet timeouts close it.** Let c be the time for a
@@ -814,7 +816,8 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
        pending unless T_close − c forces it.
    - **p and L are practical choices.** An invoice may carry the
      payee's last day for receiving. Collusion between payee and hub
-     harms only them, since the payer holds ψ_B and z_S.
+     harms only them, since the payer is debited only when z_S exists,
+     and z_S completes the payee's note.
    - Drop "payers exit first" here and in §7 (deferred receipt) and
      Open questions. The open question becomes whether a timeout-free
      binding inside the statement is possible.
