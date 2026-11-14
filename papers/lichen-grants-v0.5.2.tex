@@ -93,8 +93,11 @@ note, 74 bytes on chain. The hub answers any claim by citing one spend:
 a later step of the same account supersedes the claimed one, so a
 spend in flight needs no naming and a stale claim never pays more than
 a current one. Algorithm~1 has two cases; there are no transaction ids,
-no merges and no fallbacks; a halting hub has nothing to keep; user and
-hub each store only the latest state of an account. With one note per
+no merges and no fallbacks. The hub stores $O(1)$ per account, its
+latest step, so $O(N)$ for $N$ users however many payments they make,
+where version 0.4's hub keeps every spend; the user stores only her
+live note. Every balance is claimable in full, so no part of it is left
+at the hub's mercy. With one note per
 claim there is nothing to aggregate, so notes are signed with BIP340 and
 encrypted by adaptor, and the hub's statement needs no pairing: about
 1.7M cycles (estimated), against 29M. The exit's graph is version
@@ -673,7 +676,10 @@ and for a stale claim the hub cites the spend that made the live note.
   moved on. Per contract, the BABE instances it kept at the opening,
   which are bulk but fixed.
 \end{itemize}
-Nothing grows with history. Lightning's channels keep every revoked
+Nothing grows with history: the hub's storage is $O(1)$ per account,
+$O(N)$ for $N$ accounts, whatever the volume of payments. Version 0.4's
+hub must keep every spend, to answer a claim of any note it took.
+Lightning's channels keep every revoked
 state's secrets, because publishing an old state is punished; here an
 old state is merely superseded, as in eltoo. A wallet restored from a
 backup claims an old note and is paid at most its current balance, and
@@ -767,7 +773,8 @@ receiving & offline, by mailbox & online, signing (deferred: \S\ref{sec:deferred
 notes per key & any; an exit protects 4 & exactly 1, all of it protected \\
 note names & 32-byte ids, 16-byte short ids & (owner, number) \\
 merges & needed, and need the hub & none \\
-a halting hub keeps & every note beyond each claim's 4 & nothing \\
+hub's storage & every spend: grows with payments & $O(1)$ per account: $O(N)$ users \\
+unclaimable balance & notes beyond a claim's 4 & none \\
 claim $Q$ & 137 bytes: 4 notes, fallbacks & 74 bytes: one note \\
 unlocks $U$ & 4 seeds, 64 bytes & 1 seed, 16 bytes \\
 \tx{request}, \tx{correct}, \tx{ack} & 8.9, 3.6, 8.0 kvB (measured) & 5.0, 1.2, 2.6 kvB (scaled) \\
@@ -776,7 +783,6 @@ spend in flight & named as a fallback & counts by its number \\
 stale claim & 0, if the hub cites what took it & at most the current balance \\
 note signatures & BLS, aggregated; encrypted under $T$ & BIP340; adaptor pre-signatures \\
 statement & about 29M cycles (a pairing) & about 1.7M (no pairing) \\
-state kept & every spend, to answer stale claims & the latest step per account \\
 concurrency & up to 3 spends in flight & one pending signature per account \\
 atomicity & one-way: the payer's side & both sides, the same way \\
 counterparty learns & the payee nothing of her change & the amount only (halves) \\
@@ -789,16 +795,18 @@ fixed point, and the argument for its capacity; the claim loses its
 list and its fallbacks; notes lose their ids; the wallet loses its merge
 policy and its choice of what to claim; and the statement loses BLS,
 whose cost was version 0.4's open question: 29M cycles, half an hour of
-proving on a laptop, becomes about 1.7M. A hub that could estimate what
-it would keep by halting has nothing to act on.
+proving on a laptop, becomes about 1.7M. And since every balance is
+claimable in full, a hub that stops serving gains nothing; in version
+0.4 it kept whatever notes users held beyond a claim's four.
 
 \textbf{What it costs.} Payees must be online when paid, and an account
 makes one payment at a time. These are Lightning's terms for a payee,
 without channels or routes, and without Lightning's standing duties:
 no watching between payments, and no history to back up.
 
-\textbf{Scaling.} Per payment, the hub does a constant amount of work
-and keeps a constant amount per account; accounts don't contend except
+\textbf{Scaling.} The hub's storage is $O(1)$ per account, $O(N)$ in
+all, independent of the number of payments; per payment it does a
+constant amount of work; accounts don't contend except
 pairwise, so payments between disjoint pairs need no coordination; and
 an exit costs the same however long the account's history.
 
