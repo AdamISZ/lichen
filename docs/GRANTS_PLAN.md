@@ -589,3 +589,61 @@ untested`, in a non-Montgomery representation): it disagrees with
 upstream. Derive scalars with canonical `from_bytes` (a 254-bit value)
 or report it to RISC Zero first. The scratch project:
 the session's scratchpad `blsbench/` (host + guest), not kept.
+
+### A candidate v0.5: one note per contract, live receipt (2026-11-14)
+
+Written up in papers/lichen-grants-v0.5.0 for comparison with v0.4. It's
+a proposal, not approved to build. Step 2 below (BLS notes in the hub,
+wallet and book) waits on the choice, because v0.5 has no BLS.
+
+Where it came from: v0.4 protects at most 4 notes per exit. A hub that
+halts keeps every note beyond that, and it can count, without linking,
+how much that is. In the private (denominated) variant the count is
+worst: a balance takes popcount(V) notes, and the uncovered part can be
+up to V/8 at a cap of 4. The user: a free 12.5% for the adversary is not
+acceptable.
+
+The design: each contract key holds exactly one note. A payment is a
+joint spend of the payer's note and the payee's, giving each a new note.
+Both sign the same α, and one grant opens both outputs. The payee must
+be online (Lightning terms).
+- **Halves.** sid = H(o1, h(η1), o2, h(η2)), with η = (o, ι_in, v_in,
+  v_out, blinding). The counterparty sees only the amount, and the
+  statement sees only her half.
+- **Rule 1 (statement):** a spend counts only with both owners' ψ.
+  Otherwise the hub could cite on the payer's ψ alone, toward a payee
+  who doesn't hold the grant.
+- **Rule 2 (wallet):** one pending signature per key. Otherwise a payee
+  who signed two incoming payments could be followed in only one.
+- **Rule 3 (wallet):** sign only spends of your current note.
+- **Cancel = reissue.** The hub gives a fresh id for the same value. If
+  it later completes the cancelled spend, the hub pays from nothing,
+  which is self-punishing.
+
+What drops out:
+- Algorithm 1 becomes three cases (unspent; the fallback cited, so
+  change counts unless also spent; otherwise 0).
+- U is 2 seeds, 32 bytes. Q is 95 bytes (one note, a BIP340 σ, a
+  fallback).
+- No merges.
+- No BLS: notes are BIP340, encrypted by adaptor pre-signatures. The
+  statement is about 2.6M cycles (est.: 5 BIP340 at 260k, about 2,100
+  compressions, two t·G), against 29M.
+- request, correct and ack are about 6.3, 2.0 and 4.4 kvB, scaled from
+  the measured 8.9, 3.6 and 8.0.
+
+Deferred receipt (a mailbox) is kept as an option in §7. Its costs:
+- The hub forms the payee's half.
+- One payment per payee in the mailbox; later payers wait unsigned.
+- The payer is locked while the payee is away; cancels race late
+  signatures, which strand both sides.
+
+**A gap found while writing, which v0.4 also has:** settling into a
+closed contract. The hub records S and withholds z_S. The payee exits
+first, and the hub doesn't cite S against him, since citing would raise
+what he's owed. Later the hub cites S against the payer: she's debited,
+and his new note settles as credit under a closed key. The hub keeps a.
+The mitigation in v0.5 §4.3 is that payers exit first: a payee with an
+incoming payment in flight waits for the payer's exit. It's bounded by
+one pending payment per user. Whether the statement can bind a spend's
+use to the payee's contract being open is an open question.
