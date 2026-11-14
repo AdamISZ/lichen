@@ -592,7 +592,8 @@ the session's scratchpad `blsbench/` (host + guest), not kept.
 
 ### A candidate v0.5: one note per contract, live receipt (2026-11-14)
 
-Written up in papers/lichen-grants-v0.5.0 for comparison with v0.4. It's
+Written up in papers/lichen-grants-v0.5.0 for comparison with v0.4, then
+revised as v0.5.1 (sequence numbers, below). It's
 a proposal, not approved to build. Step 2 below (BLS notes in the hub,
 wallet and book) waits on the choice, because v0.5 has no BLS.
 
@@ -647,3 +648,34 @@ The mitigation in v0.5 §4.3 is that payers exit first: a payee with an
 incoming payment in flight waits for the payer's exit. It's bounded by
 one pending payment per user. Whether the statement can bind a spend's
 use to the payee's contract being open is an open question.
+
+**v0.5.1: sequence numbers (2026-11-14).** A note is (o, k, v): owner,
+number, value. Every account starts at 0 (a contract key with its mint,
+any other key with the empty note), and a spend steps both accounts to
+k + 1. Halves name their input by (o, k_in, v_in).
+
+What goes:
+- note ids, short ids and output ids, and with them the grinding
+  argument. δ(S) survives only as the hashed message;
+- fallbacks;
+- U's second seed.
+
+Algorithm 1 becomes one comparison: a cited spend supersedes the claim
+iff it has both ψ, its seed is in U, and her half's k_in ≥ k. Then
+owed = min(b, v_out/u); otherwise min(b, v/u).
+
+Why ≥: the hub may cite any later step against a stale claim, but an
+honest claim of the live note leaves it only the spend in flight (Rule
+3). A stale claim is paid at most the current balance (eltoo-like, no
+penalty), and with "=" a stale claim could get a past, larger balance.
+
+Results:
+- One citation always suffices.
+- The hub keeps only each account's latest step and any spend in
+  flight; the user keeps only the live note and any spend in flight.
+- Q is 74 bytes, U 16.
+- request, correct and ack are about 5.0, 1.2 and 2.6 kvB (scaled).
+- The statement is about 1.7M cycles (3 BIP340 checks and one t·G,
+  est.).
+- Cancel reissues at k + 1, so the cancelled spend (k_in = k) never
+  supersedes the reissue.
