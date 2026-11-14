@@ -710,7 +710,22 @@ while reading v0.5.4.
    Where: a short statement in §2 or at Rules (§4.2), pointed to from
    the fig. 1 box. It's the same idea as the "leaves only hurt the hub"
    condition in v0.4's countersigning note (§5.6).
-3. **Maybe, Open questions: rules at exit.** The statement could enforce
+3. **Stand alone, not a delta to v0.4 (the user, 2026-11-14).** §3.3
+   says "version 0.4's τ and its commitment C", and neither is defined
+   in v0.5. More generally, v0.5 must read on its own.
+   - Define in place what's now "as in version 0.4": the setting (§1),
+     the notation and one-time signatures (§2), opening and the mint,
+     the dispute graph and its figure (§5), request/correct (§6.2) and
+     the keyless contest.
+   - Drop the asides on what was removed: BLS (§2, the adaptor
+     paragraph), ids and short ids (§3.1), τ/C (§3.3), "no fallbacks"
+     (§6.4, §6.5), the one-way atomicity (§4.3), the storage contrast
+     (§6.7, abstract) and the TeX comment at line 27.
+   - Give the costs as measured on regtest for this graph's shape, not
+     as "scaled from version 0.4".
+   - Keep the comparison in one place: §10, plus a line in the abstract
+     and the title page.
+4. **Maybe, Open questions: rules at exit.** The statement could enforce
    predicates committed at contract setup. A cited spend counts only if
    it meets them, so they limit only what the hub can debit. They're
    bilateral, have no clock but the chain's, and carry no global facts.
