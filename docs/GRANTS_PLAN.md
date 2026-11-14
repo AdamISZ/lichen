@@ -649,7 +649,7 @@ incoming payment in flight waits for the payer's exit. It's bounded by
 one pending payment per user. Whether the statement can bind a spend's
 use to the payee's contract being open is an open question.
 
-**v0.5.1: sequence numbers (2026-11-14; now v0.5.3, which reworded the storage point: the hub keeps O(1) per account, O(N) for N users, against v0.4 keeping every spend).** A note is (o, k, v): owner,
+**v0.5.1: sequence numbers (2026-11-14; now v0.5.4, which reworded the storage point and added §9, payment volume against Lightning: the hub keeps O(1) per account, O(N) for N users, against v0.4 keeping every spend).** A note is (o, k, v): owner,
 number, value. Every account starts at 0 (a contract key with its mint,
 any other key with the empty note), and a spend steps both accounts to
 k + 1. Halves name their input by (o, k_in, v_in).

@@ -96,8 +96,11 @@ a current one. Algorithm~1 has two cases; there are no transaction ids,
 no merges and no fallbacks. The hub stores $O(1)$ per account, its
 latest step, so $O(N)$ for $N$ users however many payments they make,
 where version 0.4's hub keeps every spend; the user stores only her
-live note. Every balance is claimable in full, so no part of it is left
-at the hub's mercy. With one note per
+live note. Since nothing is kept per payment, an account can make any
+number of payments, billions on a 32-bit counter: payment volume is
+limited by rate, not by storage (\S\ref{sec:volume-pay}). Every balance
+is claimable in full, so no part of it is left at the hub's mercy. With
+one note per
 claim there is nothing to aggregate, so notes are signed with BIP340 and
 encrypted by adaptor, and the hub's statement needs no pairing: about
 1.7M cycles (estimated), against 29M. The exit's graph is version
@@ -761,6 +764,80 @@ hub's book & per account: the live note, the spend that made it, any spend in fl
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\section{Payment volume}\label{sec:volume-pay}
+
+Nothing in this design grows with the number of payments. Each payment
+replaces one step of each of two accounts: the hub keeps the latest
+step, the parties their live notes, and an exit costs the same after
+one payment or a billion. The counter is 32 bits, about $4.3 \times
+10^9$ payments per account, 50 days at a thousand a second; a contract
+closes at $\Tc$ anyway, and a new one starts a new account at 0. So a
+pair can stream a million payments of 1 sat each and leave behind
+exactly what one payment leaves. Volume over time is unbounded; what
+bounds it is the rate.
+
+\textbf{The rate.} A payment is about two round trips for each party,
+and Rule~2 allows one pending payment per account. So one pair streams
+at about $1/(2\,\mathit{RTT})$: 5--20 payments a second over the
+internet, a million in a day or so. The hub's work per payment is two
+pre-signatures and two verifications, microseconds; pairs of accounts
+that share none don't contend, so the hub can shard its book by
+account, a payment locking only the two it touches. Below a unit $u$,
+value is lost at exit, not in the L2: the L2 counts sats.
+
+Table~\ref{tab:ln} sets this against Lightning, for the closest
+equivalent: a payment from Alice to Bob through one node (an LSP),
+Alice $\to N \to$ Bob.
+
+\begin{table}[!tbp]
+\centering\small
+\renewcommand{\arraystretch}{1.15}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{2.7cm}LL}
+\toprule
+Per payment & Lightning, through one node & This design \\
+\midrule
+messages & per hop an add and a fulfil, each a commitment exchange both ways: about 20 & 9 messages; about 2 round trips for each party \\
+signatures made & each side, per hop and update, a commitment and its HTLCs: 8 and more & 4: the hub's two pre-signatures and the parties' two $\psi$ \\
+signatures verified & as many & 4: the hub two $\psi$, each party one pre-signature \\
+kept by the parties & per revoked state, what punishing it takes: secrets compress ($O(\log n)$, shachain), HTLC data doesn't & nothing new: the live note replaces the old \\
+kept by the node or hub & the same, per channel & the latest step per account, overwritten \\
+kept by a tower & a blob per state & nothing; there is nothing to watch \\
+an old state published & punished: all funds to the other side & superseded: paid at most the current balance \\
+\midrule
+Over time & & \\
+\midrule
+payments per account & unbounded, at growing storage & unbounded at $O(1)$ storage ($2^{32}$ per contract) \\
+in flight per pair & up to 483 HTLCs each way, pipelined & one; more by more accounts, splitting liquidity \\
+rate per pair & bounded by bandwidth and compute & about $1/(2\,\mathit{RTT})$, 5--20 a second \\
+watching between payments & continuous, or a tower & none \\
+\midrule
+Around it & & \\
+\midrule
+who sees a payment & each hop its amount; the onion hides the ends & the hub: both parties and the amount \\
+reach & the whole network, without trust & one hub's users \\
+fixed cost per user & a channel open; a force close, a few hundred vB & a contract with its BABE setup; an exit, 5--17 kvB \\
+\bottomrule
+\end{tabularx}
+\caption{Payment volume against Lightning. Lightning's figures are for
+the BOLT protocol with LN-penalty channels; this design's are
+estimates (\S\ref{sec:costs}).}
+\label{tab:ln}
+\end{table}
+
+\textbf{Where it wins.} Per payment it costs no more than Lightning
+through an LSP, and probably less: under half the messages, a handful of
+signatures, no commitment transactions, nothing revoked. And nothing
+accumulates: a payment channel's history is a liability, kept against an
+old state being published; an account's history here is nothing at all.
+So very high volumes, streams of small payments, machine-to-machine
+metering, are bounded only by how fast two parties and a hub can
+exchange nine messages.
+
+\textbf{Where it doesn't.} One pair can't pipeline: Lightning can keep
+483 payments in flight on a channel, an account one. The hub sees every
+payment and carries all of them; Lightning spreads both. And the reach
+is one hub's users.
 
 \section{Against version 0.4}\label{sec:compare}
 
