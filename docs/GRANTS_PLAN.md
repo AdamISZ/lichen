@@ -289,6 +289,30 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
 
 ## Open
 
+### Performance, later (the user, 2026-11-15: noted, not yet)
+
+- **Payments over the internet take ~10 s, the receiver a few more.**
+  Seen between a laptop and a phone (in Japan) on the Mutinynet hub
+  behind thimbly.org: no computation, round trips. Each hub call is a
+  fresh HTTPS connection (`lichen_l2::http::quick()` has
+  `max_idle_connections(0)`): ~1 s from there (TCP 0.3, TLS 0.6),
+  0.3 s reused. And they run in series: the receiver sees `/incoming`
+  only on its refresh (every 4 s), behind `/info` and Esplora calls,
+  then `/half`, `/account` per account, `/payment`, `/sign`; the payer's
+  `/sign`; the receiver learns it's recorded only at its next full
+  refresh. On the box (local, no TLS): 1.3 s. Fixes, cheap: reuse
+  connections (check why the pool is 0: stale ones through Caddy?);
+  `/incoming` first and on its own fast timer, or a long poll; once in
+  flight, only `/payment`; the hub's answer to the last `/sign` carrying
+  the seed. Expected ~2 s, mostly the round trip.
+- **The hp guest: 2,681k cycles, 3 segments**, 62% her Winternitz
+  checks at ~1,100 cycles a hash, mostly the `sha2` crate's per-call
+  set-up, padding and copies around the accelerator (profile in
+  "Building v0.5", step 7). Hashing with the single-block compression
+  directly: a few hundred a hash, ~1.4M in all, likely 2 segments (a
+  third less proving). Fewer chains for `Q` (151) would be a design
+  change.
+
 - Fees: per transaction (burned: the hub's revenue as issuer) and
   liquidity per unit time, as in docs/FORWARD_PLAN.md.
 - The hub's book is one JSON file rewritten on each change: fine for a
