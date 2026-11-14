@@ -307,9 +307,22 @@ rounds after.
    for an L2 address and a deposit address. Tauri's barcode-scanner
    plugin (Android and iOS; asks for the camera permission). The desktop
    keeps paste.
-2. **Checksummed L2 addresses.** Now 64 hex characters (the account's
-   x-only key), no checksum. A standard proposed to the user, pending
-   their answer.
+2. **Checksummed L2 addresses** (planned; the user chose, 2026-11-15).
+   Now 64 hex characters (the account's x-only key), no checksum. To be:
+   bech32m (BIP350), HRP `tlc` on the test networks and `lc` on mainnet,
+   data `0x00 ‖ owner (32) ‖ tag (4)`, the tag the first 4 bytes of
+   `SHA256("lichen/grants/hub" ‖ x(P_iss))`: 41 + 29 = 70 characters, so
+   within bech32m's 90, where any error of up to 4 characters is caught.
+   A wallet refuses an unknown version or another deployment's tag (a
+   Mutinynet address in a signet wallet, another hub's): a payment there
+   would be credit at a hub where the payee has no contract. The tag is
+   against mistakes, not attack (2^-32 by accident). QR codes in upper
+   case (alphanumeric mode). Shown, scanned and parsed by the wallet
+   library, so the CLI and the app agree; the hex form dropped.
+   The user's note: with the deployment fixed in the address, a later
+   scheme (say Chaumian blinding) under the same format isn't dangerous:
+   its deployment has another issuer key, so another tag, and the version
+   byte marks a different payload.
 
 ### Performance, later (the user, 2026-11-15: noted, not yet)
 
