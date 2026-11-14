@@ -736,3 +736,12 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
    user's key is stolen: the hub may ignore the rule, but then it pays
    the thief itself. The user found it "interesting" and wasn't sure
    it's useful, so at most one paragraph.
+
+### Pending for papers/lichen-grants-v0.5.6 (2026-11-14)
+
+1. **One width for values: ⟨v⟩₆ everywhere (the user).** v0.5.5 hashes
+   v in 8 bytes (δ(N), h(η)'s v_in and v_out, the journal's v₀) but
+   posts it in 6 (Q), and bounds it by 2^48 because of Q. Use 6 bytes
+   throughout, and say why the bound is enough: v counts sats; u applies
+   only to b on chain, so u·b ≤ v < 2^48 = 2^32·2^16, which covers every
+   payout for u ≤ 65,536 sats.
