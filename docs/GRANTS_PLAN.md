@@ -745,3 +745,9 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
    throughout, and say why the bound is enough: v counts sats; u applies
    only to b on chain, so u·b ≤ v < 2^48 = 2^32·2^16, which covers every
    payout for u ≤ 65,536 sats.
+2. **Why t_S is hashed from z_S, not z_S itself (the user asked).** Add
+   to §8 "Why a seed": a 16-byte scalar would put T's discrete log below
+   2^128, so kangaroo would recover it in about 2^64. Anyone holding a
+   grant could then complete the notes without the hub publishing, which
+   breaks atomicity. Hashing spreads 16 bytes over a full scalar, so
+   recovering t means guessing z, at 2^128 work.
