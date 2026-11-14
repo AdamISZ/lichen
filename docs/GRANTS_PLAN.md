@@ -796,3 +796,27 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
      enforces it: the statement, against the hub; the wallet, for its
      owner. Nothing relies on the hub." This ties back to §1's "the hub
      checks amounts for itself".
+7. **Settling into a closed contract: by timeouts, not exit order (the
+   user).** Replace §4.3's paragraph. "Payers exit first" was a bit off.
+   - **Evidence.** The payee is not paid without z_S, and delivers
+     nothing. A debited payer always holds z_S: either from step 6, or
+     from her own `correct`, since citing S means publishing it. With
+     ψ_B it is her proof of payment, and she can complete Bob's note by
+     handing z_S over. So step 6 should send ψ_B to Alice with z_S.
+   - **The gap is timing.** z_S may reach Bob after his contract has
+     closed.
+   - **Two wallet timeouts close it.** Let c be the time for a
+     `request` to confirm.
+     - Payer: in flight longer than p, it exits. The hub must then
+       decide within w_H: publish z_S, or lose S against her for good.
+     - Payee: it signs no incoming payment after T_close − L, with
+       L > p + w_H + 2c, and doesn't exit with an incoming payment
+       pending unless T_close − c forces it.
+   - **p and L are practical choices.** An invoice may carry the
+     payee's last day for receiving. Collusion between payee and hub
+     harms only them, since the payer holds ψ_B and z_S.
+   - Drop "payers exit first" here and in §7 (deferred receipt) and
+     Open questions. The open question becomes whether a timeout-free
+     binding inside the statement is possible.
+   - The user's draft-level verdict: the remaining questions are
+     practical, and their technical side is the dispute-path timeouts.
