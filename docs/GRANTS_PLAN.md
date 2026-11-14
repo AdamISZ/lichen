@@ -830,3 +830,6 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
    terminals with † in the upper graph, and start the caption's second
    part "Below: each bit output of a † terminal's payout, one per bit
    position i, worth u·2^i sats."
+9. **Fig. 1: drop the primes (the user).** σ'_A and σ'_B → σ_A and σ_B.
+   They appear only there, and no σ for the old notes appears in the
+   figure.
