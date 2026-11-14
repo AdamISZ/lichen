@@ -772,6 +772,9 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
    ⌊v_out/u⌋, which it can prove". For her own exit she never needs the
    new note's signature. Publishing z_S is what completes the payment
    for the counterparty, as in an atomic swap.
+   And make the sentence plural, as the user suggested: "...it must
+   publish z_S, and both new notes count". Hers is paid as b_corr, and
+   the counterparty's settles from the published seed.
 5. **Define U properly (the user).** Definition 4 is a description.
    Write: "An exit's unlock is U ∈ {0,1}^128: U = z_S if the hub cites
    spend S against the claim, and U = 0^16 if it cites none." State its
