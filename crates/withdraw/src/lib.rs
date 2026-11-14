@@ -23,6 +23,7 @@ use lichen_validity::{state_root, AnchorState, ChainJournal, OutPoint};
 use sha2::{Digest, Sha256};
 
 mod codec;
+pub mod accounts;
 pub mod grants;
 pub mod hp;
 

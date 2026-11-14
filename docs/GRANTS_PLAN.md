@@ -889,3 +889,11 @@ policy. Measured against the paper's estimates:
 | `correct` | 1,296 | 92 | 1.2 kvB, 92 |
 | `ack` | 2,699 | 182 | 2.6 kvB, 182 |
 | `assert` | 7,725 | 258 | (unchanged) |
+
+**Step 2 done (2026-11-14).** `lichen_withdraw::accounts`: note, half and
+spend digests (values 6 bytes), α, the seed and its scalar, Q, Algorithm
+1 (`owed`), Winternitz verification on SHA-256 chains (`wots_verify`),
+the journal (`Contract::journal`: `c ‖ D`, D binding issuer, owner, u,
+v₀, κ), and `check`. Tests: Algorithm 1's cases (Rule 1, wrong or no
+seed, stale and later claims, the mint, malformed claims); one-time
+signatures; the statement, its encoding round-trip.
