@@ -897,3 +897,79 @@ the journal (`Contract::journal`: `c ‖ D`, D binding issuer, owner, u,
 v₀, κ), and `check`. Tests: Algorithm 1's cases (Rule 1, wrong or no
 seed, stale and later claims, the mint, malformed claims); one-time
 signatures; the statement, its encoding round-trip.
+
+**Steps 3–5 done (2026-11-14, 742dc97).**
+- `lichen_notes`: `Note` (o, k, v), `Settled` (note 0 unsigned), `Half`,
+  `Grant` (T and ρ₁, ρ₂, 65 bytes each: R′ and s′), `proto` (the payment
+  messages), and `book::Book`. Per account the book holds the live note,
+  the last spend recorded on it, a payment pending, and whether a claim
+  closed it. A payment is dropped once neither account has it as its
+  last spend.
+- Payment ids are `owner-k-[h(η)]₈`: a payment cancelled unsigned leaves
+  the note live, and the next one from it is another payment (a bug the
+  payments test found).
+- Hub routes: `POST /pay`, `GET /incoming/<o>`, `POST /half`, `GET
+  /payment/<id>`, `POST /sign`, `POST /cancel`, `GET /account/<o>`.
+  `/grant`, `/spend`, `/mailbox` and `/notes` are gone.
+- The opening: `HpSetupRequest` carries v₀ and `HpSetup` the issuer; her
+  four keys go in `HpCommit.keys` (`AliceKeys`), and the hub's `K_corr`
+  and `K_U` in `HpOffer`. The journal is `hp::contract(..).journal()`
+  (36 bytes), and `Record.deployment` holds its D. There is no
+  checkpoint. The mint is no longer pre-issued: the account opens at (O_c,
+  0, v₀) when the funding is out. Her deposit signature is still locked
+  to the funding's adaptor point.
+- Withdrawal: the claim is Q of the live note. The hub checks that it is
+  owed b in full and closes the account; the rest beyond u·b is credited
+  to `rest_to` (her wallet's key).
+- The hub's dispute: `Requested` → `correct` (b_corr and U from
+  `assess`: the book's last spend if it takes the claimed note or later,
+  posted only if it lowers the claim) → `Corrected` (her `ack`, or
+  `accept` after w_A) → `Acked` (prove from her four signatures, assert)
+  → `Asserted` / `Challenged` as before.
+- The wallet: `notes::{Acct, Pending, Step}`; `pay`, `receive`,
+  `progress` (checks the grant: the sides hold our half, the other owner
+  is the peer, ρ on our next note verifies; then signs), `complete`,
+  `cancel`, `sync` (takes a later hub note only if no less and nothing is
+  pending). The exit: Q of the live note. On `correct`, U completes the
+  step in flight (`Store::unlocked`). She accepts if b_corr is at least
+  what she reckons, else she countersigns (`contest` forces it, for
+  tests). `unlock_of` and `complete_with` let the counterparty settle
+  from the chain. CLI: `send` (waits for the payee, then cancels),
+  `receive`, `cancel`, `notes`.
+- Windows: regtest (w_H, w_A, Δ2, Δ1) = (40, 30, 40, 40); Mutinynet
+  (240, 2880, 2880, 240).
+- Not done: lichen-gui (local) builds against the old wallet API, so its
+  grants mode needs the new calls.
+
+**Step 6, payments on regtest (2026-11-14).** crates/hub/tests/payments.rs
+passes: an opening, payments both ways (each about 230 ms), Rule 2 at the
+hub (busy, retry), cancels unsigned and one-side-signed (reissue at k + 1,
+the late side applies the cancel), a stale half refused, a wallet restored
+from its key.
+
+**Step 6 done (2026-11-14).** Every hub test passes on regtest:
+payments, withdraw, mint, deposit and contested. The test runs found
+three bugs:
+- the payment id (above);
+- the hub compared a claim's signature bytes with its own fresh
+  signature on the live note (hers came from the grant's pre-signature);
+  it now compares the note, and Algorithm 1 checks hers;
+- the wallet counted a claimed account in its balance; it now marks it
+  closed after a withdrawal or an exit.
+
+contested.rs, each exit with a payment recorded and its seed withheld,
+both parties in flight:
+- C (accepted): Alice's claim of 584 units is corrected to 365, her step
+  cited with its seed in U. She completes her note from U, reckons the
+  same, and accepts; `accept` pays her. Bob settles his note from the
+  same seed, read from `correct`.
+- P (proved): Dave contests; the hub proves from his four signatures
+  (the mock statement, checked natively), and `success` pays 365. Erin
+  settles from U.
+- F (forged): a lying hub corrects Carol's full claim to 0 and asserts a
+  forged proof. She contests and challenges, and `failure` pays her 584.
+
+The three exits play in about 15 s. withdraw.rs: folds in about 230 ms,
+the rest credited to the wallet's key; an early close; both defaults.
+mint.rs: the answer lost (the account opens from the chain, and Alice
+pays from it), never funded (no account), refused, and resumed too late.

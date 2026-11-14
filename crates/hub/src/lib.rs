@@ -708,7 +708,10 @@ impl Inner {
         let live = self.book.account(&owner);
         ensure!(!live.closed, "the account is closed");
         ensure!(live.busy.is_none(), "a payment is pending on the account: finish or cancel it first");
-        ensure!(live.live.claim() == q, "the claim isn't of the account's live note");
+        // the note, not the signature's bytes: hers came from the grant's
+        // pre-signature, the book's is signed afresh; Algorithm 1 checks hers
+        let n = live.live.note;
+        ensure!(q.k == n.k && (q.k == 0 || q.v == n.v), "the claim isn't of the account's live note");
         let unit = record.terms.unit.to_sat();
         let owed = self.assess(record, b, Some(&q), self.book.evidence(&owner, q.k)).owed;
         ensure!(owed == b, "the claim is owed {owed} units, not {b}");

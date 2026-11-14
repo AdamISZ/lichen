@@ -561,7 +561,7 @@ impl Wallet {
         let r = &self.contracts[k].record;
         let (owner, v0) = (r.l2_address, r.minted());
         if !self.accounts.contains_key(&hex::encode(owner)) {
-            self.accounts.insert(hex::encode(owner), notes::Acct { live: lichen_notes::Settled::first(owner, v0), pending: None });
+            self.accounts.insert(hex::encode(owner), notes::Acct { live: lichen_notes::Settled::first(owner, v0), pending: None, closed: false });
         }
         self.contracts[k].mint.as_mut().expect("checked").claimed = true;
         self.save()
@@ -719,6 +719,9 @@ impl Wallet {
         ensure!(done.txid == fold.tx.compute_txid(), "the hub answered {} for the fold, not its txid {}", done.txid, fold.tx.compute_txid());
         self.contracts[k].closed = Some(done.txid);
         self.save()?;
+        if units > 0 {
+            self.close_account(cid)?;
+        }
         // the rest of the account's note, as credit
         let _ = self.sync();
         Ok(done.txid)

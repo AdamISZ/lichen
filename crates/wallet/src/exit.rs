@@ -43,7 +43,10 @@ impl Wallet {
             Some(p) => p,
             None => self.keep_exit_claim(chain, cid)?,
         };
-        self.play(chain, statement, cid, plan.b)
+        let out = self.play(chain, statement, cid, plan.b)?;
+        // the hub took the claim at request: the account is closed
+        self.close_account(cid)?;
+        Ok(out)
     }
 
     /// Contract `cid`'s exit claim prepared now and kept with it, not

@@ -65,6 +65,10 @@ pub struct Acct {
     pub live: Settled,
     #[serde(default)]
     pub pending: Option<Pending>,
+    /// Claimed (a withdrawal, an exit): the hub closed it; what it held is
+    /// on chain, or credited elsewhere.
+    #[serde(default)]
+    pub closed: bool,
 }
 
 /// What a step of a payment came to.
@@ -85,11 +89,11 @@ impl Wallet {
     }
     /// What our accounts hold.
     pub fn balance(&self) -> u64 {
-        self.accounts.values().map(|a| a.live.note.v).sum()
+        self.accounts.values().filter(|a| !a.closed).map(|a| a.live.note.v).sum()
     }
     /// Our account under `owner`: its live note, the empty note if none.
     pub fn account(&self, owner: &Hash) -> Acct {
-        self.accounts.get(&hex::encode(owner)).cloned().unwrap_or(Acct { live: Settled::first(*owner, 0), pending: None })
+        self.accounts.get(&hex::encode(owner)).cloned().unwrap_or(Acct { live: Settled::first(*owner, 0), pending: None, closed: false })
     }
     fn set_account(&mut self, a: Acct) {
         self.accounts.insert(hex::encode(a.live.note.owner), a);
@@ -279,6 +283,15 @@ impl Wallet {
         ensure!(u64::from(units) * record.terms.unit.to_sat() <= v, "the account holds {v} sats, short of {units} units");
         let q = hex::encode(live.claim().to_bytes());
         Ok(ExitPlan { b: units, claim: q.clone(), posted: q })
+    }
+
+    /// Contract `cid`'s account, claimed: closed.
+    pub(crate) fn close_account(&mut self, cid: u32) -> Result<()> {
+        let owner = self.contracts.iter().find(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?.record.l2_address;
+        let mut a = self.account(&owner);
+        a.closed = true;
+        self.set_account(a);
+        self.save()
     }
 
     /// A note of ours, as the hub signed it (tests, front ends).

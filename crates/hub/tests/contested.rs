@@ -90,7 +90,8 @@ fn exits_contested() {
     }
     let (_, swept) = c_swept.expect("C: her bits swept");
     assert!(swept > Amount::from_sat(u64::from(b_corr) * unit / 2), "C: {swept}");
-    let me = alice.0.address();
+    // the contract's key (closed now: the wallet's address is its own key)
+    let me = alice.2.record.l2_address;
     assert_eq!(alice.0.note_of(&me), Note { owner: me, k: 1, v: ask.deposit - PAID }, "her new note, completed from U");
     assert!(hub_c.log().iter().any(|l| l.contains("her last step cited")), "{:?}", hub_c.log());
     assert!(!hub_c.log().iter().any(|l| l.contains("asserted")), "accepted: nothing to prove");
