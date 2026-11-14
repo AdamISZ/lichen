@@ -1,5 +1,5 @@
 //! The countersigned exit's graph on regtest, under mainnet's relay
-//! policy (papers/lichen-grants-v0.4.1): every link relayed at its floor,
+//! policy (papers/lichen-grants-v0.5.6): every link relayed at its floor,
 //! the terminals mined, and their bit outputs spent by each leaf.
 //!
 //! - accepted: `request`, `correct`; after `w_A`, `accept` pays `b_corr`

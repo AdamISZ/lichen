@@ -878,3 +878,14 @@ Order, by risk:
 7. **The guest** on the new statement (r0/hp-guest), measured.
 
 Progress is recorded below as each step lands.
+
+**Step 1 done (2026-11-14).** `countersigned::Q_LEN` = 74, one seed in U.
+The regtest test (crates/babe/tests/countersigned.rs) passes, standard
+policy. Measured against the paper's estimates:
+
+| link | vsize | items | v0.5.6 est. |
+|---|---|---|---|
+| `request` | 5,056 | 324 | 5.0 kvB, 324 |
+| `correct` | 1,296 | 92 | 1.2 kvB, 92 |
+| `ack` | 2,699 | 182 | 2.6 kvB, 182 |
+| `assert` | 7,725 | 258 | (unchanged) |

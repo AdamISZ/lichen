@@ -1,4 +1,4 @@
-//! The countersigned exit's graph (papers/lichen-grants-v0.4.1, §4–5):
+//! The countersigned exit's graph (papers/lichen-grants-v0.5.6, §5–6):
 //! BABE with the roles swapped, where the hub proves, and every value its
 //! statement reads at exit time is under one of Alice's one-time keys.
 //!
@@ -48,10 +48,10 @@ use lngap_sessions::skeleton::{wots_shape, Core, Presign, POST_CSV};
 use crate::reveal::{LamportPub, Preimage};
 use crate::setup::{Hash, DIGITS, VALUES};
 
-/// The posted claim `Q`'s length in bytes (v0.4.1 §5.1).
-pub const Q_LEN: usize = 137;
-/// The unlocks `U`: four 16-byte seeds.
-pub const SEEDS: usize = 4;
+/// The posted claim `Q`'s length in bytes (v0.5 §6.1): `⟨k⟩₄ ‖ ⟨v⟩₆ ‖ σ`.
+pub const Q_LEN: usize = 74;
+/// The unlock `U`: one 16-byte seed (v0.5 §6.2).
+pub const SEEDS: usize = 1;
 pub const SEED_LEN: usize = 16;
 pub const U_LEN: usize = SEEDS * SEED_LEN;
 
