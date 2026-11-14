@@ -772,3 +772,9 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
    ⌊v_out/u⌋, which it can prove". For her own exit she never needs the
    new note's signature. Publishing z_S is what completes the payment
    for the counterparty, as in an atomic swap.
+5. **Define U properly (the user).** Definition 4 is a description.
+   Write: "An exit's unlock is U ∈ {0,1}^128: U = z_S if the hub cites
+   spend S against the claim, and U = 0^16 if it cites none." State its
+   role in one line: the hub posts it in `correct`, and the statement
+   derives t from U by the same rule as t_S from z_S. Consider moving it
+   to §6.2, where U first matters, and leaving §3.3 at z_S.
