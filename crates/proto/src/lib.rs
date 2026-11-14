@@ -51,8 +51,13 @@ pub const FEE_SHARE: Amount = Amount::from_sat(1_000);
 /// output would be dust. A contract's unit is from this to about twice it
 /// ([`scale`]).
 pub const MIN_UNIT: u64 = 512;
-/// lichen's version (the workspace's): what a hub and a wallet report.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// lichen's version: what a hub and a wallet report. On branch `grants`,
+/// the grants L2's release, `grants-<major>.<minor>.<patch>`, its major and
+/// minor the design's (papers/lichen-grants-v0.5.x), tagged
+/// `grants-v<version>`; the app built on it has the same number. Not the
+/// workspace's Cargo version, which stays at the fork point (v0.4.5):
+/// a guest's ELF, and so its image id, changes with its crates' versions.
+pub const VERSION: &str = "grants-0.5.1";
 
 /// The guests a build proves and checks receipts with: each one's image
 /// id, hex (`r0/guests/<g>.id`). A wallet proves with its own, and a

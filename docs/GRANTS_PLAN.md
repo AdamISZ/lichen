@@ -41,6 +41,15 @@ chain prover, anchoring, acknowledgments, shielded notes.
 
 ## Deployed
 
+**Versions (2026-11-15).** The grants L2's releases are numbered apart
+from master's: `grants-X.Y.Z`, X.Y the design's (papers/lichen-grants-
+vX.Y), tagged `grants-vX.Y.Z` here and in lichen-gui, whose grants app
+("lichen grants") has the same number. `lichen_proto::VERSION` is it (a
+hub's `/info`, the app's Settings); the workspace's Cargo version stays
+at the fork point (0.4.5), since a guest's ELF, so its image id, changes
+with its crates' versions. First: grants-v0.5.1 (design v0.5; app 0.5.1;
+the app's earlier grants builds were 0.5.0 and 0.6.0, untagged).
+
 **v0.5 since 2026-11-14** on lichen-hub: the container `lichen-grants5-hub`
 (image `lichen:grants5`, from `~/lichen-grants` at 5c09eb2), on the
 Mutinynet node's compose network, its wallet `grants` (0.08 BTC sent from
@@ -301,7 +310,9 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
   then `/half`, `/account` per account, `/payment`, `/sign`; the payer's
   `/sign`; the receiver learns it's recorded only at its next full
   refresh. On the box (local, no TLS): 1.3 s. Fixes, cheap: reuse
-  connections (check why the pool is 0: stale ones through Caddy?);
+  connections (the pool is 0 since 314f144: ureq 2 clears the
+  read timeout on a pooled connection, so a call to a silent server hung;
+  needs ureq 3 or a timeout per call);
   `/incoming` first and on its own fast timer, or a long poll; once in
   flight, only `/payment`; the hub's answer to the last `/sign` carrying
   the seed. Expected ~2 s, mostly the round trip.

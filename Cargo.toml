@@ -4,6 +4,8 @@ exclude = ["r0"]
 members = ["crates/notes", "crates/ledger", "crates/shielded", "crates/validity", "crates/withdraw", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/babe"]
 
 [workspace.package]
+# The fork point, kept: the guests' ELFs (their image ids) change with their
+# crates' versions. The grants release's version is lichen_proto::VERSION.
 version = "0.4.5"
 edition = "2021"
 license = "MIT"
