@@ -48,7 +48,8 @@ T_close, block 3,604,195 (Mutinynet was at 3,589,654 that day). To post
 it, `docker start lichen-grants-hub` after that block: its watcher posts
 the default within seconds. Then stop it again. Deposit 1001 was asked
 for and never opened; any refund is the user's wallet's. The hub's
-`grants` wallet (0.0395 BTC) stays on the node for the v0.5 deployment.
+`grants` wallet (0.0395 BTC) was swept into `hub` the same day (txid
+`4ce71666…6b2eda`).
 
 The original deployment, for the record:
 
@@ -984,3 +985,20 @@ The three exits play in about 15 s. withdraw.rs: folds in about 230 ms,
 the rest credited to the wallet's key; an early close; both defaults.
 mint.rs: the answer lost (the account opens from the chain, and Alice
 pays from it), never funded (no account), refused, and resumed too late.
+
+**Step 7 done (2026-11-14).** The guest on `accounts::check`, image
+`0e3809e4…` (r0/guests/README.md). On the contested test's proved exit
+(P, one step cited): 2,681k user cycles, 3 segments, about twice v0.4's
+1,306k, most of it probably her four Winternitz signatures on SHA-256
+chains (not profiled). Proved for real: the STARK on the Mac (14 cores,
+CPU) in 179 s, the Groth16 wrap on lichen-vps in 264 s. The seal
+verifies under BABE's `Kind::Risc0` for the contract's 36-byte journal,
+and not for a journal with one bit flipped. On lichen-vps alone the
+proof would take about 25 minutes (v0.4's 2 segments took 16, plus the
+wrap), still inside Mutinynet's `w_H` (2 h).
+
+**lichen-gui v0.6.0 (2026-11-14, local).** For v0.5's payments by joint
+spend: the receiver's app takes and signs a payment to it in its
+refresh; Send waits a minute for it, then cancels. On the devstack, two
+GUIs: a payment in 3.2 s, a closed receiver's cancelled after 60 s, a
+withdrawal.
