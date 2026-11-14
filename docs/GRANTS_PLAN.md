@@ -823,3 +823,10 @@ fig. 1 and Rule 3 point to it. The worked exit is redone for one note.
      binding inside the statement is possible.
    - The user's draft-level verdict: the remaining questions are
      practical, and their technical side is the dispute-path timeouts.
+8. **Fig. 3: tie the bit-output inset to the graph (the user).** The
+   lower part is a template for every bit output of the five payout
+   terminals (`request_timeout`, `accept`, `ack_timeout`, `success`,
+   `failure`), so it doesn't connect to the graph above. Mark those
+   terminals with † in the upper graph, and start the caption's second
+   part "Below: each bit output of a † terminal's payout, one per bit
+   position i, worth u·2^i sats."
