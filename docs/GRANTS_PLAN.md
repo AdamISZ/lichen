@@ -836,3 +836,45 @@ coherent and asked to build it, abandoning the v0.4 build.
 9. **Fig. 1: drop the primes (the user).** σ'_A and σ'_B → σ_A and σ_B.
    They appear only there, and no σ for the old notes appears in the
    figure.
+
+## Building v0.5 (the user, 2026-11-14)
+
+The user: the design in papers/lichen-grants-v0.5.6 is "coherent and at
+least basically correct". Abandon the v0.4 build (its step 2, BLS notes,
+never started) and build v0.5, as far as possible unattended. Regtest
+only; the Mutinynet grants deployment stays as it is. Proofs on the mock
+statement first.
+
+What carries over: the opening (VSSS garbling, cut-and-choose, the
+upload), deposit, funding, fold, default, the chain crate, BABE's
+challenge and answer, and `lichen_babe::countersigned` (v0.4's step 1),
+which is v0.5's graph with Q = 74 bytes and U = 16. What goes: note ids,
+spends of many inputs, mailboxes, reveals and slots, the chain-reading
+statement (headers, work, the checkpoint), `HubProves` for this L2.
+
+Order, by risk:
+
+1. **The graph's lengths**: `countersigned::Q_LEN` = 74, one seed in U;
+   its regtest test.
+2. **The core** (`lichen_withdraw::accounts`, no_std, shared by hub,
+   wallet and guest): notes (o, k, v), halves, δ(S), α, the seed and its
+   scalar, Q, Algorithm 1, and the chainless statement. The statement
+   verifies her four SHA-256 Winternitz signatures under the keys hashed
+   to κ. J = c ‖ D, D = SHA256("lichen/grants/contract" ‖ x(P_iss) ‖
+   x(O_c) ‖ u₈ ‖ v₀₆ ‖ κ).
+3. **lichen-notes on accounts**: the grant Γ (adaptor pre-signatures on
+   both new notes), the hub's book (per account: the live note, the step
+   that made it, a pending spend), cancel and reissue.
+4. **The protocol**: the hub's payment endpoints (pay, incoming, half,
+   sign, unlock, cancel), the wallet's Rules 2 and 3.
+5. **The contract on the countersigned graph**: the setup carries her
+   four keys and the hub's two; the journal is J. The hub's dispute is
+   request → correct (b_corr, U) or timeout → ack or accept → assert.
+   The wallet reads U, completes the step in flight, and accepts or
+   contests.
+6. **Tests on regtest**: payments, cancel, withdrawal, exits (accepted,
+   contested and proved, forged and refuted, a step in flight completed
+   through U).
+7. **The guest** on the new statement (r0/hp-guest), measured.
+
+Progress is recorded below as each step lands.
