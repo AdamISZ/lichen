@@ -298,6 +298,19 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
 
 ## Open
 
+### From the user's testing, to do (2026-11-15, grants-v0.5.1)
+
+Collected while the user tests between a laptop and a phone; done in
+rounds after.
+
+1. **Scan a QR with the phone's camera** (the app, Android at least):
+   for an L2 address and a deposit address. Tauri's barcode-scanner
+   plugin (Android and iOS; asks for the camera permission). The desktop
+   keeps paste.
+2. **Checksummed L2 addresses.** Now 64 hex characters (the account's
+   x-only key), no checksum. A standard proposed to the user, pending
+   their answer.
+
 ### Performance, later (the user, 2026-11-15: noted, not yet)
 
 - **Payments over the internet take ~10 s, the receiver a few more.**
