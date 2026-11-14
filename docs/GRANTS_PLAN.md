@@ -685,11 +685,15 @@ Results:
 Noted, not yet written. Batch these with whatever else the user finds
 while reading v0.5.4.
 
-1. **Drop o from h(η).** h(η) = H_half(k_in, v_in, v_out, λ). The owners
-   appear only in δ(S) = H_spend(o1, h(η1), o2, h(η2)), each tied to
-   its half by position. They have to be in the clear there: the
+1. **Say why o appears twice; keep it in h(η) (the user, 2026-11-14).**
+   One sentence at §3.2. o goes in the clear in δ(S) because the
    statement checks the counterparty's ψ under the key Alice approved
    (Rule 1), and the payer checks that the payee is her invoice's o_B.
+   It stays inside h(η) so that each half names its own owner whatever
+   it's embedded in. That guards against order mix-ups, a δ(S) with more
+   than two parties, and the hub forming the payee's half in §7.
+   Dropping it was considered: it would save one SHA-256 compression in
+   the statement (68 bytes of input → 36), out of about 1,500.
 2. **The hub checks amounts only for itself (the user).** This is a
    general Lichen principle, and v0.4 has it too. In fig. 1, "values
    balance" is the hub's own check. Nobody else needs it, and the
