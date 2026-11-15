@@ -50,6 +50,7 @@ at the fork point (0.4.5), since a guest's ELF, so its image id, changes
 with its crates' versions. First: grants-v0.5.1 (design v0.5; app 0.5.1;
 the app's earlier grants builds were 0.5.0 and 0.6.0, untagged).
 grants-v0.5.2: byte strings as hex in JSON (the wire changes).
+grants-v0.5.3: L2 addresses as bech32m (`tlc1…`); the app's camera.
 
 **v0.5 since 2026-11-14** on lichen-hub: the container `lichen-grants5-hub`
 (image `lichen:grants5`, from `~/lichen-grants` at 5c09eb2; since 2026-11-15 `lichen:grants-0.5.1`, at grants-v0.5.1, the same book, the old container kept stopped as `lichen-grants5-hub-old`), on the
@@ -304,11 +305,24 @@ key: `f7c1929c0b116bb92b57dee1b036c5cb76af04da8f0a412570fbb05af8f6174e`.
 Collected while the user tests between a laptop and a phone; done in
 rounds after.
 
-1. **Scan a QR with the phone's camera** (the app, Android at least):
-   for an L2 address and a deposit address. Tauri's barcode-scanner
-   plugin (Android and iOS; asks for the camera permission). The desktop
-   keeps paste.
-2. **Checksummed L2 addresses** (planned; the user chose, 2026-11-15).
+1. **Scan a QR with the phone's camera** (the app, Android at least).
+   Done in grants-0.5.3 (local): Tauri's barcode-scanner plugin 2.5.3 on
+   Android and iOS only (`capabilities/mobile.json`: scan, cancel, the
+   permission's check and request); a "Scan a QR code" button on Send,
+   shown only where the plugin is; the camera permission asked at the
+   first scan (the APK declares `android.permission.CAMERA`). The desktop
+   keeps paste. Not yet tried on a phone. (The deposit address is one the
+   app shows, not one it reads, so Send is the only place to scan.)
+2. **Checksummed L2 addresses** (the user chose, 2026-11-15; done in
+   grants-0.5.3, local: `lichen_notes::address`, `Wallet::address_text`,
+   `address_of`, `parse_address`; the CLI's `address` and `send`, the
+   app's address, its QR code in upper case, Send checking the address
+   before the payment starts. Tests: every single-character substitution
+   and adjacent swap caught; another hub's tag, the other network, an
+   unknown version, bech32 for bech32m and a bare key refused. On the
+   devstack: CLI and app paying each other by address, upper case
+   accepted, a typo and another hub's address refused before sending.
+   The API and the hub's book keep the key, hex.)
    Now 64 hex characters (the account's x-only key), no checksum. To be:
    bech32m (BIP350), HRP `tlc` on the test networks and `lc` on mainnet,
    data `0x00 ‖ owner (32) ‖ tag (4)`, the tag the first 4 bytes of

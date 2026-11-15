@@ -1,14 +1,14 @@
 openapi: 3.1.0
 info:
   title: lichen grants hub API
-  version: grants-0.5.2
+  version: grants-0.5.3
   summary: The HTTP API a grants L2 hub serves to wallets.
   description: |
     The hub of lichen's grants L2 (branch `grants`, design
     papers/lichen-grants-v0.5.6): it opens contracts with users, keeps the
     book of accounts (one note per account), grants and records payments,
     and folds withdrawals. This file specifies the wire format as the hub
-    at `grants-v0.5.2` serves it (`crates/hub/src/lib.rs`, `route`), and
+    at `grants-v0.5.3` serves it (`crates/hub/src/lib.rs`, `route`), and
     was checked against traffic captured between the CLI wallet and a
     devstack hub (an opening, payments both ways, a cancel, withdrawals).
 
@@ -24,8 +24,11 @@ info:
     - Every byte string (a key, a hash, a signature) is lower-case hex.
       (Before grants-0.5.2 some were JSON arrays of byte values; a hub and
       a wallet still read those in their stored files, and on the wire.)
-    - An L2 address, an account's owner, is a 32-byte x-only secp256k1
-      key, as 64 hex characters in paths and payments.
+    - An account's owner is a 32-byte x-only secp256k1 key, as 64 hex
+      characters in paths and payments. People see it as an L2 address,
+      `tlc1…` (bech32m: a version byte, the key, and a 4-byte tag of the
+      hub's issuer key; `lichen_notes::address`), which a wallet decodes to
+      the key before calling the hub.
     - Signatures are BIP340 Schnorr, 64 bytes; a transaction signature
       with a sighash byte other than the default is 65.
 

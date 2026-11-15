@@ -87,6 +87,20 @@ impl Wallet {
     pub fn issuer(&self) -> Hash {
         self.deployment.hub
     }
+    /// Our address as people see it: bech32m, with the hub's tag
+    /// ([`lichen_notes::address`]).
+    pub fn address_text(&self, net: lichen_chain::Net) -> String {
+        self.address_of(&self.address(), net)
+    }
+    /// `owner`'s address in this hub's deployment, as people see it.
+    pub fn address_of(&self, owner: &Hash, net: lichen_chain::Net) -> String {
+        lichen_notes::address::encode(owner, &self.issuer(), net.is_test())
+    }
+    /// The owner an address names, if it's an address of this hub's on
+    /// this network.
+    pub fn parse_address(&self, text: &str, net: lichen_chain::Net) -> Result<Hash> {
+        lichen_notes::address::decode(text, &self.issuer(), net.is_test())
+    }
     /// What our accounts hold.
     pub fn balance(&self) -> u64 {
         self.accounts.values().filter(|a| !a.closed).map(|a| a.live.note.v).sum()

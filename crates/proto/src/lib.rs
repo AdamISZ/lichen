@@ -57,7 +57,7 @@ pub const MIN_UNIT: u64 = 512;
 /// `grants-v<version>`; the app built on it has the same number. Not the
 /// workspace's Cargo version, which stays at the fork point (v0.4.5):
 /// a guest's ELF, and so its image id, changes with its crates' versions.
-pub const VERSION: &str = "grants-0.5.2";
+pub const VERSION: &str = "grants-0.5.3";
 
 /// The guests a build proves and checks receipts with: each one's image
 /// id, hex (`r0/guests/<g>.id`). A wallet proves with its own, and a

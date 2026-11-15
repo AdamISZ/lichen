@@ -17,6 +17,7 @@
 //! The hub keeps its [`book::Book`]: per account, its live note, the last
 //! spend it took part in, and a payment pending.
 
+pub mod address;
 pub mod book;
 pub mod proto;
 

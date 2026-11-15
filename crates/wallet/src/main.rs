@@ -45,13 +45,14 @@ struct Args {
 enum Cmd {
     /// Create a wallet with a fresh key.
     Init,
-    /// The wallet's L2 address: its key, which payers pay.
+    /// The wallet's L2 address, which payers pay: `tlc1…` (bech32m, its
+    /// key and the hub's tag).
     Address,
     /// What our accounts hold, as the hub has them.
     Balance,
     /// Our accounts, one a line: the live note, a payment pending.
     Notes,
-    /// Pay an L2 address (32 bytes, hex) from our open contract's account.
+    /// Pay an L2 address (`tlc1…`) from our open contract's account.
     /// The payee must be online (`receive`): waits up to `--wait` seconds
     /// for it, then cancels.
     Send {
@@ -225,7 +226,7 @@ fn main() -> Result<()> {
     let hub = w.hub.clone();
     match a.cmd {
         Cmd::Init => unreachable!(),
-        Cmd::Address => println!("{}", hex::encode(w.address())),
+        Cmd::Address => println!("{}", w.address_text(a.network)),
         Cmd::Balance => {
             let new = w.sync()?;
             println!("{} sats{}", w.balance(), if new > 0 { format!(" ({new} changed)") } else { String::new() });
@@ -242,7 +243,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Send { ref to, amount, wait } => {
-            let to: [u8; 32] = hex::decode(to)?.try_into().ok().context("an address is 32 bytes, hex")?;
+            let to = w.parse_address(to, a.network)?;
             let id = w.pay(to, amount)?;
             println!("payment {id} proposed: waiting for the payee");
             let start = std::time::Instant::now();
@@ -259,7 +260,11 @@ fn main() -> Result<()> {
                 }
                 if start.elapsed().as_secs() >= wait {
                     println!("no answer in {wait} s: cancelling");
-                    println!("{:?}", w.cancel()?);
+                    match w.cancel()? {
+                        lichen_wallet::notes::Step::Done(_, n) => println!("too late to cancel: paid {amount} sats, our note {} of {} sats", n.note.k, n.note.v),
+                        lichen_wallet::notes::Step::Cancelled(_, n) => println!("cancelled: our note {} of {} sats", n.note.k, n.note.v),
+                        lichen_wallet::notes::Step::Signed(_) => println!("signed"),
+                    }
                     return Ok(());
                 }
                 std::thread::sleep(std::time::Duration::from_millis(300));
