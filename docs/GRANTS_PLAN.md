@@ -323,6 +323,25 @@ rounds after.
    scheme (say Chaumian blinding) under the same format isn't dangerous:
    its deployment has another issuer key, so another tag, and the version
    byte marks a different payload.
+3. **Later: an audit of a payment in flight when a client goes away**
+   (the user, 2026-11-15: future work, not now). A phone stops or kills
+   a backgrounded app; each step's state is saved before it's sent, so a
+   restart resumes, but what each side sees, for how long, and what
+   frees it hasn't been gone through step by step (proposed, taken,
+   granted, one or both signed, recorded; each side gone at each; the
+   hub restarted; a late return). From reading the code (not tested):
+   the hub never expires a payment, either party can cancel it until
+   it's recorded, and only the payer's job cancels by itself (60 s, and
+   only before the payer signs); the receiver's account is busy while a
+   payment to it waits, so a payer gone after granting blocks its
+   receipts until someone cancels; the app runs one job at a time, so a
+   payer whose payee went away between `/half` and `/sign` waits in its
+   pay job, which never ends, and the Cancel button is refused until the
+   app restarts (likely a bug). Then: a hub-side expiry for a payment
+   not recorded; the app's own wake-ups. The precedent for a receiver
+   that must be online: Lightning's phone wallets (Phoenix, Breez) wake
+   the app by a push notification for an incoming payment (FCM, or
+   UnifiedPush without Google).
 
 ### Performance, later (the user, 2026-11-15: noted, not yet)
 
