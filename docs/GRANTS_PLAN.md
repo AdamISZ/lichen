@@ -323,6 +323,16 @@ rounds after.
    scheme (say Chaumian blinding) under the same format isn't dangerous:
    its deployment has another issuer key, so another tag, and the version
    byte marks a different payload.
+4. **The hub's API, specified** (the user asked, 2026-11-15): done,
+   `docs/hub-api.yaml` (OpenAPI 3.1), checked against traffic captured
+   between the CLI and a devstack hub through a logging proxy (an
+   opening, payments both ways, a cancel, withdrawals: 135 messages, all
+   valid; mutated ones refused). Found writing it, candidate changes:
+   keys and hashes in two encodings (hex strings, and JSON arrays of
+   bytes where a `[u8; N]` has no hex helper: `owner` in `/deposit` and
+   `/hp/setup`, `issuer`, `l2_address`, `rest_to`, the one-time keys'
+   chains, the graph's signatures); `GET /payment` of an unknown id is a
+   400, not a 404; an unknown account is shown empty.
 3. **Later: an audit of a payment in flight when a client goes away**
    (the user, 2026-11-15: future work, not now). A phone stops or kills
    a backgrounded app; each step's state is saved before it's sent, so a

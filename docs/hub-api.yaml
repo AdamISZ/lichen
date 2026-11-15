@@ -1,0 +1,872 @@
+openapi: 3.1.0
+info:
+  title: lichen grants hub API
+  version: grants-0.5.1
+  summary: The HTTP API a grants L2 hub serves to wallets.
+  description: |
+    The hub of lichen's grants L2 (branch `grants`, design
+    papers/lichen-grants-v0.5.6): it opens contracts with users, keeps the
+    book of accounts (one note per account), grants and records payments,
+    and folds withdrawals. This file specifies the wire format as the hub
+    at `grants-v0.5.1` serves it (`crates/hub/src/lib.rs`, `route`), and
+    was checked against traffic captured between the CLI wallet and a
+    devstack hub (an opening, payments both ways, a cancel, withdrawals).
+
+    **Conventions.**
+    - Every body is JSON (`Content-Type: application/json`) except an
+      instance upload, raw bytes. Bodies are at most 8 MiB, an instance
+      64 MiB.
+    - A refusal is `400` with `{"error": "<why>"}`; a body too large
+      `413`; a request that panics the handler `500` (the hub goes on
+      serving). There is no `404`: an unknown payment is a `400`, an
+      unknown account is shown empty.
+    - Amounts are sats (integers). Heights are Bitcoin block heights.
+    - Keys and hashes appear in two encodings, as the Rust types
+      serialize: lower-case hex strings (most), or JSON arrays of byte
+      values 0–255 (`[u8; N]` fields without a hex helper). Each schema
+      says which. (Unifying on hex is a candidate change.)
+    - An L2 address, an account's owner, is a 32-byte x-only secp256k1
+      key, as 64 hex characters in paths and payments.
+    - Signatures are BIP340 Schnorr, 64 bytes; a transaction signature
+      with a sighash byte other than the default is 65.
+
+    **Opening a contract** (all by the wallet, in order):
+    1. `POST /deposit`: a contract number and the hub's key in the
+       deposit's taproot tree. The wallet pays the deposit to that tree's
+       address from any wallet and waits for it to confirm.
+    2. `POST /hp/setup`: the dispute's terms (unit, mint value, owner,
+       issuer), the cut-and-choose's `n` and `m`, the hub's Lamport and
+       adaptor keys as prover.
+    3. `POST /hp/commit`: her four one-time keys and her commitments to
+       `n` garbled instances; the hub answers which `m` it keeps.
+    4. `POST /hp/instance/{cid}/{i}` for each kept `i`: the instance.
+    5. `POST /open`: the other instances opened, her keys, the deposit
+       coin; the hub answers with the funding transaction and its
+       signatures on the contract's graph.
+    6. `POST /accept`: her signatures; the hub broadcasts the funding and
+       reveals the adaptor secret `t`, which completes the mint of her
+       deposit to her account (note 0 of `v0`).
+
+    **A payment** (payer P, payee R; both must be online):
+    1. P `POST /pay` with her half (her live note, what it keeps). State
+       `Proposed`.
+    2. R finds it in `GET /incoming/{owner}`, `POST /half` with its half.
+       The hub grants it: `Granted`, with the sides and the grant (an
+       adaptor point `T` and pre-signatures on both new notes).
+    3. Each party reads `GET /payment/{id}`, checks its pre-signature and
+       the other side, and `POST /sign`s `α` (the grant's auth message).
+    4. With both signatures the hub records it: `Recorded`, both accounts
+       one step on, and the seed released, which completes each party's
+       new note. Until then either party may `POST /cancel`.
+
+    **Withdrawing**: `POST /withdraw` with the claim (her live note), the
+    whole units `b` and her signature on the fold; the hub closes the
+    account and broadcasts the fold. `b = 0` without a claim closes the
+    contract early, paying her reserve alone.
+  license:
+    name: MIT
+servers:
+  - url: https://thimbly.org/lichen/grants/hub
+    description: the Mutinynet deployment (lichen-hub)
+  - url: http://127.0.0.1:18310
+    description: a local hub (the devstack's is on 28310)
+tags:
+  - name: hub
+  - name: opening
+  - name: payments
+  - name: withdrawal
+paths:
+  /info:
+    get:
+      tags: [hub]
+      operationId: info
+      summary: The hub's terms, deployment and build.
+      responses:
+        '200':
+          description: The hub's terms.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Info' }
+  /deposit:
+    post:
+      tags: [opening]
+      operationId: deposit
+      summary: Ask for a deposit address (a contract number and the hub's key in the deposit's tree).
+      description: |
+        Refused now, before she pays, if the hub couldn't fund a contract
+        of this deposit and liquidity, or if `owner` already holds a
+        contract (one at a time) or has exited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DepositRequest' }
+      responses:
+        '200':
+          description: The contract's number and the deposit's terms.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepositOffer' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /hp/setup:
+    post:
+      tags: [opening]
+      operationId: hpSetup
+      summary: Fix the dispute's statement terms and get the hub's prover keys.
+      description: Once the deposit for `cid` is paid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HpSetupRequest' }
+      responses:
+        '200':
+          description: The setup.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HpSetup' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /hp/commit:
+    post:
+      tags: [opening]
+      operationId: hpCommit
+      summary: Commit to her one-time keys and her n garbled instances; the hub chooses the m it keeps.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HpCommit' }
+      responses:
+        '200':
+          description: The instances kept.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HpKept' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /hp/instance/{cid}/{i}:
+    post:
+      tags: [opening]
+      operationId: hpInstance
+      summary: Upload a kept instance.
+      description: |
+        The instance's bytes (`lichen_babe` `Instance::to_bytes`), about
+        24 MB each; at most 64 MiB. The hub checks it against her
+        commitment `commitments[i-1]` and keeps it.
+      parameters:
+        - { name: cid, in: path, required: true, schema: { type: integer, minimum: 0 } }
+        - { name: i, in: path, required: true, description: 'The instance, from 1; one the hub kept.', schema: { type: integer, minimum: 1 } }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, contentEncoding: binary }
+      responses:
+        '200':
+          description: Kept.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [kept]
+                properties:
+                  kept: { type: integer, description: The instance kept. }
+        '400': { $ref: '#/components/responses/Refused' }
+  /open:
+    post:
+      tags: [opening]
+      operationId: open
+      summary: Open the contract; the hub offers the funding and its signatures on the contract's graph.
+      description: |
+        Every kept instance must be uploaded. The instances not kept are
+        opened (`hp_opened`, in order), each rebuilt by the hub to its
+        commitment. The hub may take some seconds (it checks the opened
+        instances) before answering.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OpenRequest' }
+      responses:
+        '200':
+          description: The hub's offer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OpenOffer' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /accept:
+    post:
+      tags: [opening]
+      operationId: accept
+      summary: Her signatures; the hub broadcasts the funding and reveals the adaptor secret t.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Accept' }
+      responses:
+        '200':
+          description: The funding broadcast.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Opened' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /account/{owner}:
+    get:
+      tags: [payments]
+      operationId: account
+      summary: An account as the hub's book has it.
+      description: An owner the hub doesn't know is shown as its note 0 of 0 sats.
+      parameters:
+        - $ref: '#/components/parameters/Owner'
+      responses:
+        '200':
+          description: The account.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /incoming/{owner}:
+    get:
+      tags: [payments]
+      operationId: incoming
+      summary: Payments proposed to this owner, awaiting its half.
+      parameters:
+        - $ref: '#/components/parameters/Owner'
+      responses:
+        '200':
+          description: The payments, possibly none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Payment' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /payment/{id}:
+    get:
+      tags: [payments]
+      operationId: payment
+      summary: A payment as the hub has it.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/PaymentId' }
+      responses:
+        '200':
+          description: The payment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /pay:
+    post:
+      tags: [payments]
+      operationId: pay
+      summary: Propose a payment, with the payer's half.
+      description: |
+        The half must take the payer's live note, which must not be busy
+        with another payment; `v_out = v_in - amount`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PayRequest' }
+      responses:
+        '200':
+          description: The payment, `Proposed`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /half:
+    post:
+      tags: [payments]
+      operationId: half
+      summary: The payee's half; the hub grants the payment.
+      description: |
+        The half must take the payee's live note (`v_out = v_in +
+        amount`). The answer is `Granted`, carrying the sides and the
+        grant.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HalfRequest' }
+      responses:
+        '200':
+          description: The payment, `Granted`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /sign:
+    post:
+      tags: [payments]
+      operationId: sign
+      summary: A party's signature on the grant's auth message α.
+      description: |
+        `psi` is the owner's BIP340 signature on `α`
+        (`Grant::alpha` of the sides). With both parties' signatures the
+        hub records the payment and the answer carries the seed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SignRequest' }
+      responses:
+        '200':
+          description: The payment, `Granted` (one signature) or `Recorded` (both, with the seed).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /cancel:
+    post:
+      tags: [payments]
+      operationId: cancel
+      summary: A party asks to cancel a payment in flight.
+      description: |
+        Signed by the asking party: BIP340 on `cancel_msg(id)`, the tagged
+        hash `"cancel"` of the id's bytes. If the payment is `Recorded`,
+        the answer is it with the seed (too late to cancel). Otherwise it
+        is `Cancelled` from now on, and each party that had signed is
+        reissued its note one step on (`reissued`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelRequest' }
+      responses:
+        '200':
+          description: The payment, `Cancelled` or `Recorded`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /withdraw:
+    post:
+      tags: [withdrawal]
+      operationId: withdraw
+      summary: A cooperative withdrawal; the hub closes the account and broadcasts the fold.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WithdrawRequest' }
+      responses:
+        '200':
+          description: The fold broadcast.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Folded' }
+        '400': { $ref: '#/components/responses/Refused' }
+components:
+  parameters:
+    Owner:
+      name: owner
+      in: path
+      required: true
+      description: An account's owner (an L2 address).
+      schema: { $ref: '#/components/schemas/Hex32' }
+  responses:
+    Refused:
+      description: Refused, and why.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+      example: { error: 'the half takes note 1 of 109500, not the live one (2)' }
+    Hex32:
+      description: 32 bytes as hex (a hash, an x-only key, a scalar).
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+    Hex16:
+      description: 16 bytes as hex.
+      type: string
+      pattern: '^[0-9a-f]{32}$'
+    SigHex:
+      description: A BIP340 signature, 64 bytes as hex.
+      type: string
+      pattern: '^[0-9a-f]{128}$'
+    Point:
+      description: A compressed secp256k1 point, 33 bytes as hex.
+      type: string
+      pattern: '^0[23][0-9a-f]{64}$'
+    HexBytes:
+      description: Bytes as hex.
+      type: string
+      pattern: '^([0-9a-f]{2})*$'
+    Bytes32:
+      description: 32 bytes as a JSON array of byte values.
+      type: array
+      items: { type: integer, minimum: 0, maximum: 255 }
+      minItems: 32
+      maxItems: 32
+    Bytes20:
+      description: 20 bytes (a HASH160) as a JSON array of byte values.
+      type: array
+      items: { type: integer, minimum: 0, maximum: 255 }
+      minItems: 20
+      maxItems: 20
+    TxSig:
+      description: A transaction signature as byte values, 64 bytes (SIGHASH_DEFAULT) or 65 (with its sighash byte).
+      type: array
+      items: { type: integer, minimum: 0, maximum: 255 }
+      minItems: 64
+      maxItems: 65
+    U16:
+      type: integer
+      minimum: 0
+      maximum: 65535
+    U32:
+      type: integer
+      minimum: 0
+      maximum: 4294967295
+    Sats:
+      type: integer
+      minimum: 0
+    OutPoint:
+      description: A coin, `txid:vout`.
+      type: string
+      pattern: '^[0-9a-f]{64}:[0-9]+$'
+    TxOut:
+      type: object
+      required: [value, script_pubkey]
+      properties:
+        value: { $ref: '#/components/schemas/Sats' }
+        script_pubkey: { $ref: '#/components/schemas/HexBytes' }
+    Coin:
+      description: A coin and its output, `[outpoint, txout]`.
+      type: array
+      prefixItems:
+        - $ref: '#/components/schemas/OutPoint'
+        - $ref: '#/components/schemas/TxOut'
+      minItems: 2
+      maxItems: 2
+    Transaction:
+      description: A Bitcoin transaction as rust-bitcoin serializes it.
+      type: object
+      required: [version, lock_time, input, output]
+      properties:
+        version: { type: integer }
+        lock_time: { $ref: '#/components/schemas/U32' }
+        input:
+          type: array
+          items:
+            type: object
+            required: [previous_output, script_sig, sequence, witness]
+            properties:
+              previous_output: { $ref: '#/components/schemas/OutPoint' }
+              script_sig: { $ref: '#/components/schemas/HexBytes' }
+              sequence: { $ref: '#/components/schemas/U32' }
+              witness:
+                type: array
+                items: { $ref: '#/components/schemas/HexBytes' }
+        output:
+          type: array
+          items: { $ref: '#/components/schemas/TxOut' }
+    Network:
+      type: string
+      enum: [regtest, mutinynet, signet, testnet4]
+    Info:
+      type: object
+      required: [network, deployment, statement, reserve_ppm, fee_ppm, max_liquidity, duration]
+      properties:
+        network: { $ref: '#/components/schemas/Network' }
+        deployment:
+          description: The deployment's keys; in the grants L2 both are the issuer's, which signs every note.
+          type: object
+          required: [sequencer, hub]
+          properties:
+            sequencer: { $ref: '#/components/schemas/Hex32' }
+            hub: { $ref: '#/components/schemas/Hex32' }
+            seal: { description: Unused in the grants L2. }
+        statement:
+          description: The dispute's statement, which the wallet must run too.
+          type: string
+          enum: [hub-proves, hub-proves-mock]
+        reserve_ppm: { type: integer, minimum: 0, description: "The hub's reserve for a contract of cap V_max: V_max times this, per million." }
+        fee_ppm: { type: integer, minimum: 0, description: The liquidity fee, per million of the liquidity asked. }
+        max_liquidity: { $ref: '#/components/schemas/Sats' }
+        duration: { type: integer, minimum: 0, description: Blocks from opening to T_close. }
+        version: { type: string, description: 'The release, `grants-X.Y.Z`.' }
+        commit:
+          description: The build's `git describe`, when the build was told.
+          type: [string, 'null']
+        guests:
+          description: The RISC Zero image ids the hub proves and checks with; a wallet refuses a hub whose guests aren't its own.
+          type: [object, 'null']
+          required: [spend, chain, hp]
+          properties:
+            spend: { $ref: '#/components/schemas/Hex32' }
+            chain: { $ref: '#/components/schemas/Hex32' }
+            hp: { $ref: '#/components/schemas/Hex32' }
+    DepositRequest:
+      type: object
+      required: [alice]
+      properties:
+        alice: { $ref: '#/components/schemas/Hex32', description: "Her x-only key in the deposit's tree." }
+        deposit: { $ref: '#/components/schemas/Sats', description: 'D, as she will ask it at the opening (0: unsaid).' }
+        liquidity: { $ref: '#/components/schemas/Sats', description: 'L, as she will ask it (0: unsaid).' }
+        owner:
+          description: "Her L2 key, the contract's owner."
+          oneOf:
+            - $ref: '#/components/schemas/Bytes32'
+            - type: 'null'
+    DepositOffer:
+      type: object
+      required: [cid, hub, timeout]
+      properties:
+        cid: { $ref: '#/components/schemas/U32', description: "The contract's number, its memo c." }
+        hub: { $ref: '#/components/schemas/Hex32', description: "The hub's x-only key in the deposit's tree." }
+        timeout: { $ref: '#/components/schemas/U16', description: "Blocks after the deposit confirms until her refund matures." }
+    HpSetupRequest:
+      type: object
+      required: [cid, deposit, unit, owner, v0]
+      properties:
+        cid: { $ref: '#/components/schemas/U32' }
+        deposit: { $ref: '#/components/schemas/OutPoint' }
+        unit: { $ref: '#/components/schemas/Sats', description: "The contract's unit u (sats per unit of b)." }
+        owner: { $ref: '#/components/schemas/Bytes32' }
+        v0: { $ref: '#/components/schemas/Sats', description: "The mint's value, note 0's." }
+    HpSetup:
+      type: object
+      required: [cid, n, m, unit, deposit, owner, v0, issuer, lamport, adaptor]
+      properties:
+        cid: { $ref: '#/components/schemas/U32' }
+        n: { $ref: '#/components/schemas/U32', description: Instances she garbles. }
+        m: { $ref: '#/components/schemas/U32', description: Instances the hub keeps. }
+        unit: { $ref: '#/components/schemas/Sats' }
+        deposit: { $ref: '#/components/schemas/OutPoint' }
+        owner: { $ref: '#/components/schemas/Bytes32' }
+        v0: { $ref: '#/components/schemas/Sats' }
+        issuer: { $ref: '#/components/schemas/Bytes32', description: "The issuer's x-only key." }
+        lamport:
+          description: "The hub's Lamport key for π1: per digit (254), a HASH160 lock per value (4)."
+          type: array
+          items:
+            type: array
+            items: { $ref: '#/components/schemas/Bytes20' }
+            minItems: 4
+            maxItems: 4
+        adaptor:
+          description: "The hub's adaptor keys: per digit, an x-only key per value."
+          type: array
+          items:
+            type: array
+            items: { $ref: '#/components/schemas/Hex32' }
+            minItems: 4
+            maxItems: 4
+    WotsParams:
+      type: object
+      required: [message_digits, checksum_digits]
+      properties:
+        message_digits: { $ref: '#/components/schemas/U32' }
+        checksum_digits: { $ref: '#/components/schemas/U32' }
+    Wots256Public:
+      description: A Winternitz public key on SHA-256 chains (base 16), each chain's end.
+      type: object
+      required: [params, digits]
+      properties:
+        params: { $ref: '#/components/schemas/WotsParams' }
+        digits:
+          type: array
+          items: { $ref: '#/components/schemas/Bytes32' }
+    WotsPublic:
+      description: A Winternitz public key on HASH160 chains (base 16), each chain's end.
+      type: object
+      required: [params, digits]
+      properties:
+        params: { $ref: '#/components/schemas/WotsParams' }
+        digits:
+          type: array
+          items: { $ref: '#/components/schemas/Bytes20' }
+    AliceKeys:
+      description: "Her one-time keys, which the statement's journal binds: K_Q (148+3 digits, the posted claim's 74 bytes), K_b (8+2), A_corr (8+2), A_U (32+3, the unlock's 16 bytes)."
+      type: object
+      required: [q_key, b_key, a_corr_key, a_u_key]
+      properties:
+        q_key: { $ref: '#/components/schemas/Wots256Public' }
+        b_key: { $ref: '#/components/schemas/Wots256Public' }
+        a_corr_key: { $ref: '#/components/schemas/Wots256Public' }
+        a_u_key: { $ref: '#/components/schemas/Wots256Public' }
+    HpCommit:
+      type: object
+      required: [cid, keys, commitments, dealing]
+      properties:
+        cid: { $ref: '#/components/schemas/U32' }
+        keys: { $ref: '#/components/schemas/AliceKeys' }
+        commitments:
+          description: Each instance's commitment, in order (n of them).
+          type: array
+          items: { $ref: '#/components/schemas/Hex32' }
+        dealing:
+          description: "The dealing's commitments, hex (`lichen_proto::setup::dealing_to_hex`)."
+          allOf: [{ $ref: '#/components/schemas/HexBytes' }]
+    HpKept:
+      type: object
+      required: [cid, kept]
+      properties:
+        cid: { $ref: '#/components/schemas/U32' }
+        kept:
+          description: The instances the hub keeps, from 1 (m of them).
+          type: array
+          items: { type: integer, minimum: 1 }
+    InstanceOpened:
+      description: An instance the hub didn't keep, opened.
+      type: object
+      required: [i, seed, shares]
+      properties:
+        i: { type: integer, minimum: 1 }
+        seed: { $ref: '#/components/schemas/Hex32', description: "The instance's seed." }
+        shares:
+          description: "Its shares of the dealing, hex (`lichen_proto::setup::shares_to_hex`)."
+          allOf: [{ $ref: '#/components/schemas/HexBytes' }]
+    PartyPubKeys:
+      description: "A party's keys in the contract (ln-gap's `PartyPubKeys`): x-only keys, and where its payouts go."
+      type: object
+      required: [funding, payment, delayed, payout_spk]
+      properties:
+        funding: { $ref: '#/components/schemas/Hex32' }
+        payment: { $ref: '#/components/schemas/Hex32' }
+        delayed: { $ref: '#/components/schemas/Hex32' }
+        payout_spk: { $ref: '#/components/schemas/HexBytes' }
+    OpenRequest:
+      type: object
+      required: [alice, l2_address, deposit, liquidity, fee, reserve, hp_opened, cid, deposit_coin, fee_spk]
+      properties:
+        alice: { $ref: '#/components/schemas/PartyPubKeys' }
+        l2_address: { $ref: '#/components/schemas/Bytes32', description: 'Her L2 key, where D - fee is minted.' }
+        deposit: { $ref: '#/components/schemas/Sats', description: 'D: she is minted D - fee.' }
+        liquidity: { $ref: '#/components/schemas/Sats', description: 'L: what she can receive beyond her balance; the cap is D - fee + L.' }
+        fee: { $ref: '#/components/schemas/Sats', description: "The liquidity fee at the hub's rate, kept out of her minted balance." }
+        reserve: { $ref: '#/components/schemas/Sats', description: 'Her reserve r_A.' }
+        hp_opened:
+          description: The instances the hub didn't keep, opened, in order.
+          type: array
+          items: { $ref: '#/components/schemas/InstanceOpened' }
+        cid: { $ref: '#/components/schemas/U32' }
+        deposit_coin:
+          description: "Her deposit coin, confirmed: D + r_A, the funding fee's share, the rest her fee budget."
+          allOf: [{ $ref: '#/components/schemas/Coin' }]
+        fee_spk: { $ref: '#/components/schemas/HexBytes', description: 'Where the funding pays her fee budget.' }
+    Windows:
+      description: "The dispute's windows, in blocks: w_h for the hub's moves (correct, assert), w_a for her ack, delta2 for her challenge, delta1 for the hub's answer."
+      type: object
+      required: [w_h, w_a, delta2, delta1]
+      properties:
+        w_h: { $ref: '#/components/schemas/U16' }
+        w_a: { $ref: '#/components/schemas/U16' }
+        delta2: { $ref: '#/components/schemas/U16' }
+        delta1: { $ref: '#/components/schemas/U16' }
+    AdaptorPresig:
+      description: "An adaptor pre-signature on a transaction: the final nonce R' + T (x-only), R', s'."
+      type: object
+      required: [r_final, r, s_prime]
+      properties:
+        r_final: { $ref: '#/components/schemas/Hex32' }
+        r: { $ref: '#/components/schemas/Point' }
+        s_prime: { $ref: '#/components/schemas/Hex32' }
+    GraphSigs:
+      description: "Signatures on the contract's graph, by transaction name (request, correct, ack, assert, challenge_assert, accept, success, failure, default, request_timeout, ack_timeout; hers also wrongly_challenged_0 and _1)."
+      type: object
+      additionalProperties: { $ref: '#/components/schemas/TxSig' }
+    OpenOffer:
+      type: object
+      required: [cid, t_close, reserve_hub, hub, hp_windows, corr_key, u_key, hp_presigs, funding, hub_coins, hub_sigs, mint_point]
+      properties:
+        cid: { $ref: '#/components/schemas/U32' }
+        t_close: { $ref: '#/components/schemas/U32', description: "The contract's T_close (a height)." }
+        reserve_hub: { $ref: '#/components/schemas/Sats' }
+        hub: { $ref: '#/components/schemas/PartyPubKeys' }
+        hp_windows: { $ref: '#/components/schemas/Windows' }
+        corr_key: { $ref: '#/components/schemas/WotsPublic', description: "The hub's one-time key for b_corr (HASH160 chains)." }
+        u_key: { $ref: '#/components/schemas/WotsPublic', description: "The hub's one-time key for U." }
+        hp_presigs:
+          description: "The hub's adaptor pre-signatures on challenge_assert: per digit, one per value."
+          type: array
+          items:
+            type: array
+            items: { $ref: '#/components/schemas/AdaptorPresig' }
+            minItems: 4
+            maxItems: 4
+        funding: { $ref: '#/components/schemas/Transaction', description: "Inputs: her coins, then the hub's. Outputs: the contract, her change, the hub's change." }
+        hub_coins:
+          description: "The prevouts of the hub's inputs."
+          type: array
+          items: { $ref: '#/components/schemas/Coin' }
+        hub_sigs: { $ref: '#/components/schemas/GraphSigs' }
+        mint_point: { $ref: '#/components/schemas/Point', description: "T, the funding's adaptor point: her signature on the deposit's spend is locked to it." }
+        checkpoint:
+          description: Unused in the grants L2 (an anchored deployment's).
+          type: 'null'
+    Accept:
+      type: object
+      required: [cid, alice_sigs, deposit_presig]
+      properties:
+        cid: { $ref: '#/components/schemas/U32' }
+        alice_sigs: { $ref: '#/components/schemas/GraphSigs' }
+        deposit_presig: { $ref: '#/components/schemas/AdaptorPresig', description: "Her pre-signature on the funding's deposit input (the deposit_open leaf), locked to T." }
+    Opened:
+      type: object
+      required: [txid, t]
+      properties:
+        txid: { $ref: '#/components/schemas/Hex32', description: "The funding's txid." }
+        t: { $ref: '#/components/schemas/Hex32', description: "The adaptor secret, which completes her deposit's mint." }
+    Note:
+      description: "Account owner's k-th note, of v sats."
+      type: object
+      required: [owner, k, v]
+      properties:
+        owner: { $ref: '#/components/schemas/Hex32' }
+        k: { $ref: '#/components/schemas/U32' }
+        v: { $ref: '#/components/schemas/Sats' }
+    Settled:
+      description: "A note with the issuer's BIP340 signature on its digest; note 0 has none (all zeros)."
+      type: object
+      required: [note, sig]
+      properties:
+        note: { $ref: '#/components/schemas/Note' }
+        sig: { $ref: '#/components/schemas/SigHex' }
+    Account:
+      type: object
+      required: [live]
+      properties:
+        live: { $ref: '#/components/schemas/Settled' }
+        busy:
+          description: The payment pending on it.
+          oneOf:
+            - $ref: '#/components/schemas/PaymentId'
+            - type: 'null'
+        closed: { type: boolean, description: 'Closed by a claim (a withdrawal, an exit).' }
+    Half:
+      description: "A party's half of a spend: the note it takes (owner, k_in, v_in), the value it leaves with, a fresh blinding."
+      type: object
+      required: [owner, k_in, v_in, v_out, blind]
+      properties:
+        owner: { $ref: '#/components/schemas/Hex32' }
+        k_in: { $ref: '#/components/schemas/U32' }
+        v_in: { $ref: '#/components/schemas/Sats' }
+        v_out: { $ref: '#/components/schemas/Sats' }
+        blind: { $ref: '#/components/schemas/Hex16' }
+    PaymentId:
+      description: "`<payer>-<k_in>-<the first 8 bytes of the payer's half digest, hex>`."
+      type: string
+      pattern: '^[0-9a-f]{64}-[0-9]+-[0-9a-f]{16}$'
+    Side:
+      description: "A side of a spend: its owner and its half's digest."
+      type: object
+      required: [owner, h]
+      properties:
+        owner: { $ref: '#/components/schemas/Hex32' }
+        h: { $ref: '#/components/schemas/Hex32' }
+    NotePresig:
+      description: "The issuer's adaptor pre-signature on a new note under T: R' and s'."
+      type: object
+      required: [r, s_prime]
+      properties:
+        r: { $ref: '#/components/schemas/Point' }
+        s_prime: { $ref: '#/components/schemas/Hex32' }
+    Grant:
+      description: "The hub's grant: the adaptor point T and its pre-signatures on the two new notes, in owner order."
+      type: object
+      required: [t_point, rho]
+      properties:
+        t_point: { $ref: '#/components/schemas/Point' }
+        rho:
+          type: array
+          items: { $ref: '#/components/schemas/NotePresig' }
+          minItems: 2
+          maxItems: 2
+    PaymentState:
+      description: "Proposed: the payer's half in. Granted: both halves, signatures awaited. Recorded: both signed, both accounts one step on. Cancelled: refused from then on."
+      type: string
+      enum: [Proposed, Granted, Recorded, Cancelled]
+    Payment:
+      type: object
+      required: [id, from, to, amount, state]
+      properties:
+        id: { $ref: '#/components/schemas/PaymentId' }
+        from: { $ref: '#/components/schemas/Hex32' }
+        to: { $ref: '#/components/schemas/Hex32' }
+        amount: { $ref: '#/components/schemas/Sats' }
+        state: { $ref: '#/components/schemas/PaymentState' }
+        sides:
+          description: 'Once granted: the sides in owner order (by owner key).'
+          oneOf:
+            - type: array
+              items: { $ref: '#/components/schemas/Side' }
+              minItems: 2
+              maxItems: 2
+            - type: 'null'
+        grant:
+          description: Once granted.
+          oneOf:
+            - $ref: '#/components/schemas/Grant'
+            - type: 'null'
+        signed:
+          description: The owners who have signed.
+          type: array
+          items: { $ref: '#/components/schemas/Hex32' }
+        seed:
+          description: "Once recorded and released: the seed z, whose scalar is T's discrete log; it completes both new notes."
+          oneOf:
+            - $ref: '#/components/schemas/Hex16'
+            - type: 'null'
+        reissued:
+          description: 'Once cancelled: the reissued notes of the parties that had signed, each one step on.'
+          type: array
+          items: { $ref: '#/components/schemas/Settled' }
+    PayRequest:
+      type: object
+      required: [half, to, amount]
+      properties:
+        half: { $ref: '#/components/schemas/Half' }
+        to: { $ref: '#/components/schemas/Hex32' }
+        amount: { $ref: '#/components/schemas/Sats' }
+    HalfRequest:
+      type: object
+      required: [id, half]
+      properties:
+        id: { $ref: '#/components/schemas/PaymentId' }
+        half: { $ref: '#/components/schemas/Half' }
+    SignRequest:
+      type: object
+      required: [id, owner, psi]
+      properties:
+        id: { $ref: '#/components/schemas/PaymentId' }
+        owner: { $ref: '#/components/schemas/Hex32' }
+        psi: { $ref: '#/components/schemas/SigHex' }
+    CancelRequest:
+      type: object
+      required: [id, owner, sig]
+      properties:
+        id: { $ref: '#/components/schemas/PaymentId' }
+        owner: { $ref: '#/components/schemas/Hex32' }
+        sig: { $ref: '#/components/schemas/SigHex' }
+    WithdrawRequest:
+      type: object
+      required: [cid, b, alice_sig]
+      properties:
+        cid: { $ref: '#/components/schemas/U32' }
+        b: { $ref: '#/components/schemas/U32', description: 'Whole units withdrawn (0: an early close, her reserve alone).' }
+        claim:
+          description: "The posted claim Q, hex (74 bytes: k, v, the issuer's signature): her account's live note. Absent at b = 0."
+          type: string
+          pattern: '^[0-9a-f]{148}$'
+        alice_sig: { $ref: '#/components/schemas/TxSig', description: 'Her signature on the fold.' }
+        rest_to:
+          description: "Where what the note holds beyond u·b goes, as credit (a key of hers with no contract)."
+          oneOf:
+            - $ref: '#/components/schemas/Bytes32'
+            - type: 'null'
+    Folded:
+      type: object
+      required: [txid]
+      properties:
+        txid: { $ref: '#/components/schemas/Hex32', description: "The fold's txid." }
