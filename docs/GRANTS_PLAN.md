@@ -363,6 +363,14 @@ rounds after.
    arrays left in 8 stored files). Left as they are: `GET /payment` of
    an unknown id is a 400, not a 404; an unknown account is shown empty.
    The release changes the wire: a hub and its apps upgrade together.
+   **Published** (the user, 2026-11-15) at
+   https://thimbly.org/lichen/grants/api/: `docs/api/build.sh` renders
+   the spec with Redoc 2.5.4 (pinned, checked against npm's hash) into
+   one self-contained page (`docs/api/out/`, not committed: Redoc's
+   script and the spec inline, nothing fetched when viewed; read-only,
+   no "try it"). Served by the Caddy on thimbly.org's relay
+   (`handle_path /lichen/grants/api/*`, root `/var/www/lichen-api`).
+   To update: `docs/api/build.sh`, then copy `docs/api/out/*` there.
 
 ### Performance, later (the user, 2026-11-15: noted, not yet)
 
