@@ -439,6 +439,48 @@ rounds after.
   forgets its pending grants, and the spend is dropped, its inputs still
   the payer's.
 
+### Variant: amounts hidden from the hub (the user, 2026-11-15)
+
+One possible variant, not planned: the user agrees it works, but it is
+nontrivial engineering. Confidential Transactions inside a spend, so
+the hub no longer sees amounts or balances.
+
+- **Notes** `(o, k, C)`, `C = v·G + r·H` (Pedersen; `H` with no known
+  discrete log to `G`). The hub signs `δ(o, k, C)`.
+- **A payment** moves a transfer commitment `D = a·G + r_a·H`: Alice's
+  note `C_A → C_A − D`, Bob's `C_B → C_B + D`. The hub checks only
+  `C_A,in − C_A,out = C_B,out − C_B,in` (`+ fee·G`, the fee public).
+- **ECDH** between payer and payee keys, with the step numbers, derives
+  `r_a` and encrypts `a`: Bob needs nothing from Alice beyond what the
+  hub relays (helps deferred receipt), and a wallet restored from its
+  seed recomputes its blindings and finds each amount from
+  `D − r_a·H = a·G`, a 48-bit discrete log (seconds, baby-step
+  giant-step).
+- **One range proof per payment**: Alice's change `≥ 0`. Without it she
+  could go negative and inflate Bob, and the hub pays the difference.
+  It protects the hub, which verifies it when recording; the statement
+  needn't. Bob checks `a` himself by opening `D`. A 48-bit Bulletproof:
+  ~600 B, tens of ms to prove on a phone, a few ms to verify.
+- **The claim opens the note**: `Q` carries `(v, r)`, ~32 bytes more
+  under Winternitz in `request`; the statement recomputes `C`
+  (~300k cycles).
+- **The correction turns around** (the real redesign). The hub can't post
+  `b_corr` for a stale claim or a spend in flight, not knowing her
+  balance. It names the superseding spend (`U` as now, `X` in its
+  witness); Alice answers in `ack` with the opening of the note `X` gave
+  her; a wrong opening, the hub's proof shows it and she gets 0; a right
+  one, she's paid it. The timeout path can't pay a hub's `b_corr`: a
+  claimant silent past `w_A` gets 0 (harsher than now, but she started
+  the exit).
+- **The hub still sees** owners, timing and who pays whom (the payment
+  graph), mint values (deposits are on chain), and balances at exit (on
+  chain anyway). Not amounts or balances in between: between today's
+  design (the hub sees everything) and licash.
+- **Knock-on**: the hub can't see a payee pass his receive room, so his
+  wallet must refuse such payments (the hub's liability is capped by the
+  contract's output anyway); rules on values (a floor `F`) need a range
+  proof on `C_out − F·G` in place of a comparison.
+
 ### Undecided: short-id collisions (found 2026-11-13, reading v0.1.1)
 
 A note is named by its id's first 8 bytes (in its digest, so in the
