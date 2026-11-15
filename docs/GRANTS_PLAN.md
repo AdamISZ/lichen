@@ -343,6 +343,13 @@ rounds after.
    that must be online: Lightning's phone wallets (Phoenix, Breez) wake
    the app by a push notification for an incoming payment (FCM, or
    UnifiedPush without Google).
+5. **Payments received weren't shown** (the user, 2026-11-15: 2,541
+   sats from the phone to the desktop app, "does not seem to have
+   recorded the receipt"). It had: the hub recorded it, the desktop
+   wallet held the new note; but Activity lists only jobs, and a receipt
+   happens in the refresh, whose message went nowhere. Fixed in the app
+   (local, lichen-gui after grants-v0.5.2): received, cancelled-incoming
+   and credits recorded in Activity. Not live until the apps update.
 4. **The hub's API, specified** (the user asked, 2026-11-15): done,
    `docs/hub-api.yaml` (OpenAPI 3.1), checked against traffic captured
    between the CLI and a devstack hub through a logging proxy (an
