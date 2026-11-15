@@ -392,6 +392,17 @@ rounds after.
    happens in the refresh, whose message went nowhere. Fixed in the app
    (local, lichen-gui after grants-v0.5.2): received, cancelled-incoming
    and credits recorded in Activity. Not live until the apps update.
+6. **Later: from credit to a contract** (the user, 2026-11-15: "someone
+   got some sats on this app and later on wants to get serious and
+   convert it to a backed contract"). Credit circulates already (an
+   account with no contract can be paid and can pay: on Mutinynet, Bob,
+   with none, received 5,000 sats and paid 2,000 back), but it's backed
+   by nothing until it reaches a contract's account. To think through:
+   the path in the app (open a contract, then move the credit into its
+   account, as a payment between one's own keys, needing cap room: the
+   liquidity asked must cover it; or the credit counted into the
+   opening's mint); what the app tells a holder of credit; whether the
+   hub should limit credit at all.
 
 ### Performance, later (the user, 2026-11-15: noted, not yet)
 
