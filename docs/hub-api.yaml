@@ -1,14 +1,14 @@
 openapi: 3.1.0
 info:
   title: lichen grants hub API
-  version: grants-0.5.1
+  version: grants-0.5.2
   summary: The HTTP API a grants L2 hub serves to wallets.
   description: |
     The hub of lichen's grants L2 (branch `grants`, design
     papers/lichen-grants-v0.5.6): it opens contracts with users, keeps the
     book of accounts (one note per account), grants and records payments,
     and folds withdrawals. This file specifies the wire format as the hub
-    at `grants-v0.5.1` serves it (`crates/hub/src/lib.rs`, `route`), and
+    at `grants-v0.5.2` serves it (`crates/hub/src/lib.rs`, `route`), and
     was checked against traffic captured between the CLI wallet and a
     devstack hub (an opening, payments both ways, a cancel, withdrawals).
 
@@ -21,10 +21,9 @@ info:
       serving). There is no `404`: an unknown payment is a `400`, an
       unknown account is shown empty.
     - Amounts are sats (integers). Heights are Bitcoin block heights.
-    - Keys and hashes appear in two encodings, as the Rust types
-      serialize: lower-case hex strings (most), or JSON arrays of byte
-      values 0–255 (`[u8; N]` fields without a hex helper). Each schema
-      says which. (Unifying on hex is a candidate change.)
+    - Every byte string (a key, a hash, a signature) is lower-case hex.
+      (Before grants-0.5.2 some were JSON arrays of byte values; a hub and
+      a wallet still read those in their stored files, and on the wire.)
     - An L2 address, an account's owner, is a 32-byte x-only secp256k1
       key, as 64 hex characters in paths and payments.
     - Signatures are BIP340 Schnorr, 64 bytes; a transaction signature
@@ -401,24 +400,14 @@ components:
       description: Bytes as hex.
       type: string
       pattern: '^([0-9a-f]{2})*$'
-    Bytes32:
-      description: 32 bytes as a JSON array of byte values.
-      type: array
-      items: { type: integer, minimum: 0, maximum: 255 }
-      minItems: 32
-      maxItems: 32
-    Bytes20:
-      description: 20 bytes (a HASH160) as a JSON array of byte values.
-      type: array
-      items: { type: integer, minimum: 0, maximum: 255 }
-      minItems: 20
-      maxItems: 20
+    Hex20:
+      description: 20 bytes (a HASH160) as hex.
+      type: string
+      pattern: '^[0-9a-f]{40}$'
     TxSig:
-      description: A transaction signature as byte values, 64 bytes (SIGHASH_DEFAULT) or 65 (with its sighash byte).
-      type: array
-      items: { type: integer, minimum: 0, maximum: 255 }
-      minItems: 64
-      maxItems: 65
+      description: A transaction's Schnorr signature as hex, 64 bytes (SIGHASH_DEFAULT) or 65 (with its sighash byte).
+      type: string
+      pattern: '^[0-9a-f]{128}([0-9a-f]{2})?$'
     U16:
       type: integer
       minimum: 0
@@ -516,7 +505,7 @@ components:
         owner:
           description: "Her L2 key, the contract's owner."
           oneOf:
-            - $ref: '#/components/schemas/Bytes32'
+            - $ref: '#/components/schemas/Hex32'
             - type: 'null'
     DepositOffer:
       type: object
@@ -532,7 +521,7 @@ components:
         cid: { $ref: '#/components/schemas/U32' }
         deposit: { $ref: '#/components/schemas/OutPoint' }
         unit: { $ref: '#/components/schemas/Sats', description: "The contract's unit u (sats per unit of b)." }
-        owner: { $ref: '#/components/schemas/Bytes32' }
+        owner: { $ref: '#/components/schemas/Hex32' }
         v0: { $ref: '#/components/schemas/Sats', description: "The mint's value, note 0's." }
     HpSetup:
       type: object
@@ -543,15 +532,15 @@ components:
         m: { $ref: '#/components/schemas/U32', description: Instances the hub keeps. }
         unit: { $ref: '#/components/schemas/Sats' }
         deposit: { $ref: '#/components/schemas/OutPoint' }
-        owner: { $ref: '#/components/schemas/Bytes32' }
+        owner: { $ref: '#/components/schemas/Hex32' }
         v0: { $ref: '#/components/schemas/Sats' }
-        issuer: { $ref: '#/components/schemas/Bytes32', description: "The issuer's x-only key." }
+        issuer: { $ref: '#/components/schemas/Hex32', description: "The issuer's x-only key." }
         lamport:
           description: "The hub's Lamport key for π1: per digit (254), a HASH160 lock per value (4)."
           type: array
           items:
             type: array
-            items: { $ref: '#/components/schemas/Bytes20' }
+            items: { $ref: '#/components/schemas/Hex20' }
             minItems: 4
             maxItems: 4
         adaptor:
@@ -576,7 +565,7 @@ components:
         params: { $ref: '#/components/schemas/WotsParams' }
         digits:
           type: array
-          items: { $ref: '#/components/schemas/Bytes32' }
+          items: { $ref: '#/components/schemas/Hex32' }
     WotsPublic:
       description: A Winternitz public key on HASH160 chains (base 16), each chain's end.
       type: object
@@ -585,7 +574,7 @@ components:
         params: { $ref: '#/components/schemas/WotsParams' }
         digits:
           type: array
-          items: { $ref: '#/components/schemas/Bytes20' }
+          items: { $ref: '#/components/schemas/Hex20' }
     AliceKeys:
       description: "Her one-time keys, which the statement's journal binds: K_Q (148+3 digits, the posted claim's 74 bytes), K_b (8+2), A_corr (8+2), A_U (32+3, the unlock's 16 bytes)."
       type: object
@@ -641,7 +630,7 @@ components:
       required: [alice, l2_address, deposit, liquidity, fee, reserve, hp_opened, cid, deposit_coin, fee_spk]
       properties:
         alice: { $ref: '#/components/schemas/PartyPubKeys' }
-        l2_address: { $ref: '#/components/schemas/Bytes32', description: 'Her L2 key, where D - fee is minted.' }
+        l2_address: { $ref: '#/components/schemas/Hex32', description: 'Her L2 key, where D - fee is minted.' }
         deposit: { $ref: '#/components/schemas/Sats', description: 'D: she is minted D - fee.' }
         liquidity: { $ref: '#/components/schemas/Sats', description: 'L: what she can receive beyond her balance; the cap is D - fee + L.' }
         fee: { $ref: '#/components/schemas/Sats', description: "The liquidity fee at the hub's rate, kept out of her minted balance." }
@@ -863,7 +852,7 @@ components:
         rest_to:
           description: "Where what the note holds beyond u·b goes, as credit (a key of hers with no contract)."
           oneOf:
-            - $ref: '#/components/schemas/Bytes32'
+            - $ref: '#/components/schemas/Hex32'
             - type: 'null'
     Folded:
       type: object

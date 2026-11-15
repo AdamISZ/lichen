@@ -57,7 +57,7 @@ pub const MIN_UNIT: u64 = 512;
 /// `grants-v<version>`; the app built on it has the same number. Not the
 /// workspace's Cargo version, which stays at the fork point (v0.4.5):
 /// a guest's ELF, and so its image id, changes with its crates' versions.
-pub const VERSION: &str = "grants-0.5.1";
+pub const VERSION: &str = "grants-0.5.2";
 
 /// The guests a build proves and checks receipts with: each one's image
 /// id, hex (`r0/guests/<g>.id`). A wallet proves with its own, and a
@@ -243,6 +243,7 @@ pub struct Info {
 pub struct OpenRequest {
     pub alice: PartyPubKeys,
     /// Where the hub mints `D` on the L2.
+    #[serde(with = "lichen_babe::hexbytes::fixed")]
     pub l2_address: [u8; 32],
     /// What Alice pays in, `D`: she is minted `D - fee`.
     pub deposit: u64,
@@ -281,7 +282,7 @@ pub struct DepositRequest {
     /// Her L2 key, the contract's owner: one contract at a time, and none
     /// after an exit (the grants L2), refused now rather than after she
     /// pays.
-    #[serde(default)]
+    #[serde(default, with = "lichen_babe::hexbytes::opt_fixed")]
     pub owner: Option<[u8; 32]>,
 }
 
@@ -309,6 +310,7 @@ pub struct OpenOffer {
     pub funding: Transaction,
     /// The prevouts of the hub's inputs.
     pub hub_coins: Vec<(OutPoint, TxOut)>,
+    #[serde(with = "lichen_babe::hexbytes::map_bytes")]
     pub hub_sigs: HashMap<String, Vec<u8>>,
     /// `T`, the adaptor point of this funding transaction (Alice's
     /// signature on her deposit's spend is locked to it).
@@ -321,6 +323,7 @@ pub struct OpenOffer {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Accept {
     pub cid: u32,
+    #[serde(with = "lichen_babe::hexbytes::map_bytes")]
     pub alice_sigs: HashMap<String, Vec<u8>>,
     /// Alice's pre-signature on the funding transaction's deposit input
     /// (the `deposit_open` leaf), locked to `T`: the hub completes it with
@@ -409,10 +412,11 @@ pub struct WithdrawRequest {
     pub b: u32,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub claim: String,
+    #[serde(with = "lichen_babe::hexbytes::bytes")]
     pub alice_sig: Vec<u8>,
     /// Where what the claimed note holds beyond `u·b` goes, as credit (a
     /// key of hers with no contract).
-    #[serde(default)]
+    #[serde(default, with = "lichen_babe::hexbytes::opt_fixed")]
     pub rest_to: Option<[u8; 32]>,
 }
 
@@ -518,6 +522,7 @@ pub struct Record {
     pub network: Net,
     /// The claim's journal must carry this: the L2 deployment's id, or in
     /// an anchored deployment the contract's ([`contract_word`]).
+    #[serde(with = "lichen_babe::hexbytes::fixed")]
     pub deployment: Hash,
     /// In an anchored deployment, the Bitcoin block the contract opened at,
     /// which fixes the work a withdrawal shows on top of its anchor.
@@ -525,9 +530,12 @@ pub struct Record {
     pub checkpoint: Option<Checkpoint>,
     pub terms: Terms,
     pub pubs: [PartyPubKeys; 2],
+    #[serde(with = "lichen_babe::hexbytes::fixed")]
     pub l2_address: [u8; 32],
     pub funding: OutPoint,
+    #[serde(with = "lichen_babe::hexbytes::map_bytes")]
     pub hub_sigs: HashMap<String, Vec<u8>>,
+    #[serde(with = "lichen_babe::hexbytes::map_bytes")]
     pub alice_sigs: HashMap<String, Vec<u8>>,
     /// The hub's fee for the contract's liquidity: Alice was minted
     /// `terms.deposit - fee` ([`Record::minted`]).

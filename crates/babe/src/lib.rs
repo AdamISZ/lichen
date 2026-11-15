@@ -22,6 +22,7 @@ pub mod countersigned;
 pub mod field;
 pub mod gadget;
 pub mod garble;
+pub mod hexbytes;
 pub mod hp;
 pub mod reveal;
 pub mod risc0;

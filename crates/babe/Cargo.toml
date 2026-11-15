@@ -32,7 +32,9 @@ rand_chacha = "0.3"
 rand_core = "0.6"
 sha2.workspace = true
 serde.workspace = true
+# byte strings as hex in JSON (hexbytes)
+hex.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 bitcoincore-rpc.workspace = true
-hex.workspace = true

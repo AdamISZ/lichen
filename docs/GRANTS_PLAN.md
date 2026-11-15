@@ -49,6 +49,7 @@ hub's `/info`, the app's Settings); the workspace's Cargo version stays
 at the fork point (0.4.5), since a guest's ELF, so its image id, changes
 with its crates' versions. First: grants-v0.5.1 (design v0.5; app 0.5.1;
 the app's earlier grants builds were 0.5.0 and 0.6.0, untagged).
+grants-v0.5.2: byte strings as hex in JSON (the wire changes).
 
 **v0.5 since 2026-11-14** on lichen-hub: the container `lichen-grants5-hub`
 (image `lichen:grants5`, from `~/lichen-grants` at 5c09eb2; since 2026-11-15 `lichen:grants-0.5.1`, at grants-v0.5.1, the same book, the old container kept stopped as `lichen-grants5-hub-old`), on the
@@ -346,12 +347,22 @@ rounds after.
    `docs/hub-api.yaml` (OpenAPI 3.1), checked against traffic captured
    between the CLI and a devstack hub through a logging proxy (an
    opening, payments both ways, a cancel, withdrawals: 135 messages, all
-   valid; mutated ones refused). Found writing it, candidate changes:
-   keys and hashes in two encodings (hex strings, and JSON arrays of
-   bytes where a `[u8; N]` has no hex helper: `owner` in `/deposit` and
-   `/hp/setup`, `issuer`, `l2_address`, `rest_to`, the one-time keys'
-   chains, the graph's signatures); `GET /payment` of an unknown id is a
-   400, not a 404; an unknown account is shown empty.
+   valid; mutated ones refused). Found writing it: keys and hashes in
+   two encodings, hex strings and JSON arrays of bytes (serde's default
+   for a `[u8; N]` or `Vec<u8>` with no hex helper). Fixed in
+   grants-0.5.2 (the user, 2026-11-15): `lichen_babe::hexbytes`, hex in
+   JSON, reading either (so the hub's book, contracts and setups and the
+   wallets' files written before still load; a binary format keeps
+   serde's default), on every such field, wire and stored: `owner` in
+   `/deposit` and `/hp/setup`, `issuer`, `l2_address`, `rest_to`, the
+   Lamport key, the one-time keys' chains, the graph's signatures, a
+   record's `deployment` and `hmsg`, a setup's `uploaded`. No guest
+   changes (the hp guest builds on `lichen-withdraw` alone). Checked: a
+   new hub on an old hub's state, the new CLI on an old wallet file; a
+   capture again (168 messages, all valid against the spec; no byte
+   arrays left in 8 stored files). Left as they are: `GET /payment` of
+   an unknown id is a 400, not a 404; an unknown account is shown empty.
+   The release changes the wire: a hub and its apps upgrade together.
 
 ### Performance, later (the user, 2026-11-15: noted, not yet)
 

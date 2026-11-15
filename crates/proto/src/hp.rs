@@ -46,6 +46,7 @@ pub struct HpSetupRequest {
     pub unit: u64,
     /// The contract's owner (its L2 key) and the mint's value, which the
     /// journal binds.
+    #[serde(with = "lichen_babe::hexbytes::fixed")]
     pub owner: Hash,
     pub v0: u64,
 }
@@ -59,9 +60,11 @@ pub struct HpSetup {
     pub m: u32,
     pub unit: u64,
     pub deposit: bitcoin::OutPoint,
+    #[serde(with = "lichen_babe::hexbytes::fixed")]
     pub owner: Hash,
     pub v0: u64,
     /// The issuer's key, which signs every note.
+    #[serde(with = "lichen_babe::hexbytes::fixed")]
     pub issuer: Hash,
     pub lamport: LamportPub,
     pub adaptor: Vec<[XOnlyPublicKey; VALUES]>,
@@ -71,9 +74,13 @@ pub struct HpSetup {
 /// `ack`). SHA-256 chains: the statement verifies them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AliceKeys {
+    #[serde(with = "lichen_babe::hexbytes::wots")]
     pub q_key: Wots256Public,
+    #[serde(with = "lichen_babe::hexbytes::wots")]
     pub b_key: Wots256Public,
+    #[serde(with = "lichen_babe::hexbytes::wots")]
     pub a_corr_key: Wots256Public,
+    #[serde(with = "lichen_babe::hexbytes::wots")]
     pub a_u_key: Wots256Public,
 }
 
@@ -129,7 +136,9 @@ pub struct HpRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HpOffer {
     pub hp_windows: Windows,
+    #[serde(with = "lichen_babe::hexbytes::wots")]
     pub corr_key: WotsPublic,
+    #[serde(with = "lichen_babe::hexbytes::wots")]
     pub u_key: WotsPublic,
     pub hp_presigs: Vec<[Presig; VALUES]>,
 }
@@ -138,7 +147,9 @@ pub struct HpOffer {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HpKeys {
     pub alice_keys: AliceKeys,
+    #[serde(with = "lichen_babe::hexbytes::wots")]
     pub corr_key: WotsPublic,
+    #[serde(with = "lichen_babe::hexbytes::wots")]
     pub u_key: WotsPublic,
     /// The hub's Lamport key for π1 and its adaptor keys.
     pub hub_lamport: LamportPub,
@@ -147,10 +158,12 @@ pub struct HpKeys {
     /// hashlocks.
     pub n: u32,
     pub kept: Vec<u32>,
+    #[serde(with = "lichen_babe::hexbytes::vec_fixed")]
     pub hmsg: Vec<Hash>,
     pub hp_windows: Windows,
     /// The contract's deposit coin, the issuer, the mint's value.
     pub deposit: bitcoin::OutPoint,
+    #[serde(with = "lichen_babe::hexbytes::fixed")]
     pub issuer: Hash,
     pub v0: u64,
     /// The hub's adaptor pre-signatures on `challenge_assert`.

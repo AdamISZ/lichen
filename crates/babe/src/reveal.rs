@@ -38,7 +38,7 @@ pub struct LamportKey(Vec<[Preimage; VALUES]>);
 
 /// Its public half: the preimages' hashes.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct LamportPub(pub Vec<[Hash160; VALUES]>);
+pub struct LamportPub(#[serde(with = "crate::hexbytes::vec_rows")] pub Vec<[Hash160; VALUES]>);
 
 impl LamportKey {
     pub fn new(seed: &Seed, digits: usize) -> LamportKey {

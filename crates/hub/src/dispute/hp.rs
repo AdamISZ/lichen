@@ -70,7 +70,7 @@ pub(crate) struct Prepared {
     #[serde(default)]
     kept: Vec<u32>,
     /// Each kept instance uploaded, its hashlock.
-    #[serde(default)]
+    #[serde(default, with = "lichen_babe::hexbytes::btree_fixed")]
     uploaded: std::collections::BTreeMap<u32, Hash>,
     /// The instances not kept, opened (at the opening).
     #[serde(default)]
