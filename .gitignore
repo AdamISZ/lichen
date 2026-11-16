@@ -33,3 +33,6 @@ papers/*.vrb
 
 # other agents' reviews and conversations, kept for reference only
 /docs/other-agent-analysis/
+
+# planning notes, kept locally, not published
+/docs/*PLAN.md

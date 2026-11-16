@@ -90,7 +90,7 @@ recipient encrypted (ECDH, ChaCha20-Poly1305), and the recipient learns
 the amount, not who sent it. An owner is a hash of three keys: a spend
 key, used only inside the spend proof; a nullifier key, which derives
 the notes' nullifiers; and an exit key, which signs exit claims and
-nothing else (docs/HUB_PROVES_PLAN.md, "Shielded notes"). RISC Zero aims for perfect
+nothing else. RISC Zero aims for perfect
 zero knowledge but hasn't proved it, so treat the proofs' hiding as a
 strong expectation, not a theorem.
 

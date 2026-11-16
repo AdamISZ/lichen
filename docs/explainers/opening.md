@@ -284,4 +284,4 @@ Once the funding is out, the contract is open. Its endings are:
 The upload is the cost the swapped roles bring: under the earlier design
 the hub garbled and Alice downloaded the instances. It is two to three
 minutes on a 10 to 20 Mbit/s uplink, poor on mobile data. Fewer instances,
-by VSSS or soldering, would shrink it (docs/BABE_DISPUTE_PLAN.md).
+by VSSS or soldering, would shrink it.

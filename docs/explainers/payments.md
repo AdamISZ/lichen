@@ -2,8 +2,7 @@
 
 How a payment moves on lichen's L2, and why it counts only once its
 sender acknowledges it, against an anchor fixed on Bitcoin. With
-Bob's payment of 10,000 to Alice on Mutinynet (2026-11-11). The design
-and its reasoning are docs/HUB_PROVES_PLAN.md, "Data availability".
+Bob's payment of 10,000 to Alice on Mutinynet (2026-11-11).
 
 ## A payment
 

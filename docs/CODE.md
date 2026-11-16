@@ -6,11 +6,10 @@ payout) is ln-gap's `sessions::skeleton`
 ([ln-gap](https://github.com/AdamISZ/ln-gap), checked out beside this
 repository at the revision in `LNGAP_REV`).
 
-A contract's dispute is the exit (docs/HUB_PROVES_PLAN.md: a claim
+A contract's dispute is the exit (a claim
 against a hostile operator, which the hub must prove false; statement
 `hub-proves`, or `hub-proves-mock` for trials), BABE with the roles
-swapped (its garbled circuits and witness encryption, `crates/babe`;
-docs/BABE_GADGET_PLAN.md): the hub's statement in `withdraw::hp`, its
+swapped (its garbled circuits and witness encryption, `crates/babe`): the hub's statement in `withdraw::hp`, its
 graph in `babe::hp`, its setup (Alice garbles and uploads) in
 `proto::hp`, its record in `validity::exit`, and its play in the hub's
 `dispute::hp` and the wallet's `hp`, `engine::hp` and `exit`. A
