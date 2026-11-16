@@ -287,7 +287,7 @@ Groth16 statement. The setup:
   - the hub's `r_H` 197,356, the floors of the deepest dispute;
   - δ = δ′ = 40.
 
-Walkthroughs, with every transaction: [explainers/](explainers/README.md).
+Walkthroughs, with every transaction: [explainers/](https://github.com/AdamISZ/lichen/blob/master/docs/explainers/README.md).
 
 | test | contract | what happened | on chain | fees |
 |---|---|---|---|---|
@@ -300,7 +300,7 @@ Walkthroughs, with every transaction: [explainers/](explainers/README.md).
 The fees are the withdrawal's, not the deposit's or the funding's. From
 the deposit's confirmation to the mint took about a minute (1001, 1002).
 
-- **A** ([cooperative.md](explainers/cooperative.md)): the fold confirmed
+- **A** ([cooperative.md](https://github.com/AdamISZ/lichen/blob/master/docs/explainers/cooperative.md)): the fold confirmed
   25 blocks after the funding, most of it time at the keyboard.
 - **B** (`docs/explainers/hub-absent.md`, removed; in commit `40159b6`): escalation to sweep
   took 67 minutes: a block between the links, then two windows (80 + 40
