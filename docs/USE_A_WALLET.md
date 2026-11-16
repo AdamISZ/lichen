@@ -12,7 +12,7 @@ out to an address of any wallet. Running the hub is
 - **The wallet.** Build it from source, with ln-gap's checkout beside
   lichen's (lichen's workspace refers to it by path), and Rust:
   ```sh
-  git clone -b grants https://github.com/AdamISZ/lichen && git clone https://github.com/AdamISZ/ln-gap
+  git clone -b grants https://github.com/lichenbtc-org/lichen && git clone https://github.com/AdamISZ/ln-gap
   cd lichen && cargo build --release -p lichen-wallet     # target/release/lichen
   ```
 - **The hub's URL and its key** (its issuer key), from the hub's
