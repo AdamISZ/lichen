@@ -1,8 +1,8 @@
-//! BABE's cryptography (ePrint 2026/065; docs/BABE_GADGET_PLAN.md, step
-//! 4): the witness encryption for Groth16 ([`we`]) and the garbled
-//! circuit that computes its `ct_prove = r·π1` from π1's bits
-//! ([`garble`]), its Boolean part ([`gadget`]) built over BN254's base
-//! field in gates ([`field`], [`circuit`]).
+//! BABE's cryptography (ePrint 2026/065; agent notes:
+//! docs/BABE_GADGET_PLAN.md, step 4): the witness encryption for Groth16
+//! ([`we`]) and the garbled circuit that computes its `ct_prove = r·π1`
+//! from π1's bits ([`garble`]), its Boolean part ([`gadget`]) built over
+//! BN254's base field in gates ([`field`], [`circuit`]).
 //!
 //! The verifier (the hub) garbles with a fresh `r` and encrypts `msg`
 //! under the contract's statement; the prover (Alice) signs π1, is given

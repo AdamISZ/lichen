@@ -64,7 +64,7 @@ enum Cmd {
     /// transparent notes, a shielded one (64 bytes) from shielded notes.
     Send { to: String, amount: u64 },
     /// Acknowledge your spends: each one the sequencer has sealed and an
-    /// anchor on Bitcoin holds (docs/HUB_PROVES_PLAN.md, "Data
+    /// anchor on Bitcoin holds (agent notes: docs/HUB_PROVES_PLAN.md, "Data
     /// availability"). Until you do, a spend doesn't count against you and
     /// its outputs, your change and your payee's note, stay locked. With
     /// --wait, until none waits (about one anchor, the margin deep).

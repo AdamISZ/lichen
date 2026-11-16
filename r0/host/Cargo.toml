@@ -25,5 +25,5 @@ serde_json = "1"
 # cargo build --release --features cuda. The Groth16 wrap then runs on
 # the GPU too, natively, without Docker, given RISC Zero's component
 # (rzup install risc0-groth16); on a rented 4090 it failed, though
-# (docs/HUB_PROVES_PLAN.md, step 7)
+# (agent notes: docs/HUB_PROVES_PLAN.md, step 7)
 cuda = ["risc0-zkvm/cuda"]

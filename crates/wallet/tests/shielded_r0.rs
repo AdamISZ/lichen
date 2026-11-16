@@ -3,11 +3,11 @@
 //! LICHEN_SPEND_PROVER naming another prover command; a
 //! regtest bitcoind): shielding, a payment and an unshielding with real
 //! RISC Zero receipts, to a sequencer that accepts no native proofs and
-//! anchors its history on regtest (docs/ANCHOR_PLAN.md); then every height
-//! it recorded proved by the chain prover (r0/chain-prover.sh, in the same
-//! image, or LICHEN_R0 naming lichen-r0), the last receipt ending at the
-//! last sealed root and carrying the last anchor. LICHEN_KEEP=1 keeps the
-//! files.
+//! anchors its history on regtest (agent notes: docs/ANCHOR_PLAN.md); then
+//! every height it recorded proved by the chain prover (r0/chain-prover.sh,
+//! in the same image, or LICHEN_R0 naming lichen-r0), the last receipt
+//! ending at the last sealed root and carrying the last anchor.
+//! LICHEN_KEEP=1 keeps the files.
 
 use std::time::{Duration, Instant};
 

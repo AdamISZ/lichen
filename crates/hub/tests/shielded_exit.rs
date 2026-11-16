@@ -1,6 +1,6 @@
-//! Exits that claim shielded notes directly (docs/HUB_PROVES_PLAN.md,
-//! "Shielded notes"), on the mock statement, native proofs: no
-//! unshielding, which needs the sequencer.
+//! Exits that claim shielded notes directly (agent notes:
+//! docs/HUB_PROVES_PLAN.md, "Shielded notes"), on the mock statement,
+//! native proofs: no unshielding, which needs the sequencer.
 //!
 //! - Carol shields her deposit and exits claiming her shielded note: her
 //!   claim reveals her keys but the spend key, and her exit key signs it.

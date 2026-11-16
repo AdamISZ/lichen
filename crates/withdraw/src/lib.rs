@@ -1,11 +1,11 @@
-//! The hub's statement (docs/HUB_PROVES_PLAN.md; [`hp`]): that a user's
-//! exit claim posted on Bitcoin is false, at an anchored state of the L2.
-//! Here what it is built on: an anchored state as a statement proves it
-//! ([`Anchored`]: a state root the sequencer signed, anchored on Bitcoin
-//! as a chain receipt shows, the chain statement of `lichen-validity`,
-//! with headers on the anchor's block carrying the contract's work `W`),
-//! a transaction proved in a block ([`Request`]), the contract's `D`
-//! ([`contract_id`]).
+//! The hub's statement (agent notes: docs/HUB_PROVES_PLAN.md; [`hp`]): that
+//! a user's exit claim posted on Bitcoin is false, at an anchored state of
+//! the L2. Here what it is built on: an anchored state as a statement
+//! proves it ([`Anchored`]: a state root the sequencer signed, anchored on
+//! Bitcoin as a chain receipt shows, the chain statement of
+//! `lichen-validity`, with headers on the anchor's block carrying the
+//! contract's work `W`), a transaction proved in a block ([`Request`]), the
+//! contract's `D` ([`contract_id`]).
 //!
 //! The caller checks the chain receipt (`verify_chain`: `env::verify(CHAIN_ID,
 //! journal)` in a guest), whose journal is rebuilt here from the input.

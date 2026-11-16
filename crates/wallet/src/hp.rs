@@ -1,8 +1,9 @@
-//! The wallet's part of a hub-proves contract (docs/HUB_PROVES_PLAN.md,
-//! `lichen_proto::hp`): its opening, in which she garbles for the hub's
-//! statement, commits to her instances and uploads the ones the hub keeps;
-//! and her claims, definite notes by position, signed once: an exit's,
-//! and a cooperative withdrawal's ([`Wallet::claim_of`]).
+//! The wallet's part of a hub-proves contract (agent notes:
+//! docs/HUB_PROVES_PLAN.md, `lichen_proto::hp`): its opening, in which she
+//! garbles for the hub's statement, commits to her instances and uploads
+//! the ones the hub keeps; and her claims, definite notes by position,
+//! signed once: an exit's, and a cooperative withdrawal's
+//! ([`Wallet::claim_of`]).
 
 use anyhow::{ensure, Context, Result};
 use lichen_babe::hp::HubProves;
@@ -289,7 +290,8 @@ impl Wallet {
 
     /// Our acknowledgments of the spends whose outputs are at `positions`:
     /// a claim carries them, so that a note locked at `A*` is shown
-    /// acknowledged (docs/HUB_PROVES_PLAN.md, "Data availability").
+    /// acknowledged (agent notes: docs/HUB_PROVES_PLAN.md, "Data
+    /// availability").
     pub(crate) fn acks_for(&self, state: &lichen_l2::State, positions: &[u32]) -> Result<Vec<lichen_ledger::lichen_validity::ack::Ack>> {
         use lichen_ledger::lichen_validity::ack;
         let mut out: Vec<ack::Ack> = vec![];

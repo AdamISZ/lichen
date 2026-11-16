@@ -1,12 +1,12 @@
-//! Alice's side of a hub-proves dispute (docs/HUB_PROVES_PLAN.md;
-//! [`super::Engine::run`] dispatches here). She requests, posting her
-//! claim; the hub asserts a proof that it is false, or after `w_H` her
-//! timeout pays her. If it asserts, she checks its proof natively: a valid
-//! one she lets stand (the claim was false, and `success` is the hub's
-//! after `Δ2`); a false one she challenges, revealing π1's input secrets
-//! by completing the hub's adaptor pre-signatures with her dealing's, and
-//! if the hub can't answer with a kept instance's `msg` within `Δ1`,
-//! `failure` pays her.
+//! Alice's side of a hub-proves dispute (agent notes:
+//! docs/HUB_PROVES_PLAN.md; [`super::Engine::run`] dispatches here). She
+//! requests, posting her claim; the hub asserts a proof that it is false,
+//! or after `w_H` her timeout pays her. If it asserts, she checks its proof
+//! natively: a valid one she lets stand (the claim was false, and `success`
+//! is the hub's after `Δ2`); a false one she challenges, revealing π1's
+//! input secrets by completing the hub's adaptor pre-signatures with her
+//! dealing's, and if the hub can't answer with a kept instance's `msg`
+//! within `Δ1`, `failure` pays her.
 //!
 //! Also her secrets: her one-time keys for `b` and `E`, her setup's
 //! ([`dealing`], [`instance_seed`]); from her contract's seed, so that

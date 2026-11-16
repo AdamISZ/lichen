@@ -1,5 +1,5 @@
-//! The wallet's exit (docs/HUB_PROVES_PLAN.md): a claim of its notes,
-//! definite notes by position, through the contract's dispute
+//! The wallet's exit (agent notes: docs/HUB_PROVES_PLAN.md): a claim of its
+//! notes, definite notes by position, through the contract's dispute
 //! ([`crate::hp`] makes it; [`crate::engine`] plays it), for when the
 //! operator won't fold or has gone. The hub proves the claim false, if it
 //! can; she proves nothing. After a cooperative withdrawal the hub didn't
@@ -12,8 +12,8 @@
 //! claim ([`ExitPlan`]), keeps it with the contract, and plays the
 //! dispute.
 //!
-//! Transparent notes only, for now (docs/HUB_PROVES_PLAN.md, "Shielded
-//! notes").
+//! Transparent notes only, for now (agent notes: docs/HUB_PROVES_PLAN.md,
+//! "Shielded notes").
 
 use anyhow::{ensure, Context, Result};
 use lichen_l2::State;

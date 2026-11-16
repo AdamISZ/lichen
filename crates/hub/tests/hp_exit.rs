@@ -1,9 +1,9 @@
-//! The exit where only the hub proves (docs/HUB_PROVES_PLAN.md) through
-//! the hub and the wallet, on the mock statement, in an anchored
-//! deployment on regtest (blocks every 150 ms; no receipts: the hub
-//! decides its statement natively, and asserts the mock's proof). Alice
-//! garbles; the hub keeps her instances. The hub refuses cooperative
-//! withdrawals, so each claim is an exit.
+//! The exit where only the hub proves (agent notes:
+//! docs/HUB_PROVES_PLAN.md) through the hub and the wallet, on the mock
+//! statement, in an anchored deployment on regtest (blocks every 150 ms; no
+//! receipts: the hub decides its statement natively, and asserts the mock's
+//! proof). Alice garbles; the hub keeps her instances. The hub refuses
+//! cooperative withdrawals, so each claim is an exit.
 //!
 //! - E: an honest exit. Eve claims her note; the hub finds no ground, holds
 //!   it and records the exit on the L2, and `request_timeout` pays her.

@@ -1,6 +1,6 @@
-//! The wallet's shielded notes (docs/SHIELDED_PLAN.md): its keys and
-//! address, note encryption, scanning, and the shielded transactions it
-//! builds (shielding, payments, unshielding).
+//! The wallet's shielded notes (agent notes: docs/SHIELDED_PLAN.md): its
+//! keys and address, note encryption, scanning, and the shielded
+//! transactions it builds (shielding, payments, unshielding).
 //!
 //! Keys, from the wallet's secret (`lichen_shielded`): the spend key
 //! `ask`, the nullifier key `nk`, the exit key `x`, and an encryption key

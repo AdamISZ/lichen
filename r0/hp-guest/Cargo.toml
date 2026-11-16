@@ -1,8 +1,8 @@
-# The hub's statement guest (docs/HUB_PROVES_PLAN.md): proves "the claim
-# posted in `request` is false" (crates/withdraw, `hp::check`), the chain
-# receipt at A* composed. BABE checks its Groth16 wrap, with the roles
-# swapped: the hub proves, Alice garbles. A workspace of its own, built as
-# the chain guest (r0/build-guest.sh hp).
+# The hub's statement guest (agent notes: docs/HUB_PROVES_PLAN.md): proves
+# "the claim posted in `request` is false" (crates/withdraw, `hp::check`),
+# the chain receipt at A* composed. BABE checks its Groth16 wrap, with the
+# roles swapped: the hub proves, Alice garbles. A workspace of its own,
+# built as the chain guest (r0/build-guest.sh hp).
 [package]
 name = "hp"
 version = "0.1.0"

@@ -1,8 +1,8 @@
-//! Anchoring the history on Bitcoin (docs/ANCHOR_PLAN.md): the genesis
-//! seal, then, while sealed heights are newer than the last anchored and
-//! no anchor is in flight, an anchor of the last sealed height; once it
-//! has its confirmations, its record applied to the ledger as an L2
-//! transaction, which the next block carries to the chain prover.
+//! Anchoring the history on Bitcoin (agent notes: docs/ANCHOR_PLAN.md): the
+//! genesis seal, then, while sealed heights are newer than the last
+//! anchored and no anchor is in flight, an anchor of the last sealed
+//! height; once it has its confirmations, its record applied to the ledger
+//! as an L2 transaction, which the next block carries to the chain prover.
 //!
 //! An anchor spends the seal (P2TR, the sequencer's key untweaked: a key
 //! path spend signed here) and a coin of the sequencer's bitcoind wallet

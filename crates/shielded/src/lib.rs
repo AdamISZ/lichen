@@ -1,6 +1,6 @@
-//! Shielded notes and the spend statement (docs/SHIELDED_PLAN.md): what
-//! the spend guest proves, the sequencer checks a receipt against, and
-//! the wallet builds.
+//! Shielded notes and the spend statement (agent notes:
+//! docs/SHIELDED_PLAN.md): what the spend guest proves, the sequencer
+//! checks a receipt against, and the wallet builds.
 //!
 //! ```text
 //! auth  = SHA256("lichen/auth" ‖ ask)            ask: the owner's spend key
@@ -10,15 +10,16 @@
 //! rho_i = SHA256("lichen/rho" ‖ nf_0 ‖ i)        the i-th new note of a transaction
 //! ```
 //!
-//! The keys are split (docs/HUB_PROVES_PLAN.md, "Shielded notes"): `ask`
-//! authorizes spends, in the proof, and is never revealed; `nk` derives
-//! nullifiers, and an exit reveals it (with `auth` and `x`) so that the
-//! hub can check a claimed note unspent; `x`, an x-only Schnorr key, signs
-//! exit claims and nothing else. `r` (the code's `trap`) is a trapdoor the
-//! sender picks and encrypts to the recipient with the value: it hides the
-//! commitment (without it, anyone with an address could test each leaf for
-//! every likely value), and after an exit only a note's sender, who knows
-//! its `r`, can link its spend to the owner whose `nk` the exit revealed.
+//! The keys are split (agent notes: docs/HUB_PROVES_PLAN.md, "Shielded
+//! notes"): `ask` authorizes spends, in the proof, and is never revealed;
+//! `nk` derives nullifiers, and an exit reveals it (with `auth` and `x`) so
+//! that the hub can check a claimed note unspent; `x`, an x-only Schnorr
+//! key, signs exit claims and nothing else. `r` (the code's `trap`) is a
+//! trapdoor the sender picks and encrypts to the recipient with the value:
+//! it hides the commitment (without it, anyone with an address could test
+//! each leaf for every likely value), and after an exit only a note's
+//! sender, who knows its `r`, can link its spend to the owner whose `nk`
+//! the exit revealed.
 //!
 //! Shielded notes are leaves of the ledger's commitment tree beside
 //! transparent ones (`lngap/note`, domain-separated), and their nullifiers
@@ -98,8 +99,8 @@ pub fn transparent_commitment(owner: &Hash, value: u64, memo: u32, rho: &Hash) -
 
 /// A leaf of the commitment tree: a commitment with its top bit set to
 /// its kind, 0 a transparent note's, 1 a shielded note's
-/// (docs/HUB_PROVES_PLAN.md), so that a leaf says which it is. The chain
-/// statement sets it as it appends; paths are to leaves.
+/// (agent notes: docs/HUB_PROVES_PLAN.md), so that a leaf says which it is.
+/// The chain statement sets it as it appends; paths are to leaves.
 pub fn t_leaf(cm: &Hash) -> Hash {
     let mut l = *cm;
     l[0] &= 0x7f;
@@ -184,8 +185,9 @@ pub struct SpendInput {
     /// New shielded notes; their `rho`s are derived.
     pub outputs: Vec<Output>,
     pub t_outputs: Vec<TOut>,
-    /// The sender's one-time acknowledgment key (docs/HUB_PROVES_PLAN.md,
-    /// "Data availability"): public, so that the sequencer can't swap it.
+    /// The sender's one-time acknowledgment key (agent notes:
+    /// docs/HUB_PROVES_PLAN.md, "Data availability"): public, so that the
+    /// sequencer can't swap it.
     pub ak: Hash,
 }
 

@@ -1,4 +1,4 @@
-//! How final the wallet's notes are (docs/ANCHOR_PLAN.md,
+//! How final the wallet's notes are (agent notes: docs/ANCHOR_PLAN.md,
 //! docs/HUB_PROVES_PLAN.md "Data availability"): locked, an output of a
 //! spend its sender hasn't acknowledged yet (it counts for nothing until
 //! then); sealed only (final if you trust the sequencer); anchored on

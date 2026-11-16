@@ -62,9 +62,9 @@ struct Stored {
 
 /// A spend this wallet signed: the nullifiers of the notes it spends. So
 /// that an exit with the sequencer gone knows which kept notes it may
-/// have spent since (docs/HUB_PROVES_PLAN.md), and so that the wallet
-/// acknowledges it ([`Wallet::acknowledge`]): its acknowledgment once
-/// signed, and whether it is settled (acknowledged on the L2, void, or
+/// have spent since (agent notes: docs/HUB_PROVES_PLAN.md), and so that the
+/// wallet acknowledges it ([`Wallet::acknowledge`]): its acknowledgment
+/// once signed, and whether it is settled (acknowledged on the L2, void, or
 /// needing none).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Signed {

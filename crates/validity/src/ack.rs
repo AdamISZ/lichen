@@ -1,8 +1,8 @@
-//! Sender acknowledgment (docs/HUB_PROVES_PLAN.md, "Data availability:
-//! sender acknowledgment"): a user's spend counts against its sender only
-//! once she has acknowledged it, which she does only with its data in
-//! hand, naming an anchor on Bitcoin of a history that holds it. Until
-//! then its outputs are locked.
+//! Sender acknowledgment (agent notes: docs/HUB_PROVES_PLAN.md, "Data
+//! availability: sender acknowledgment"): a user's spend counts against its
+//! sender only once she has acknowledged it, which she does only with its
+//! data in hand, naming an anchor on Bitcoin of a history that holds it.
+//! Until then its outputs are locked.
 //!
 //! The state lives in the spent set ([`crate::smt`]) beside the
 //! nullifiers, under keys of its own, insert only:

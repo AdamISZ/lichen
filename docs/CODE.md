@@ -66,3 +66,10 @@ runs everything that needs nothing outside the tree but bitcoind
 |---|---|---|
 | `lichen-wallet --test shielded_r0` | the prover image | 10 minutes: real spend and chain receipts (`LICHEN_KEEP=1` to keep the files) |
 | `lichen-hub --test hp_real` | `LICHEN_HP_PROVER` (`r0/hp-prover.sh`, or `r0/hp-remote.sh` from a Mac), and `LICHEN_R0` for the stale-claim case's chain prover | the hub's statement proved and wrapped for real: a malformed claim, 7 minutes; a stale claim, 20 to 25 minutes on a Mac and a 4-vCPU x86 server |
+
+## Comments citing agent notes
+
+A comment citing `agent notes: docs/<NAME>_PLAN.md` points at the
+working notes the code was planned in, kept by its developers and their
+coding agents locally and not published (`.gitignore`). Read the code,
+and the paper, without them.

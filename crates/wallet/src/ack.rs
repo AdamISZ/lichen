@@ -1,4 +1,4 @@
-//! Acknowledging our spends (docs/HUB_PROVES_PLAN.md, "Data
+//! Acknowledging our spends (agent notes: docs/HUB_PROVES_PLAN.md, "Data
 //! availability: sender acknowledgment"): a spend of ours counts against
 //! us, and its outputs unlock, only once we acknowledge it, which we do
 //! only once an anchor checked on Bitcoin holds it and we hold its data

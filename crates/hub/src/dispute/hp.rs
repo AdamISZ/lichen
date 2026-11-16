@@ -1,6 +1,7 @@
-//! The hub's side of a hub-proves contract (docs/HUB_PROVES_PLAN.md,
-//! `lichen_proto::hp`): its setup, in which Alice garbles and the hub
-//! keeps her instances, and its dispute ([`super`] drives it).
+//! The hub's side of a hub-proves contract (agent notes:
+//! docs/HUB_PROVES_PLAN.md, `lichen_proto::hp`): its setup, in which Alice
+//! garbles and the hub keeps her instances, and its dispute ([`super`]
+//! drives it).
 //!
 //! When `request` confirms, the hub looks for a ground that her claim is
 //! false (`lichen_withdraw::hp::Ground`), natively, from the L2's state

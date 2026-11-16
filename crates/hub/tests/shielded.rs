@@ -1,9 +1,9 @@
-//! Contracts over shielded notes (docs/SHIELDED_PLAN.md), native proofs:
-//! Alice and Bob open contracts and shield their deposits; Bob pays Alice
-//! 50,000 sats in a shielded note; Alice unshields what she withdraws (a
-//! claim takes transparent notes), claims it, and the hub folds. Then the
-//! hub refuses folds: Bob's refused withdrawal keeps its claim, of his
-//! unshielded note, for his exit.
+//! Contracts over shielded notes (agent notes: docs/SHIELDED_PLAN.md),
+//! native proofs: Alice and Bob open contracts and shield their deposits;
+//! Bob pays Alice 50,000 sats in a shielded note; Alice unshields what she
+//! withdraws (a claim takes transparent notes), claims it, and the hub
+//! folds. Then the hub refuses folds: Bob's refused withdrawal keeps its
+//! claim, of his unshielded note, for his exit.
 
 mod common;
 

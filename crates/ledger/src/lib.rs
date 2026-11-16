@@ -11,13 +11,13 @@
 //!   every redemption is against its own collateral, capped per user);
 //! - a [`Transfer`]: spends notes, each authorised by its owner's BIP340
 //!   signature over the transfer, and creates notes of equal total value;
-//! - a [`Shielded`] transaction (docs/SHIELDED_PLAN.md): spends shielded
-//!   notes (`lichen-shielded`) and transparent ones, and creates both,
-//!   with a proof of the spend statement; the tree holds both kinds of
-//!   leaf ([`Leaf`]);
-//! - an [`Exit`] record (docs/HUB_PROVES_PLAN.md): the hub records a
-//!   contract's claim, a cooperative withdrawal's or an exit's that
-//!   holds, and the claim's notes are retired, authorised by their
+//! - a [`Shielded`] transaction (agent notes: docs/SHIELDED_PLAN.md):
+//!   spends shielded notes (`lichen-shielded`) and transparent ones, and
+//!   creates both, with a proof of the spend statement; the tree holds both
+//!   kinds of leaf ([`Leaf`]);
+//! - an [`Exit`] record (agent notes: docs/HUB_PROVES_PLAN.md): the hub
+//!   records a contract's claim, a cooperative withdrawal's or an exit's
+//!   that holds, and the claim's notes are retired, authorised by their
 //!   owners' signatures on it;
 //! - an anchor's record, from the sequencer's anchorer.
 
@@ -96,7 +96,8 @@ pub struct Deployment {
     #[serde(with = "hex32")]
     pub hub: Hash,
     /// The genesis seal, if the sequencer anchors its history on Bitcoin
-    /// (docs/ANCHOR_PLAN.md): the outpoint the first anchor spends.
+    /// (agent notes: docs/ANCHOR_PLAN.md): the outpoint the first anchor
+    /// spends.
     #[serde(default, with = "outpoint_opt", skip_serializing_if = "Option::is_none")]
     pub seal: Option<OutPoint>,
 }
@@ -762,7 +763,7 @@ pub struct Ledger {
     /// Nullifiers claimed in an exit whose record hasn't retired them (a
     /// `request` not yet confirmed, or a shielded note's claim, which no
     /// record retires): their spends are refused, so that a spend can't
-    /// race the claim (docs/HUB_PROVES_PLAN.md, "After a claim").
+    /// race the claim (agent notes: docs/HUB_PROVES_PLAN.md).
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub held: BTreeSet<Hash>,
     /// The acknowledgments sequenced, by their spend's `txid` (hex): the
@@ -888,7 +889,8 @@ impl Ledger {
 
     /// The sequencer's own rule beyond the statement's: no acknowledgment
     /// of a spend whose inputs an exit claim holds (the earlier of an exit
-    /// and a spend wins: docs/HUB_PROVES_PLAN.md, "Data availability").
+    /// and a spend wins; agent notes: docs/HUB_PROVES_PLAN.md, "Data
+    /// availability").
     fn ack_policy(&self, a: &Ack) -> Result<()> {
         ensure!(!self.held.iter().any(|nf| self.nullifiers.leaf(nf) == a.txid), "the spend's inputs are claimed in an exit: it can't be acknowledged");
         Ok(())

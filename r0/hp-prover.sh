@@ -1,13 +1,14 @@
 #!/bin/sh
-# The hub's prover (docs/HUB_PROVES_PLAN.md): the hub's statement on its
-# input (HubInput's bytes) and the chain receipt at A*'s chain height
-# (`none` for a malformed claim), by lichen-r0 in its Docker image (docker
-# build -f r0/Dockerfile -t lichen-r0 .), the files in as a tar stream and
-# the result out on stdout, as r0/chain-prover.sh. Or, with LICHEN_R0
-# naming lichen-r0 itself (Linux), that. The Groth16 wrap (`hp-proof`) is
-# x86 Linux's only: RISC Zero's prover image runs as a sibling container
-# through the host's Docker (the socket mounted here), with its files in
-# RISC0_WORK_DIR at the same path on the host and in the container.
+# The hub's prover (agent notes: docs/HUB_PROVES_PLAN.md): the hub's
+# statement on its input (HubInput's bytes) and the chain receipt at A*'s
+# chain height (`none` for a malformed claim), by lichen-r0 in its Docker
+# image (docker build -f r0/Dockerfile -t lichen-r0 .), the files in as a
+# tar stream and the result out on stdout, as r0/chain-prover.sh. Or, with
+# LICHEN_R0 naming lichen-r0 itself (Linux), that. The Groth16 wrap
+# (`hp-proof`) is x86 Linux's only: RISC Zero's prover image runs as a
+# sibling container through the host's Docker (the socket mounted here),
+# with its files in RISC0_WORK_DIR at the same path on the host and in the
+# container.
 #
 #   hp-prover.sh hp-proof|hp|exec-hp <hub input> <chain receipt|none> <out>
 set -eu

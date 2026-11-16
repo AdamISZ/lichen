@@ -1,4 +1,5 @@
-//! `lichen-r0`: proves lichen's guests (docs/SHIELDED_PLAN.md).
+//! `lichen-r0`: proves lichen's guests (agent notes:
+//! docs/SHIELDED_PLAN.md).
 //!
 //! - `spend <input> <receipt>`: prove the spend statement's input (its
 //!   bytes, `lichen_shielded::SpendInput::to_bytes`) and write the
@@ -16,12 +17,13 @@
 //!   by its claim, unresolved;
 //! - `verify-chain <receipt>`: check a chain receipt; print its journal;
 //! - `hp <hub input> <chain receipt|none> <out>`: prove the hub's statement
-//!   (`lichen_withdraw::hp`, docs/HUB_PROVES_PLAN.md) on its input (its
-//!   bytes, `HubInput::to_bytes`), the chain receipt at `A*`'s chain height
-//!   an assumption (`none` for a malformed claim, which needs none);
-//!   writes the succinct receipt, which resolves it; `exec-hp <hub input>
-//!   [<chain receipt>]` runs the guest without proving, the receipt's
-//!   claim an unresolved assumption if none is given (its cycles);
+//!   (`lichen_withdraw::hp`, agent notes: docs/HUB_PROVES_PLAN.md) on its
+//!   input (its bytes, `HubInput::to_bytes`), the chain receipt at `A*`'s
+//!   chain height an assumption (`none` for a malformed claim, which needs
+//!   none); writes the succinct receipt, which resolves it; `exec-hp <hub
+//!   input> [<chain receipt>]` runs the guest without proving, the
+//!   receipt's claim an unresolved assumption if none is given (its
+//!   cycles);
 //! - `wrap <receipt> <out>`: the Groth16 receipt of a succinct receipt of
 //!   the hub's statement (x86 Linux with Docker: RISC Zero's gnark step);
 //! - `hp-proof <hub input> <chain receipt|none> <out>`: `hp` then `wrap`,

@@ -1,6 +1,7 @@
-//! The exit where only the hub proves (docs/HUB_PROVES_PLAN.md): BABE
-//! with the roles swapped, `lichen_babe::hp`'s graph. The hub's statement
-//! (`lichen_withdraw::hp`) is fixed at opening, and Alice garbles for it.
+//! The exit where only the hub proves (agent notes:
+//! docs/HUB_PROVES_PLAN.md): BABE with the roles swapped,
+//! `lichen_babe::hp`'s graph. The hub's statement (`lichen_withdraw::hp`)
+//! is fixed at opening, and Alice garbles for it.
 //!
 //! Its opening takes three steps before the request, each by Alice:
 //!
@@ -135,7 +136,8 @@ pub fn windows(net: Net, t_close: u32) -> Windows {
 }
 
 /// The hub's statement's margin on a network, in blocks: covers her
-/// request's confirmation (docs/HUB_PROVES_PLAN.md, "The margin").
+/// request's confirmation (agent notes: docs/HUB_PROVES_PLAN.md, "The
+/// margin").
 pub fn margin(net: Net) -> u32 {
     match net {
         Net::Regtest => 6,

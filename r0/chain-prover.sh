@@ -1,10 +1,10 @@
 #!/bin/sh
-# The chain prover (docs/SHIELDED_PLAN.md, phase 2): proves each height
-# the sequencer records (<ledger>.blocks/<h>.input and its spend receipts
-# <h>.<k>.receipt), in order, each from the last, writing <h>.chain: the
-# succinct receipt that heights 1..h are valid from genesis. In the prover
-# image (docker build -f r0/Dockerfile -t lichen-r0 .), or with LICHEN_R0
-# naming lichen-r0 itself (Linux).
+# The chain prover (agent notes: docs/SHIELDED_PLAN.md, phase 2): proves
+# each height the sequencer records (<ledger>.blocks/<h>.input and its spend
+# receipts <h>.<k>.receipt), in order, each from the last, writing
+# <h>.chain: the succinct receipt that heights 1..h are valid from genesis.
+# In the prover image (docker build -f r0/Dockerfile -t lichen-r0 .), or
+# with LICHEN_R0 naming lichen-r0 itself (Linux).
 #
 #   chain-prover.sh <blocks dir> [--once]   --once: stop at the last height
 set -eu

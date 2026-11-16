@@ -655,8 +655,8 @@ impl Inner {
     /// protection: once it is sequenced the notes are gone, an earlier
     /// spend of them refused. If the hub then didn't fold, her exit would
     /// post the same claim, which this contract's own record doesn't
-    /// refute (docs/HUB_PROVES_PLAN.md). At `b` 0, no claim: an early
-    /// close, her reserve alone.
+    /// refute (agent notes: docs/HUB_PROVES_PLAN.md). At `b` 0, no claim:
+    /// an early close, her reserve alone.
     fn withdraw(&self, w: WithdrawRequest) -> Result<Folded> {
         let o = self.open.lock().unwrap().get(&w.cid).cloned().context("no such contract")?;
         ensure!(o.closed.is_none(), "contract {} is closed", w.cid);
