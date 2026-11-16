@@ -5,7 +5,7 @@ info:
   summary: The HTTP API a grants L2 hub serves to wallets.
   description: |
     The hub of lichen's grants L2 (branch `grants`, design
-    papers/lichen-grants-v0.5.6): it opens contracts with users, keeps the
+    papers/lichen-grants.pdf): it opens contracts with users, keeps the
     book of accounts (one note per account), grants and records payments,
     and folds withdrawals. This file specifies the wire format as the hub
     at `grants-v0.5.3` serves it (`crates/hub/src/lib.rs`, `route`), and
