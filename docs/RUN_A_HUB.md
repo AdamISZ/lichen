@@ -33,7 +33,7 @@ Linux or macOS, x86-64 or arm64, with Docker (Compose v2):
 ## 1. Build
 
 ```sh
-git clone https://github.com/AdamISZ/lichen && git clone https://github.com/AdamISZ/ln-gap
+git clone https://github.com/lichenbtc-org/lichen && git clone https://github.com/AdamISZ/ln-gap
 cd lichen && cp deploy/.env.example deploy/.env    # set NETWORK
 deploy/build.sh
 ```
