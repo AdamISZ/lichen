@@ -1,6 +1,6 @@
-//! An exit record (docs/HUB_PROVES_PLAN.md): once a claim holds, the
-//! hub's record (`Tx::Exit`) retires its notes on the L2. A claim names
-//! its notes by their positions in the commitment tree, and its
+//! An exit record (agent notes: docs/HUB_PROVES_PLAN.md): once a claim
+//! holds, the hub's record (`Tx::Exit`) retires its notes on the L2. A
+//! claim names its notes by their positions in the commitment tree, and its
 //! fingerprint `E` is what each note's owner signed:
 //!
 //! ```text
@@ -37,11 +37,11 @@ pub struct SNoteClaim {
     pub trap: Hash,
 }
 
-/// A claim's shielded notes (docs/HUB_PROVES_PLAN.md, "Shielded notes"):
-/// their one owner's keys, `auth` (its spend key's public part), `nk` and
-/// the exit key `x`, and the notes, positions increasing. Revealing `nk`
-/// lets anyone check the notes unspent, and spend none: that needs the
-/// spend key.
+/// A claim's shielded notes (agent notes: docs/HUB_PROVES_PLAN.md,
+/// "Shielded notes"): their one owner's keys, `auth` (its spend key's
+/// public part), `nk` and the exit key `x`, and the notes, positions
+/// increasing. Revealing `nk` lets anyone check the notes unspent, and
+/// spend none: that needs the spend key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SClaim {
     pub auth: Hash,
@@ -105,7 +105,7 @@ pub const MAX_NOTES: usize = 64;
 /// `E` for contract `c` of deposit coin `deposit`, claiming `b` with the
 /// transparent notes at `positions` and the `shielded` ones, carrying
 /// `acks` (of the spends whose locked outputs it claims:
-/// docs/HUB_PROVES_PLAN.md, "Data availability").
+/// agent notes: docs/HUB_PROVES_PLAN.md, "Data availability").
 pub fn fingerprint(c: u32, deposit: &OutPoint, b: u32, positions: &[u32], acks: &[Ack], shielded: Option<&SClaim>) -> Hash {
     let mut h = Sha256::new();
     h.update(b"lichen/exit");

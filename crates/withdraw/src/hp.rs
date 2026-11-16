@@ -1,7 +1,8 @@
-//! The exit where only the hub proves (docs/HUB_PROVES_PLAN.md): Alice
-//! claims definite notes and an amount `b`, and the hub proves, if it
-//! can, that her claim is false. Its statement is fixed when the contract
-//! opens; BABE checks it with the roles swapped (Alice garbles).
+//! The exit where only the hub proves (agent notes:
+//! docs/HUB_PROVES_PLAN.md): Alice claims definite notes and an amount `b`,
+//! and the hub proves, if it can, that her claim is false. Its statement is
+//! fixed when the contract opens; BABE checks it with the roles swapped
+//! (Alice garbles).
 //!
 //! **The claim** ([`Claim`]), posted in `request`'s witness: its notes
 //! by their positions in the commitment tree, increasing, and one
@@ -77,7 +78,7 @@ pub struct ChainSet {
 }
 
 /// How the spend of a claimed note counts against her at `A*`
-/// (docs/HUB_PROVES_PLAN.md, "Data availability").
+/// (agent notes: docs/HUB_PROVES_PLAN.md, "Data availability").
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Counts {

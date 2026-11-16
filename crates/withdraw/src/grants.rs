@@ -1,8 +1,8 @@
-//! The grants L2's statement (docs/GRANTS_PLAN.md, milestones 2 and 4):
-//! "the claim posted in `request` is owed at most `b_corr`", the hub's
-//! correction, one-time signed in `correct`. And the hashes and encodings
-//! the notes, spends, grants and claims are made of: one implementation,
-//! for the wallet, the hub (`lichen_notes`) and the guest.
+//! The grants L2's statement (agent notes: docs/GRANTS_PLAN.md, milestones
+//! 2 and 4): "the claim posted in `request` is owed at most `b_corr`", the
+//! hub's correction, one-time signed in `correct`. And the hashes and
+//! encodings the notes, spends, grants and claims are made of: one
+//! implementation, for the wallet, the hub (`lichen_notes`) and the guest.
 //!
 //! - **The claim** ([`Claim`]): settled notes of the contract's owner (the
 //!   hub's BIP340 signature on each), fallbacks (the ids of spends in

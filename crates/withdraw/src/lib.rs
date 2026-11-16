@@ -1,5 +1,7 @@
-//! The hub's statement (docs/HUB_PROVES_PLAN.md; [`hp`]): that a user's
-//! exit claim posted on Bitcoin is false, at an anchored state of the L2.
+//! The hub's statements. The grants L2's is [`accounts`]
+//! (agent notes: docs/GRANTS_PLAN.md). The base design's (agent notes:
+//! docs/HUB_PROVES_PLAN.md; [`hp`]): that a user's exit claim posted on
+//! Bitcoin is false, at an anchored state of the L2.
 //! Here what it is built on: an anchored state as a statement proves it
 //! ([`Anchored`]: a state root the sequencer signed, anchored on Bitcoin
 //! as a chain receipt shows, the chain statement of `lichen-validity`,

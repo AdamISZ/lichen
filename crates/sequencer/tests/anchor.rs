@@ -1,8 +1,8 @@
-//! Anchoring on regtest (docs/ANCHOR_PLAN.md, step 1): the genesis seal,
-//! an anchor of each new sealed height once the last is recorded, its
-//! record in the next block; every recorded block checked by the chain
-//! statement natively, its anchoring state the anchor's; a restart with
-//! an anchor in flight picks it up.
+//! Anchoring on regtest (agent notes: docs/ANCHOR_PLAN.md, step 1): the
+//! genesis seal, an anchor of each new sealed height once the last is
+//! recorded, its record in the next block; every recorded block checked by
+//! the chain statement natively, its anchoring state the anchor's; a
+//! restart with an anchor in flight picks it up.
 
 use std::time::{Duration, Instant};
 

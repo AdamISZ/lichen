@@ -1,8 +1,8 @@
-//! The cut-and-choose's shared parts (BABE, docs/BABE_GADGET_PLAN.md),
-//! as the hub-proves opening uses them ([`crate::hp`]): an opened
-//! instance, the soundness a wallet asks, the dealing's and the shares'
-//! encodings; and what a dispute reads off the chain: a link's
-//! arguments, `assert`'s proof.
+//! The cut-and-choose's shared parts (BABE; agent notes:
+//! docs/BABE_GADGET_PLAN.md), as the hub-proves opening uses them
+//! ([`crate::hp`]): an opened instance, the soundness a wallet asks, the
+//! dealing's and the shares' encodings; and what a dispute reads off the
+//! chain: a link's arguments, `assert`'s proof.
 
 use anyhow::{ensure, Context, Result};
 use lichen_babe::setup::{Secret, DIGITS, VALUES};

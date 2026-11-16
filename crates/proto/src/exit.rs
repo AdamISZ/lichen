@@ -1,8 +1,8 @@
 //! What the hub's statement reads of Bitcoin, from a chain
-//! (docs/HUB_PROVES_PLAN.md): `request` in its block with its witness
-//! (where the claim is posted), and the contract's funding transaction,
-//! whose output 0 it spends; and a transaction in its block by the txid
-//! tree (the spend of `A*`'s seal).
+//! (agent notes: docs/HUB_PROVES_PLAN.md): `request` in its block with its
+//! witness (where the claim is posted), and the contract's funding
+//! transaction, whose output 0 it spends; and a transaction in its block by
+//! the txid tree (the spend of `A*`'s seal).
 
 use anyhow::{Context, Result};
 use bitcoin::consensus::serialize;

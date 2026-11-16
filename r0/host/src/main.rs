@@ -1,4 +1,5 @@
-//! `lichen-r0`: proves lichen's guests (docs/SHIELDED_PLAN.md).
+//! `lichen-r0`: proves lichen's guests (agent notes:
+//! docs/SHIELDED_PLAN.md).
 //!
 //! - `spend <input> <receipt>`: prove the spend statement's input (its
 //!   bytes, `lichen_shielded::SpendInput::to_bytes`) and write the

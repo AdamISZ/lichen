@@ -1,6 +1,7 @@
 //! BABE's graph with the roles swapped, for the exit where only the hub
-//! proves (docs/HUB_PROVES_PLAN.md, "On chain"): Alice claims, the hub
-//! asserts a proof that her claim is false or lets her timeout pay her.
+//! proves (agent notes: docs/HUB_PROVES_PLAN.md, "On chain"): Alice claims,
+//! the hub asserts a proof that her claim is false or lets her timeout pay
+//! her.
 //!
 //! ```text
 //! request (Alice: b, the claim, each one-time signed)

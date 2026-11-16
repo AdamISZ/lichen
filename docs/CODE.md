@@ -73,3 +73,10 @@ write each contested exit's statement input there (for instance from
 `contested`), and `r0/hp-prover.sh hp-proof <input> <out>` proves and
 wraps it (on a Mac, `hp` proves the STARK only: about 3 minutes; the
 wrap, about 4 more, needs x86).
+
+## Comments citing agent notes
+
+A comment citing `agent notes: docs/<NAME>_PLAN.md` points at the
+working notes the code was planned in, kept by its developers and their
+coding agents locally and not published (`.gitignore`). Read the code,
+and the paper, without them.

@@ -1,8 +1,9 @@
-# The hub's statement guest, the grants L2's (docs/GRANTS_PLAN.md): proves
-# "the claim posted in `request` is owed at most b_corr" (crates/withdraw,
-# `grants::check`). BABE checks its Groth16 wrap, with the roles swapped:
-# the hub proves, Alice garbles. A workspace of its own, built as the
-# other guests (r0/build-guest.sh hp).
+# The hub's statement guest, the grants L2's (agent notes:
+# docs/GRANTS_PLAN.md): proves "the claim Alice signed is owed at most the
+# b_corr she countersigned" (crates/withdraw, `accounts::check`). BABE
+# checks its Groth16 wrap, with the roles swapped: the hub proves, Alice
+# garbles. A workspace of its own, built as the other guests
+# (r0/build-guest.sh hp).
 [package]
 name = "hp"
 version = "0.1.0"

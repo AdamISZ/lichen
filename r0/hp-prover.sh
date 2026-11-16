@@ -1,6 +1,6 @@
 #!/bin/sh
-# The hub's prover (docs/GRANTS_PLAN.md, milestone 3): the hub's statement
-# on its input (GrantsInput's bytes), by lichen-r0 in its Docker image
+# The hub's prover (agent notes: docs/GRANTS_PLAN.md): the hub's statement
+# on its input (`accounts::Input`'s bytes), by lichen-r0 in its Docker image
 # (docker build -f r0/Dockerfile -t lichen-r0 .), the input in as a tar
 # stream and the result out on stdout. Or, with LICHEN_R0 naming lichen-r0
 # itself (Linux), that. The Groth16 wrap (`hp-proof`) is x86 Linux's only:

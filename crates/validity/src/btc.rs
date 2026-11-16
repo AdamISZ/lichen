@@ -1,5 +1,5 @@
-//! What the statements read of Bitcoin (docs/ANCHOR_PLAN.md): a
-//! transaction's non-witness serialization (its txid's), a block header,
+//! What the statements read of Bitcoin (agent notes: docs/ANCHOR_PLAN.md):
+//! a transaction's non-witness serialization (its txid's), a block header,
 //! a Merkle path from a txid to the header's root, and proof of work;
 //! and, for what a transaction carries in its witness, its witness
 //! serialization and a path in the block's witness tree (BIP141).

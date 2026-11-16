@@ -58,7 +58,7 @@ case "${1:-}" in
         fi
         # an anchor is recorded the margin deep, so an acknowledgment, which
         # names a recorded anchor, can't be sequenced sooner
-        # (docs/HUB_PROVES_PLAN.md, "Data availability")
+        # (agent notes: docs/HUB_PROVES_PLAN.md, "Data availability")
         case "$NETWORK" in mutinynet) margin=20 ;; *) margin=6 ;; esac
         exec lichen-sequencer "$@" --network "$NETWORK" --anchor-rpc "$node" --anchor-cookie "$cookie" \
             --anchor-wallet "$wallet" --anchor-confirmations "${ANCHOR_CONFIRMATIONS:-$margin}" --anchor-feerate "${ANCHOR_FEERATE:-2}"

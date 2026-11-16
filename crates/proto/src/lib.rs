@@ -442,7 +442,8 @@ pub fn sign_anchor(kp: &bitcoin::key::Keypair, child: &Transaction, prevouts: &[
 }
 
 /// How many blocks' work, at the checkpoint's difficulty, a withdrawal
-/// shows on top of the anchor of its root (docs/ANCHOR_PLAN.md).
+/// shows on top of the anchor of its root (agent notes:
+/// docs/ANCHOR_PLAN.md).
 pub const ANCHOR_DEPTH: u128 = 10;
 
 /// The Bitcoin block a contract opened at, in an anchored deployment: its

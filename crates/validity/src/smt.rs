@@ -1,10 +1,11 @@
-//! The spent set as a compact sparse Merkle tree (docs/SHIELDED_PLAN.md,
-//! phase 2; compact since 2026-11-10), so that a block guest can show a
-//! key absent and add it, and the hub's statement read a key's leaf. Keys
-//! are 256 bits, read from the most significant (the root's choice) down;
-//! a leaf is zero if absent, and if present says how (the hub's statement
-//! reads it, docs/HUB_PROVES_PLAN.md): a spend's `txid`, [`exited`] by a
-//! contract's exit record, and the acknowledgment state's.
+//! The spent set as a compact sparse Merkle tree (agent notes:
+//! docs/SHIELDED_PLAN.md, phase 2; compact since 2026-11-10), so that a
+//! block guest can show a key absent and add it, and the hub's statement
+//! read a key's leaf. Keys are 256 bits, read from the most significant
+//! (the root's choice) down; a leaf is zero if absent, and if present says
+//! how (the hub's statement reads it; agent notes:
+//! docs/HUB_PROVES_PLAN.md): a spend's `txid`, [`exited`] by a contract's
+//! exit record, and the acknowledgment state's.
 //!
 //! Compact: a subtree holding no key is zero; one holding a single key is
 //! that key's [`leaf_node`], wherever it sits; one holding more is the

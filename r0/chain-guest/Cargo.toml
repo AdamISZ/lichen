@@ -1,7 +1,7 @@
-# The chain guest (docs/SHIELDED_PLAN.md, phase 2): proves the chain
-# statement of crates/validity, one sealed block checked and the history
-# before it proved. A workspace of its own, built with RISC Zero's guest
-# toolchain in its pinned builder image (r0/build-guest.sh chain).
+# The chain guest (agent notes: docs/SHIELDED_PLAN.md, phase 2): proves the
+# chain statement of crates/validity, one sealed block checked and the
+# history before it proved. A workspace of its own, built with RISC Zero's
+# guest toolchain in its pinned builder image (r0/build-guest.sh chain).
 [package]
 name = "chain"
 version = "0.1.0"

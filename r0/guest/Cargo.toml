@@ -1,6 +1,6 @@
-# The spend guest (docs/SHIELDED_PLAN.md): proves the spend statement of
-# crates/shielded. A workspace of its own, built with RISC Zero's guest
-# toolchain in its pinned builder image (r0/build-guest.sh).
+# The spend guest (agent notes: docs/SHIELDED_PLAN.md): proves the spend
+# statement of crates/shielded. A workspace of its own, built with RISC
+# Zero's guest toolchain in its pinned builder image (r0/build-guest.sh).
 [package]
 name = "spend"
 version = "0.1.0"

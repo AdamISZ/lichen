@@ -1,5 +1,6 @@
-//! The block statement (docs/SHIELDED_PLAN.md, phase 2): one sealed
-//! height's transition `i -> i+1`, checked as the sequencer checks it.
+//! The block statement (agent notes: docs/SHIELDED_PLAN.md, phase 2): one
+//! sealed height's transition `i -> i+1`, checked as the sequencer checks
+//! it.
 //!
 //! The state at a height is the commitment tree (its root `T`, its size,
 //! its frontier), the nullifier tree's root `N` ([`smt`])
@@ -35,7 +36,7 @@ pub mod smt;
 pub use btc::OutPoint;
 
 /// A spend's anchor must be one of the last this many sealed tree roots
-/// (docs/SHIELDED_PLAN.md).
+/// (agent notes: docs/SHIELDED_PLAN.md).
 pub const RECENT: usize = 64;
 
 fn sha256(parts: &[&[u8]]) -> Hash {
@@ -198,7 +199,7 @@ pub enum Tx {
 }
 
 /// The history hash after `root`: `hist_h = H(hist_{h-1} ‖ root_h)`, from
-/// `hist_0 = 0` (docs/ANCHOR_PLAN.md).
+/// `hist_0 = 0` (agent notes: docs/ANCHOR_PLAN.md).
 pub fn hist_next(hist: &Hash, root: &Hash) -> Hash {
     sha256(&[b"lichen/hist", hist, root])
 }
