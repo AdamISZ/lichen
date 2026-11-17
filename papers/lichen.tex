@@ -49,7 +49,7 @@
 
 \title{\textbf{Lichen}\\L2s In CHannels ENforced by bitcoin}
 \author{waxwing}
-\date{Version 0.5, November 2026}
+\date{November 2026}
 
 \begin{document}
 \maketitle
@@ -57,7 +57,7 @@
 \begin{abstract}
 A \emph{contract} with a hub lets a user hold the hub's tokens on a layer 2 and
 withdraw them as bitcoin without trusting the hub for honesty or liveness. The L2 tokens are collateralised by the bitcoin in the user-hub multisig output\footnote{a standalone 2-of-2 output (a channel embedding is possible; Section~\ref{sec:contract})}, and if the hub refuses a withdrawal, or cannot answer because it is offline, it is enforced on Bitcoin. The only assumptions are those of the layer 2 itself. \underline{No change to Bitcoin's
-consensus is required}. A withdrawal is a claim; if false, its falsehood is proved by the hub with RISC Zero and wrapped in Groth16, and a thus-disputed claim is settled on Bitcoin by a \emph{verification gadget} that checks the Groth16 proof: the one chosen is BABE~\cite{babe}, using witness encryption and garbled circuits, in two to four transactions (BitVMX~\cite{bitvmx} has also been implemented and tested).  Withdrawals are executed cooperatively in the contract --- the normal case, because the statement is independently verifiable and disputing a true claim costs the hub --- or, otherwise, a refused one is played as a dispute on chain, set up at the start of each contract. The trustlessness gain is paid for with liquidity (with receiving ability only contingent on offered ``inbound'' from the hub, as in Lightning). The hub (but not user) must also stay live during normal operation, since an offline hub loses disputes by timeout. The design is built and measured a privacy-focused, shielded-note ledger~\cite{lichencode,lichenl2}; an ecash design whose hub is the mint~\cite{lichenecash} is under development.
+consensus is required}. A withdrawal is a claim; if false, its falsehood is proved by the hub with RISC Zero and wrapped in Groth16, and a thus-disputed claim is settled on Bitcoin by a \emph{verification gadget} that checks the Groth16 proof: the one chosen is BABE~\cite{babe}, using witness encryption and garbled circuits, in two to four transactions.  Withdrawals are executed cooperatively in the contract --- the normal case, because the statement is independently verifiable and disputing a true claim costs the hub --- or, otherwise, a refused one is played as a dispute on chain, set up at the start of each contract. The trustlessness gain is paid for with liquidity (with receiving ability only contingent on offered ``inbound'' from the hub, as in Lightning). The hub (but not user) must also stay live during normal operation, since an offline hub loses disputes by timeout. The design has been built and measured with a privacy-focused, shielded-note ledger~\cite{vlichencode,lichenl2}; and two ecash designs whose hub is the mint~\cite{lichenecash,glichen} are under development.
 \end{abstract}
 
 \tableofcontents
@@ -79,7 +79,7 @@ consensus is required}. A withdrawal is a claim; if false, its falsehood is prov
 
 \paragraph{But still, a single central hub feels like bad design. Why not multiple hubs?} Having multiple hubs \emph{will} make sense --- see Section~\ref{sec:multihub}, but done naively, it is broken. It's because of what these L2 tokens are. They are fungible, \underline{enforceable} claims on the hub's money; they are minted by the hub itself, just on its own say-so. If you had hub 1 and hub 2, those claims are not transferrable trustlessly to the hubs themselves. If hub 2 prints a billion sats out of nothing and users accept it on the L2 they can redeem it with hub1, leaving hub1 out of pocket. From this line of thinking we see an interesting comparison with ecash servers: the hub can print as much as it likes, but it cannot steal/``rug''.
 
-\paragraph{So what's the catch?} The negatives are twofold: one is liquidity, and this is easy to understand as the analog of the inbound liquidity pain point in Lightning, because it's basically the same thing. Such a hub \emph{can} choose to give no inbound liquidity to a user: they get tokens on L2 to spend, but they cannot (safely) receive. If they receive, it's just credit that someone else will hopefully buy from them. But the design does not assume that, of course, it allows receiving up to a ``cap'': the user negotiates that extra potential receiving amount (inbound liquidity) when it sets up the contract with the hub. The second is the on-chain dispute, whose size depends on the gadget: two to four transactions and 2--31~kvB under BABE, lichen's gadget, against tens of transactions and 100--200~kvB under BitVMX (previously tested), both as measured on Mutinynet~\cite{lichenl2,lichenbitvmx}.
+\paragraph{So what's the catch?} The negatives are twofold: one is liquidity, and this is easy to understand as the analog of the inbound liquidity pain point in Lightning, because it's basically the same thing. Such a hub \emph{can} choose to give no inbound liquidity to a user: they get tokens on L2 to spend, but they cannot (safely) receive. If they receive, it's just credit that someone else will hopefully buy from them. But the design does not assume that, of course, it allows receiving up to a ``cap'': the user negotiates that extra potential receiving amount (inbound liquidity) when it sets up the contract with the hub. The second is the on-chain dispute, which is two to four transactions and 2--38~kvB under BABE, lichen's verification gadget, as measured on Mutinynet~\cite{lichenl2}.
 
 \section{Contracts with the hub}
 \label{sec:terms}
@@ -182,9 +182,9 @@ the hub prove only that it is worth less than $b$\footnote{This additional compl
 
 \begin{itemize}
 \item An L2 managed by a large quorum with threshold signing of some form (here you'd be trusting the signers for L2 updates, not for withdrawals; arguably not a compelling model since they can block transfers on L2, so they have to be trusted with the money, like any federated/quorum model)
-\item An L2 that handles ecash notes where the hub is the mint, requiring extra tricks to make the hub trustless (such as the design in~\cite{lichenecash})
+\item An L2 that handles ecash notes where the hub is the mint, using atomic swaps with the hub as coordinator to achieve trustless update(such as the designs in~\cite{lichenecash, glichen})
 \item an L2 hosted on another blockchain such as Ethereum
-\item an L2 using a single use seal on Bitcoin itself to achieve finality and validity proofs of state transition (such as our own design described in~\cite{lichenl2})
+\item an L2 using a single use seal on Bitcoin itself to achieve finality and validity proofs of state transition (such as in~\cite{lichenl2})
 \end{itemize}
 
 \ldots the degree to which trustless exit can be claimed will vary, but that is a matter for the L2 architecture: \underline{lichen simply enforces the L2's ruleset, and that part \emph{is} trustless}.
@@ -241,7 +241,7 @@ what the payout's bit outputs read (Section~\ref{sec:outcomes}).
 \label{sec:blocks}
 
 The contract is a single taproot output, 2-of-2 between Alice and the
-hub with three spending leaves. Transactions pre-signed at
+hub with three spending conditions. Transactions pre-signed at
 opening let either party carry out its side of a dispute without the
 other. What settles a dispute is the on-chain \emph{verification gadget}; in concrete, here, it is always BABE, but we did earlier implement BitVMX to validate the mechanism with an alternative gadget~\cite{lichenbitvmx}.
 
@@ -260,22 +260,9 @@ exchanged when the contract opens, one per value, each used once;
 signing two different values under one key is \emph{equivocation},
 which a leaf can prove, giving the signer's stake to its counterparty.
 
-\subsection{The first gadget: BitVMX}
+\subsection{Lichen's gadget: BABE with authenticated amounts}
 
-The first experiments, using a different client-proves algorithm (substantially similar except in who makes the ZKP), were done with BitVMX~\cite{bitvmx}, a heavier but simpler mechanism than BABE. BitVMX settles a claim about a RISC-V program's run by an
-interactive search over its execution. In those experiments, Alice claimed that the Groth16
-verifier, run on her signed input, halted with success; if the hub
-disagreed, they narrowed the run down, eight segments a round, to a single
-step, which Alice then proved in Script or the hub disproved. Each move
-was a pre-signed transaction carrying the mover's one-time signatures,
-and a lie about a memory read was caught through an authenticated jump
-list instead of a second search. The companion
-paper~\cite{lichenbitvmx} gives the transaction graph and the
-measurements from tests that were carried out on regtest and Mutinynet.
-
-\subsection{Lichen's current gadget: BABE with authenticated amounts}
-
-BABE~\cite{babe} replaces the search with a challenge. In making this change, we have also switched to a hub-proves algorithm as was outlined in Section~\ref{sec:statement}.
+BABE~\cite{babe} settles the claim with a single challenge, not an interactive search; lichen uses it hub-proves Section~\ref{sec:statement}.
 
 At setup, the user Alice
 garbles a small circuit that turns the first group element of the Hub's (Groth16) invalidity proof
@@ -296,20 +283,20 @@ companion paper~\cite{lichenl2} the measurements.
 \begin{table}[!htp]
 \centering
 \small
-\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{58mm}LL}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{58mm}L}
 \toprule
-& BitVMX & BABE \\
+& on chain, and per contract \\
 \midrule
-a withdrawal the hub never answers & 23~kvB, 5 transactions & 2.7~kvB, 2 \\
-a true claim refused, played to the end & ${\sim}120$~kvB, 23 transactions & 2.7~kvB, 2; 31.2~kvB, 4 if the hub asserts a false proof \\
-a false claim & 100--200~kvB & 9.9~kvB, 3, if Alice concedes; 30.8~kvB, 4, if she challenges \\
-the worst case & ${\sim}200$~kvB (a lie about a read) & 31.2~kvB \\
-pre-signed per contract & 141 transactions & 17 \\
-setup per contract, beyond pre-signing & none & about a minute; ${\sim}240$~MiB uploaded by the user, stored by the hub \\
-contracts a hub can hold, disputes lasting a week\textsuperscript{*} & 3,300 (8,350 with a window per move) & ${\sim}35{,}000$ (est.) \\
+a withdrawal the hub never answers & 2.7~kvB, 2 transactions \\
+a true claim refused, played to the end & 2.7~kvB, 2; 31.2~kvB, 4 if the hub asserts a false proof \\
+a false claim & 9.9~kvB, 3, if Alice concedes; 30.8~kvB, 4, if she challenges \\
+the worst case & 31.2~kvB \\
+pre-signed per contract & 17 transactions \\
+setup per contract, beyond pre-signing & about a minute; ${\sim}240$~MiB uploaded by the user, stored by the hub \\
+contracts a hub can hold, disputes lasting a week\textsuperscript{*} & ${\sim}35{,}000$ (est.) \\
 \bottomrule
 \end{tabularx}
-\caption{The two gadgets, as measured on Mutinynet but where marked~\cite{lichenbitvmx,lichenl2}.
+\caption{A contract's dispute under BABE, as measured on Mutinynet but where marked~\cite{lichenl2}.
 \textsuperscript{*}Before congesting the chain becomes a profitable
 attack: for $N$ contracts, every move due within a window of $w$ blocks
 must fit in it, $N s \le w \cdot 1\,\mathrm{MvB}$~\cite{floodloot}, and
@@ -324,14 +311,13 @@ answer, 28.7~kvB in all, against a week of mainnet blocks.}
 
 \subsection{Three ways out}
 
-A contract ends in one of three ways; its output carries three leaves (not including a revocation if inside a channel):
+A contract ends in one of three ways; its output carries two leaves (not including a revocation if inside a channel) as well as the keypath spend:
 \begin{itemize}[leftmargin=1.5em]
-\item the \emph{fold}: a cooperative close of the contract (Alice
-  $b + r_A$, the hub $\vmax - b + r_H$), the normal case, nothing on
-  chain;
+\item \tx{fold}: the 2-of-2 MuSig2 keypath spend: a cooperative close of the contract (Alice
+  $b + r_A$, the hub $\vmax - b + r_H$), the normal case, a normal spend on chain;
 \item \tx{default}: after $\Tc$, a transaction pre-signed at the
   contract's opening pays the hub $\vmax + r_H$ and returns Alice's
-  reserve $r_A$. This is the liveness requirement on Alice: turn up at the end, i.e. it's a very low bar requirement; whereas the hub must always be ready to answer disputes.
+  reserve $r_A$. This is the liveness requirement on Alice: turn up at the end, i.e. it's a very low bar requirement; whereas the hub must always be ready to answer disputes, which is represented by:
 \item \tx{request}: Alice's claim goes on chain
   as the first step of the dispute.
 \end{itemize}
@@ -470,13 +456,13 @@ If your chosen L2 is properly trust minimized (so that you can always access a v
 
 Now imagine lichen similarly, but with that problem exacerbated: a hub holding 60,000 users (note: the problem is not \emph{necessarily} any better with the 60k spread over multiple hubs). Now each withdrawal may take a number of transactions and a chunk of vB; as we noted in Table~\ref{tab:gadgets}, this is about 30 kvB worst case with our chosen gadget BABE. It's clearly the case that a malicious hub can trigger a large block space demand and, with a lot of difficulty to be fair, \emph{could} steal from many honest users at once depending on the order in which transactions get confirmed. The same attack exists in reverse: if a user-attack generates a ton of Sybil contracts with one hub, they could trigger mass exit with fraudulent exit requests.
 
-It is worth mentioning that the more likely failure mode --- that is of hub infrastructure failure leading to offlineness --- tends to use up less onchain space with any verifier gadget used for the onchain transactions, but it can still be quite significant, even here.
+It is worth mentioning that the more likely failure mode --- that is of hub infrastructure failure leading to offlineness --- tends to use up less onchain space, but it can still be quite significant, even here.
 
 Two things must be chosen to get a sense of the potential safe scale of a Lichen L2: how long is the dispute phase allowed to last? And, how much fees must be held in reserve by both parties to ensure that the dispute can fully play out in time? Given this data, some specific, though estimated, numbers of how many users a hub can support, can be generated. See Table 1.
 
 We can improve these figures on \emph{some} axes by having multiple hubs. If we had 20 distinct hubs of 3000 users and not 1 hub of 60,000 it would reduce some risk for users in particular, and also reduce the liquidity burden on individual hubs. Which leads to the question:
 
-\paragraph{ Can you pay users in a different hub?} Certainly you can, with some infrastructure. There's more than one way to do it, but for brevity we describe the simplest: if Hub 1 and Hub 2 exist, with their own distinct ledgers, Alice on Hub 1 can pay Bob on Hub 2, in bitcoin, if Hub 2 has a contract on Hub 1 with inbound capacity. She simply pays Hub2's address on Hub 1's ledger, contingent on an atomic swap set up with the payment to Bob on Hub 2's ledger. There could also be routing, but the principle is clear.
+\paragraph{Can you pay users in a different hub?} The manner of achieving this will depend on the L2 design. It will either involve normal style atomic swaps for L2 ledgers with ordering and timelocks included, or may involve cooperation with the hub entity, or may involve extra conditions in the ZKP statements to establish timing conditions, otherwise.
 
 \paragraph{Different ledgers?} It seems natural in this multi-hub world to allow users to use a Hub whose ledger rules (e.g. does it use shielded transactions or smart contracts or ..) can be distinct and whose consensus establishing mechanisms are distinct. Alternatively they could all rely on the same finality and proof of validity, in one ledger, as distinct assets.
 
@@ -538,7 +524,7 @@ expiry & none & none & $\Tc$: withdraw, or renew, before it \\
 \bottomrule
 \end{tabularx}
 \caption{Two bridges and lichen. The bridges' figures are their
-authors' estimates; lichen's depend on the gadget; see~\cite{lichenbitvmx},~\cite{lichenl2} for measurements and estimates.}
+authors' estimates.}
 \label{tab:bitvm2}
 \end{table}
 
@@ -563,14 +549,14 @@ contests; and the dispute between them needs no search: a challenge,
 answered from garbled circuits Alice created when the contract opened
 (assuming the BABE gadget). \textbf{The bridges ask their users
 to trust one signer at setup and one challenger afterwards, and to be
-present for none of it, whereas lichen has no such trust requirement, but requires the user to be present for their own disputes}.
+present for none of it, whereas lichen has no such trust requirement, but requires the user to be present for their own disputes --- we claim this model has the very attractive property of every user having the right to withdraw at exactly the correct current amount, instead of relying on operators or swaps}.
 
 \paragraph{Other designs, briefly.}
 \begin{itemize}[leftmargin=1.5em]
 \item \emph{Ecash} (Cashu, Fedimint): lichen removes the mint's power to
   take the funds, within each user's cap, at the price of the hub's
   locked liquidity; the mint may print as it likes, but every redemption
-  is against its own collateral. A specific redesign of the ecash model for Lichen is fleshed out in~\cite{lichenecash}.
+  is against its own collateral. A specific redesign of the ecash model for Lichen is fleshed out in~\cite{lichenecash}, with~\cite{glichen} being a simpler model of the same thing that removes unlinkability of payments in favour of ease of use.
 \item \emph{Ark}: a shared tree of outputs with an operator and an
   expiry, where a lichen contract is per user; both ask users to act
   before an expiry. An Ark balance is a claim on a specific pre-signed
@@ -587,21 +573,17 @@ present for none of it, whereas lichen has no such trust requirement, but requir
 \section{Implementation}
 \label{sec:status}
 
-The design is implemented in proof-of-concept form as two code bases, LN-GAP~\cite{lngapcode} and Lichen~\cite{lichencode}, with tests and demos executed on bitcoin regtest and on mutinynet. Any bitcoin-related data in this paper come from the concrete executions there, including playing out disputes fully.
-
-The implementation uses the BABE gadget (Appendix~\ref{app:babe};~\cite{lichenl2}), though a BitVMX gadget~\cite{lichenbitvmx} has also been built. L2s implementing shielded notes~\cite{shielded} and also ecash~\cite{lichenecash} are under development as proofs of concept.
+A core library is under development~\cite{lichencode}. Two L2s built on it, gLichen~\cite{glichencode} and vLichen~\cite{vlichencode}, have run on Mutinynet, and an ecash L2~\cite{lichenecash} is being designed for it. The figures in this paper come from those L2s' executions, on regtest and Mutinynet, disputes included, played out in full.
 
 \begin{thebibliography}{99}
 
 \bibitem{lngap} waxwing. LN-GAP: Lightning governed by arbitrary programs. Version 1.0 (draft), September 2026. \url{https://github.com/AdamISZ/ln-gap/blob/master/docs/paper/lngap_draft.pdf}
 
-\bibitem{pipeline} lichen's explainers. From a Rust program to a check on Bitcoin: the statements proved, the STARK and its Groth16 wrap, and the check under BABE with the hub as prover. November 2026. \url{https://github.com/AdamISZ/lichen/blob/master/docs/explainers/pipeline.md}
+\bibitem{pipeline} vLichen's explainers. From a Rust program to a check on Bitcoin: the statements proved, the STARK and its Groth16 wrap, and the check under BABE with the hub as prover. November 2026. \url{https://github.com/lichenbtc-org/vlichen/blob/master/docs/explainers/pipeline.md}
 
-\bibitem{lichenbitvmx} waxwing. Lichen over BitVMX: the dispute, as built and measured. Version 0.1 (not maintained), October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-bitvmx-v0.1.2.pdf}
+\bibitem{lichenl2} waxwing. Lichen's reference L2: as built and measured. Version 0.1 (draft), November 2026. \url{https://github.com/lichenbtc-org/vlichen/blob/master/papers/lichen-l2-v0.1.0.pdf}
 
-\bibitem{lichenl2} waxwing. Lichen's reference L2: as built and measured. Version 0.1 (draft), November 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-l2-v0.1.0.pdf}
-
-\bibitem{lichenbuilt} waxwing. Lichen as built: the BABE gadget, the hub's ledger and the exit. Version 0.1 (not maintained), October 2026. \url{https://github.com/AdamISZ/lichen/blob/master/papers/lichen-built-v0.1.1.pdf}
+\bibitem{lichenbuilt} waxwing. Lichen as built: the BABE gadget, the hub's ledger and the exit. Version 0.1 (not maintained), October 2026. \url{https://github.com/lichenbtc-org/lichen/blob/d81c117b731328dee0c31dd0f8f802288a490ccf/papers/lichen-built-v0.1.1.pdf}
 
 \bibitem{babe} S.~Garg, D.~Kolonelos, M.~Sergeevitch, S.~Sridhar and D.~Tse. BABE: verifying proofs on Bitcoin made 1000x cheaper. ePrint 2026/065, revised October 2026. \url{https://eprint.iacr.org/2026/065}
 
@@ -615,11 +597,13 @@ The implementation uses the BABE gadget (Appendix~\ref{app:babe};~\cite{lichenl2
 
 \bibitem{lichenecash} m0wer and waxwing. Lichen ecash: owner-bound ecash with local exits, enforced by Bitcoin. Version 0.2, November 2026. Not yet published.
 
-\bibitem{shielded} lichen's shielded transfers: an example L2. \url{https://github.com/AdamISZ/lichen/blob/master/docs/SHIELDED.md}
+\bibitem{glichen} waxwing. gLichen - grants based lichen designed for light clients with high throughput. November 2026. \url{https://github.com/lichenbtc-org/glichen/blob/master/papers/lichen-grants.pdf}
 
-\bibitem{lngapcode} LN-GAP proof-of-concept code. \url{https://github.com/AdamISZ/ln-gap}
+\bibitem{lichencode} lichen: the contract, the BABE gadget, and the hub's and the wallet's libraries, on which L2s are built. \url{https://github.com/lichenbtc-org/lichen}
 
-\bibitem{lichencode} lichen: the ledger, the sequencer, the hub and the wallet. \url{https://github.com/AdamISZ/lichen}
+\bibitem{glichencode} gLichen implementation \url{https://github.com/lichenbtc-org/glichen}
+
+\bibitem{vlichencode} vLichen implementation \url{https://github.com/lichenbtc-org/vlichen}
 
 \bibitem{bitvmx} S.~D.~Lerner, R.~Amela, S.~Mishra, M.~Jonas and J.~\'Alvarez Cid-Fuentes. BitVMX: a CPU for universal computation on Bitcoin, 2024. \url{https://arxiv.org/abs/2405.06842}
 
@@ -648,7 +632,7 @@ The implementation uses the BABE gadget (Appendix~\ref{app:babe};~\cite{lichenl2
 This appendix describes how lichen uses BABE~\cite{babe}, and in
 particular the concrete choices made where BABE's paper leaves them
 open or where lichen departs from it. The figures are from the
-Mutinynet deployment of November 2026~\cite{lichencode}.
+Mutinynet deployment of November 2026~\cite{vlichencode}.
 
 \subsection{BABE in brief}
 
