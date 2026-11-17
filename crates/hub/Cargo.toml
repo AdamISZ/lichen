@@ -1,6 +1,6 @@
 [package]
 name = "lichen-hub"
-description = "The hub: opens contracts with users, issues tokens, pays withdrawals"
+description = "The hub's library: contracts, BABE's setup, the fold, the default, the dispute's tail, for an L2"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,27 +8,17 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 bitcoin.workspace = true
-clap.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tiny_http.workspace = true
-lichen-ledger = { workspace = true, features = ["risc0"] }
-lichen-l2.workspace = true
 lichen-chain.workspace = true
 lichen-proto.workspace = true
 lichen-contract.workspace = true
 lichen-btc.workspace = true
+lichen-wots.workspace = true
 lichen-babe.workspace = true
-lichen-withdraw.workspace = true
 rand_chacha = "0.3"
 ark-bn254 = "0.5"
 ark-groth16 = { version = "0.5", default-features = false, features = ["std"] }
 rand_core = "0.6"
-
-[dev-dependencies]
-lichen-sequencer.workspace = true
-lichen-wallet = { path = "../wallet" }
-bitcoincore-rpc.workspace = true
-lichen-validity.workspace = true
-lichen-withdraw.workspace = true

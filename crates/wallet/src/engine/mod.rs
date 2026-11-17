@@ -1,9 +1,10 @@
 //! Alice's side of a dispute, from her request to the payout, over what it
 //! signs with ([`Signer`]) and where it keeps its state ([`Store`]): the
-//! wallet's own keys and contract. The play is [`hp`]'s, the exit where
-//! only the hub proves; here what it rests on: posting her links and
-//! terminals, waiting on the hub's, keeping the outcome. A win ends at the
-//! payout: sweeping it takes her own key.
+//! wallet's own keys and contract. The front is the L2's
+//! ([`crate::WalletL2::run_front`]); then BABE's tail ([`tail`]): the
+//! hub's assertion checked, challenged if false. Here also what both rest
+//! on: posting her links and terminals, waiting on the hub's, keeping the
+//! outcome. A win ends at the payout: sweeping it takes her own key.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,23 +16,28 @@ use lichen_chain::{Chain, KeyFees};
 use lichen_proto::{anchor_vout, sign_anchor, Patience, Record, Stall, Statement};
 use lichen_btc::keys::Seed;
 use lichen_contract::{PartyKeys, Role};
+use lichen_babe::vsss::{deal, Dealer, Dealing};
+use rand_chacha::ChaCha20Rng;
+use rand_core::SeedableRng;
 
-pub mod hp;
+pub mod tail;
 
 /// How a dispute ended for Alice.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Outcome {
     /// Stopped on request (`pause_after`); run again to resume.
     Paused,
-    /// The hub didn't assert her claim false: `request_timeout` paid her
-    /// (its txid).
+    /// The hub didn't correct her claim (`request_timeout`), or corrected
+    /// it, she contested, and it never proved (`ack_timeout`): paid her
+    /// claim (its txid).
     HubTimedOut(Txid),
     /// The hub's assertion was false, it couldn't answer her challenge,
     /// and `failure` paid her.
     Refuted(Txid),
-    /// The hub asserted a valid proof that her claim is false: she lets
-    /// it stand, and `success` is the hub's.
-    Countered,
+    /// The hub corrected her claim to `b_corr` units, and she accepted
+    /// (`accept`) or it proved so (`success`): that payout (its txid) paid
+    /// her `b_corr`, and her reserve.
+    Corrected { success: Txid, b_corr: u32 },
     /// The hub answered her challenge (or took the contract otherwise).
     Lost,
 }
@@ -40,8 +46,8 @@ impl Outcome {
     /// The payout's txid, for a win.
     pub fn payout(&self) -> Option<Txid> {
         match self {
-            Outcome::HubTimedOut(t) | Outcome::Refuted(t) => Some(*t),
-            Outcome::Lost | Outcome::Paused | Outcome::Countered => None,
+            Outcome::HubTimedOut(t) | Outcome::Refuted(t) | Outcome::Corrected { success: t, .. } => Some(*t),
+            Outcome::Lost | Outcome::Paused => None,
         }
     }
 }
@@ -67,7 +73,12 @@ pub trait Store {
     /// The claim lost: the contract closed by `txid`.
     fn set_lost(&mut self, txid: Txid) -> Result<()>;
     /// The exit's claim, prepared before `request`.
-    fn exit(&self) -> Option<crate::exit::ExitPlan>;
+    fn exit(&self) -> Option<serde_json::Value>;
+    /// The unlock `correct` posted: if it opens the payment in flight on
+    /// the contract's account, that payment completed (our new note
+    /// settled; the seed is the counterparty's to have too). The new
+    /// note's value, if so.
+    fn unlocked(&mut self, z: &[u8]) -> Result<Option<u64>>;
 }
 
 /// The wallet's own Bitcoin key for payouts, derived from its key apart
@@ -93,8 +104,13 @@ impl ContractSecrets {
         PartyKeys::from_seed(Role::User, Seed::from_label(&self.seed))
     }
     /// The entropy of a one-time key of hers, by its label.
-    pub(crate) fn wots(&self, label: &str) -> [u8; 32] {
+    pub fn wots(&self, label: &str) -> [u8; 32] {
         Seed::from_label(&format!("{}/{label}", self.seed)).derive_bytes("wots")
+    }
+    /// The contract's L2 key: its owner, fresh for it, which holds the
+    /// notes its claims take.
+    pub fn l2(&self) -> Keypair {
+        Seed::from_label(&self.seed).keypair("l2")
     }
     /// Her key in the contract's deposit tree.
     pub fn deposit_key(&self) -> Keypair {
@@ -126,12 +142,12 @@ impl Signer for WalletSigner {
 }
 
 /// The height a transaction confirmed at, if it has.
-pub(crate) fn confirmed_at(chain: &Chain, txid: &Txid) -> Result<Option<u32>> {
+pub fn confirmed_at(chain: &Chain, txid: &Txid) -> Result<Option<u32>> {
     let c = chain.confirmations(txid)?;
     (c > 0).then(|| chain.height().map(|h| h + 1 - c)).transpose()
 }
 
-pub(crate) fn wait_confirmed(chain: &Chain, txid: &Txid) -> Result<u32> {
+pub fn wait_confirmed(chain: &Chain, txid: &Txid) -> Result<u32> {
     let patience = Patience::new(chain.height()?, chain.network);
     loop {
         if let Some(h) = confirmed_at(chain, txid)? {
@@ -143,7 +159,7 @@ pub(crate) fn wait_confirmed(chain: &Chain, txid: &Txid) -> Result<u32> {
 }
 
 /// What happened to the output a party's last link created.
-pub(crate) enum Next {
+pub enum Next {
     /// The other side's link, as expected.
     Link(Transaction),
     /// It didn't answer by the deadline: the timeout is ours.
@@ -154,7 +170,7 @@ pub(crate) enum Next {
 
 /// Wait for the other side's link `txid` spending `ours`, until the chain
 /// reaches `deadline`.
-pub(crate) fn wait_link(chain: &Chain, txid: &Txid, ours: &OutPoint, deadline: u32) -> Result<Next> {
+pub fn wait_link(chain: &Chain, txid: &Txid, ours: &OutPoint, deadline: u32) -> Result<Next> {
     let mut stall = Stall::new(chain.height()?, chain.network);
     loop {
         if confirmed_at(chain, txid)?.is_some() {
@@ -195,6 +211,10 @@ pub struct Options {
     /// For tests: challenge the hub's assertion even if its proof is
     /// valid.
     pub unchecked_claims: bool,
+    /// For tests: contest the hub's correction (countersign it in `ack`)
+    /// even if it is what we reckon we're owed, so that the hub must
+    /// prove.
+    pub contest: bool,
 }
 
 /// One dispute: Alice's side of it.
@@ -261,11 +281,65 @@ impl Engine<'_> {
     /// payout for a win.
     ///
     /// Resumable: what is already on chain is replayed, not posted again.
-    pub fn run(&mut self, chain: &Chain, record: &Record, statement: &Statement, b: u32) -> Result<Outcome> {
+    pub fn run<L: crate::WalletL2>(&mut self, chain: &Chain, record: &Record, statement: &Statement, layer: &L, b: u32) -> Result<Outcome> {
         if let Some(o) = self.store.payout() {
             // the payout is posted: nothing left to play
             return Ok(o);
         }
-        self.run_hp(chain, record, statement, b)
+        let d = lichen_proto::hp::Disputed::new(record, statement, layer)?;
+        let plan = self.store.exit().context("a dispute is an exit: no claim kept")?;
+        ensure!(L::plan_b(&plan)? == b, "the claim kept is of {}, not {b}", L::plan_b(&plan)?);
+        let mut stall = Stall::new(chain.height()?, chain.network);
+        while chain.confirmations(&record.funding.txid)? < u32::from(d.graph.core().params.to_self_delay) {
+            ensure!(!stall.stalled(chain.height()?), "the chain stalled before the contract's funding was deep enough to request");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        match L::run_front(self, chain, &d, &plan)? {
+            crate::FrontEnd::Done(o) => Ok(o),
+            crate::FrontEnd::Paused => Ok(Outcome::Paused),
+            crate::FrontEnd::Asserting { at, b_corr } => {
+                let journal = layer.journal(record)?;
+                self.tail(chain, &d, statement, &journal, at, b_corr)
+            }
+        }
+    }
+
+    /// Say `msg` ([`Options::progress`]).
+    pub fn say(&self, msg: String) {
+        self.step(msg)
+    }
+    /// Post one of her links ([`Engine::post_link`]).
+    pub fn link(&self, chain: &Chain, name: &str, tx: Transaction) -> Result<u32> {
+        self.post_link(chain, name, tx)
+    }
+    /// Post one of her terminals, from the dispute's set.
+    pub fn terminal(&self, chain: &Chain, d: &lichen_proto::hp::Disputed, name: &str) -> Result<Txid> {
+        self.post_terminal(chain, &d.finish(name, vec![])?, &d.set[name].prevout)
+    }
+    /// Record the outcome: paid.
+    pub fn pay(&mut self, outcome: Outcome) -> Result<Outcome> {
+        self.paid(outcome)
+    }
+    /// Record the outcome: lost, its output taken by `txid`.
+    pub fn lose(&mut self, txid: Txid) -> Result<Outcome> {
+        self.lost(txid)
+    }
+}
+
+/// Her dealing of the input secrets for a contract's setup (`n`
+/// instances, `m` kept), from its seed: the same every time.
+pub fn dealing(s: &ContractSecrets, n: u32, m: u32) -> (Dealer, Dealing) {
+    deal(lichen_babe::setup::DIGITS, (n - m) as usize, &mut ChaCha20Rng::from_seed(s.hp_seed().derive_bytes("dealing")))
+}
+
+/// The seed of her instance `i` (1-based), from the contract's seed.
+pub fn instance_seed(s: &ContractSecrets, i: u32) -> [u8; 32] {
+    s.hp_seed().derive_bytes(&format!("instance/{i}"))
+}
+
+impl ContractSecrets {
+    /// The seed of her setup (her dealing, her instances).
+    pub fn hp_seed(&self) -> Seed {
+        Seed::from_label(&format!("{}/hp", self.seed))
     }
 }

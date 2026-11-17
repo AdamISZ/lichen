@@ -9,32 +9,25 @@ use anyhow::{ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use lichen_chain::{Chain, Fees};
 use lichen_proto::{anchor_vout, Built, Statement};
-use lichen_btc::taptree::TapTree;
+
 use lichen_contract::{anchor_tree_for, Presign};
 use lichen_btc::sighash::sign_tapscript;
 use lichen_btc::witness::tapscript_witness;
-use lichen_contract::{bit_tree, reserve_tree};
 
 pub use crate::engine::Outcome;
 use crate::engine::{wait_confirmed, Engine, Options, Store, WalletSigner};
-use crate::Wallet;
+use crate::{Wallet, WalletL2};
 
 /// Her winnings swept to her payout address, with her anchors and the fee
 /// budget's rest: the sweep's txid and what it pays.
 pub type Swept = Option<(Txid, Amount)>;
 
-/// An input of the sweep: its outpoint, prevout and sequence, and its leaf
-/// (and whether the witness carries `b`'s signature), or none for a coin
-/// of the fee budget (its key path).
-type SweepIn = (OutPoint, TxOut, Sequence, Option<(TapTree, String, bool)>);
-
-/// The wallet's contract `k` as a dispute's store.
-struct HeldStore<'a> {
-    w: &'a mut Wallet,
+struct HeldStore<'a, L: WalletL2> {
+    w: &'a mut Wallet<L>,
     k: usize,
 }
 
-impl Store for HeldStore<'_> {
+impl<L: WalletL2> Store for HeldStore<'_, L> {
     fn payout(&self) -> Option<Outcome> {
         self.w.contracts[self.k].payout.clone()
     }
@@ -46,12 +39,15 @@ impl Store for HeldStore<'_> {
         self.w.contracts[self.k].closed = Some(txid);
         self.w.save()
     }
-    fn exit(&self) -> Option<crate::exit::ExitPlan> {
+    fn exit(&self) -> Option<serde_json::Value> {
         self.w.contracts[self.k].exit.clone()
+    }
+    fn unlocked(&mut self, z: &[u8]) -> Result<Option<u64>> {
+        L::unlocked(self.w, self.k, z)
     }
 }
 
-impl Wallet {
+impl<L: WalletL2> Wallet<L> {
     /// Contract `k` is still open: no closing transaction, or one named
     /// (the hub's answer to a fold) that never reached the chain, which
     /// is then forgotten.
@@ -70,6 +66,25 @@ impl Wallet {
         }
     }
 
+    /// Exit contract `cid`: post the claim kept (made and kept now, if
+    /// none) and play the dispute to its end; on a win, sweep the payout.
+    pub fn exit(&mut self, chain: &Chain, statement: &Statement, cid: u32) -> Result<(Outcome, Swept)> {
+        let k = self.contracts.iter().position(|h| h.record.cid() == cid).with_context(|| format!("no contract {cid}"))?;
+        let plan = match self.contracts[k].exit.clone() {
+            Some(p) => p,
+            None => {
+                let p = L::exit_plan(self, chain, cid)?;
+                self.contracts[k].exit = Some(p.clone());
+                self.save()?;
+                p
+            }
+        };
+        let b = L::plan_b(&plan)?;
+        let out = self.play(chain, statement, cid, b)?;
+        L::exited(self, cid)?;
+        Ok(out)
+    }
+
     /// Play contract `cid`'s exit, a claim of `b` (the plan kept with the
     /// contract, [`Wallet::exit`]). Blocks until the dispute ends; on a
     /// win, sweeps her winnings to her payout address.
@@ -80,8 +95,9 @@ impl Wallet {
         self.ensure_open(chain, k)?;
         let held = self.contracts[k].clone();
         let signer = WalletSigner { secrets: self.secrets(&held.nonce), network: held.record.network };
-        let opts = Options { progress: self.progress.clone(), pause_after: self.pause_after, unchecked_claims: self.unchecked_claims };
-        let outcome = Engine { signer: &signer, store: &mut HeldStore { w: self, k }, opts }.run(chain, &held.record, statement, b)?;
+        let opts = Options { progress: self.progress.clone(), pause_after: self.pause_after, unchecked_claims: self.unchecked_claims, contest: self.contest };
+        let layer = self.l2.clone();
+        let outcome = Engine { signer: &signer, store: &mut HeldStore { w: self, k }, opts }.run(chain, &held.record, statement, &layer, b)?;
         if outcome.payout().is_none() {
             return Ok((outcome, None));
         }
@@ -92,7 +108,7 @@ impl Wallet {
     /// checked).
     fn presigned(&self, k: usize, statement: &Statement) -> Result<(Built, Vec<Presign>)> {
         let record = &self.contracts[k].record;
-        let c = record.build(statement)?;
+        let c = record.build(statement, &self.l2)?;
         let set = record.presigned(&c)?;
         Ok((c, set))
     }
@@ -107,23 +123,9 @@ impl Wallet {
         let payout = chain.get_tx(&txid).context("the payout")?;
         let held = self.contracts[k].clone();
         let (c, set) = self.presigned(k, statement)?;
-        let core = c.core();
-        let (t, ctx) = (core.terms, core.ctx());
-        let b_key = c.b_key().clone();
-        let b_wire = self.secrets(&held.nonce).b_wire(b)?;
+        let _ = &c;
         let kp = self.contract_keys(&held.nonce).payment;
-        let delta = core.params.delta;
-        let mut ins: Vec<SweepIn> = vec![];
-        // her outputs: the bits set in b, then the reserves
-        let at_delta = Sequence::from_height(delta);
-        for i in t.low_bits..t.bits {
-            if (b >> i) & 1 == 1 {
-                let vout = i - t.low_bits;
-                ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), at_delta, Some((bit_tree(&ctx, i, &b_key)?, format!("alice_bit_{i}"), true))));
-            }
-        }
-        let vout = t.bits - t.low_bits;
-        ins.push((OutPoint { txid, vout }, payout.output[vout as usize].clone(), at_delta, Some((reserve_tree(&ctx, t, &b_key)?, "alice_reserve".to_string(), false))));
+        let (mut ins, b_wire, wait) = L::payout_inputs(self, chain, &held, statement, &outcome, &payout, b)?;
         let winnings: Amount = ins.iter().map(|i| i.1.value).sum();
         // her links' anchors (a link of the set with an anchor of hers is
         // hers), where they are unspent
@@ -148,8 +150,8 @@ impl Wallet {
         }
         let total: Amount = ins.iter().map(|i| i.1.value).sum();
         let budget = total - winnings - anchors;
-        self.step(format!("the payout confirmed at {at}: the user's outputs can be swept from block {}", at + u32::from(delta)));
-        while chain.height()? < at + u32::from(delta) {
+        self.step(format!("the payout confirmed at {at}: the user's outputs can be swept from block {}", at + u32::from(wait)));
+        while chain.height()? < at + u32::from(wait) {
             std::thread::sleep(Duration::from_millis(100));
         }
         let prevouts: Vec<TxOut> = ins.iter().map(|i| i.1.clone()).collect();
@@ -175,7 +177,7 @@ impl Wallet {
         let swept = chain.broadcast(&build(fee)?).context("sweeping the winnings")?;
         // the parts that came to nothing (on regtest the anchors often went
         // to fee bumps) are left out
-        let parts: Vec<String> = [("b's bits and the reserves", winnings), ("the anchors", anchors), ("the fee budget's rest", budget)]
+        let parts: Vec<String> = [("the payout's bits and reserves", winnings), ("the anchors", anchors), ("the fee budget's rest", budget)]
             .into_iter()
             .filter(|(_, v)| *v > Amount::ZERO)
             .map(|(name, v)| format!("{name} {}", v.to_sat()))

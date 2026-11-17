@@ -1,0 +1,25 @@
+<script>
+  // the spec, inline: nothing is fetched
+  const spec = JSON.parse(document.getElementById('spec').textContent);
+  const sans = 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+  Redoc.init(spec, {
+    downloadFileName: 'hub-api.yaml',
+    expandResponses: '200',
+    requiredPropsFirst: true,
+    jsonSampleExpandLevel: 3,
+    hideHostname: false,
+    theme: {
+      colors: { primary: { main: '#2f6b46' } },
+      typography: {
+        fontFamily: sans,
+        fontSize: '15px',
+        headings: { fontFamily: sans, fontWeight: '600' },
+        code: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' },
+      },
+      sidebar: { width: '280px' },
+      rightPanel: { backgroundColor: '#1f2a24' },
+    },
+  }, document.getElementById('redoc'));
+</script>
+</body>
+</html>

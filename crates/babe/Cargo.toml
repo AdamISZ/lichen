@@ -9,8 +9,6 @@ license.workspace = true
 anyhow.workspace = true
 # RISC Zero's verifying key and claim, checked natively
 lichen-risc0.workspace = true
-# the journal's key digest and length, as the guest's
-lichen-withdraw.workspace = true
 # the reveal on chain: adaptor signatures, scripts, keys
 lichen-btc.workspace = true
 # the graph, on lichen's contract
@@ -31,7 +29,9 @@ rand_chacha = "0.3"
 rand_core = "0.6"
 sha2.workspace = true
 serde.workspace = true
+# byte strings as hex in JSON (hexbytes)
+hex.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 bitcoincore-rpc.workspace = true
-hex.workspace = true

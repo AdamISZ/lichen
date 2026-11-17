@@ -7,10 +7,6 @@ name: CI
 #
 # The Esplora tests (crates/chain/tests/esplora.rs, the hub's deposit test)
 # need Blockstream's electrs: built once at a pinned revision, then cached.
-#
-# Not run here: the opt-in (ignored) tests, which need the RISC Zero
-# prover image built locally (`shielded_r0`) or a prover for the hub's
-# statement (`hp_real`).
 
 on:
   push:
