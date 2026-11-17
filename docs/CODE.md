@@ -2,12 +2,13 @@
 
 For working on lichen itself, on the `grants` branch: the L2 of
 [papers/lichen-grants.pdf](../papers/lichen-grants.pdf), whose notes the
-hub keeps, one per account. The contract on Bitcoin (its output with
-the fold and the default, the pre-signed links' floors and anchors, the
-payout) is the `contract` crate, on
+hub keeps, one per account. The contract on Bitcoin (its output, whose
+key path is both parties' MuSig2 key, for the fold, and whose leaves
+are the default and the dispute's; the pre-signed links' floors and
+anchors; the payout) is the `contract` crate, on
 [lichen-btc](https://github.com/lichenbtc-org/lichen-btc) (taproot,
-transactions, adaptor signatures, Winternitz, RISC Zero's Groth16 key),
-which Cargo fetches at the commit `Cargo.lock` pins.
+transactions, adaptor signatures, MuSig2, Winternitz, RISC Zero's
+Groth16 key), which Cargo fetches at the commit `Cargo.lock` pins.
 
 A contract's dispute is the exit where only the hub proves: Alice posts
 a claim of her note, the hub may correct it, she accepts or
@@ -17,7 +18,8 @@ the roles swapped. The hub's statement and the L2's encodings are in
 (Alice garbles and uploads) in `proto::hp`, its play in the hub's
 `dispute::hp` and the wallet's `engine::hp`. A cooperative withdrawal
 is the same claim, which the hub takes into its book before it folds
-(`POST /withdraw`). The hub's HTTP API is [hub-api.yaml](hub-api.yaml).
+(`POST /withdraw/nonce`, the hub's MuSig2 nonce, then `POST /withdraw`,
+the claim and her half of the signature). The hub's HTTP API is [hub-api.yaml](hub-api.yaml).
 
 ## Crates
 

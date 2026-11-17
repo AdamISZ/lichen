@@ -1433,12 +1433,13 @@ dependencies = [
 [[package]]
 name = "lichen-btc"
 version = "0.1.0"
-source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=2a02a55e3f05a8d956544b68495522dc33f57966#2a02a55e3f05a8d956544b68495522dc33f57966"
+source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=07871c869acf5c55d18845903326d6daa1661ceb#07871c869acf5c55d18845903326d6daa1661ceb"
 dependencies = [
  "anyhow",
  "bitcoin",
  "bitcoincore-rpc",
  "hex",
+ "musig2",
  "rand 0.8.8",
  "secp256k1",
  "serde",
@@ -1575,7 +1576,7 @@ dependencies = [
 [[package]]
 name = "lichen-risc0"
 version = "0.1.0"
-source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=2a02a55e3f05a8d956544b68495522dc33f57966#2a02a55e3f05a8d956544b68495522dc33f57966"
+source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=07871c869acf5c55d18845903326d6daa1661ceb#07871c869acf5c55d18845903326d6daa1661ceb"
 dependencies = [
  "anyhow",
  "ark-bn254",
@@ -1662,7 +1663,7 @@ dependencies = [
 [[package]]
 name = "lichen-wots"
 version = "0.1.0"
-source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=2a02a55e3f05a8d956544b68495522dc33f57966#2a02a55e3f05a8d956544b68495522dc33f57966"
+source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=07871c869acf5c55d18845903326d6daa1661ceb#07871c869acf5c55d18845903326d6daa1661ceb"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -1748,6 +1749,20 @@ checksum = "05015102dad0f7d61691ca347e9d9d9006685a64aefb3d79eecf62665de2153d"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "musig2"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "183312a1f782d0e27c2e9aa4d68c151301caa39b38f48ea125c1d55ab1ff29f0"
+dependencies = [
+ "base16ct",
+ "hmac",
+ "k256",
+ "secp",
+ "sha2",
+ "subtle",
 ]
 
 [[package]]
@@ -2337,6 +2352,17 @@ dependencies = [
  "pkcs8",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "secp"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3ef0ffc3b1b2720b00b919f6c697b1e64aca7bba54b93e0ef4b8560fac6f946"
+dependencies = [
+ "base16ct",
+ "k256",
+ "subtle",
 ]
 
 [[package]]

@@ -19,7 +19,7 @@ use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_ledger::{fresh_rho, xonly, Deployment, Hash};
 use lichen_chain::{Chain, KeyFees};
 use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
-use lichen_proto::{check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, Presig, fee_budget_of, terms, Accept, DepositOffer, DepositRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, WithdrawRequest, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, Presig, fee_budget_of, terms, Accept, DepositOffer, DepositRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, FoldNonce, FoldNonceRequest, WithdrawRequest, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
 use lichen_btc::adaptor::{adaptor_extract, adaptor_sign, AdaptorSig};
 use lichen_contract::PartyKeys;
 use lichen_contract::sign_all;
@@ -711,9 +711,15 @@ impl Wallet {
         let c = held.record.build(statement)?;
         let paid = bitcoin::Amount::from_sat(u64::from(units) * unit);
         let fold = c.fold(held.record.funding, paid, FOLD_FEE)?;
-        let alice_sig = fold.sign(&self.contract_keys(&held.nonce).payment)?;
+        // MuSig2 on the contract output's key path: the hub's nonce, then
+        // hers, and her partial signature under both
+        let hub_nonce: FoldNonce = hub_call(&format!("{hub}/withdraw/nonce"), Some(serde_json::to_string(&FoldNonceRequest { cid })?), false)?;
+        let kp = self.contract_keys(&held.nonce).payment;
+        let (sec, alice_nonce) = fold.nonce(&kp, &cid.to_be_bytes())?;
+        let nonces = [alice_nonce, lichen_btc::musig::PubNonce::from_slice(&hub_nonce.nonce)?];
+        let alice_partial = fold.sign(&kp, sec, &nonces)?;
         let rest_to = Some(xonly(&self.key));
-        let req = WithdrawRequest { cid, b: units, claim: plan.map(|p| p.claim).unwrap_or_default(), alice_sig, rest_to };
+        let req = WithdrawRequest { cid, b: units, claim: plan.map(|p| p.claim).unwrap_or_default(), hub_nonce: hub_nonce.nonce, alice_nonce: alice_nonce.0.to_vec(), alice_partial, rest_to };
         let done: Folded = hub_call(&format!("{hub}/withdraw"), Some(serde_json::to_string(&req)?), false)?;
         // the hub's txid must be the fold's
         ensure!(done.txid == fold.tx.compute_txid(), "the hub answered {} for the fold, not its txid {}", done.txid, fold.tx.compute_txid());

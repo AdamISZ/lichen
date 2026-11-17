@@ -104,7 +104,8 @@ lw withdraw <contract> <amount>
 claims your account's live note, for that amount in the contract's
 units, and asks the hub to fold. The hub takes the claim, closing the
 account, and pays you `amount` plus your reserve in one transaction,
-closing the contract. What the note held beyond `amount` it credits to
+closing the contract. That transaction is signed by you and the hub
+together (MuSig2) and looks on chain like any single-key spend. What the note held beyond `amount` it credits to
 your wallet's key, an account with no contract. `lw sweep-fees
 <contract>` then sends what is left of the contract's fee budget to the
 payout address.

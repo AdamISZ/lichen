@@ -1,8 +1,9 @@
 //! What every contract has, whatever its dispute: the contract output
-//! with `fold`, `default` and the dispute's `escalate` ([`Core::tree`]),
-//! the cooperative close, the default, the payout, and the machinery of
-//! the pre-signed set: a link of the dispute's chain, with its floor and
-//! its poster's anchor ([`Core::link`]), and [`Presign`].
+//! ([`Core::tree`]: the parties' MuSig2 key, and the leaves `default` and
+//! the dispute's `escalate`), the cooperative close on its key path
+//! ([`Fold`]), the default, the payout, and the machinery of the
+//! pre-signed set: a link of the dispute's chain, with its floor and its
+//! poster's anchor ([`Core::link`]), and [`Presign`].
 
 use std::collections::HashMap;
 
@@ -16,11 +17,12 @@ use bitcoin::{Amount, OutPoint, ScriptBuf, Transaction, TxOut};
 use lichen_btc::sighash::{sign_tapscript, sign_tapscript_acp, tapscript_sighash};
 use lichen_btc::taptree::{Leaf, TapTree};
 use lichen_btc::tx::{build_spend, Timelock};
+use lichen_btc::musig::{self, KeyAgg, Partial, PubNonce, SecNonce};
 use lichen_btc::witness::tapscript_witness;
 use crate::keys::{ContractCtx, ContractParams, PartyPubKeys, Role};
 use lichen_wots::{Chain, WotsPublicOf};
 
-use crate::leaves::{default_leaf, default_outputs, fold_leaf, payout_less, Terms};
+use crate::leaves::{default_leaf, default_outputs, payout_less, Terms};
 
 /// The fee a link pays of its own, sat/vB, out of the contract: enough to
 /// relay alone; its poster's child pays the rest.
@@ -73,16 +75,21 @@ impl<'a> Core<'a> {
     pub fn value(&self) -> Amount {
         self.terms.v_max() + self.terms.reserves()
     }
-    /// The contract output's tree: `fold`, `default` and the dispute's
-    /// `escalate`.
+    /// Both parties' payment keys aggregated (MuSig2, Alice's first): the
+    /// contract output's internal key.
+    pub fn musig(&self) -> Result<KeyAgg> {
+        KeyAgg::new(&[self.pubs[0].payment, self.pubs[1].payment])
+    }
+    /// The contract output's tree: the parties' MuSig2 key (the fold), and
+    /// the leaves `default` and the dispute's `escalate`.
     pub fn tree(&self, escalate: Leaf) -> Result<TapTree> {
         let ctx = self.ctx();
-        TapTree::new(vec![fold_leaf(&ctx), default_leaf(&ctx, self.terms.t_close), escalate])
+        TapTree::with_internal_key(self.musig()?.internal_key(), vec![default_leaf(&ctx, self.terms.t_close), escalate])
     }
     /// The cooperative close for a withdrawal of `b` sats, the contract
     /// output (`tree`) at `funding`: Alice `b + r_A`, the hub the rest
-    /// less `fee`. Both sign it when it happens ([`Presign::sign`], ALL).
-    pub fn fold(&self, tree: &TapTree, funding: OutPoint, b: Amount, fee: Amount) -> Result<Presign> {
+    /// less `fee`. Both sign it when it happens, on the key path.
+    pub fn fold(&self, tree: &TapTree, funding: OutPoint, b: Amount, fee: Amount) -> Result<Fold> {
         let t = self.terms;
         ensure!(b <= t.v_max(), "{b} is above the cap {}", t.v_max());
         let c_out = TxOut { value: self.value(), script_pubkey: tree.script_pubkey() };
@@ -92,11 +99,13 @@ impl<'a> Core<'a> {
         if hub >= self.params.dust {
             outs.push(TxOut { value: hub, script_pubkey: self.pubs[1].payout_spk.clone() });
         }
-        // signed like a link (plain ALL: its fee comes from the hub's
-        // output, nothing is added to it), but an ordinary transaction
-        let mut p = Presign::new("fold", tree, "fold", funding, &c_out, outs, true)?;
-        p.tx.version = Version::TWO;
-        Ok(p)
+        // its fee comes from the hub's output: signed with plain ALL
+        // (SIGHASH_DEFAULT), nothing is added to it
+        let mut tx = build_spend(funding, &Timelock::NONE, outs);
+        tx.version = Version::TWO;
+        let key = self.musig()?.taproot(tree.merkle_root())?;
+        ensure!(key.output_key() == tree.output_key().to_x_only_public_key(), "the MuSig2 key isn't the tree's output key");
+        Ok(Fold { tx, prevout: c_out, key })
     }
     /// The default, the contract output (`tree`) at `funding`: after
     /// `T_close` the hub takes `V_max` and its reserve, Alice her reserve.
@@ -132,6 +141,49 @@ impl<'a> Core<'a> {
         let carried = prev_out.value.checked_sub(floor + ANCHOR).context("the contract can't carry the floors")?;
         p.tx.output[0].value = carried;
         Ok(p)
+    }
+}
+
+/// The fold: the cooperative close, the contract output spent on its key
+/// path by both parties' MuSig2 signature (BIP327; `lichen_btc::musig`).
+/// Each party makes a nonce for it ([`Fold::nonce`]) and, with both
+/// public nonces, its partial signature ([`Fold::sign`]); the partials
+/// make the signature ([`Fold::finish`]).
+#[derive(Clone, Debug)]
+pub struct Fold {
+    pub tx: Transaction,
+    pub prevout: TxOut,
+    /// The parties' aggregate, tweaked for the contract output's tree.
+    pub key: KeyAgg,
+}
+
+impl Fold {
+    /// What both sign: the key-path sighash (SIGHASH_DEFAULT).
+    pub fn sighash(&self) -> Result<[u8; 32]> {
+        let h = bitcoin::sighash::SighashCache::new(&self.tx).taproot_key_spend_signature_hash(0, &bitcoin::sighash::Prevouts::All(&[&self.prevout]), bitcoin::sighash::TapSighashType::Default)?;
+        Ok(bitcoin::hashes::Hash::to_byte_array(h))
+    }
+    /// A fresh nonce for `kp` (a party's payment key) on this contract
+    /// output; `extra` salts it with the session's context.
+    pub fn nonce(&self, kp: &Keypair, extra: &[u8]) -> Result<(SecNonce, PubNonce)> {
+        musig::nonce(&self.key, kp, extra)
+    }
+    /// `kp`'s partial signature, its nonce `sec` (spent) among `nonces`
+    /// (Alice's, then the hub's).
+    pub fn sign(&self, kp: &Keypair, sec: SecNonce, nonces: &[PubNonce; 2]) -> Result<Partial> {
+        musig::sign(&self.key, kp, sec, nonces, &self.sighash()?)
+    }
+    /// Check `pk`'s partial signature, its nonce `nonce`.
+    pub fn verify_partial(&self, pk: &XOnlyPublicKey, nonce: &PubNonce, nonces: &[PubNonce; 2], partial: &Partial) -> Result<()> {
+        musig::verify_partial(&self.key, pk, nonce, nonces, partial, &self.sighash()?)
+    }
+    /// The transaction ready to broadcast: the partials (Alice's, then the
+    /// hub's) aggregated, the signature checked, as its witness.
+    pub fn finish(&self, nonces: &[PubNonce; 2], partials: &[Partial; 2]) -> Result<Transaction> {
+        let sig = musig::aggregate(&self.key, nonces, partials, &self.sighash()?)?;
+        let mut tx = self.tx.clone();
+        tx.input[0].witness = bitcoin::Witness::p2tr_key_spend(&bitcoin::taproot::Signature { signature: sig, sighash_type: bitcoin::sighash::TapSighashType::Default });
+        Ok(tx)
     }
 }
 

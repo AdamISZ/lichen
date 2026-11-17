@@ -37,9 +37,9 @@ lichen-wallet = { path = "crates/wallet" }
 lichen-babe = { path = "crates/babe" }
 lichen-contract = { path = "crates/contract" }
 # the Bitcoin layer (lichenbtc-org/lichen-btc)
-lichen-btc = { git = "https://github.com/lichenbtc-org/lichen-btc", rev = "2a02a55e3f05a8d956544b68495522dc33f57966" }
-lichen-wots = { git = "https://github.com/lichenbtc-org/lichen-btc", rev = "2a02a55e3f05a8d956544b68495522dc33f57966" }
-lichen-risc0 = { git = "https://github.com/lichenbtc-org/lichen-btc", rev = "2a02a55e3f05a8d956544b68495522dc33f57966" }
+lichen-btc = { git = "https://github.com/lichenbtc-org/lichen-btc", rev = "07871c869acf5c55d18845903326d6daa1661ceb" }
+lichen-wots = { git = "https://github.com/lichenbtc-org/lichen-btc", rev = "07871c869acf5c55d18845903326d6daa1661ceb" }
+lichen-risc0 = { git = "https://github.com/lichenbtc-org/lichen-btc", rev = "07871c869acf5c55d18845903326d6daa1661ceb" }
 lichen-sequencer = { path = "crates/sequencer" }
 
 # Dependencies (lichen-btc's crates among them) optimised even in debug

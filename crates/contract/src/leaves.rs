@@ -1,10 +1,11 @@
-//! The contract's terms, its leaves (`fold`, `default`, and the payout's
-//! bit and reserve leaves), and the outputs that pay a withdrawal `b` on
-//! the dispute path or end the contract by default at `T_close`.
+//! The contract's terms, its leaves (`default`, and the payout's bit and
+//! reserve leaves), and the outputs that pay a withdrawal `b` on the
+//! dispute path or end the contract by default at `T_close`.
 //!
-//! The contract output carries `fold`, `default` and the dispute's
-//! `escalate` (BABE's `request`, `lichen_babe`):
-//! - `fold`: the cooperative withdrawal, both signing at the time;
+//! The contract output's key path is both parties' MuSig2 key: the fold,
+//! the cooperative withdrawal, signed when it happens ([`crate::Fold`]).
+//! Its leaves are `default` and the dispute's `escalate` (BABE's
+//! `request`, `lichen_babe`):
 //! - `default`: after `T_close`, a pre-signed transaction paying the hub
 //!   and returning Alice's reserve (not withdrawing is not a lie);
 //! - `escalate`: Alice's claim on chain, the dispute's first move.
@@ -175,15 +176,6 @@ pub fn default_outputs(ctx: &ContractCtx, t: &Terms, available: Amount, fee: Amo
         TxOut { value: t.reserve_alice, script_pubkey: ctx.key(Role::User).payout_spk.clone() },
         TxOut { value: total - t.reserve_alice, script_pubkey: ctx.key(Role::Hub).payout_spk.clone() },
     ])
-}
-
-/// `fold` on the contract output: the cooperative close, both parties
-/// signing at the time (nothing pre-signed): Alice `b + r_A`, the hub the
-/// rest, once the hub has seen her return. Witness: the hub's signature,
-/// the user's. (TODO: a MuSig2 key path instead.)
-pub fn fold_leaf(ctx: &ContractCtx) -> Leaf {
-    let b = ctx.two_of_two_verify(Builder::new());
-    Leaf::new("fold", b.push_int(1).into_script(), Timelock::NONE)
 }
 
 /// `default` on the contract output: after `T_close`, 2-of-2 pre-signed

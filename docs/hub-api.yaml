@@ -61,10 +61,14 @@ info:
        one step on, and the seed released, which completes each party's
        new note. Until then either party may `POST /cancel`.
 
-    **Withdrawing**: `POST /withdraw` with the claim (her live note), the
-    whole units `b` and her signature on the fold; the hub closes the
-    account and broadcasts the fold. `b = 0` without a claim closes the
-    contract early, paying her reserve alone.
+    **Withdrawing**: the fold spends the contract output on its key path,
+    a MuSig2 (BIP327) signature of both parties' payment keys (Alice's
+    first). `POST /withdraw/nonce` gives the hub's public nonce for it;
+    then `POST /withdraw` with the claim (her live note), the whole units
+    `b`, the hub's nonce, hers and her partial signature on the fold; the
+    hub closes the account, adds its partial signature and broadcasts the
+    fold. `b = 0` without a claim closes the contract early, paying her
+    reserve alone.
   license:
     name: MIT
 servers:
@@ -344,6 +348,23 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Payment' }
+        '400': { $ref: '#/components/responses/Refused' }
+  /withdraw/nonce:
+    post:
+      tags: [withdrawal]
+      operationId: foldNonce
+      summary: The hub's MuSig2 nonce for a contract's fold, kept for the withdrawal that follows (a new request replaces it).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FoldNonceRequest' }
+      responses:
+        '200':
+          description: The hub's public nonce.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FoldNonce' }
         '400': { $ref: '#/components/responses/Refused' }
   /withdraw:
     post:
@@ -841,9 +862,23 @@ components:
         id: { $ref: '#/components/schemas/PaymentId' }
         owner: { $ref: '#/components/schemas/Hex32' }
         sig: { $ref: '#/components/schemas/SigHex' }
+    PubNonce:
+      description: A MuSig2 public nonce (BIP327), 66 bytes as hex.
+      type: string
+      pattern: '^[0-9a-f]{132}$'
+    FoldNonceRequest:
+      type: object
+      required: [cid]
+      properties:
+        cid: { $ref: '#/components/schemas/U32' }
+    FoldNonce:
+      type: object
+      required: [nonce]
+      properties:
+        nonce: { $ref: '#/components/schemas/PubNonce' }
     WithdrawRequest:
       type: object
-      required: [cid, b, alice_sig]
+      required: [cid, b, hub_nonce, alice_nonce, alice_partial]
       properties:
         cid: { $ref: '#/components/schemas/U32' }
         b: { $ref: '#/components/schemas/U32', description: 'Whole units withdrawn (0: an early close, her reserve alone).' }
@@ -851,7 +886,9 @@ components:
           description: "The posted claim Q, hex (74 bytes: k, v, the issuer's signature): her account's live note. Absent at b = 0."
           type: string
           pattern: '^[0-9a-f]{148}$'
-        alice_sig: { $ref: '#/components/schemas/TxSig', description: 'Her signature on the fold.' }
+        hub_nonce: { $ref: '#/components/schemas/PubNonce', description: "The hub's nonce she signed under (from /withdraw/nonce)." }
+        alice_nonce: { $ref: '#/components/schemas/PubNonce', description: 'Her nonce.' }
+        alice_partial: { $ref: '#/components/schemas/Hex32', description: 'Her partial signature on the fold (key path, SIGHASH_DEFAULT).' }
         rest_to:
           description: "Where what the note holds beyond u·b goes, as credit (a key of hers with no contract)."
           oneOf:
