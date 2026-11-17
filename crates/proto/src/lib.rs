@@ -387,22 +387,38 @@ pub const CLOSE_DUST: Amount = Amount::from_sat(330);
 /// The default's fee coin, the hub's.
 pub const DEFAULT_FEE: Amount = Amount::from_sat(2_000);
 
-/// Alice asks the hub to fold contract `cid` for her return at `index`
-/// (a sealed note of `b` sats to the hub with memo `cid`), with her
-/// signature on the fold.
+/// The first round of a cooperative withdrawal (`POST /withdraw/nonce`):
+/// the hub's public nonce for the fold of contract `cid` (MuSig2 on the
+/// contract output's key path). The hub keeps the secret half for the
+/// [`WithdrawRequest`] that follows; a new request replaces it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FoldNonceRequest {
+    pub cid: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FoldNonce {
+    /// 66 bytes (BIP327's encoding).
+    pub nonce: Vec<u8>,
+}
+
 /// A cooperative withdrawal (`POST /withdraw`): Alice's claim of `b`
 /// units from contract `cid` ([`lichen_withdraw::hp::Claim`]'s bytes, hex:
 /// her notes by position, her signatures on its `E`), which the hub
-/// records on the L2, retiring the notes, and her signature on the fold
-/// paying her `b` units. At `b` 0, no claim: an early close, the fold
-/// paying her reserve alone.
+/// records on the L2, retiring the notes, and her half of the fold
+/// paying her `b` units: her public nonce and her partial signature,
+/// under the hub's nonce from [`FoldNonce`]. At `b` 0, no claim: an early
+/// close, the fold paying her reserve alone.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WithdrawRequest {
     pub cid: u32,
     pub b: u32,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub claim: String,
-    pub alice_sig: Vec<u8>,
+    /// The hub's public nonce she signed under ([`FoldNonce`]).
+    pub hub_nonce: Vec<u8>,
+    pub alice_nonce: Vec<u8>,
+    pub alice_partial: [u8; 32],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -578,7 +594,7 @@ impl Built {
         self.0.tree()
     }
     /// The cooperative close for a withdrawal of `b` sats.
-    pub fn fold(&self, funding: OutPoint, b: Amount, fee: Amount) -> Result<Presign> {
+    pub fn fold(&self, funding: OutPoint, b: Amount, fee: Amount) -> Result<lichen_contract::Fold> {
         self.core().fold(&self.tree()?, funding, b, fee)
     }
     /// Every transaction the two parties pre-sign, the contract output at

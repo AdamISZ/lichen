@@ -1,11 +1,12 @@
 # lichen's code
 
-For working on lichen itself. The contract on Bitcoin (its output with
-the fold and the default, the pre-signed links' floors and anchors, the
-payout) is the `contract` crate, on
+For working on lichen itself. The contract on Bitcoin (its output,
+whose key path is both parties' MuSig2 key, for the fold, and whose
+leaves are the default and the dispute's; the pre-signed links' floors
+and anchors; the payout) is the `contract` crate, on
 [lichen-btc](https://github.com/lichenbtc-org/lichen-btc) (taproot,
-transactions, adaptor signatures, Winternitz, RISC Zero's Groth16 key),
-which Cargo fetches at the commit `Cargo.lock` pins.
+transactions, adaptor signatures, MuSig2, Winternitz, RISC Zero's
+Groth16 key), which Cargo fetches at the commit `Cargo.lock` pins.
 
 A contract's dispute is the exit (a claim
 against a hostile operator, which the hub must prove false; statement
@@ -15,7 +16,8 @@ graph in `babe::hp`, its setup (Alice garbles and uploads) in
 `proto::hp`, its record in `validity::exit`, and its play in the hub's
 `dispute::hp` and the wallet's `hp`, `engine::hp` and `exit`. A
 cooperative withdrawal is the same claim, which the hub records on the
-L2 before it folds (`POST /withdraw`).
+L2 before it folds (`POST /withdraw/nonce`, the hub's MuSig2 nonce, then
+`POST /withdraw`, the claim and her half of the signature).
 
 ## Crates
 

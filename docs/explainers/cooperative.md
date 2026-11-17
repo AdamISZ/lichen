@@ -64,7 +64,8 @@ sequencer, is what makes the hub agree to a fold.
 on Bitcoin ([exit.md](exit.md)): her notes by position, signed by their
 owner for this contract, and `b` = 64 units. With it, it builds the fold
 from the contract's terms, signs it, and sends the hub both
-(`POST /withdraw`).
+(`POST /withdraw`; since 2026-11-17 her half of a MuSig2 signature,
+under the hub's nonce from `POST /withdraw/nonce`).
 
 **The hub checks the claim against its own ledger,** now, not at an
 anchor: each position is a note of hers, unspent, and unlocked (or the
@@ -124,9 +125,15 @@ The fold reveals only its own leaf: a 71-byte script of the two keys,
 checked with `CHECKSIG` and `CHECKSIGADD`. The other two leaves appear
 only as one 32-byte hash in the control block. So the fold's witness
 holds two 64-byte signatures, the 71-byte script and a 65-byte control
-block: 68 vB on top of a plain one-input, two-output transaction. With
-MuSig2, a TODO, it would be a key-path spend, indistinguishable from
-any other taproot payment.
+block: 68 vB on top of a plain one-input, two-output transaction.
+
+Since 2026-11-17 the fold is a key-path spend instead: the contract
+output's internal key is the two payment keys aggregated (MuSig2,
+BIP327), its leaves are `default` and `request`, and the fold's witness
+is one 64-byte signature, about 51 vB less (some 154 vB), and on chain
+like any other taproot payment. The hub gives its nonce first (`POST
+/withdraw/nonce`); her claim then carries her nonce and her partial
+signature.
 
 **Its fee** is a fixed 1,000 sats, which the hub pays from its side.
 

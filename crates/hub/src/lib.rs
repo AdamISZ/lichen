@@ -5,8 +5,10 @@
 //! /hp/setup`, `POST /hp/commit`, and `POST /hp/instance/<cid>/<i>`, an
 //! instance's bytes: `lichen_proto::hp`), `POST /open` ([`OpenRequest`] to
 //! [`OpenOffer`]), `POST /accept` ([`Accept`] to [`Opened`]), `POST
-//! /withdraw` ([`WithdrawRequest`] to [`Folded`]: the cooperative
-//! withdrawal, Alice's claim recorded on the L2, then the fold). An offer mints the
+//! /withdraw/nonce` ([`FoldNonceRequest`] to [`FoldNonce`]: the hub's
+//! MuSig2 nonce for the fold) then `POST /withdraw` ([`WithdrawRequest`]
+//! to [`Folded`]: the cooperative withdrawal, Alice's claim recorded on
+//! the L2, then the fold on the contract output's key path). An offer mints the
 //! deposit to a key Alice can spend only once the funding is broadcast
 //! (see `lichen_proto`); a watcher broadcasts, after `T_close`, the
 //! default of any contract still open.
@@ -26,7 +28,7 @@ use lichen_btc::adaptor::{adaptor_complete, adaptor_verify, AdaptorSig};
 use lichen_chain::Chain;
 use lichen_ledger::{files, note, xonly, Mint, Tx};
 use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_proto::{broadcast_deadline, check_funding, contributions, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, terms, Accept, DepositOffer, DepositRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, WithdrawRequest, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
+use lichen_proto::{broadcast_deadline, check_funding, contributions, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, terms, Accept, DepositOffer, DepositRequest, FoldNonce, FoldNonceRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, WithdrawRequest, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
 use lichen_l2::Client;
 use lichen_btc::keys::Seed;
 use lichen_contract::{PartyKeys, Role};
@@ -149,6 +151,11 @@ pub(crate) struct Inner {
     open: Mutex<HashMap<u32, Open>>,
     next_cid: Mutex<u32>,
     disputes: Mutex<HashMap<u32, dispute::State>>,
+    /// The hub's secret nonces for each contract's fold, from
+    /// `POST /withdraw/nonce` (the last [`FOLD_NONCES`]: anyone may ask, so
+    /// another's request mustn't drop hers), each taken by the
+    /// `POST /withdraw` that names it (signing with it at most once).
+    fold_nonces: Mutex<HashMap<u32, Vec<(lichen_btc::musig::SecNonce, lichen_btc::musig::PubNonce)>>>,
     /// The misbehaviour switches (initially the config's), and a log of
     /// what the hub did.
     refuse_folds: AtomicBool,
@@ -218,7 +225,7 @@ impl Hub {
         let server = Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let server = Arc::new(Mutex::new(Arc::new(server)));
-        let inner = Arc::new(Inner { cfg, chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), proving: Arc::new(Mutex::new(Default::default())), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, chain, seq, seen: Mutex::new(seen), pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), fold_nonces: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), proving: Arc::new(Mutex::new(Default::default())), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             listen(&srv, &i1.stop, |mut req| {
@@ -393,10 +400,14 @@ fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String
         (Method::Post, "/hp/commit") => serde_json::to_string(&inner.hp_commit(serde_json::from_str(body)?)?)?,
         (Method::Post, "/open") => serde_json::to_string(&inner.open(serde_json::from_str(body)?)?)?,
         (Method::Post, "/accept") => serde_json::to_string(&inner.accept(serde_json::from_str(body)?)?)?,
+        (Method::Post, "/withdraw/nonce") => serde_json::to_string(&inner.fold_nonce(serde_json::from_str(body)?)?)?,
         (Method::Post, "/withdraw") => serde_json::to_string(&inner.withdraw(serde_json::from_str(body)?)?)?,
         _ => bail!("no {method} {url}"),
     })
 }
+
+/// How many of its fold nonces the hub keeps per contract.
+const FOLD_NONCES: usize = 8;
 
 impl Inner {
     /// Log what the hub did.
@@ -649,9 +660,28 @@ impl Inner {
         Ok(state)
     }
 
-    /// The cooperative withdrawal: Alice's claim of `b` units checked
-    /// against the hub's ledger, recorded on the L2 (retiring its notes),
-    /// then her fold signed and broadcast at once. The record is the hub's
+    /// The fold's first round: a fresh nonce of the hub's for contract
+    /// `cid`'s fold, kept for the withdrawal (with the last few others).
+    fn fold_nonce(&self, r: FoldNonceRequest) -> Result<FoldNonce> {
+        let o = self.open.lock().unwrap().get(&r.cid).cloned().context("no such contract")?;
+        ensure!(o.closed.is_none(), "contract {} is closed", r.cid);
+        let c = self.built(&o.record)?;
+        // the key, not the transaction: the amount isn't known yet
+        let fold = c.fold(o.record.funding, Amount::ZERO, FOLD_FEE)?;
+        let (sec, public) = fold.nonce(&contract_keys(&self.cfg.seed, r.cid).payment, &r.cid.to_be_bytes())?;
+        let mut all = self.fold_nonces.lock().unwrap();
+        let kept = all.entry(r.cid).or_default();
+        if kept.len() >= FOLD_NONCES {
+            kept.remove(0);
+        }
+        kept.push((sec, public));
+        Ok(FoldNonce { nonce: public.0.to_vec() })
+    }
+
+    /// The cooperative withdrawal: Alice's half of the fold checked, her
+    /// claim of `b` units checked against the hub's ledger, recorded on the
+    /// L2 (retiring its notes), then the hub's half signed and the fold
+    /// broadcast at once. The record is the hub's
     /// protection: once it is sequenced the notes are gone, an earlier
     /// spend of them refused. If the hub then didn't fold, her exit would
     /// post the same claim, which this contract's own record doesn't
@@ -664,7 +694,15 @@ impl Inner {
         let paid = unit.checked_mul(u64::from(w.b)).filter(|v| *v <= o.record.terms.v_max()).with_context(|| format!("{} units is above the cap", w.b))?;
         let c = self.built(&o.record)?;
         let p = c.fold(o.record.funding, paid, FOLD_FEE)?;
-        p.verify(&o.record.pubs[0].payment, &w.alice_sig).context("Alice's signature on the fold")?;
+        // the nonce is taken whatever happens next: it signs at most once
+        let (sec, hub_nonce) = {
+            let mut all = self.fold_nonces.lock().unwrap();
+            let kept = all.entry(w.cid).or_default();
+            let i = kept.iter().position(|(_, n)| n.0[..] == w.hub_nonce[..]).context("not a nonce the hub holds for this fold: ask for a new one (POST /withdraw/nonce)")?;
+            kept.remove(i)
+        };
+        let nonces = [lichen_btc::musig::PubNonce::from_slice(&w.alice_nonce)?, hub_nonce];
+        p.verify_partial(&o.record.pubs[0].payment, &nonces[0], &nonces, &w.alice_partial).context("Alice's partial signature on the fold")?;
         if w.b == 0 {
             // an early close: Alice takes her reserve alone, as the default
             // would pay her at T_close, so there's no claim to record
@@ -675,8 +713,8 @@ impl Inner {
         // a refusing hub (tests) records the claim first: the user's worst
         // case, her notes retired and no fold
         ensure!(!self.refuse_folds.load(Ordering::Relaxed), "this hub refuses cooperative withdrawals");
-        let mine = p.sign(&contract_keys(&self.cfg.seed, w.cid).payment)?;
-        let txid = self.chain.broadcast(&p.finish(vec![], &mine, &w.alice_sig)).context("broadcasting the fold")?;
+        let mine = p.sign(&contract_keys(&self.cfg.seed, w.cid).payment, sec, &nonces)?;
+        let txid = self.chain.broadcast(&p.finish(&nonces, &[w.alice_partial, mine])?).context("broadcasting the fold")?;
         self.close(w.cid, txid)?;
         self.note(format!("contract {}: folded: {} units ({} sats) back to the user, with the user's reserve", w.cid, w.b, paid.to_sat()));
         Ok(Folded { txid })
