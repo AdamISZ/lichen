@@ -1,6 +1,7 @@
 name: CI
 
-# Push to master and every PR: lint and build, then the default test suite
+# Push to master and every PR, unless it changes only text (Markdown, papers,
+# docs/): lint and build, then the default test suite
 # (docs/CODE.md, "Tests"): everything that needs nothing outside the tree
 # but bitcoind on regtest. lichen-btc comes by git, at the commit
 # Cargo.lock pins.
@@ -11,7 +12,9 @@ name: CI
 on:
   push:
     branches: [master]
+    paths-ignore: ['**.md', 'papers/**', 'docs/**', 'LICENSE', '.gitignore']
   pull_request:
+    paths-ignore: ['**.md', 'papers/**', 'docs/**', 'LICENSE', '.gitignore']
   workflow_dispatch:
 
 env:
