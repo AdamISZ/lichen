@@ -141,6 +141,19 @@ mod tests {
         let bytes = made[1].0.to_bytes();
         assert_eq!(crate::setup::Instance::from_bytes(&bytes).as_ref(), Some(&made[1].0));
         assert!(crate::setup::Instance::from_bytes(&bytes[..bytes.len() - 1]).is_none());
+        // A commitment to malformed lengths is not a safe kept circuit.
+        // Refuse it before funding, not by panicking during a dispute.
+        for part in 0..4 {
+            let mut bad = made[1].0.clone();
+            match part {
+                0 => { bad.gc.ands.pop(); }
+                1 => { bad.gc.dre.pop(); }
+                2 => { bad.gc.constant.pop(); }
+                _ => { bad.table.pop(); }
+            }
+            assert!(!bad.has_shape());
+            assert!(crate::setup::Instance::from_bytes(&bad.to_bytes()).is_none());
+        }
         // the kept instances, as committed
         for k in &kept {
             assert_eq!(made[*k as usize - 1].0.commitment(), commitments[*k as usize - 1]);

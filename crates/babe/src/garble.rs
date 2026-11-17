@@ -56,6 +56,15 @@ impl Encoding {
 }
 
 impl Garbled {
+    /// Whether every ciphertext the fixed circuit evaluates is present.
+    /// Commitments bind lengths, but do not prove this shape.
+    pub(crate) fn has_shape(&self) -> bool {
+        static ANDS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        self.ands.len() == *ANDS.get_or_init(|| circuit().ands())
+            && self.dre.len() == BITS * BITS * ROWS.iter().map(|row| row.len()).sum::<usize>()
+            && self.constant.len() == BITS
+    }
+
     /// Its size serialized: 16 bytes a label, 32 a field element.
     pub fn size(&self) -> usize {
         16 * self.ands.len() + 32 * (self.dre.len() + 3 * self.constant.len())
