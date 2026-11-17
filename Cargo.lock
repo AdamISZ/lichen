@@ -1032,6 +1032,7 @@ dependencies = [
  "lichen-btc",
  "lichen-contract",
  "lichen-risc0",
+ "lichen-statement",
  "lichen-wots",
  "rand_chacha",
  "rand_core",
@@ -1138,6 +1139,13 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "hex",
+ "sha2",
+]
+
+[[package]]
+name = "lichen-statement"
+version = "0.1.0"
+dependencies = [
  "sha2",
 ]
 

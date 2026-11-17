@@ -1,0 +1,13 @@
+[package]
+name = "lichen-statement"
+description = "The statement of the exit where the hub proves, as an L2 on Lichen states it: what Bitcoin shows of the exit, read in a guest"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[features]
+# Fixtures for an L2's tests: blocks, headers and the exit's transactions.
+testing = []
+
+[dependencies]
+sha2 = { version = "0.10", default-features = false }
