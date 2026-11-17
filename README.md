@@ -10,4 +10,4 @@ CAVEAT: Do not use with real money. Most importantly, the code is unaudited eith
 
 This README and the [main design paper](./papers/lichen-v0.5.0.pdf) are written by me. Most of the lower level documentation and instructions are LLM generated.
 
-*Want to try it* - with a wallet, against a hub someone is running: go to the other repos in this org that describe prototype L2s built from lichen: [gLichen](https://lichenbtc-org/glichen) and [vLichen](https://lichenbtc-org/vlichen) for instructions and details on how they work.
+*Want to try it* - with a wallet, against a hub someone is running: go to the other repos in this org that describe prototype L2s built from lichen: [gLichen](https://github.com/lichenbtc-org/glichen) and [vLichen](https://github.com/lichenbtc-org/vlichen) for instructions and details on how they work.
