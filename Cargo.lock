@@ -1432,7 +1432,7 @@ dependencies = [
 [[package]]
 name = "lichen-btc"
 version = "0.1.0"
-source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=07871c869acf5c55d18845903326d6daa1661ceb#07871c869acf5c55d18845903326d6daa1661ceb"
+source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=d7d2de04f7f8d51b44f61a68c7e1789f36502071#d7d2de04f7f8d51b44f61a68c7e1789f36502071"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -1557,7 +1557,7 @@ dependencies = [
 [[package]]
 name = "lichen-risc0"
 version = "0.1.0"
-source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=07871c869acf5c55d18845903326d6daa1661ceb#07871c869acf5c55d18845903326d6daa1661ceb"
+source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=d7d2de04f7f8d51b44f61a68c7e1789f36502071#d7d2de04f7f8d51b44f61a68c7e1789f36502071"
 dependencies = [
  "anyhow",
  "ark-bn254",
@@ -1645,7 +1645,7 @@ dependencies = [
 [[package]]
 name = "lichen-wots"
 version = "0.1.0"
-source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=07871c869acf5c55d18845903326d6daa1661ceb#07871c869acf5c55d18845903326d6daa1661ceb"
+source = "git+https://github.com/lichenbtc-org/lichen-btc?rev=d7d2de04f7f8d51b44f61a68c7e1789f36502071#d7d2de04f7f8d51b44f61a68c7e1789f36502071"
 dependencies = [
  "anyhow",
  "bitcoin",
