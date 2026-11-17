@@ -1,63 +1,95 @@
-# lichen's code (the grants L2)
+# lichen's code
 
-For working on lichen itself, on the `grants` branch: the L2 of
-[papers/lichen-grants.pdf](../papers/lichen-grants.pdf), whose notes the
-hub keeps, one per account. The contract on Bitcoin (its output, whose
-key path is both parties' MuSig2 key, for the fold, and whose leaves
-are the default and the dispute's; the pre-signed links' floors and
-anchors; the payout) is the `contract` crate, on
-[lichen-btc](https://github.com/lichenbtc-org/lichen-btc) (taproot,
-transactions, adaptor signatures, MuSig2, Winternitz, RISC Zero's
-Groth16 key), which Cargo fetches at the commit `Cargo.lock` pins.
+lichen is the base an L2 is built on: the contract between a user and the
+hub on Bitcoin, its opening, the fold, the default, and the dispute, with
+BABE checking the hub's proof. It has no ledger and no binaries of its
+own: an L2 brings its ledger and plugs into the hub and the wallet here,
+and builds the binaries. [glichen](https://github.com/lichenbtc-org/glichen)
+(the grants L2) and [vlichen](https://github.com/lichenbtc-org/vlichen)
+(a validity rollup) are the two so far; each takes lichen by git, at a
+commit.
 
-A contract's dispute is the exit where only the hub proves: Alice posts
-a claim of her note, the hub may correct it, she accepts or
-countersigns, and the hub proves its correction, checked by BABE with
-the roles swapped. The hub's statement and the L2's encodings are in
-`withdraw::accounts`, its graph in `babe::countersigned`, its setup
-(Alice garbles and uploads) in `proto::hp`, its play in the hub's
-`dispute::hp` and the wallet's `engine::hp`. A cooperative withdrawal
-is the same claim, which the hub takes into its book before it folds
-(`POST /withdraw/nonce`, the hub's MuSig2 nonce, then `POST /withdraw`,
-the claim and her half of the signature). The hub's HTTP API is [hub-api.yaml](hub-api.yaml).
+The Bitcoin layer (taproot, transactions, adaptor signatures, MuSig2,
+Winternitz signatures, RISC Zero's Groth16 key) is
+[lichen-btc](https://github.com/lichenbtc-org/lichen-btc), which Cargo
+fetches at the commit `Cargo.lock` pins. The design is
+[papers/lichen-v0.5.0.pdf](../papers/lichen-v0.5.0.pdf).
 
 ## Crates
 
-| crate | binary | who runs it |
-|---|---|---|
-| `contract` | | hub and wallet: the contract on Bitcoin: the parties' keys (`keys`), the terms and leaves (`leaves`), the fold, the default, the payout and the pre-signed set (`graph`) |
-| `notes` | | hub and wallet: the grants L2's types (notes, halves, spends, grants, claims), the hub's book (`book`), the payment messages (`proto`), L2 addresses (`address`) |
-| `withdraw` | | hub, wallet, the hub's guest: the L2's hashes and encodings, Algorithm 1 and the hub's statement (`accounts`, `no_std`) |
-| `babe` | | hub and wallet: BABE's cryptography (the garbled circuit, the witness encryption, the cut-and-choose setup over VSSS, the reveal by adaptor signatures), the countersigned graph and its scripts (`countersigned`), its statement (the mock; a RISC Zero receipt's Groth16 form) |
-| `proto` | | wallet and hub: the opening messages, the contract record, the contract's graph (`Built`); the setup exchange and dispute plumbing (`hp`, the cut-and-choose's shared parts in `setup`) |
-| `hub` | `lichen-hub` | the hub: opens contracts, keeps the book, takes part in payments, takes withdrawal claims and folds; corrects exit claims and proves its corrections |
-| `wallet` | `lichen` | the user: accounts and payments (`notes`), the opening (`hp`), `lichen withdraw`, and `lichen exit` (`exit`, `dispute`, `engine`) |
-| `chain` | | each party: its own bitcoind wallet over RPC, or Esplora |
-| `ledger`, `l2` | | from the base design: keys and the deployment's record (`ledger`), the HTTP agents (`l2::http`) |
-
-`sequencer`, `shielded` and `validity`, and the modules `withdraw::hp`,
-`withdraw::grants` and `babe::hp`, are the base design's or earlier
-grants versions', kept but not used by the grants deployment.
-
-## RISC Zero (`r0/`)
-
-A separate workspace, built natively (on a Mac, with Xcode's Metal
-compiler; `--features cuda` for an NVIDIA GPU) or in Docker
-(`r0/Dockerfile`, the image `lichen-r0`). Its Groth16 wrap needs x86
-Linux (RISC Zero's prover image, on Docker).
-
-| path | what |
+| crate | what |
 |---|---|
-| `hp-guest/` | the hub's statement guest (`withdraw::accounts::check`) |
-| `guests/` | the committed builds (`<g>.bin`) and image ids (`<g>.id`), and how each was built (its README) |
-| `host/` | `lichen-r0`: proves the hub's guest (`hp`), and wraps it in Groth16 (`hp-proof`) |
-| `build-guest.sh` | a guest's reproducible build (x86 Linux), then packing it (anywhere) |
-| `hp-prover.sh` | `lichen-r0` in its image (`LICHEN_R0_IMAGE`, `lichen-r0` by default), or itself (`LICHEN_R0`), for the hub |
-| `hp-remote.sh` | `hp-prover.sh` on another machine over ssh (`LICHEN_R0_HOST`), for a hub on a Mac |
+| `contract` | the contract on Bitcoin: the parties' keys (`keys`), the terms and leaves (`leaves`), the cooperative and pre-signed transactions: the fold, on the contract output's key path (both parties' MuSig2 key), the default, the payout (`graph`) |
+| `chain` | a party's view of Bitcoin: its own bitcoind over RPC, with a wallet (the hub's), or an Esplora server (a user's: no node, no wallet) |
+| `babe` | BABE: the witness encryption for Groth16 (`we`), the garbled circuit (`garble`, `gadget`, `circuit`, `field`), the cut-and-choose setup over verifiable secret sharing (`setup`, `vsss`), the reveal by adaptor signatures (`reveal`); a contract's dispute graph, an L2's front then BABE's tail (`graph`); the statement (`statement`: a RISC Zero receipt's Groth16 form, or a mock for tests) |
+| `proto` | what the wallet and the hub exchange to open a contract, and the record each keeps of it; the dispute's setup exchange (`hp`, the cut-and-choose's shared parts in `setup`); the contract's graph (`Built`); the L2's hook into the contract (`Layer`) |
+| `hub` | the hub's library: opens contracts, pays withdrawals (the fold), defaults contracts at `T_close`, plays every dispute's tail; its HTTP API (`GET /info`, the opening, `/withdraw`), with the L2's routes beside them; the L2's hooks (`l2`: `HubL2`, `Ctx`) |
+| `wallet` | the wallet's library: a key and its contracts with the hub (the opening, the cooperative withdrawal, the exit), the dispute's engine (`engine`), the L2's hooks (`l2`: `WalletL2`) |
 
-`guest/` and `chain-guest/` (and `spend-prover.sh`, `chain-prover.sh`)
-are the base design's. A new hub guest is a new deployment
-(r0/guests/README.md says how each was built).
+## A contract
+
+The wallet asks to open a contract (`proto::OpenRequest`): her keys for
+the dispute (the BABE instances she garbled that the hub doesn't keep,
+opened), her deposit `D`, cap and reserve. The hub offers
+(`OpenOffer`): the contract's number, `T_close`, its keys and reserve,
+the funding transaction and its signatures on the whole pre-signed set,
+and `D` minted on the L2 behind an adaptor point `T`. She accepts
+(`Accept`) with her signatures and a pre-signature on her deposit's
+spend locked to `T`: broadcasting the funding puts `t` on chain, which
+completes her mint. So the deposit and the mint are one atomic swap.
+
+The contract output's key path is the fold, the cooperative withdrawal:
+the user's claim, which the hub takes into its L2, then both parties'
+MuSig2 signature (`POST /withdraw/nonce`, the hub's nonce, then `POST
+/withdraw`). Its leaves are the default, after `T_close`, and the
+dispute:
+
+```text
+contract output (key path: the fold; leaves: default, and the front's
+│                first link)
+└─ front links (the L2's: request, and whatever its exit adds), each
+    │          output with its terminal (a timeout paying the user,
+    │          a correction's payout, ...)
+    └─ assert (the hub: π1 under its Lamport key, π2 and π3)
+        ├─ success (after Δ2)            → the front's choice
+        └─ challenge_assert (the user: the reveal)
+            ├─ wrongly_challenged_k      → the hub (its proof was valid)
+            └─ failure (after Δ1)        → the user: her claim
+```
+
+The dispute is the exit, where only the hub proves: she claims, and the
+hub must prove the claim false (against the L2's statement) or her
+timeout pays her. The front, everything before `assert`, is the L2's;
+BABE's tail, with the roles swapped (the hub proves, she garbled), is
+lichen's.
+
+## Writing an L2
+
+An L2 implements four traits, and its two binaries (a hub and a wallet)
+start lichen's `Hub` and `Wallet` with it:
+
+| trait | where | what the L2 gives |
+|---|---|---|
+| `Front` | `lichen_babe::graph` | the dispute's front: its links from the contract output to `assert` (each with its leaf, its terminal and window), what a front terminal pays, what `success` pays |
+| `Layer` | `lichen_proto` | a contract's front, from its record, and the journal its statement's proof is of: what both sides build the contract's graph from |
+| `HubL2` | `lichen_hub` (`l2`) | the hub's side: its info and HTTP routes (payments, ...), who may open a contract, the statement's terms at the setup, its keys at the opening, the mint, a withdrawal's claim taken into the ledger, the front's moves in a dispute up to the statement's input, and collecting its payout. `Ctx` is what the hub gives it: the chain, the configuration, the contracts, and the plumbing a front's moves need (posting a link, a terminal, a sweep) |
+| `WalletL2` | `lichen_wallet` (`l2`) | the wallet's side, its state kept in the wallet file: the terms it asks for and checks, her keys for the front, the mint, a withdrawal's claim and an exit's plan, the front's moves, and the sweep of a payout she won |
+
+The L2's data rides through lichen as JSON values it defines: the
+statement's terms (`HpSetup::l2`), her keys for the front
+(`HpCommit::keys`), the contract's L2 keys (`HpKeys::l2`), the offer's
+part (`OpenOffer::l2_offer`), the hub's info (`Info::l2`), and the
+wallet's record of an offer (`Locked::l2`). The statement is a RISC Zero
+guest of the L2's, whose image id is in the contract; lichen checks its
+Groth16 wrap (`lichen_babe::statement::Kind::Risc0`).
+
+The two L2s are the worked examples:
+
+| | glichen | vlichen |
+|---|---|---|
+| `Front` | `Countersigned` (`glichen_proto::front`): request, the hub's correction, her countersignature | `HubProves` (`vlichen_proto::front`): the request only |
+| `Layer`, `HubL2`, `WalletL2` | `Grants` (its hub and wallet crates) | `Rollup` (its hub and wallet crates) |
+| the ledger | the hub's book, one note per account | a sequencer's, anchored on Bitcoin, proved valid |
 
 ## Tests
 
@@ -66,17 +98,12 @@ cargo test --workspace --release
 ```
 
 runs everything that needs nothing outside the tree but bitcoind
-(regtest; `bitcoind` on the PATH or `LICHEN_BITCOIND`), the hub's
-statement as its mock. The grants L2's are in `crates/hub/tests`
-(`payments`, `withdraw`, `contested`: every ending of an exit) and
-`crates/babe/tests/countersigned.rs` (the graph under mainnet's relay
-policy).
-
-To prove the statement for real: `LICHEN_DUMP_HP=<dir>` makes the hub
-write each contested exit's statement input there (for instance from
-`contested`), and `r0/hp-prover.sh hp-proof <input> <out>` proves and
-wraps it (on a Mac, `hp` proves the STARK only: about 3 minutes; the
-wrap, about 4 more, needs x86).
+(regtest; `bitcoind` on the PATH or `LICHEN_BITCOIND`) and, for the
+Esplora tests (`crates/chain/tests/esplora.rs`), Blockstream's electrs
+(`LICHEN_ELECTRS`). The contract's whole life, opening to every ending of
+a dispute, needs an L2: those tests are in glichen's and vlichen's
+`crates/hub/tests`. `crates/babe/examples/setup_cost.rs` measures BABE's
+setup.
 
 ## Comments citing agent notes
 
