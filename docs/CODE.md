@@ -13,7 +13,7 @@ The Bitcoin layer (taproot, transactions, adaptor signatures, MuSig2,
 Winternitz signatures, RISC Zero's Groth16 key) is
 [lichen-btc](https://github.com/lichenbtc-org/lichen-btc), which Cargo
 fetches at the commit `Cargo.lock` pins. The design is
-[papers/lichen-v0.5.0.pdf](../papers/lichen-v0.5.0.pdf).
+[papers/lichen.pdf](../papers/lichen.pdf).
 
 ## Crates
 
