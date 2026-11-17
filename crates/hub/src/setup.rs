@@ -136,12 +136,12 @@ impl<L: HubL2> Inner<L> {
     /// and each rebuilt to its commitment. The record's and the offer's
     /// (the pre-signatures to come, [`Inner::hp_presign`]); the L2's from
     /// the L2.
-    pub(crate) fn hp_open_keys(&self, cid: u32, req: &OpenRequest, unit: bitcoin::Amount) -> Result<(HpKeys, HpOffer)> {
+    pub(crate) fn hp_open_keys(&self, cid: u32, req: &OpenRequest, unit: bitcoin::Amount, t_close: u32) -> Result<(HpKeys, HpOffer)> {
         let mut p = self.hp_prepared(cid)?;
         let s = p.setup.clone();
         ensure!(s.unit == unit.to_sat() && s.deposit == req.deposit_coin.0, "the setup is for another unit or deposit than the opening's");
         let commit = p.commit.clone().context("no instances committed")?;
-        let (l2_keys, l2_offer) = self.l2.open_keys(self, &s, &commit.keys, req)?;
+        let (l2_keys, l2_offer) = self.l2.open_keys(self, &s, &commit.keys, req, t_close)?;
         ensure!(p.kept.iter().all(|i| p.uploaded.contains_key(i)), "not every kept instance uploaded");
         let opened = &req.dispute.hp_opened;
         let want: Vec<u32> = (1..=s.n).filter(|i| !p.kept.contains(i)).collect();

@@ -32,12 +32,12 @@ impl<L: WalletL2> Wallet<L> {
     /// input secrets dealt, committed to; the ones the hub keeps uploaded,
     /// the others opened in her request.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn hp_opening(&self, hub: &str, statement: &Statement, cid: u32, deposit: bitcoin::OutPoint, quote: &Quote, owner: &Hash, s: &ContractSecrets, net: Net) -> Result<HpOpening> {
+    pub(crate) fn hp_opening(&self, hub: &str, chain: &lichen_chain::Chain, statement: &Statement, cid: u32, deposit: bitcoin::OutPoint, quote: &Quote, owner: &Hash, s: &ContractSecrets, net: Net) -> Result<HpOpening> {
         let unit = quote.unit;
         let asked = L::setup_terms(self, cid, quote, owner)?;
         let setup: HpSetup = hub_call(&format!("{hub}/hp/setup"), Some(serde_json::to_string(&HpSetupRequest { cid, deposit, unit, l2: asked.clone() })?), false)?;
         ensure!(setup.cid == cid && setup.unit == unit && setup.deposit == deposit, "the setup is for another contract, unit or deposit");
-        L::check_setup(self, &setup, &asked)?;
+        L::check_setup(self, chain, &setup, &asked)?;
         check_setup(&setup)?;
         let (n, m) = (setup.n, setup.m);
         ensure!(soundness(n, m) >= min_soundness(net), "keeping {m} of {n} instances: a cheating garbler escapes with odds of 1 in 2^{}, not 2^{}", soundness(n, m), min_soundness(net));

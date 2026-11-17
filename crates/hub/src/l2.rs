@@ -89,6 +89,8 @@ pub enum FrontStep<S> {
 pub enum ProverInput {
     Holds(Vec<u8>),
     Fails(String),
+    /// Not yet (something the proof needs is still to come): why.
+    NotYet(String),
 }
 
 /// An L2 at the hub.
@@ -118,8 +120,9 @@ pub trait HubL2: Layer + Sized + Send + Sync + 'static {
     fn setup_journal(&self, cid: u32, setup: &HpSetup, keys: &serde_json::Value) -> Result<Vec<u8>>;
     /// At the opening: the contract's L2 keys (`HpKeys::l2`, from the
     /// setup, her keys and the hub's own) and the offer's (`HpOffer::l2`,
-    /// the hub's keys she needs). The setup is checked against `req`.
-    fn open_keys(&self, ctx: &dyn Ctx, setup: &HpSetup, keys: &serde_json::Value, req: &OpenRequest) -> Result<(serde_json::Value, serde_json::Value)>;
+    /// the hub's keys she needs). The setup is checked against `req`;
+    /// `t_close` the contract's.
+    fn open_keys(&self, ctx: &dyn Ctx, setup: &HpSetup, keys: &serde_json::Value, req: &OpenRequest, t_close: u32) -> Result<(serde_json::Value, serde_json::Value)>;
     /// The offer is made: the L2's part of it (`OpenOffer::l2`; a mint
     /// behind `mint_point`, ...).
     fn offered(&self, ctx: &dyn Ctx, record: &Record, mint_point: &PublicKey, fault: OpeningFault) -> Result<serde_json::Value>;

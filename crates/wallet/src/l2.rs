@@ -49,7 +49,7 @@ pub trait WalletL2: Layer + Serialize + DeserializeOwned + Clone + Send + Sync +
     /// (`HpSetupRequest::l2`), for her contract's `owner`.
     fn setup_terms(w: &Wallet<Self>, cid: u32, quote: &Quote, owner: &Hash) -> Result<serde_json::Value>;
     /// The hub's setup, against what she asked.
-    fn check_setup(w: &Wallet<Self>, setup: &HpSetup, asked: &serde_json::Value) -> Result<()>;
+    fn check_setup(w: &Wallet<Self>, chain: &Chain, setup: &HpSetup, asked: &serde_json::Value) -> Result<()>;
     /// Her keys for the dispute's front (`HpCommit::keys`), from her
     /// contract's secrets.
     fn alice_keys(s: &ContractSecrets) -> serde_json::Value;

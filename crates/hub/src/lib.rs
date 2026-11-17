@@ -509,7 +509,7 @@ impl<L: HubL2> Inner<L> {
         let v_max = scaled.v_max().to_sat();
         // the dispute's keys: the user's, checked, and the hub's; the
         // statement fixed at the setup
-        let (dispute, mut offer_keys) = self.hp_open_keys(cid, &req, scaled.unit)?;
+        let (dispute, mut offer_keys) = self.hp_open_keys(cid, &req, scaled.unit, t_close)?;
         let mut record = Record {
             statement: self.cfg.statement.id().to_string(),
             network: self.cfg.network,

@@ -116,9 +116,12 @@ pub struct Locked {
     /// the funding's completed signature, less it, is `t`.
     pub presig: Presig,
     pub deposit: bitcoin::OutPoint,
-    /// The account opened at its mint, in our accounts.
+    /// The mint claimed (the L2 has it as ours).
     #[serde(default)]
     pub claimed: bool,
+    /// What the hub's offer said of the mint, the L2's (`OpenOffer::l2_offer`).
+    #[serde(default)]
+    pub l2: serde_json::Value,
 }
 
 /// A contract the wallet holds.
@@ -187,11 +190,23 @@ impl<L: WalletL2> Wallet<L> {
         if path.exists() {
             bail!("{} already exists", path.display());
         }
-        let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
         let info = hub_info(hub)?;
-        let w = Wallet { pause_after: None, unchecked_claims: false, contest: false, progress: None, opening: None, key, path: path.to_path_buf(), hub: hub.trim_end_matches('/').to_string(), l2: L::create(&info)?, contracts: vec![], deposits: vec![] };
+        Self::create_with(path, hub, L::create(&info)?)
+    }
+    /// A wallet at `path` with a fresh key and the L2 `l2` (made by the
+    /// caller: no hub need be reachable).
+    pub fn create_with(path: &Path, hub: &str, l2: L) -> Result<Wallet<L>> {
+        if path.exists() {
+            bail!("{} already exists", path.display());
+        }
+        let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
+        let w = Wallet { pause_after: None, unchecked_claims: false, contest: false, progress: None, opening: None, key, path: path.to_path_buf(), hub: hub.trim_end_matches('/').to_string(), l2, contracts: vec![], deposits: vec![] };
         w.save()?;
         Ok(w)
+    }
+    /// The wallet file's path.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
     /// The wallet at `path`, talking to the hub at `hub` (the one it was
     /// made for: its deployment is checked at every call that matters).
@@ -420,7 +435,7 @@ impl<L: WalletL2> Wallet<L> {
         // those the hub keeps uploaded, the others opened
         let secrets = self.secrets(&nonce);
         let owner = self.owner_of(&nonce);
-        let hp_open = self.hp_opening(hub, statement, dep.cid, coin.0, &quote, &owner, &secrets, net)?;
+        let hp_open = self.hp_opening(hub, chain, statement, dep.cid, coin.0, &quote, &owner, &secrets, net)?;
         self.opened_step(Opening::HubChecking);
         let fees = self.fees(&nonce, net);
         let req = OpenRequest { alice, l2_address: owner, deposit, liquidity, fee: quote.fee, reserve, dispute: hp_open.request.clone(), cid: dep.cid, deposit_coin: coin.clone(), fee_spk: fees.spk() };
@@ -474,7 +489,7 @@ impl<L: WalletL2> Wallet<L> {
         // (taproot signs every input's prevout: ours and the hub's coins)
         let known: Vec<(bitcoin::OutPoint, bitcoin::TxOut)> = std::iter::once(coin.clone()).chain(offer.hub_coins.iter().cloned()).collect();
         let (_, msg) = deposit_open_msg(&offer.funding, &coin.0, &known, &dep_tree)?;
-        let locked = Locked { point: offer.mint_point, presig: adaptor_sign(&dep_kp, &msg, &offer.mint_point).into(), deposit: coin.0, claimed: false };
+        let locked = Locked { point: offer.mint_point, presig: adaptor_sign(&dep_kp, &msg, &offer.mint_point).into(), deposit: coin.0, claimed: false, l2: offer.l2_offer.clone() };
         if let Some(d) = self.deposits.iter_mut().find(|d| d.cid == dep.cid) {
             if let Some(old) = d.offered.replace((record.clone(), locked.clone())) {
                 if old.0.funding != record.funding {

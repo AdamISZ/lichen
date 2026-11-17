@@ -231,6 +231,10 @@ impl<L: HubL2> Inner<L> {
         } else {
             let input = match self.l2.prover_input(self, d)? {
                 ProverInput::Holds(i) => i,
+                ProverInput::NotYet(why) => {
+                    self.note_once(format!("contract {cid}: {why}"));
+                    return Ok(false);
+                }
                 ProverInput::Fails(why) => {
                     let t = d.graph.terminal_of(d.last_front()?)?;
                     self.note(format!("contract {cid}: the statement doesn't hold ({why}): no assertion; {t} will pay the user"));
