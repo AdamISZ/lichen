@@ -570,7 +570,7 @@ impl<L: HubL2> Inner<L> {
         let fault = *self.opening_fault.lock().unwrap();
         let l2 = self.l2.offered(self, &record, &mint_point, fault)?;
         self.note(format!("contract {cid}: offered: {} sats for the user once the funding is out (a fee of {} for {} sats of liquidity)", record.minted(), req.fee, req.liquidity));
-        let offer = OpenOffer { cid, t_close, reserve_hub, hub, dispute: offer_keys, funding, hub_coins, hub_sigs: shown, mint_point, l2 };
+        let offer = OpenOffer { cid, t_close, reserve_hub, hub, dispute: offer_keys, funding, hub_coins, hub_sigs: shown, mint_point, l2_offer: l2 };
         let replaced = self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t, made: std::time::Instant::now() });
         if let Some(old) = replaced {
             let _ = self.chain.unlock(&old.offer.hub_coins.iter().map(|c| c.0).collect::<Vec<_>>());

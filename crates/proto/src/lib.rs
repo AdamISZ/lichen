@@ -290,9 +290,9 @@ pub struct OpenOffer {
     /// `T`, the adaptor point of this funding transaction (Alice's
     /// signature on her deposit's spend is locked to it).
     pub mint_point: PublicKey,
-    /// The L2's (a mint's place, ...).
+    /// The L2's (a mint's place, ...); beside the dispute's (`dispute.l2`).
     #[serde(default)]
-    pub l2: serde_json::Value,
+    pub l2_offer: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
