@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 exclude = ["r0"]
-members = ["crates/ledger", "crates/shielded", "crates/validity", "crates/withdraw", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/babe"]
+members = ["crates/contract", "crates/ledger", "crates/shielded", "crates/validity", "crates/withdraw", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/babe"]
 
 [workspace.package]
 version = "0.4.5"
@@ -22,9 +22,6 @@ sha2 = "0.10"
 tiny_http = "0.12"
 ureq = { version = "2", features = ["json"] }
 esplora-client = { version = "0.13", default-features = false, features = ["blocking-https-rustls"] }
-# the withdrawal statement's data and check: the ledger's notes, tree and
-# roots are exactly what the proof checks (ln-gap, path for now)
-lngap-r0-core = { path = "../ln-gap/crates/apps/sessions/r0/core" }
 lichen-ledger = { path = "crates/ledger" }
 lichen-shielded = { path = "crates/shielded" }
 lichen-validity = { path = "crates/validity" }
@@ -35,32 +32,25 @@ lichen-proto = { path = "crates/proto" }
 lichen-hub = { path = "crates/hub" }
 lichen-wallet = { path = "crates/wallet" }
 lichen-babe = { path = "crates/babe" }
-# the contract and the dispute (ln-gap)
-lngap-sessions = { path = "../ln-gap/crates/apps/sessions" }
-lngap-zk = { path = "../ln-gap/crates/apps/zk" }
-lngap-channel = { path = "../ln-gap/crates/channel" }
-lngap-btc = { path = "../ln-gap/crates/btc" }
-lngap-lamport = { path = "../ln-gap/crates/lamport" }
+lichen-contract = { path = "crates/contract" }
+# the Bitcoin layer (lichenbtc-org/lichen-btc)
+lichen-btc = { path = "../lichen-btc/crates/btc" }
+lichen-wots = { path = "../lichen-btc/crates/wots" }
+lichen-risc0 = { path = "../lichen-btc/crates/risc0" }
 lichen-sequencer = { path = "crates/sequencer" }
 
-# Dependencies (ln-gap's crates among them) optimised even in debug builds:
-# the pre-signing and the curve arithmetic are too slow at
-# opt-level 0 for a hub to answer within a move's window in the tests. A
-# profile applies only from the top-level workspace, so lichen repeats
-# ln-gap's. Our own crates stay at debug for fast rebuilds.
+# Dependencies (lichen-btc's crates among them) optimised even in debug
+# builds: the pre-signing and the curve arithmetic are too slow at
+# opt-level 0 for a hub to answer within a move's window in the tests.
+# Our own crates stay at debug for fast rebuilds, but for the contract's
+# pre-signing and BABE's garbling.
 [profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.lichen-contract]
 opt-level = 2
 
 # BABE's garbling, the exception: half a million gates and field
 # elements, half a minute a test at opt-level 0, seconds at 2.
 [profile.dev.package.lichen-babe]
 opt-level = 2
-
-# BitVMX-CPU as ln-gap builds it (its sessions crate, the contract's
-# skeleton, depends on it): the `lngap` branch of a public fork (upstream
-# 299009c, bug fixes, the opt-in jump list). A [patch] applies only from
-# the top-level workspace, so lichen repeats ln-gap's.
-[patch."https://github.com/FairgateLabs/BitVMX-CPU"]
-emulator = { git = "https://github.com/AdamISZ/BitVMX-CPU", rev = "0b7d285fc5c7795d16fd58d380ff6ef25f2f0423" }
-bitvmx-cpu-definitions = { git = "https://github.com/AdamISZ/BitVMX-CPU", rev = "0b7d285fc5c7795d16fd58d380ff6ef25f2f0423" }
-bitcoin-script-riscv = { git = "https://github.com/AdamISZ/BitVMX-CPU", rev = "0b7d285fc5c7795d16fd58d380ff6ef25f2f0423" }

@@ -8,10 +8,9 @@ of any wallet. Running the hub is [RUN_A_HUB.md](RUN_A_HUB.md).
 
 ## What you need
 
-- **The wallet.** Build it from source, with ln-gap's checkout beside
-  lichen's (lichen's workspace refers to it by path), and Rust:
+- **The wallet.** Build it from source, with Rust:
   ```sh
-  git clone https://github.com/lichenbtc-org/lichen && git clone https://github.com/AdamISZ/ln-gap
+  git clone https://github.com/lichenbtc-org/lichen
   cd lichen && cargo build --release -p lichen-wallet     # target/release/lichen
   ```
 - **The hub's two URLs**, the sequencer's (port 18300) and the hub's

@@ -24,9 +24,9 @@ use lichen_chain::{Chain, KeyFees};
 use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
 use lichen_proto::{check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, mint_owner, Presig, fee_budget_of, terms, Accept, DepositOffer, DepositRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, WithdrawRequest, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
 use lichen_l2::{Client, Equivocation, Seen, State};
-use lngap_btc::adaptor::{adaptor_extract, adaptor_sign, AdaptorSig};
-use lngap_channel::PartyKeys;
-use lngap_sessions::contract::sign_all;
+use lichen_btc::adaptor::{adaptor_extract, adaptor_sign, AdaptorSig};
+use lichen_contract::PartyKeys;
+use lichen_contract::sign_all;
 use crate::engine::ContractSecrets;
 use serde::{Deserialize, Serialize};
 
@@ -657,7 +657,7 @@ impl Wallet {
         let set = c.presign(record.funding)?;
         for p in set.iter().filter(|p| !c.withheld(&p.name)) {
             for i in 0..p.inputs() {
-                let n = lngap_sessions::contract::sig_name(&p.name, i);
+                let n = lichen_contract::sig_name(&p.name, i);
                 let s = record.hub_sigs.get(&n).with_context(|| format!("the hub didn't sign {n}"))?;
                 p.verify_input(&record.pubs[1].payment, i, s)?;
             }
@@ -797,7 +797,7 @@ impl Wallet {
         let total: bitcoin::Amount = coins.iter().map(|c| c.1.value).sum();
         let ins: Vec<(bitcoin::OutPoint, bitcoin::Sequence)> = coins.iter().map(|c| (c.0, bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME)).collect();
         let out = bitcoin::TxOut { value: total.checked_sub(fee).context("the budget can't pay the fee")?, script_pubkey: h.record.pubs[0].payout_spk.clone() };
-        let tx = lngap_btc::tx::build_tx(&ins, vec![out], bitcoin::absolute::LockTime::ZERO);
+        let tx = lichen_btc::tx::build_tx(&ins, vec![out], bitcoin::absolute::LockTime::ZERO);
         let prevouts: Vec<_> = coins.into_iter().map(|c| (c.0, c.1)).collect();
         let tx = fees.sign(chain, &tx, &prevouts)?;
         chain.broadcast(&tx).context("the sweep of the fee budget")
@@ -878,9 +878,9 @@ impl Wallet {
         let ready = at + u32::from(dep.timeout) - 1;
         ensure!(chain.height()? >= ready, "the deposit can be refunded from height {ready} (now {})", chain.height()?);
         let leaf = tree.leaf(DEPOSIT_REFUND)?;
-        let mut tx = lngap_btc::tx::build_spend(op, &leaf.timelock, vec![bitcoin::TxOut { value: out.value.checked_sub(fee).context("the deposit can't pay the fee")?, script_pubkey: dep.payout.clone() }]);
-        let sig = lngap_btc::sighash::sign_tapscript(&kp, &tx, 0, std::slice::from_ref(&out), &leaf.script)?;
-        tx.input[0].witness = lngap_btc::witness::tapscript_witness(&[sig.as_ref().to_vec()], &leaf.script, &tree.control_block(DEPOSIT_REFUND)?);
+        let mut tx = lichen_btc::tx::build_spend(op, &leaf.timelock, vec![bitcoin::TxOut { value: out.value.checked_sub(fee).context("the deposit can't pay the fee")?, script_pubkey: dep.payout.clone() }]);
+        let sig = lichen_btc::sighash::sign_tapscript(&kp, &tx, 0, std::slice::from_ref(&out), &leaf.script)?;
+        tx.input[0].witness = lichen_btc::witness::tapscript_witness(&[sig.as_ref().to_vec()], &leaf.script, &tree.control_block(DEPOSIT_REFUND)?);
         let txid = chain.broadcast(&tx).context("the refund")?;
         // a deposit the hub holds a pre-signature on is kept: until the
         // refund confirms, the hub's funding may still replace it, and
@@ -1001,7 +1001,7 @@ pub fn send_from(payout: &KeyFees, chain: &Chain, to: &bitcoin::Script, amount: 
         }
     };
     let ins: Vec<(bitcoin::OutPoint, bitcoin::Sequence)> = coins.iter().map(|c| (c.0, bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME)).collect();
-    let tx = lngap_btc::tx::build_tx(&ins, outs, bitcoin::absolute::LockTime::ZERO);
+    let tx = lichen_btc::tx::build_tx(&ins, outs, bitcoin::absolute::LockTime::ZERO);
     let prevouts: Vec<_> = coins.into_iter().map(|c| (c.0, c.1)).collect();
     let tx = payout.sign(chain, &tx, &prevouts)?;
     chain.broadcast(&tx).context("the payment from the payout address")

@@ -23,9 +23,9 @@ use lichen_babe::vsss::{deal, Dealer, Dealing};
 use lichen_chain::{Chain, Stall};
 use lichen_proto::hp::HpDisputed;
 use lichen_proto::{Record, Statement};
-use lngap_btc::adaptor::AdaptorSig;
-use lngap_btc::keys::Seed;
-use lngap_lamport::winternitz::{WotsParams, WotsSecret};
+use lichen_btc::adaptor::AdaptorSig;
+use lichen_btc::keys::Seed;
+use lichen_wots::{WotsParams, WotsSecret};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 

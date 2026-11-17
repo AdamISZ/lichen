@@ -22,15 +22,15 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
 use bitcoin::{Amount, OutPoint, Sequence, TxOut};
-use lngap_btc::adaptor::{adaptor_complete, adaptor_verify, AdaptorSig};
+use lichen_btc::adaptor::{adaptor_complete, adaptor_verify, AdaptorSig};
 use lichen_chain::Chain;
 use lichen_ledger::{files, note, xonly, Mint, Tx};
 use lichen_ledger::k256::schnorr::SigningKey;
 use lichen_proto::{broadcast_deadline, check_funding, contributions, deposit_open_msg, deposit_timeout, deposit_tree, mint_owner, terms, Accept, DepositOffer, DepositRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, WithdrawRequest, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
 use lichen_l2::Client;
-use lngap_btc::keys::Seed;
-use lngap_channel::{PartyKeys, Role};
-use lngap_sessions::contract::sign_all;
+use lichen_btc::keys::Seed;
+use lichen_contract::{PartyKeys, Role};
+use lichen_contract::sign_all;
 use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request, Response, Server};
 
@@ -464,7 +464,7 @@ impl Inner {
         Ok(out)
     }
 
-    fn deposit_tree(&self, cid: u32) -> Result<lngap_btc::taptree::TapTree> {
+    fn deposit_tree(&self, cid: u32) -> Result<lichen_btc::taptree::TapTree> {
         let alice = *self.deposits.lock().unwrap().get(&cid).with_context(|| format!("no deposit asked for contract {cid}"))?;
         deposit_tree(&alice, &deposit_key(&self.cfg.seed, cid).x_only_public_key().0, deposit_timeout(self.cfg.network))
     }
@@ -542,7 +542,7 @@ impl Inner {
         let c = self.built(&record)?;
         let ins: Vec<(OutPoint, Sequence)> = std::iter::once(&req.deposit_coin).chain(&hub_coins).map(|c| (c.0, Sequence::ENABLE_RBF_NO_LOCKTIME)).collect();
         let outs = vec![TxOut { value: c.value(), script_pubkey: c.tree()?.script_pubkey() }, fee_out, hub_change.clone()];
-        let funding = lngap_btc::tx::build_tx(&ins, outs, bitcoin::absolute::LockTime::ZERO);
+        let funding = lichen_btc::tx::build_tx(&ins, outs, bitcoin::absolute::LockTime::ZERO);
         check_funding(&funding, &c, &hub_coins, &hub_change, hub_in)?;
         record.funding = OutPoint { txid: funding.compute_txid(), vout: 0 };
         let set = c.presign(record.funding)?;
@@ -603,8 +603,8 @@ impl Inner {
         // matures: broadcast only with time to confirm before then
         let deadline = broadcast_deadline(self.deposit_confirmed_at(&p.req.deposit_coin.0)?, deposit_timeout(self.cfg.network));
         ensure!(self.chain.height()? < deadline, "the deposit's refund matures too soon to broadcast the funding (height {deadline} was the last)");
-        let hub_sig = lngap_btc::sighash::sign_tapscript(&deposit_key(&self.cfg.seed, a.cid), &funding, dep, &outs, &leaf.script)?;
-        funding.input[dep].witness = lngap_btc::witness::tapscript_witness(&[alice_sig.as_ref().to_vec(), hub_sig.as_ref().to_vec()], &leaf.script, &tree.control_block(DEPOSIT_OPEN)?);
+        let hub_sig = lichen_btc::sighash::sign_tapscript(&deposit_key(&self.cfg.seed, a.cid), &funding, dep, &outs, &leaf.script)?;
+        funding.input[dep].witness = lichen_btc::witness::tapscript_witness(&[alice_sig.as_ref().to_vec(), hub_sig.as_ref().to_vec()], &leaf.script, &tree.control_block(DEPOSIT_OPEN)?);
         let signed = self.chain.sign_mine(&funding, &prevouts)?;
         // kept before the funding goes out: a contract the hub funded and
         // forgot (a crash between) would never be defaulted or disputed

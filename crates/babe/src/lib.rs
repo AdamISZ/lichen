@@ -15,7 +15,7 @@
 //! by completing Alice's adaptor pre-signatures ([`reveal`]). Here the
 //! roles are swapped ([`hp`]): Alice garbles and the hub proves (the
 //! mock statement, [`statement`]; a RISC Zero receipt's Groth16 form,
-//! [`risc0`]); the transactions, on ln-gap's skeleton, are [`hp`]'s.
+//! [`risc0`]); the transactions, on `lichen_contract`, are [`hp`]'s.
 
 pub mod circuit;
 pub mod field;

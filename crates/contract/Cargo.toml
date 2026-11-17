@@ -1,0 +1,13 @@
+[package]
+name = "lichen-contract"
+description = "Lichen's contract on Bitcoin: the parties' keys, the terms, the leaves, the cooperative and pre-signed transactions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bitcoin.workspace = true
+serde.workspace = true
+lichen-btc.workspace = true
+lichen-wots.workspace = true

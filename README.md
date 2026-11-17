@@ -24,7 +24,7 @@ talks to a running deployment's two services, its sequencer and its hub.
 From the hub's operator you need their two URLs and the sequencer's key.
 
 ```sh
-git clone https://github.com/lichenbtc-org/lichen && git clone https://github.com/AdamISZ/ln-gap
+git clone https://github.com/lichenbtc-org/lichen
 cd lichen && cargo build --release -p lichen-wallet       # target/release/lichen
 
 alias lw='target/release/lichen --network mutinynet --wallet alice.json \

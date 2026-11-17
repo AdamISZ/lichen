@@ -274,7 +274,7 @@ fn signed_message(items: &[&[u8]], bytes: usize) -> Option<Vec<u8>> {
     (0..bytes).map(|k| Some((digit(2 * k)? << 4) | digit(2 * k + 1)?)).collect()
 }
 
-/// The checksum digits of a signature on `bytes` bytes (ln-gap's
+/// The checksum digits of a signature on `bytes` bytes (lichen-wots's
 /// `WotsParams::for_bytes`).
 fn checksum_digits(bytes: usize) -> usize {
     let most = 15 * 2 * bytes as u64;

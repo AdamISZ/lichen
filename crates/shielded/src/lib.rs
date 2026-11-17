@@ -92,7 +92,7 @@ pub fn rho(nf0: &Hash, i: u32) -> Hash {
     sha256(&[b"lichen/rho", nf0, &i.to_be_bytes()])
 }
 
-/// A transparent note's commitment (`lngap-r0-core`'s `Note::commitment`).
+/// A transparent note's commitment (`lichen_ledger::core`'s `Note::commitment`).
 pub fn transparent_commitment(owner: &Hash, value: u64, memo: u32, rho: &Hash) -> Hash {
     sha256(&[b"lngap/note", owner, &value.to_be_bytes(), &memo.to_be_bytes(), rho])
 }
@@ -119,7 +119,7 @@ pub fn is_shielded(leaf: &Hash) -> bool {
     leaf[0] & 0x80 != 0
 }
 
-/// A node of the commitment tree (`lngap-r0-core`'s `node`).
+/// A node of the commitment tree (`lichen_ledger::core`'s `node`).
 pub fn node(left: &Hash, right: &Hash) -> Hash {
     sha256(&[left, right])
 }

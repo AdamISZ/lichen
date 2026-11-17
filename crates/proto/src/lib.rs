@@ -36,13 +36,13 @@ use std::collections::HashMap;
 use anyhow::{bail, ensure, Context, Result};
 use bitcoin::secp256k1::{schnorr, Message, PublicKey, SecretKey, XOnlyPublicKey};
 use bitcoin::{Amount, OutPoint, Transaction, TxOut, Txid};
-use lngap_btc::adaptor::AdaptorSig;
-use lngap_channel::{ChannelParams, PartyPubKeys};
-use lngap_lamport::winternitz::WotsPublic;
-use lngap_btc::taptree::TapTree;
-use lngap_sessions::contract::{Presign, Signed};
-use lngap_sessions::session::Terms;
-use lngap_sessions::skeleton::Core;
+use lichen_btc::adaptor::AdaptorSig;
+use lichen_contract::{ContractParams, PartyPubKeys};
+use lichen_wots::WotsPublic;
+use lichen_btc::taptree::TapTree;
+use lichen_contract::{Presign, Signed};
+use lichen_contract::Terms;
+use lichen_contract::Core;
 pub use lichen_ledger::{Deployment, Hash};
 use serde::{Deserialize, Serialize};
 
@@ -87,22 +87,22 @@ pub mod hp;
 pub mod setup;
 pub use hp::{HpKeys, HpOffer, HpRequest};
 
-/// The contracts' timing on a network, in blocks (ln-gap's skeleton): the
+/// The contracts' timing on a network, in blocks (`lichen_contract`): the
 /// dispute's first link waits `to_self_delay` after the funding; a
 /// payout's outputs wait δ. The dispute's own windows are
 /// [`hp::windows`]'. Wide enough for a person, or a restart, at the
 /// network's block time; on testnet4, whose blocks come in bursts, wide
 /// in blocks so that a burst doesn't use one up.
-pub fn params(net: Net) -> ChannelParams {
-    let p = ChannelParams::regtest(Amount::from_sat(0));
+pub fn params(net: Net) -> ContractParams {
+    let p = ContractParams::regtest(Amount::from_sat(0));
     match net {
         Net::Regtest => p,
         // 30 s blocks: 5 min, 20 min windows
-        Net::Mutinynet => ChannelParams { to_self_delay: 10, delta: 40, delta_prime: 40, deadline_margin: 20, ..p },
+        Net::Mutinynet => ContractParams { to_self_delay: 10, delta: 40, delta_prime: 40, deadline_margin: 20, ..p },
         // 10 min blocks: 30 min, 1 h windows
-        Net::Signet => ChannelParams { to_self_delay: 3, delta: 6, delta_prime: 6, deadline_margin: 3, ..p },
+        Net::Signet => ContractParams { to_self_delay: 3, delta: 6, delta_prime: 6, deadline_margin: 3, ..p },
         // nominally 10 min, in bursts: 6 h windows
-        Net::Testnet4 => ChannelParams { to_self_delay: 6, delta: 36, delta_prime: 36, deadline_margin: 12, ..p },
+        Net::Testnet4 => ContractParams { to_self_delay: 6, delta: 36, delta_prime: 36, deadline_margin: 12, ..p },
     }
 }
 
@@ -139,13 +139,13 @@ pub fn fee_budget(net: Net) -> Amount {
 /// refund). A NUMS key path: every spend is a script path. (With MuSig2 the
 /// first leaf would be the key path, and the deposit an ordinary-looking
 /// P2TR output.)
-pub fn deposit_tree(alice: &bitcoin::XOnlyPublicKey, hub: &bitcoin::XOnlyPublicKey, timeout: u16) -> Result<lngap_btc::taptree::TapTree> {
+pub fn deposit_tree(alice: &bitcoin::XOnlyPublicKey, hub: &bitcoin::XOnlyPublicKey, timeout: u16) -> Result<lichen_btc::taptree::TapTree> {
     use bitcoin::opcodes::all::{OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_CSV, OP_DROP};
-    use lngap_btc::taptree::Leaf;
-    use lngap_btc::tx::Timelock;
+    use lichen_btc::taptree::Leaf;
+    use lichen_btc::tx::Timelock;
     let open = bitcoin::script::Builder::new().push_x_only_key(hub).push_opcode(OP_CHECKSIGVERIFY).push_x_only_key(alice).push_opcode(OP_CHECKSIG).into_script();
     let refund = bitcoin::script::Builder::new().push_int(i64::from(timeout)).push_opcode(OP_CSV).push_opcode(OP_DROP).push_x_only_key(alice).push_opcode(OP_CHECKSIG).into_script();
-    lngap_btc::taptree::TapTree::new(vec![Leaf::new(DEPOSIT_OPEN, open, Timelock::NONE), Leaf::new(DEPOSIT_REFUND, refund, Timelock { cltv: None, csv: Some(timeout) })])
+    lichen_btc::taptree::TapTree::new(vec![Leaf::new(DEPOSIT_OPEN, open, Timelock::NONE), Leaf::new(DEPOSIT_REFUND, refund, Timelock { cltv: None, csv: Some(timeout) })])
 }
 pub const DEPOSIT_OPEN: &str = "deposit_open";
 pub const DEPOSIT_REFUND: &str = "deposit_refund";
@@ -327,7 +327,7 @@ pub struct Opened {
     pub t: SecretKey,
 }
 
-/// An adaptor pre-signature on the wire ([`lngap_btc::adaptor::AdaptorSig`]).
+/// An adaptor pre-signature on the wire ([`lichen_btc::adaptor::AdaptorSig`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Presig {
     pub r_final: XOnlyPublicKey,
@@ -356,10 +356,10 @@ pub fn mint_owner(l2_address: &Hash, mint_point: &PublicKey) -> Result<Hash> {
 /// The message a signature on the funding's deposit input commits to
 /// (SIGHASH_DEFAULT, the `deposit_open` leaf), and that input's index.
 /// `coins`: the prevouts of every input of the funding.
-pub fn deposit_open_msg(funding: &Transaction, deposit: &OutPoint, coins: &[(OutPoint, TxOut)], tree: &lngap_btc::taptree::TapTree) -> Result<(usize, Message)> {
+pub fn deposit_open_msg(funding: &Transaction, deposit: &OutPoint, coins: &[(OutPoint, TxOut)], tree: &lichen_btc::taptree::TapTree) -> Result<(usize, Message)> {
     let prevouts: Vec<TxOut> = funding.input.iter().map(|i| coins.iter().find(|k| k.0 == i.previous_output).map(|k| k.1.clone()).context("an input of the funding not offered")).collect::<Result<_>>()?;
     let dep = funding.input.iter().position(|i| i.previous_output == *deposit).context("the deposit input")?;
-    Ok((dep, lngap_btc::sighash::tapscript_sighash(funding, dep, &prevouts, &tree.leaf(DEPOSIT_OPEN)?.script)?))
+    Ok((dep, lichen_btc::sighash::tapscript_sighash(funding, dep, &prevouts, &tree.leaf(DEPOSIT_OPEN)?.script)?))
 }
 
 /// Alice's signature in a funding transaction's deposit input, as
@@ -413,17 +413,17 @@ pub struct Folded {
 /// A link's anchor: the output whose script is the poster's anchor for
 /// its payment key.
 pub fn anchor_vout(tx: &Transaction, payment: &bitcoin::XOnlyPublicKey) -> Result<u32> {
-    let spk = lngap_sessions::contract::anchor_tree_for(payment)?.script_pubkey();
+    let spk = lichen_contract::anchor_tree_for(payment)?.script_pubkey();
     tx.output.iter().position(|o| o.script_pubkey == spk).map(|v| v as u32).context("the link has no anchor of this party's")
 }
 
 /// The anchor's witness in a fee child (input 0 spends the anchor), signed
 /// with the poster's payment key.
 pub fn sign_anchor(kp: &bitcoin::key::Keypair, child: &Transaction, prevouts: &[TxOut]) -> Result<bitcoin::Witness> {
-    let tree = lngap_sessions::contract::anchor_tree_for(&kp.x_only_public_key().0)?;
+    let tree = lichen_contract::anchor_tree_for(&kp.x_only_public_key().0)?;
     let leaf = tree.leaf("fee")?;
-    let sig = lngap_btc::sighash::sign_tapscript(kp, child, 0, prevouts, &leaf.script)?;
-    Ok(lngap_btc::witness::tapscript_witness(&[sig.as_ref().to_vec()], &leaf.script, &tree.control_block("fee")?))
+    let sig = lichen_btc::sighash::sign_tapscript(kp, child, 0, prevouts, &leaf.script)?;
+    Ok(lichen_btc::witness::tapscript_witness(&[sig.as_ref().to_vec()], &leaf.script, &tree.control_block("fee")?))
 }
 
 /// How many blocks' work, at the checkpoint's difficulty, a withdrawal
@@ -558,8 +558,8 @@ impl Record {
 }
 
 /// A contract's graph ([`lichen_babe::hp::HubProves`]): the contract
-/// output with its fold, default and dispute (ln-gap's skeleton,
-/// [`Core`]), the dispute's links and terminals, the payout.
+/// output with its fold, default and dispute
+/// ([`Core`]), the dispute's links and terminals, the payout.
 pub struct Built(pub Box<lichen_babe::hp::HubProves>);
 
 impl Built {
@@ -729,7 +729,7 @@ mod tests {
             assert!(v_max >= cap && v_max - cap < 1 << k && u >= MIN_UNIT && k <= 32, "{cap}: K {k}, u {u}");
         }
         let req = |deposit, liquidity, fee| OpenRequest {
-            alice: lngap_channel::PartyKeys::from_seed(lngap_channel::Role::User, lngap_btc::keys::Seed::from_label("test/alice")).public(),
+            alice: lichen_contract::PartyKeys::from_seed(lichen_contract::Role::User, lichen_btc::keys::Seed::from_label("test/alice")).public(),
             l2_address: [7; 32],
             deposit,
             liquidity,
@@ -752,7 +752,7 @@ mod tests {
     /// built on it; the networks' names read back; the windows in blocks.
     #[test]
     fn a_request_checked() {
-        let alice = lngap_channel::PartyKeys::from_seed(lngap_channel::Role::User, lngap_btc::keys::Seed::from_label("test/alice")).public();
+        let alice = lichen_contract::PartyKeys::from_seed(lichen_contract::Role::User, lichen_btc::keys::Seed::from_label("test/alice")).public();
         let mut req = OpenRequest {
             alice,
             l2_address: [7; 32],

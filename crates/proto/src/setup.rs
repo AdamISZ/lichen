@@ -86,7 +86,7 @@ pub fn statement_outpoint(o: &bitcoin::OutPoint) -> lichen_ledger::OutPoint {
 
 /// A link's witness arguments below both signatures, consumption order.
 pub fn link_args(tx: &bitcoin::Transaction) -> Vec<Vec<u8>> {
-    lngap_btc::witness::witness_args_consumption_order(&tx.input[0].witness).into_iter().skip(2).collect()
+    lichen_btc::witness::witness_args_consumption_order(&tx.input[0].witness).into_iter().skip(2).collect()
 }
 
 /// What `assert` put on chain.

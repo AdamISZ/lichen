@@ -19,18 +19,18 @@
 //! it would be 1,018.
 
 use k256::elliptic_curve::sec1::ToEncodedPoint;
-use lngap_btc::adaptor::{adaptor_complete, adaptor_extract, adaptor_sign, adaptor_verify, AdaptorSig};
-use lngap_btc::bitcoin::opcodes::all::*;
-use lngap_btc::bitcoin::script::Builder;
-use lngap_btc::keys::{xonly, Seed};
-use lngap_btc::script::BuilderExt;
-use lngap_btc::secp256k1::{schnorr, Keypair, Message, PublicKey, SecretKey, XOnlyPublicKey};
-use lngap_btc::{hash160, Hash160};
+use lichen_btc::adaptor::{adaptor_complete, adaptor_extract, adaptor_sign, adaptor_verify, AdaptorSig};
+use lichen_btc::bitcoin::opcodes::all::*;
+use lichen_btc::bitcoin::script::Builder;
+use lichen_btc::keys::{xonly, Seed};
+use lichen_btc::script::BuilderExt;
+use lichen_btc::secp256k1::{schnorr, Keypair, Message, PublicKey, SecretKey, XOnlyPublicKey};
+use lichen_btc::{hash160, Hash160};
 
 use crate::setup::{Secret, VALUES};
 use crate::vsss::Dealing;
 
-/// A Lamport preimage, as ln-gap's (`OP_HASH160`).
+/// A Lamport preimage (`OP_HASH160`).
 pub type Preimage = [u8; 20];
 
 /// Alice's one-time Lamport key for π1: four preimages a digit.

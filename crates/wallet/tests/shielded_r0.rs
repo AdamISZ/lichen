@@ -18,7 +18,7 @@ use lichen_sequencer::anchor::{genesis_seal, Anchoring};
 use lichen_sequencer::{Options, Sequencer};
 use lichen_wallet::shielded::SpendProver;
 use lichen_wallet::Wallet;
-use lngap_btc::regtest::Regtest;
+use lichen_btc::regtest::Regtest;
 
 #[test]
 #[ignore]

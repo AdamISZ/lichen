@@ -33,19 +33,19 @@
 
 use anyhow::{ensure, Context, Result};
 use lichen_withdraw::hp::{posted_items, POSTED_ITEM, POSTED_ITEMS};
-use lngap_btc::bitcoin::opcodes::all::*;
-use lngap_btc::bitcoin::script::Builder;
-use lngap_btc::bitcoin::transaction::Version;
-use lngap_btc::bitcoin::{Amount, OutPoint, TxOut};
-use lngap_btc::script::BuilderExt;
-use lngap_btc::secp256k1::{Message, XOnlyPublicKey};
-use lngap_btc::sighash::tapscript_sighash;
-use lngap_btc::taptree::{Leaf, TapTree};
-use lngap_btc::tx::Timelock;
-use lngap_channel::{ChannelParams, CommitCtx, PartyPubKeys, Role};
-use lngap_lamport::winternitz::{WotsExt, WotsParams, WotsPublic, WotsSig};
-use lngap_sessions::session::Terms;
-use lngap_sessions::skeleton::{wots_shape, Core, Presign, POST_CSV};
+use lichen_btc::bitcoin::opcodes::all::*;
+use lichen_btc::bitcoin::script::Builder;
+use lichen_btc::bitcoin::transaction::Version;
+use lichen_btc::bitcoin::{Amount, OutPoint, TxOut};
+use lichen_btc::script::BuilderExt;
+use lichen_btc::secp256k1::{Message, XOnlyPublicKey};
+use lichen_btc::sighash::tapscript_sighash;
+use lichen_btc::taptree::{Leaf, TapTree};
+use lichen_btc::tx::Timelock;
+use lichen_contract::{ContractParams, ContractCtx, PartyPubKeys, Role};
+use lichen_wots::{WotsExt, WotsParams, WotsPublic, WotsSig};
+use lichen_contract::Terms;
+use lichen_contract::{wots_shape, Core, Presign, POST_CSV};
 
 use crate::reveal::{LamportPub, Preimage};
 use crate::setup::{Hash, DIGITS, VALUES};
@@ -96,7 +96,7 @@ const E_DIGITS: usize = 64;
 #[derive(Clone, Debug)]
 pub struct Spec {
     pub terms: Terms,
-    pub params: ChannelParams,
+    pub params: ContractParams,
     /// Alice's keys, then the hub's.
     pub pubs: [PartyPubKeys; 2],
     /// Alice's one-time keys for `b` (the payout's bit outputs read it)
@@ -132,7 +132,7 @@ impl HubProves {
     pub fn core(&self) -> Core<'_> {
         Core { terms: &self.spec.terms, params: &self.spec.params, pubs: &self.spec.pubs }
     }
-    fn ctx(&self) -> CommitCtx<'_> {
+    fn ctx(&self) -> ContractCtx<'_> {
         self.core().ctx()
     }
     pub fn value(&self) -> Amount {

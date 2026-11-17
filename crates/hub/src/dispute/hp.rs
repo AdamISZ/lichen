@@ -36,8 +36,8 @@ use lichen_proto::{Checkpoint, Presig, Record};
 use lichen_ledger::lichen_validity::TNote;
 use lichen_ledger::lichen_validity::ack::{self, Ack};
 use lichen_withdraw::hp::{Bad, ChainSet, Claim, Counts, Ground, HubInput, Last, Opening, SealSpend, Terms, Why};
-use lngap_btc::adaptor::AdaptorSig;
-use lngap_btc::keys::Seed;
+use lichen_btc::adaptor::AdaptorSig;
+use lichen_btc::keys::Seed;
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use serde::{Deserialize, Serialize};
@@ -206,7 +206,7 @@ impl Inner {
 
     /// The hub's adaptor pre-signatures on `challenge_assert`, adapted to
     /// Alice's dealing's points, into the record and the offer.
-    pub(crate) fn hp_presign(&self, record: &mut Record, offer: &mut HpOffer, set: &[lngap_sessions::contract::Presign]) -> Result<()> {
+    pub(crate) fn hp_presign(&self, record: &mut Record, offer: &mut HpOffer, set: &[lichen_contract::Presign]) -> Result<()> {
         let cid = record.cid();
         let p = self.hp_prepared(cid)?;
         let commit = p.commit.as_ref().context("no instances committed")?;

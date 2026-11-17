@@ -51,7 +51,7 @@ use lichen_sequencer::{Options, Sequencer};
 use lichen_validity as v;
 use lichen_wallet::dispute::Outcome;
 use lichen_wallet::{Ask, Wallet};
-use lngap_btc::regtest::Regtest;
+use lichen_btc::regtest::Regtest;
 
 fn statement() -> Statement {
     Statement::HubProves { mock: true }

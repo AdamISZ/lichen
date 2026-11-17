@@ -13,8 +13,8 @@ use bitcoin::key::Keypair;
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use lichen_chain::{Chain, KeyFees};
 use lichen_proto::{anchor_vout, sign_anchor, Patience, Record, Stall, Statement};
-use lngap_btc::keys::Seed;
-use lngap_channel::{PartyKeys, Role};
+use lichen_btc::keys::Seed;
+use lichen_contract::{PartyKeys, Role};
 
 pub mod hp;
 

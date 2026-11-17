@@ -2,8 +2,8 @@
 //! nullifier set, and a sequencer that seals batches into state roots and
 //! signs them (BIP340).
 //!
-//! The note, the tree's hashing and the state root are ln-gap's
-//! (`lngap-r0-core`), but for a leaf's kind, its commitment's top bit
+//! The note, the tree's hashing and the state root are [`core`]'s (from
+//! ln-gap), but for a leaf's kind, its commitment's top bit
 //! (`lichen_shielded::t_leaf`).
 //!
 //! The kinds of transaction:
@@ -21,6 +21,7 @@
 //!   owners' signatures on it;
 //! - an anchor's record, from the sequencer's anchorer.
 
+pub mod core;
 pub mod files;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -31,7 +32,7 @@ use k256::schnorr::{Signature, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub use lngap_r0_core::{deployment_id, node, root_from_path, state_root, Note, HUB_KEY, SEQUENCER_KEY, TREE_DEPTH};
+pub use crate::core::{deployment_id, node, root_from_path, state_root, Note, HUB_KEY, SEQUENCER_KEY, TREE_DEPTH};
 
 pub use lichen_shielded as shielded;
 pub use lichen_validity::{self, AnchorState, OutPoint};

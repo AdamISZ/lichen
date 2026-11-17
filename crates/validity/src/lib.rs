@@ -47,7 +47,7 @@ fn sha256(parts: &[&[u8]]) -> Hash {
     h.finalize().into()
 }
 
-/// A transparent note (`lngap-r0-core`'s `Note`).
+/// A transparent note (`lichen_ledger::core`'s `Note`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TNote {
     pub owner: Hash,
@@ -70,7 +70,7 @@ impl TNote {
     }
 }
 
-/// The state root the sequencer signs (`lngap-r0-core`'s `state_root`).
+/// The state root the sequencer signs (`lichen_ledger::core`'s `state_root`).
 pub fn state_root(height: u64, tree: &Hash, nullifiers: &Hash) -> Hash {
     sha256(&[b"lngap/root", &height.to_be_bytes(), tree, nullifiers])
 }

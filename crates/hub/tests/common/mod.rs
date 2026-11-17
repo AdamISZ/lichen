@@ -18,7 +18,7 @@ use lichen_ledger::{regtest_sequencer, xonly, HUB_KEY};
 use lichen_proto::Statement;
 use lichen_sequencer::anchor::{genesis_seal, Anchoring};
 use lichen_sequencer::{Options, Sequencer};
-use lngap_btc::regtest::Regtest;
+use lichen_btc::regtest::Regtest;
 
 pub fn statement() -> Statement {
     Statement::HubProves { mock: true }

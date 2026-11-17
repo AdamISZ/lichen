@@ -1,10 +1,11 @@
 # lichen's code
 
-For working on lichen itself. The contract's skeleton (its output with
+For working on lichen itself. The contract on Bitcoin (its output with
 the fold and the default, the pre-signed links' floors and anchors, the
-payout) is ln-gap's `sessions::skeleton`
-([ln-gap](https://github.com/AdamISZ/ln-gap), checked out beside this
-repository at the revision in `LNGAP_REV`).
+payout) is the `contract` crate, on
+[lichen-btc](https://github.com/lichenbtc-org/lichen-btc) (taproot,
+transactions, adaptor signatures, Winternitz, RISC Zero's Groth16 key),
+which Cargo fetches at the commit `Cargo.lock` pins.
 
 A contract's dispute is the exit (a claim
 against a hostile operator, which the hub must prove false; statement
@@ -20,6 +21,7 @@ L2 before it folds (`POST /withdraw`).
 
 | crate | binary | who runs it |
 |---|---|---|
+| `contract` | | hub and wallet: the contract on Bitcoin: the parties' keys (`keys`), the terms and leaves (`leaves`), the fold, the default, the payout and the pre-signed set (`graph`) |
 | `ledger` | | everyone: notes (transparent and shielded), mints, transfers, the trees, signed roots |
 | `shielded` | | wallet, sequencer, the spend guest: the spend statement (`no_std`) |
 | `validity` | | sequencer, the chain guest: the block and chain statements, the nullifier tree, anchor records and what they read of Bitcoin (`btc`: transactions, witnesses through the coinbase's commitment); an exit record, which retires a claim's notes (`exit`) (`no_std`) |
@@ -59,7 +61,7 @@ cargo test --workspace --release
 ```
 
 runs everything that needs nothing outside the tree but bitcoind
-(regtest; `bitcoind` on the PATH or `LNGAP_BITCOIND`). Opt-in, with
+(regtest; `bitcoind` on the PATH or `LICHEN_BITCOIND`). Opt-in, with
 `-- --ignored --nocapture`:
 
 | test | needs | time |

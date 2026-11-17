@@ -28,8 +28,8 @@ use lichen_babe::hp::{HubProves, Spec, Windows};
 use lichen_babe::reveal::LamportPub;
 use lichen_babe::setup::{Hash, DIGITS, VALUES};
 use lichen_babe::statement::Kind;
-use lngap_lamport::winternitz::{WotsParams, WotsPublic};
-use lngap_sessions::contract::Presign;
+use lichen_wots::{WotsParams, WotsPublic};
+use lichen_contract::Presign;
 use serde::{Deserialize, Serialize};
 
 use crate::setup::Opened;

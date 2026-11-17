@@ -9,11 +9,11 @@ use anyhow::{ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use lichen_chain::{Chain, Fees};
 use lichen_proto::{anchor_vout, Built, Statement};
-use lngap_btc::taptree::TapTree;
-use lngap_sessions::contract::{anchor_tree_for, Presign};
-use lngap_btc::sighash::sign_tapscript;
-use lngap_btc::witness::tapscript_witness;
-use lngap_sessions::session::{bit_tree, reserve_tree};
+use lichen_btc::taptree::TapTree;
+use lichen_contract::{anchor_tree_for, Presign};
+use lichen_btc::sighash::sign_tapscript;
+use lichen_btc::witness::tapscript_witness;
+use lichen_contract::{bit_tree, reserve_tree};
 
 pub use crate::engine::Outcome;
 use crate::engine::{wait_confirmed, Engine, Options, Store, WalletSigner};
@@ -157,7 +157,7 @@ impl Wallet {
         let seqs: Vec<(OutPoint, Sequence)> = ins.iter().map(|i| (i.0, i.2)).collect();
         let build = |fee: Amount| -> Result<Transaction> {
             let out = TxOut { value: total.checked_sub(fee).context("the sweep can't pay its fee")?, script_pubkey: held.record.pubs[0].payout_spk.clone() };
-            let mut sweep = lngap_btc::tx::build_tx(&seqs, vec![out], bitcoin::absolute::LockTime::ZERO);
+            let mut sweep = lichen_btc::tx::build_tx(&seqs, vec![out], bitcoin::absolute::LockTime::ZERO);
             for (n, i) in ins.iter().enumerate() {
                 if let Some((tree, name, with_b)) = &i.3 {
                     let leaf = tree.leaf(name)?;
