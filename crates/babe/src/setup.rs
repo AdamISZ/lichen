@@ -83,6 +83,12 @@ pub fn instance(seed: &[u8; 32], secrets: &[[Secret; VALUES]], vk: &VerifyingKey
 }
 
 impl Instance {
+    /// The fixed circuit's shape, independent of its random secrets or
+    /// statement. A committed kept instance must satisfy it before funding.
+    pub fn has_shape(&self) -> bool {
+        self.gc.has_shape() && self.table.len() == DIGITS
+    }
+
     /// The circuit's input labels for `bits`, from their digits' secrets.
     pub fn labels(&self, bits: &[bool], secrets: &[Secret]) -> Vec<Label> {
         let digits = digits(bits);
@@ -100,10 +106,16 @@ impl Instance {
         <Hash>::from(Sha256::digest(msg)) == self.hmsg
     }
 
-    /// The hub's commitment to it.
+    /// The commitment to it, its parts' lengths first: bytes split
+    /// otherwise into its parts (labels moved from the circuit to the
+    /// table, field elements from `dre` to the constants) commit
+    /// otherwise, so a kept instance as committed evaluates as built.
     pub fn commitment(&self) -> Hash {
         let mut h = blake3::Hasher::new();
         h.update(b"lichen/babe/instance");
+        for n in [self.gc.ands.len(), self.table.len(), self.gc.dre.len(), self.gc.constant.len()] {
+            h.update(&(n as u64).to_le_bytes());
+        }
         for l in self.gc.ands.iter().chain(self.table.iter().flatten().flatten()) {
             h.update(&l.to_le_bytes());
         }
@@ -144,7 +156,8 @@ impl Instance {
     }
 
     /// The instance of `b` ([`Instance::to_bytes`]), if it is one: every
-    /// length checked against what is left before anything is allocated.
+    /// length checked against what is left before anything is allocated,
+    /// and the fixed circuit's shape checked before it can be evaluated.
     pub fn from_bytes(b: &[u8]) -> Option<Instance> {
         struct Reader<'a>(&'a [u8]);
         impl<'a> Reader<'a> {
@@ -185,7 +198,8 @@ impl Instance {
         let r_delta = G2Affine::deserialize_compressed(r.take(64)?).ok()?;
         let masked = r.take(32)?.try_into().ok()?;
         let hmsg = r.take(32)?.try_into().ok()?;
-        r.0.is_empty().then_some(Instance { gc: Garbled { ands, dre, constant }, table, ct: Setup { r_delta, masked }, hmsg })
+        let inst = Instance { gc: Garbled { ands, dre, constant }, table, ct: Setup { r_delta, masked }, hmsg };
+        (r.0.is_empty() && inst.has_shape()).then_some(inst)
     }
 }
 
