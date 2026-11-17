@@ -13,7 +13,7 @@ use lichen_ledger::{regtest_hub, regtest_sequencer, xonly, Mint, Tx, HUB_KEY};
 use lichen_sequencer::anchor::{genesis_seal, in_flight_file, Anchoring};
 use lichen_sequencer::{blocks_dir, Options, Sequencer};
 use lichen_validity as v;
-use lngap_btc::regtest::Regtest;
+use lichen_btc::regtest::Regtest;
 
 fn wait(what: &str, mut ok: impl FnMut() -> bool) {
     let start = Instant::now();

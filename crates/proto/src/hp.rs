@@ -30,8 +30,8 @@ use lichen_babe::reveal::LamportPub;
 use lichen_babe::setup::{Hash, DIGITS, VALUES};
 use lichen_babe::statement::Kind;
 use lichen_withdraw::accounts;
-use lngap_lamport::winternitz::{Wots256Public, WotsParams, WotsPublic};
-use lngap_sessions::contract::Presign;
+use lichen_wots::{Wots256Public, WotsParams, WotsPublic};
+use lichen_contract::Presign;
 use serde::{Deserialize, Serialize};
 
 use crate::setup::Opened;
@@ -322,6 +322,6 @@ impl HpDisputed {
 }
 
 /// A one-time signature as the statement takes it.
-pub fn wots(s: &lngap_lamport::winternitz::Wots256Sig) -> accounts::Wots {
+pub fn wots(s: &lichen_wots::Wots256Sig) -> accounts::Wots {
     accounts::Wots { hashes: s.hashes.clone(), digits: s.digits.clone() }
 }

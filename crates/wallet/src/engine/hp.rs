@@ -27,9 +27,9 @@ use lichen_chain::{Chain, Stall};
 use lichen_proto::hp::{AliceKeys, HpDisputed};
 use lichen_proto::setup::link_args;
 use lichen_proto::{Record, Statement};
-use lngap_btc::adaptor::AdaptorSig;
-use lngap_btc::keys::Seed;
-use lngap_lamport::winternitz::{Wots256Secret, WotsParams};
+use lichen_btc::adaptor::AdaptorSig;
+use lichen_btc::keys::Seed;
+use lichen_wots::{Wots256Secret, WotsParams};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 

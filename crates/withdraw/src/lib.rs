@@ -37,7 +37,7 @@ pub type Hash = [u8; 32];
 pub const TREE_DEPTH: usize = 16;
 
 /// A deployment's id: its sequencer's and hub's keys (x-only), hashed
-/// (`lngap-r0-core`'s `deployment_id`).
+/// (`lichen_ledger::core`'s `deployment_id`).
 pub fn deployment_id(sequencer: &Hash, hub: &Hash) -> Hash {
     let mut h = Sha256::new();
     h.update(b"lngap/deployment");

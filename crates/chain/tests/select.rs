@@ -5,7 +5,7 @@
 
 use bitcoin::Amount;
 use lichen_chain::Chain;
-use lngap_btc::regtest::Regtest;
+use lichen_btc::regtest::Regtest;
 
 #[test]
 fn a_coin_selected_is_not_selected_again() {

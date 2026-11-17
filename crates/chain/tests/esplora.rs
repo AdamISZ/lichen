@@ -6,7 +6,7 @@
 use bitcoin::{Amount, OutPoint, Transaction, TxIn, TxOut};
 use lichen_chain::electrs::Electrs;
 use lichen_chain::{Chain, Net};
-use lngap_btc::regtest::Regtest;
+use lichen_btc::regtest::Regtest;
 
 #[test]
 fn esplora_answers_as_the_node_does() {

@@ -22,7 +22,7 @@ talks to a running deployment's hub.
 From the hub's operator you need its URL and its key.
 
 ```sh
-git clone -b grants https://github.com/lichenbtc-org/lichen && git clone https://github.com/AdamISZ/ln-gap
+git clone -b grants https://github.com/lichenbtc-org/lichen
 cd lichen && cargo build --release -p lichen-wallet       # target/release/lichen
 
 alias lw='target/release/lichen --network mutinynet --wallet alice.json --hub <URL>'

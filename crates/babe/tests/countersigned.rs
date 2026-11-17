@@ -17,19 +17,19 @@ use std::collections::HashMap;
 use lichen_babe::countersigned::{corr_bit_tree, Countersigned, Spec, Windows, Q_LEN, U_LEN};
 use lichen_babe::reveal::{AdaptorKeys, LamportKey};
 use lichen_babe::setup::DIGITS;
-use lngap_btc::bitcoin::hashes::{sha256, Hash};
-use lngap_btc::bitcoin::{absolute, Amount, OutPoint, ScriptBuf, Transaction, TxOut};
-use lngap_btc::keys::{xonly, Seed};
-use lngap_btc::regtest::Regtest;
-use lngap_btc::secp256k1::{Keypair, SECP256K1};
-use lngap_btc::sighash::sign_tapscript;
-use lngap_btc::taptree::TapTree;
-use lngap_btc::tx::build_tx;
-use lngap_btc::witness::tapscript_witness;
-use lngap_channel::{ChannelParams, CommitCtx, PartyKeys, Role};
-use lngap_lamport::winternitz::{Wots256Secret, WotsParams, WotsSecret};
-use lngap_sessions::session::{bit_tree, reserve_tree, Terms};
-use lngap_sessions::skeleton::{sign_all, Presign};
+use lichen_btc::bitcoin::hashes::{sha256, Hash};
+use lichen_btc::bitcoin::{absolute, Amount, OutPoint, ScriptBuf, Transaction, TxOut};
+use lichen_btc::keys::{xonly, Seed};
+use lichen_btc::regtest::Regtest;
+use lichen_btc::secp256k1::{Keypair, SECP256K1};
+use lichen_btc::sighash::sign_tapscript;
+use lichen_btc::taptree::TapTree;
+use lichen_btc::tx::build_tx;
+use lichen_btc::witness::tapscript_witness;
+use lichen_contract::{ContractParams, ContractCtx, PartyKeys, Role};
+use lichen_wots::{Wots256Secret, WotsParams, WotsSecret};
+use lichen_contract::{bit_tree, reserve_tree, Terms};
+use lichen_contract::{sign_all, Presign};
 
 const B: u32 = 600; // 0b10_0101_1000
 const B_CORR: u32 = 300; // 0b01_0010_1100
@@ -71,7 +71,7 @@ fn fixture() -> Fixture {
     };
     let spec = Spec {
         terms,
-        params: ChannelParams::regtest(Amount::ZERO),
+        params: ContractParams::regtest(Amount::ZERO),
         pubs: [alice.public(), hub.public()],
         b_key: b.public(),
         q_key: q.public(),
@@ -155,7 +155,7 @@ fn bit_out(i: u32) -> u32 {
     i
 }
 
-fn ctx(f: &Fixture) -> CommitCtx<'_> {
+fn ctx(f: &Fixture) -> ContractCtx<'_> {
     f.g.core().ctx()
 }
 
@@ -204,7 +204,7 @@ fn countersigned_graph_on_regtest() {
     }
     let ak = c.post(&rt, "ack", ack(&f, B_CORR, &seeds()));
     sizes.push(("ack", ak.vsize(), ak.input[0].witness.len() - 2));
-    let read = Countersigned::read_ack(&lngap_btc::witness::witness_args_consumption_order(&ak.input[0].witness)[2..]).unwrap();
+    let read = Countersigned::read_ack(&lichen_btc::witness::witness_args_consumption_order(&ak.input[0].witness)[2..]).unwrap();
     assert_eq!((read.0.message(), read.1.message()), (B_CORR.to_be_bytes().to_vec(), seeds()), "her countersignatures read back");
     let digits: Vec<u8> = (0..DIGITS).map(|i| (i % 4) as u8).collect();
     let asr = c.post(&rt, "assert", Countersigned::assert_wire(&f.lamport.sign(&digits), &[7u8; 64], &[9u8; 32]));

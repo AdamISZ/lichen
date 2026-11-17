@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the deployment's two images from committed sources
 # (deploy/context.sh):
-#   deploy/build.sh            (in a lichen checkout, ln-gap beside it)
+#   deploy/build.sh            (in a lichen checkout)
 # - lichen (LICHEN_IMAGE, lichen:latest by default): the hub, the
 #   sequencer, the chain prover, the wallet;
 # - lichen-bitcoind: the node for NETWORK (deploy/.env, or ENV_FILE),

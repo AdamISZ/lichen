@@ -31,13 +31,13 @@ Linux or macOS, x86-64 or arm64, with Docker (Compose v2):
 ## 1. Build
 
 ```sh
-git clone -b grants https://github.com/lichenbtc-org/lichen && git clone https://github.com/AdamISZ/ln-gap
+git clone -b grants https://github.com/lichenbtc-org/lichen
 cd lichen && cp deploy/.env.example deploy/.env    # set NETWORK
 deploy/build.sh
 ```
 
-`build.sh` builds two images, from committed sources only: lichen's HEAD,
-and ln-gap at the commit in `LNGAP_REV`.
+`build.sh` builds two images, from committed sources only: lichen's HEAD
+(and lichen-btc at the commit `Cargo.lock` pins).
 
 - **`lichen`:** the hub, the prover (`lichen-r0`, through
   `lichen-hp-prover`), and the `lichen` wallet, for the smoke test.

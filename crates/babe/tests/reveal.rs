@@ -7,17 +7,17 @@
 use lichen_babe::reveal::{check_presigs, complete, extract, points, reveal_args, reveal_verify, AdaptorKeys, LamportKey};
 use lichen_babe::setup::{Secret, DIGITS};
 use lichen_babe::vsss::{deal, scalar};
-use lngap_btc::bitcoin::opcodes::all::*;
-use lngap_btc::bitcoin::script::Builder;
-use lngap_btc::bitcoin::{absolute, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxOut, Witness};
-use lngap_btc::keys::{xonly, Seed};
-use lngap_btc::regtest::Regtest;
-use lngap_btc::script::BuilderExt;
-use lngap_btc::secp256k1::SECP256K1;
-use lngap_btc::sighash::{sign_tapscript, tapscript_sighash};
-use lngap_btc::taptree::{Leaf, TapTree};
-use lngap_btc::tx::{build_tx, Timelock};
-use lngap_btc::witness::{witness_args_consumption_order, WitnessStack};
+use lichen_btc::bitcoin::opcodes::all::*;
+use lichen_btc::bitcoin::script::Builder;
+use lichen_btc::bitcoin::{absolute, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxOut, Witness};
+use lichen_btc::keys::{xonly, Seed};
+use lichen_btc::regtest::Regtest;
+use lichen_btc::script::BuilderExt;
+use lichen_btc::secp256k1::SECP256K1;
+use lichen_btc::sighash::{sign_tapscript, tapscript_sighash};
+use lichen_btc::taptree::{Leaf, TapTree};
+use lichen_btc::tx::{build_tx, Timelock};
+use lichen_btc::witness::{witness_args_consumption_order, WitnessStack};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
 

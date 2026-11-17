@@ -2,11 +2,12 @@
 
 For working on lichen itself, on the `grants` branch: the L2 of
 [papers/lichen-grants.pdf](../papers/lichen-grants.pdf), whose notes the
-hub keeps, one per account. The contract's skeleton (its output with
+hub keeps, one per account. The contract on Bitcoin (its output with
 the fold and the default, the pre-signed links' floors and anchors, the
-payout) is ln-gap's `sessions::skeleton`
-([ln-gap](https://github.com/AdamISZ/ln-gap), checked out beside this
-repository at the revision in `LNGAP_REV`).
+payout) is the `contract` crate, on
+[lichen-btc](https://github.com/lichenbtc-org/lichen-btc) (taproot,
+transactions, adaptor signatures, Winternitz, RISC Zero's Groth16 key),
+which Cargo fetches at the commit `Cargo.lock` pins.
 
 A contract's dispute is the exit where only the hub proves: Alice posts
 a claim of her note, the hub may correct it, she accepts or
@@ -22,6 +23,7 @@ is the same claim, which the hub takes into its book before it folds
 
 | crate | binary | who runs it |
 |---|---|---|
+| `contract` | | hub and wallet: the contract on Bitcoin: the parties' keys (`keys`), the terms and leaves (`leaves`), the fold, the default, the payout and the pre-signed set (`graph`) |
 | `notes` | | hub and wallet: the grants L2's types (notes, halves, spends, grants, claims), the hub's book (`book`), the payment messages (`proto`), L2 addresses (`address`) |
 | `withdraw` | | hub, wallet, the hub's guest: the L2's hashes and encodings, Algorithm 1 and the hub's statement (`accounts`, `no_std`) |
 | `babe` | | hub and wallet: BABE's cryptography (the garbled circuit, the witness encryption, the cut-and-choose setup over VSSS, the reveal by adaptor signatures), the countersigned graph and its scripts (`countersigned`), its statement (the mock; a RISC Zero receipt's Groth16 form) |
@@ -62,7 +64,7 @@ cargo test --workspace --release
 ```
 
 runs everything that needs nothing outside the tree but bitcoind
-(regtest; `bitcoind` on the PATH or `LNGAP_BITCOIND`), the hub's
+(regtest; `bitcoind` on the PATH or `LICHEN_BITCOIND`), the hub's
 statement as its mock. The grants L2's are in `crates/hub/tests`
 (`payments`, `withdraw`, `contested`: every ending of an exit) and
 `crates/babe/tests/countersigned.rs` (the graph under mainnet's relay

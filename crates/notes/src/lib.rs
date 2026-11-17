@@ -24,7 +24,7 @@ pub mod proto;
 use anyhow::{ensure, Context, Result};
 use bitcoin::key::{Keypair, XOnlyPublicKey};
 use bitcoin::secp256k1::{schnorr, Message, PublicKey, SecretKey, SECP256K1};
-use lngap_btc::adaptor::{adaptor_complete, adaptor_sign, adaptor_verify, AdaptorSig};
+use lichen_btc::adaptor::{adaptor_complete, adaptor_sign, adaptor_verify, AdaptorSig};
 use serde::{Deserialize, Serialize};
 
 pub use lichen_withdraw::accounts as core;
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn one_time_signatures_agree_with_ln_gap() {
-        use lngap_lamport::winternitz::{Wots256Secret, WotsParams};
+        use lichen_wots::{Wots256Secret, WotsParams};
         for n in [4usize, 16, Q_LEN] {
             let k = Wots256Secret::from_entropy(WotsParams::for_bytes(n as u32), [n as u8; 32]);
             let msg: Vec<u8> = (0..n).map(|i| (i * 13 + 1) as u8).collect();

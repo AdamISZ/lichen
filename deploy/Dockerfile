@@ -4,11 +4,10 @@
 # the prover `lichen-r0` (RISC Zero 3.1.0, in process) with the committed
 # guests it reads, which proves the chain (r0/chain-prover.sh). A Groth16
 # wrap runs RISC Zero's prover image, through the host's Docker (its
-# socket mounted). Build context: a directory holding lichen/ and ln-gap/
-# side by side (deploy/build.sh makes it).
+# socket mounted). Build context: a directory holding lichen/
+# (deploy/build.sh makes it); lichen-btc comes by git.
 FROM rust:1.96-bookworm AS build
 WORKDIR /src
-COPY ln-gap ln-gap
 COPY lichen lichen
 WORKDIR /src/lichen
 # the commit the hub reports in its offer (`GET /info`)

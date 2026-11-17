@@ -1,0 +1,22 @@
+name: Install bitcoind
+description: Bitcoin Core from bitcoincore.org, checked against a pinned SHA-256, cached; sets LICHEN_BITCOIND.
+runs:
+  using: composite
+  steps:
+    - id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/bitcoin
+        key: bitcoind-${{ env.BITCOIN_VERSION }}-${{ env.BITCOIN_SHA256 }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        tarball="bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz"
+        curl -fsSLO "https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/${tarball}"
+        echo "${BITCOIN_SHA256}  ${tarball}" | sha256sum -c -
+        mkdir -p ~/bitcoin
+        tar -xzf "${tarball}" -C ~/bitcoin --strip-components=1
+    - shell: bash
+      run: |
+        echo "LICHEN_BITCOIND=$HOME/bitcoin/bin/bitcoind" >> "$GITHUB_ENV"
+        "$HOME/bitcoin/bin/bitcoind" --version | head -1

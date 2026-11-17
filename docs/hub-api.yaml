@@ -620,7 +620,7 @@ components:
           description: "Its shares of the dealing, hex (`lichen_proto::setup::shares_to_hex`)."
           allOf: [{ $ref: '#/components/schemas/HexBytes' }]
     PartyPubKeys:
-      description: "A party's keys in the contract (ln-gap's `PartyPubKeys`): x-only keys, and where its payouts go."
+      description: "A party's keys in the contract (`lichen_contract::PartyPubKeys`): x-only keys, and where its payouts go."
       type: object
       required: [funding, payment, delayed, payout_spk]
       properties:

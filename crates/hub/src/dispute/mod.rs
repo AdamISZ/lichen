@@ -14,13 +14,13 @@ use anyhow::{Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use lichen_chain::NodeWallet;
 use lichen_proto::{anchor_vout, sign_anchor, Built, Record};
-use lngap_btc::sighash::sign_tapscript;
-use lngap_btc::witness::tapscript_witness;
+use lichen_btc::sighash::sign_tapscript;
+use lichen_btc::witness::tapscript_witness;
 use lichen_babe::countersigned::{corr_bit_tree, Countersigned};
 use lichen_proto::hp::HpDisputed;
 use lichen_proto::setup::link_args;
-use lngap_btc::taptree::TapTree;
-use lngap_sessions::session::bit_tree;
+use lichen_btc::taptree::TapTree;
+use lichen_contract::bit_tree;
 
 use crate::{contract_keys, Inner};
 
@@ -171,7 +171,7 @@ impl Inner {
         let seqs: Vec<(OutPoint, Sequence)> = ins.iter().map(|i| (i.0, sequence)).collect();
         let build = |fee: Amount| -> Result<Transaction> {
             let out = TxOut { value: total.checked_sub(fee).context("the bit outputs can't pay the sweep's fee")?, script_pubkey: to.clone() };
-            let mut sweep = lngap_btc::tx::build_tx(&seqs, vec![out], bitcoin::absolute::LockTime::ZERO);
+            let mut sweep = lichen_btc::tx::build_tx(&seqs, vec![out], bitcoin::absolute::LockTime::ZERO);
             sweep.version = bitcoin::transaction::Version::TWO;
             for (n, (_, _, (_, tree, name))) in ins.iter().enumerate() {
                 let leaf = tree.leaf(name)?;

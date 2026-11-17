@@ -14,7 +14,7 @@ use bitcoincore_rpc::{Auth, RpcApi};
 use lichen_chain::Chain;
 use lichen_hub::{Config, Hub};
 use lichen_proto::Statement;
-use lngap_btc::regtest::Regtest;
+use lichen_btc::regtest::Regtest;
 
 pub fn statement() -> Statement {
     Statement::HubProves { mock: true }

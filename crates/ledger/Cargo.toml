@@ -12,7 +12,6 @@ hex.workspace = true
 k256.workspace = true
 serde.workspace = true
 sha2.workspace = true
-lngap-r0-core.workspace = true
 lichen-shielded.workspace = true
 lichen-validity.workspace = true
 lichen-withdraw.workspace = true

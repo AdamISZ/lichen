@@ -7,16 +7,15 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-# RISC Zero's verifying key and claim, as ln-gap checks them natively
-lngap-zk.workspace = true
+# RISC Zero's verifying key and claim, checked natively
+lichen-risc0.workspace = true
 # the journal's key digest and length, as the guest's
 lichen-withdraw.workspace = true
 # the reveal on chain: adaptor signatures, scripts, keys
-lngap-btc.workspace = true
-# the graph, on ln-gap's skeleton
-lngap-channel.workspace = true
-lngap-lamport.workspace = true
-lngap-sessions.workspace = true
+lichen-btc.workspace = true
+# the graph, on lichen's contract
+lichen-contract.workspace = true
+lichen-wots.workspace = true
 ark-bn254 = "0.5"
 ark-ec = "0.5"
 ark-ff = "0.5"

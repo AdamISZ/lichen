@@ -207,11 +207,11 @@ pub mod btree_fixed {
     }
 }
 
-/// A Winternitz public key (ln-gap's `WotsPublicOf<[u8; N]>`): its
+/// A Winternitz public key (lichen-wots's `WotsPublicOf<[u8; N]>`): its
 /// parameters, and its chains' ends as hex.
 pub mod wots {
     use super::*;
-    use lngap_lamport::winternitz::{WotsParams, WotsPublicOf};
+    use lichen_wots::{WotsParams, WotsPublicOf};
 
     #[derive(Serialize)]
     struct Out<'a, const N: usize>

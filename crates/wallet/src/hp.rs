@@ -9,7 +9,7 @@ use lichen_babe::setup::{instance, par, VALUES};
 use lichen_proto::setup::{dealing_to_hex, min_soundness, shares_to_hex, soundness, Opened};
 use lichen_proto::hp::{check_setup, HpCommit, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
 use lichen_proto::{Net, Statement};
-use lngap_sessions::contract::Presign;
+use lichen_contract::Presign;
 
 use crate::engine::hp::{dealing, instance_seed};
 use crate::engine::ContractSecrets;
@@ -84,7 +84,7 @@ impl Wallet {
         ensure!(offer.hp_windows == lichen_proto::hp::windows(net), "the hub's windows {:?}, not the network's", offer.hp_windows);
         let (_, dealt) = dealing(s, o.setup.n, o.setup.m);
         let msg = Countersigned::link_sighash(set, "challenge_assert")?;
-        let presigs: Vec<[lngap_btc::adaptor::AdaptorSig; VALUES]> = offer.hp_presigs.iter().map(|p| p.each_ref().map(lngap_btc::adaptor::AdaptorSig::from)).collect();
+        let presigs: Vec<[lichen_btc::adaptor::AdaptorSig; VALUES]> = offer.hp_presigs.iter().map(|p| p.each_ref().map(lichen_btc::adaptor::AdaptorSig::from)).collect();
         ensure!(lichen_babe::reveal::check_presigs(&o.setup.adaptor, &msg, &lichen_babe::reveal::points(&dealt), &presigs), "the hub's adaptor pre-signatures on challenge_assert");
         Ok(())
     }

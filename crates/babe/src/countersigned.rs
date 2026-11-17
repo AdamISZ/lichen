@@ -31,19 +31,19 @@
 //! no one would see.
 
 use anyhow::{ensure, Context, Result};
-use lngap_btc::bitcoin::opcodes::all::*;
-use lngap_btc::bitcoin::script::Builder;
-use lngap_btc::bitcoin::transaction::Version;
-use lngap_btc::bitcoin::{Amount, OutPoint, TxOut};
-use lngap_btc::script::BuilderExt;
-use lngap_btc::secp256k1::{Message, XOnlyPublicKey};
-use lngap_btc::sighash::tapscript_sighash;
-use lngap_btc::taptree::{Leaf, TapTree};
-use lngap_btc::tx::Timelock;
-use lngap_channel::{ChannelParams, CommitCtx, PartyPubKeys, Role};
-use lngap_lamport::winternitz::{Chain, Wots256Public, Wots256Sig, WotsExt, WotsParams, WotsPublic, WotsPublicOf, WotsSig, WotsSigOf};
-use lngap_sessions::session::Terms;
-use lngap_sessions::skeleton::{wots_shape, Core, Presign, POST_CSV};
+use lichen_btc::bitcoin::opcodes::all::*;
+use lichen_btc::bitcoin::script::Builder;
+use lichen_btc::bitcoin::transaction::Version;
+use lichen_btc::bitcoin::{Amount, OutPoint, TxOut};
+use lichen_btc::script::BuilderExt;
+use lichen_btc::secp256k1::{Message, XOnlyPublicKey};
+use lichen_btc::sighash::tapscript_sighash;
+use lichen_btc::taptree::{Leaf, TapTree};
+use lichen_btc::tx::Timelock;
+use lichen_contract::{ContractParams, ContractCtx, PartyPubKeys, Role};
+use lichen_wots::{Chain, Wots256Public, Wots256Sig, WotsExt, WotsParams, WotsPublic, WotsPublicOf, WotsSig, WotsSigOf};
+use lichen_contract::Terms;
+use lichen_contract::{wots_shape, Core, Presign, POST_CSV};
 
 use crate::reveal::{LamportPub, Preimage};
 use crate::setup::{Hash, DIGITS, VALUES};
@@ -126,7 +126,7 @@ pub fn digits_equal<H1: Chain, H2: Chain>(b: Builder, first: &WotsPublicOf<H1>, 
 #[derive(Clone, Debug)]
 pub struct Spec {
     pub terms: Terms,
-    pub params: ChannelParams,
+    pub params: ContractParams,
     /// Alice's keys, then the hub's.
     pub pubs: [PartyPubKeys; 2],
     /// Alice's one-time keys in `request`: `K_b` (the payout's bit
@@ -171,7 +171,7 @@ impl Countersigned {
     pub fn core(&self) -> Core<'_> {
         Core { terms: &self.spec.terms, params: &self.spec.params, pubs: &self.spec.pubs }
     }
-    fn ctx(&self) -> CommitCtx<'_> {
+    fn ctx(&self) -> ContractCtx<'_> {
         self.core().ctx()
     }
     pub fn value(&self) -> Amount {
@@ -433,7 +433,7 @@ fn bit_check(b: Builder, i: u32, key: &WotsPublic, want: bool) -> Builder {
 /// (after `delta`, its signature, the bit clear: time for her to show an
 /// equivocation), and `equiv_corr_i` (her signature and two different
 /// signatures under `key`: the hub signed two values).
-pub fn corr_bit_tree(ctx: &CommitCtx, i: u32, key: &WotsPublic) -> Result<TapTree> {
+pub fn corr_bit_tree(ctx: &ContractCtx, i: u32, key: &WotsPublic) -> Result<TapTree> {
     assert_eq!(key.params.message_digits, 8, "a word's key signs 4 bytes");
     let alice = bit_check(Builder::new().checksigverify(&ctx.key(Role::User).payment), i, key, true);
     let delta = ctx.params.delta;
