@@ -14,6 +14,8 @@ lichen-btc.workspace = true
 # the graph, on lichen's contract
 lichen-contract.workspace = true
 lichen-wots.workspace = true
+# what the hub's statement reads of the exit on Bitcoin (exit)
+lichen-statement.workspace = true
 ark-bn254 = "0.5"
 ark-ec = "0.5"
 ark-ff = "0.5"
