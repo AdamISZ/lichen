@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 exclude = ["r0"]
-members = ["crates/contract", "crates/notes", "crates/ledger", "crates/shielded", "crates/validity", "crates/withdraw", "crates/l2", "crates/sequencer", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/babe"]
+members = ["crates/contract", "crates/chain", "crates/proto", "crates/hub", "crates/wallet", "crates/babe"]
 
 [workspace.package]
 # The fork point, kept: the guests' ELFs (their image ids) change with their
@@ -24,12 +24,6 @@ sha2 = "0.10"
 tiny_http = "0.12"
 ureq = { version = "2", features = ["json"] }
 esplora-client = { version = "0.13", default-features = false, features = ["blocking-https-rustls"] }
-lichen-ledger = { path = "crates/ledger" }
-lichen-shielded = { path = "crates/shielded" }
-lichen-validity = { path = "crates/validity" }
-lichen-withdraw = { path = "crates/withdraw" }
-lichen-l2 = { path = "crates/l2" }
-lichen-notes = { path = "crates/notes" }
 lichen-chain = { path = "crates/chain" }
 lichen-proto = { path = "crates/proto" }
 lichen-hub = { path = "crates/hub" }
@@ -40,7 +34,6 @@ lichen-contract = { path = "crates/contract" }
 lichen-btc = { git = "https://github.com/lichenbtc-org/lichen-btc", rev = "d7d2de04f7f8d51b44f61a68c7e1789f36502071" }
 lichen-wots = { git = "https://github.com/lichenbtc-org/lichen-btc", rev = "d7d2de04f7f8d51b44f61a68c7e1789f36502071" }
 lichen-risc0 = { git = "https://github.com/lichenbtc-org/lichen-btc", rev = "d7d2de04f7f8d51b44f61a68c7e1789f36502071" }
-lichen-sequencer = { path = "crates/sequencer" }
 
 # Dependencies (lichen-btc's crates among them) optimised even in debug
 # builds: the pre-signing and the curve arithmetic are too slow at

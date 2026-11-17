@@ -1,6 +1,8 @@
-//! The hub: opens contracts with users, opens their accounts at their
-//! deposits, makes their payments (the grants L2, one note per account:
-//! `lichen_notes`, its book), pays withdrawals and answers disputes.
+//! The hub's library: opens contracts with users, pays withdrawals (the
+//! fold), defaults contracts at `T_close`, and plays every dispute's tail
+//! (BABE's, the hub proving), for an L2 ([`HubL2`]) that runs the ledger
+//! and its part of each contract. An L2's hub binary makes a [`Hub`] with
+//! its [`HubL2`].
 //!
 //! HTTP (JSON): `GET /info`, the opening's cut-and-choose (`POST
 //! /hp/setup`, `POST /hp/commit`, and `POST /hp/instance/<cid>/<i>`, an
@@ -8,15 +10,16 @@
 //! [`OpenOffer`]), `POST /accept` ([`Accept`] to [`Opened`]), `POST
 //! /withdraw/nonce` ([`FoldNonceRequest`] to [`FoldNonce`]: the hub's
 //! MuSig2 nonce for the fold) then `POST /withdraw` ([`WithdrawRequest`]
-//! to [`Folded`]: the cooperative withdrawal, Alice's claim taken into the
-//! book, then the fold on the contract output's key path).
-//! Payments (`lichen_notes::proto`): `POST /pay`, `GET /incoming/<owner>`,
-//! `POST /half`, `GET /payment/<id>`, `POST /sign`, `POST /cancel`, `GET
-//! /account/<owner>`. A contract's account opens at its mint, note 0, once
-//! its funding is out; a watcher broadcasts, after `T_close`, the default
-//! of any contract still open.
+//! to [`Folded`]: the cooperative withdrawal, the user's claim taken into
+//! the L2, then the fold on the contract output's key path); and the L2's
+//! own routes ([`HubL2::route`]). A watcher broadcasts, after `T_close`,
+//! the default of any contract still open, and drives the disputes.
 
 mod dispute;
+pub mod l2;
+mod setup;
+
+pub use l2::{Bits, Ctx, FrontStep, HubL2, ProverInput};
 
 use std::collections::HashMap;
 use std::io::Read as _;
@@ -29,10 +32,8 @@ use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
 use bitcoin::{Amount, OutPoint, Sequence, TxOut};
 use lichen_btc::adaptor::{adaptor_complete, adaptor_verify, AdaptorSig};
 use lichen_chain::Chain;
-use lichen_ledger::files;
-use lichen_ledger::k256::schnorr::SigningKey;
+use lichen_proto::files;
 use lichen_proto::{broadcast_deadline, check_funding, contributions, deposit_open_msg, deposit_timeout, deposit_tree, terms, Accept, DepositOffer, DepositRequest, FoldNonce, FoldNonceRequest, Folded, Info, Net, OpenOffer, OpenRequest, Opened, Record, Statement, WithdrawRequest, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_OPEN, FEE_SHARE, FOLD_FEE};
-use lichen_notes::book::Book;
 use lichen_btc::keys::Seed;
 use lichen_contract::{PartyKeys, Role};
 use lichen_contract::sign_all;
@@ -53,8 +54,9 @@ pub struct Config {
     /// The hub's secret seed for its contract keys (a label: keep it
     /// secret; the binary makes a random one).
     pub seed: String,
-    /// The hub's issuer key: it signs every note.
-    pub l2_key: SigningKey,
+    /// The prover of the hub's statement (`<prover> hp-proof <input>
+    /// <seal>`, the L2's), for its RISC Zero statement.
+    pub prover: Option<PathBuf>,
     pub reserve_ppm: u64,
     /// Its fee for a contract's liquidity, parts per million of it.
     pub fee_ppm: u64,
@@ -82,7 +84,7 @@ pub(crate) fn deposit_key(seed: &str, cid: u32) -> bitcoin::key::Keypair {
 /// The adaptor secret `t` of a funding transaction: the hub's own, and a
 /// different one for every funding offered (retries included), so that
 /// the one funding that can confirm reveals the `t` of its own mint only.
-pub(crate) fn mint_adaptor(seed: &str, cid: u32, l2_address: &lichen_ledger::Hash, funding: &bitcoin::Txid) -> SecretKey {
+pub(crate) fn mint_adaptor(seed: &str, cid: u32, l2_address: &lichen_proto::Hash, funding: &bitcoin::Txid) -> SecretKey {
     Seed::from_label(&format!("{seed}/contract/{cid}/mint/{}/{funding}", hex::encode(l2_address))).keypair("adaptor").secret_key()
 }
 
@@ -139,19 +141,17 @@ pub(crate) struct Open {
     pub(crate) confirmed: bool,
 }
 
-pub(crate) struct Inner {
-    cfg: Config,
+pub(crate) struct Inner<L: HubL2> {
+    pub(crate) cfg: Config,
+    /// The L2.
+    pub(crate) l2: L,
     chain: Chain,
-    /// The notes: issued, spent, and to collect.
-    pub(crate) book: Book,
-    /// The deployment: the issuer's key (no sequencer, no anchoring).
-    pub(crate) deployment: lichen_ledger::Deployment,
     pending: Mutex<HashMap<u32, Pending>>,
     /// The deposits asked for, not yet opened: Alice's key in each tree.
     deposits: Mutex<HashMap<u32, bitcoin::XOnlyPublicKey>>,
     open: Mutex<HashMap<u32, Open>>,
     next_cid: Mutex<u32>,
-    disputes: Mutex<HashMap<u32, dispute::State>>,
+    disputes: Mutex<HashMap<u32, dispute::State<L::Front>>>,
     /// The hub's secret nonces for each contract's fold, from
     /// `POST /withdraw/nonce` (the last [`FOLD_NONCES`]: anyone may ask, so
     /// another's request mustn't drop hers), each taken by the
@@ -164,7 +164,6 @@ pub(crate) struct Inner {
     /// For tests: assert a false proof against every exit claim that
     /// holds.
     forge_assertions: AtomicBool,
-    withhold_unlocks: AtomicBool,
     /// Contracts whose statement the prover is proving.
     proving: Arc<Mutex<std::collections::HashSet<u32>>>,
     abandon_corrections: AtomicBool,
@@ -181,23 +180,21 @@ pub(crate) struct Inner {
     stop: AtomicBool,
 }
 
-pub struct Hub {
+pub struct Hub<L: HubL2> {
     pub url: String,
-    inner: Arc<Inner>,
+    inner: Arc<Inner<L>>,
     /// The listener: replaced if tiny_http's stops ([`listen`]).
     server: Arc<Mutex<Arc<Server>>>,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
-impl Hub {
-    pub fn start(cfg: Config) -> Result<Hub> {
+impl<L: HubL2> Hub<L> {
+    /// Start a hub for the L2 `l2`.
+    pub fn start(cfg: Config, l2: L) -> Result<Hub<L>> {
         std::fs::create_dir_all(cfg.dir.join("contracts"))?;
         let chain = Chain::connect_on(&cfg.rpc_url, &cfg.cookie, &cfg.wallet, cfg.network)?;
         // coins locked for offers that didn't survive the restart
         chain.unlock(&[])?;
-        let issuer = lichen_notes::keypair(&cfg.l2_key.to_bytes().into()).context("the issuer key")?;
-        let book = Book::open(cfg.dir.join("book.json"), issuer)?;
-        let deployment = lichen_ledger::Deployment { sequencer: book.issuer(), hub: book.issuer(), seal: None };
         let mut open = HashMap::new();
         for e in std::fs::read_dir(cfg.dir.join("contracts"))?.flatten() {
             let o: Open = serde_json::from_slice(&std::fs::read(e.path())?)?;
@@ -215,7 +212,7 @@ impl Hub {
         let server = Server::http(&cfg.listen).map_err(|e| anyhow!("listen on {}: {e}", cfg.listen))?;
         let port = server.server_addr().to_ip().context("an IP listener")?.port();
         let server = Arc::new(Mutex::new(Arc::new(server)));
-        let inner = Arc::new(Inner { cfg, chain, book, deployment, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), fold_nonces: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), withhold_unlocks: AtomicBool::new(false), proving: Default::default(), abandon_corrections: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), stop: AtomicBool::new(false) });
+        let inner = Arc::new(Inner { cfg, l2, chain, pending: Mutex::new(HashMap::new()), deposits: Mutex::new(deposits), open: Mutex::new(open), next_cid: Mutex::new(next), disputes: Mutex::new(HashMap::new()), fold_nonces: Mutex::new(HashMap::new()), refuse_folds: AtomicBool::new(cfg_refuse), forge_assertions: AtomicBool::new(cfg_forge), proving: Default::default(), abandon_corrections: AtomicBool::new(false), hold_defaults: AtomicBool::new(false), opening_fault: Mutex::new(OpeningFault::None), log: Mutex::new(vec![]), floors: Mutex::new(None), stop: AtomicBool::new(false) });
         let (srv, i1) = (server.clone(), inner.clone());
         let http = std::thread::spawn(move || {
             listen(&srv, &i1.stop, |mut req| {
@@ -276,7 +273,7 @@ impl Hub {
     }
     /// Each disputed contract's state, in words.
     pub fn disputes(&self) -> HashMap<u32, String> {
-        self.inner.disputes.lock().unwrap().iter().map(|(c, s)| (*c, s.describe())).collect()
+        self.inner.disputes.lock().unwrap().iter().map(|(c, s)| (*c, s.describe(&self.inner.l2))).collect()
     }
     /// What the hub has done, in words.
     pub fn log(&self) -> Vec<String> {
@@ -313,14 +310,11 @@ impl Hub {
         self.misbehave();
         self.inner.forge_assertions.store(on, Ordering::Relaxed);
     }
-    /// For tests: record spends but answer none (`POST /spend`): the
-    /// payer's spend stays in flight, recorded, its unlock unknown to her.
-    pub fn set_withhold_unlocks(&self, on: bool) {
-        self.misbehave();
-        self.inner.withhold_unlocks.store(on, Ordering::Relaxed);
+    /// The L2.
+    pub fn l2(&self) -> &L {
+        &self.inner.l2
     }
-    /// For tests: correct a claim and never prove it (`correct_timeout`
-    /// pays her).
+    /// For tests: never prove (the front's last terminal pays her).
     pub fn set_abandon_corrections(&self, on: bool) {
         self.misbehave();
         self.inner.abandon_corrections.store(on, Ordering::Relaxed);
@@ -341,7 +335,7 @@ impl Hub {
     }
 }
 
-impl Drop for Hub {
+impl<L: HubL2> Drop for Hub<L> {
     fn drop(&mut self) {
         self.inner.stop.store(true, Ordering::Relaxed);
         // after `stop`: a listener made since is unblocked here, and one
@@ -394,38 +388,12 @@ fn listen(server: &Mutex<Arc<Server>>, stop: &AtomicBool, mut handle: impl FnMut
     }
 }
 
-fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String> {
-    let (path, query) = url.split_once('?').unwrap_or((url, ""));
-    let _ = query;
-    let owner = |rest: &str| -> Result<lichen_notes::Hash> { hex::decode(rest).ok().and_then(|v| v.try_into().ok()).context("an owner: 64 hex digits") };
-    let release = !inner.withhold_unlocks.load(Ordering::Relaxed);
-    if let (Method::Get, Some(rest)) = (method, path.strip_prefix("/incoming/")) {
-        return Ok(serde_json::to_string(&inner.book.incoming(&owner(rest)?))?);
+fn route<L: HubL2>(inner: &Inner<L>, method: &Method, url: &str, body: &str) -> Result<String> {
+    let (path, _query) = url.split_once('?').unwrap_or((url, ""));
+    if let Some(r) = inner.l2.route(inner, method, path, body) {
+        return r;
     }
-    if let (Method::Get, Some(rest)) = (method, path.strip_prefix("/account/")) {
-        return Ok(serde_json::to_string(&inner.book.account(&owner(rest)?))?);
-    }
-    if let (Method::Get, Some(id)) = (method, path.strip_prefix("/payment/")) {
-        return Ok(serde_json::to_string(&inner.book.payment(id).with_context(|| format!("no payment {id}"))?)?);
-    }
-    use lichen_notes::proto::{CancelRequest, HalfRequest, PayRequest, SignRequest};
     Ok(match (method, path) {
-        (Method::Post, "/pay") => {
-            let r: PayRequest = serde_json::from_str(body)?;
-            serde_json::to_string(&inner.book.pay(r.half, r.to, r.amount)?)?
-        }
-        (Method::Post, "/half") => {
-            let r: HalfRequest = serde_json::from_str(body)?;
-            serde_json::to_string(&inner.book.half(&r.id, r.half)?)?
-        }
-        (Method::Post, "/sign") => {
-            let r: SignRequest = serde_json::from_str(body)?;
-            serde_json::to_string(&inner.book.sign(&r.id, &r.owner, &r.psi, release)?)?
-        }
-        (Method::Post, "/cancel") => {
-            let r: CancelRequest = serde_json::from_str(body)?;
-            serde_json::to_string(&inner.book.cancel(&r.id, &r.owner, &r.sig, release)?)?
-        }
         (Method::Get, "/info") => serde_json::to_string(&inner.info())?,
         (Method::Post, "/deposit") => serde_json::to_string(&inner.deposit(serde_json::from_str(body)?)?)?,
         (Method::Post, "/hp/setup") => serde_json::to_string(&inner.hp_setup(serde_json::from_str(body)?)?)?,
@@ -441,7 +409,7 @@ fn route(inner: &Inner, method: &Method, url: &str, body: &str) -> Result<String
 /// How many of its fold nonces the hub keeps per contract.
 const FOLD_NONCES: usize = 8;
 
-impl Inner {
+impl<L: HubL2> Inner<L> {
     /// Log what the hub did.
     pub(crate) fn note(&self, msg: String) {
         eprintln!("hub: {msg}");
@@ -461,14 +429,14 @@ impl Inner {
     }
 
     fn info(&self) -> Info {
-        Info { network: self.cfg.network, deployment: self.deployment, statement: self.cfg.statement.id().to_string(), reserve_ppm: self.cfg.reserve_ppm, fee_ppm: self.cfg.fee_ppm, max_liquidity: self.cfg.max_liquidity, duration: self.cfg.duration, version: lichen_proto::VERSION.to_string(), commit: option_env!("LICHEN_COMMIT").filter(|c| !c.is_empty()).map(str::to_string), guests: Some(lichen_proto::Guests::ours()) }
+        Info { network: self.cfg.network, statement: self.cfg.statement.id().to_string(), reserve_ppm: self.cfg.reserve_ppm, fee_ppm: self.cfg.fee_ppm, max_liquidity: self.cfg.max_liquidity, duration: self.cfg.duration, version: self.l2.version(), commit: option_env!("LICHEN_COMMIT").filter(|c| !c.is_empty()).map(str::to_string), l2: self.l2.info() }
     }
 
     /// A deposit address for a contract to come: its number, and the hub's
     /// key in the deposit's tree.
     fn deposit(&self, req: DepositRequest) -> Result<DepositOffer> {
         if let Some(owner) = &req.owner {
-            self.check_owner(owner)?;
+            self.l2.check_owner(self, owner)?;
         }
         // the ask told: what the opening would refuse for want of coins,
         // refused before she pays rather than after (a deposit then waits
@@ -539,16 +507,12 @@ impl Inner {
         // the cap and its unit, as the request makes them
         let scaled = terms(cid, &req, t_close, 0)?;
         let v_max = scaled.v_max().to_sat();
-        // the dispute's keys: Alice's, checked, and the hub's; the
+        // the dispute's keys: the user's, checked, and the hub's; the
         // statement fixed at the setup
-        let v0 = req.deposit - req.fee;
-        let (dispute, mut offer_keys) = self.hp_open_keys(cid, &req.dispute, &req.deposit_coin.0, &req.l2_address, v0, scaled.unit)?;
-        let d_word = lichen_proto::hp::contract(cid, &dispute.issuer, &req.l2_address, scaled.unit.to_sat(), v0, &dispute.alice_keys).d();
+        let (dispute, mut offer_keys) = self.hp_open_keys(cid, &req, scaled.unit)?;
         let mut record = Record {
             statement: self.cfg.statement.id().to_string(),
             network: self.cfg.network,
-            deployment: d_word,
-            checkpoint: None,
             // a reserve to measure the floors under (any amount above them:
             // they depend on the links' sizes, not on the amounts; the cap
             // isn't, for a small one); the real one below
@@ -603,9 +567,10 @@ impl Inner {
         // spend is locked to it, so the funding puts t on chain
         let t = mint_adaptor(&self.cfg.seed, cid, &req.l2_address, &record.funding.txid);
         let mint_point = PublicKey::from_secret_key(SECP256K1, &t);
-        ensure!(*self.opening_fault.lock().unwrap() != OpeningFault::ShortMint || record.minted() == 0, "contract {cid}: a short mint (a test's fault) has no meaning on accounts");
-        self.note(format!("contract {cid}: offered; its account opens at {} sats once the funding is out (a fee of {} for {} sats of liquidity)", record.minted(), req.fee, req.liquidity));
-        let offer = OpenOffer { cid, t_close, reserve_hub, hub, dispute: offer_keys, funding, hub_coins, hub_sigs: shown, mint_point, checkpoint: None };
+        let fault = *self.opening_fault.lock().unwrap();
+        let l2 = self.l2.offered(self, &record, &mint_point, fault)?;
+        self.note(format!("contract {cid}: offered: {} sats for the user once the funding is out (a fee of {} for {} sats of liquidity)", record.minted(), req.fee, req.liquidity));
+        let offer = OpenOffer { cid, t_close, reserve_hub, hub, dispute: offer_keys, funding, hub_coins, hub_sigs: shown, mint_point, l2 };
         let replaced = self.pending.lock().unwrap().insert(cid, Pending { req, offer: offer.clone(), record, t, made: std::time::Instant::now() });
         if let Some(old) = replaced {
             let _ = self.chain.unlock(&old.offer.hub_coins.iter().map(|c| c.0).collect::<Vec<_>>());
@@ -664,8 +629,8 @@ impl Inner {
             }
         };
         self.note(format!("contract {}: opened (deposit {} sats, cap {} sats); funding broadcast", a.cid, o.record.terms.deposit, o.record.terms.v_max().to_sat()));
-        // its account, opened at the mint: the funding is out
-        self.book.open_account(o.record.l2_address, o.record.minted())?;
+        // the L2's account opens: the funding is out
+        self.l2.funded(self, &o.record)?;
         self.open.lock().unwrap().insert(a.cid, o);
         self.deposits.lock().unwrap().remove(&a.cid);
         let _ = std::fs::remove_file(self.cfg.dir.join("deposits").join(format!("{}.json", a.cid)));
@@ -723,7 +688,7 @@ impl Inner {
             // would pay her at T_close, so there's no claim to record
             ensure!(o.record.terms.reserve_alice >= CLOSE_DUST, "contract {}: a fold of nothing pays the user nothing (no reserve): the default closes it", w.cid);
         } else {
-            self.take_claim(&o.record, w.b, &hex::decode(&w.claim).context("the claim's hex")?, w.rest_to)?;
+            self.l2.take_claim(self, &o.record, w.b, &w.claim, w.rest_to)?;
         }
         // a refusing hub (tests) records the claim first: the user's worst
         // case, her notes retired and no fold
@@ -733,33 +698,6 @@ impl Inner {
         self.close(w.cid, txid)?;
         self.note(format!("contract {}: folded: {} units ({} sats) back to the user, with the user's reserve", w.cid, w.b, paid.to_sat()));
         Ok(Folded { txid })
-    }
-
-    /// Alice's claim (`posted`: `Q`'s bytes) of `b` units from contract
-    /// `record`, checked and taken into the book: of her account's live
-    /// note, owed `b` units in full. The account closes; what its note held
-    /// beyond `u·b` is credited to `rest_to` (a key of hers, no contract).
-    fn take_claim(&self, record: &Record, b: u32, posted: &[u8], rest_to: Option<lichen_notes::Hash>) -> Result<()> {
-        let cid = record.cid();
-        let q = lichen_notes::core::Claim::from_bytes(posted).context("not a claim's bytes")?;
-        let owner = record.l2_address;
-        let live = self.book.account(&owner);
-        ensure!(!live.closed, "the account is closed");
-        ensure!(live.busy.is_none(), "a payment is pending on the account: finish or cancel it first");
-        // the note, not the signature's bytes: hers came from the grant's
-        // pre-signature, the book's is signed afresh; Algorithm 1 checks hers
-        let n = live.live.note;
-        ensure!(q.k == n.k && (q.k == 0 || q.v == n.v), "the claim isn't of the account's live note");
-        let unit = record.terms.unit.to_sat();
-        let owed = self.assess(record, b, Some(&q), self.book.evidence(&owner, q.k)).owed;
-        ensure!(owed == b, "the claim is owed {owed} units, not {b}");
-        self.book.take_claim(cid, &owner, &q)?;
-        let rest = live.live.note.v - u64::from(b) * unit;
-        if let (Some(to), true) = (rest_to, rest > 0) {
-            self.book.credit(&to, rest)?;
-        }
-        self.note(format!("contract {cid}: the user's withdrawal claim of {b} units taken (note {} of {} sats{})", q.k, live.live.note.v, if rest > 0 { format!(", {rest} sats left as credit") } else { String::new() }));
-        Ok(())
     }
 
     /// Close a contract: nothing of it is left to collect (a dispute the

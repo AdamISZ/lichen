@@ -1,22 +1,21 @@
-//! The user's wallet: a key, its accounts on the grants L2 ([`notes`]:
-//! one note per key, payments by joint spends), and its contracts with the
-//! hub (opening: [`Wallet::open_contract`]; the cooperative withdrawal, by
-//! claim: [`Wallet::withdraw`]; the exit: [`Wallet::exit`]).
-//!
-//! Every note is the hub's signature on it, which the wallet checks; no
-//! sequencer, no global state.
+//! The wallet's library: a key and its contracts with the hub (opening:
+//! [`Wallet::open_contract`]; the cooperative withdrawal, by claim:
+//! [`Wallet::withdraw`]; the exit: [`Wallet::exit`]), for an L2
+//! ([`WalletL2`]) whose state the wallet keeps beside them. An L2's wallet
+//! binary opens a [`Wallet`] of its [`WalletL2`].
 
 mod hp;
 pub mod dispute;
 pub mod engine;
-pub mod exit;
-pub mod notes;
+pub mod l2;
+
+pub use l2::{FrontEnd, SweepIn, WalletL2};
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
-use lichen_ledger::k256::schnorr::SigningKey;
-use lichen_ledger::{fresh_rho, xonly, Deployment, Hash};
+use k256::schnorr::SigningKey;
+use lichen_proto::{fresh_rho, Hash};
 use lichen_chain::{Chain, KeyFees};
 use bitcoin::secp256k1::{PublicKey, SecretKey, SECP256K1};
 use lichen_proto::{check_deposit_funding, deposit_open_msg, deposit_sig_in, deposit_tree, Presig, fee_budget_of, terms, Accept, DepositOffer, DepositRequest, Folded, Info, OpenOffer, OpenRequest, Opened, Record, Statement, FoldNonce, FoldNonceRequest, WithdrawRequest, CLOSE_DUST, DEFAULT_FEE, DEPOSIT_REFUND, FEE_SHARE, FOLD_FEE};
@@ -28,13 +27,15 @@ use serde::{Deserialize, Serialize};
 
 /// What the wallet keeps on disk.
 #[derive(Serialize, Deserialize)]
-struct Stored {
+#[serde(bound = "L: WalletL2")]
+struct Stored<L> {
     /// The secret key, hex.
     secret: String,
-    /// The hub's URL, and its deployment (its issuer key), pinned when the
-    /// wallet was made.
+    /// The hub's URL.
     hub: String,
-    deployment: Deployment,
+    /// The L2's state (its deployment, pinned when the wallet was made,
+    /// its accounts, ...).
+    l2: L,
     /// Its contracts: each one's nonce (from which its keys derive) and
     /// record.
     #[serde(default)]
@@ -42,10 +43,6 @@ struct Stored {
     /// Deposits paid (or to be paid) for contracts not yet open.
     #[serde(default)]
     deposits: Vec<Deposit>,
-    /// Our accounts, by owner (hex): each one's live note and a payment
-    /// pending.
-    #[serde(default)]
-    accounts: std::collections::BTreeMap<String, notes::Acct>,
 }
 
 /// A step of a contract's opening, for a front end to show where it is
@@ -144,13 +141,13 @@ pub struct Held {
     /// ([`exit::ExitPlan`]): a cooperative withdrawal's, sent to the hub,
     /// is the exit's too if the hub then won't fold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exit: Option<exit::ExitPlan>,
+    pub exit: Option<serde_json::Value>,
 }
 
 /// sat/vB for payments from the wallet's payout key ([`Wallet::send_payout`]).
 pub const PAYOUT_FEERATE: u64 = 2;
 
-pub struct Wallet {
+pub struct Wallet<L: WalletL2> {
     /// For tests: stop an exit after posting `request` (it resumes from
     /// the chain when run again).
     pub pause_after: Option<u32>,
@@ -165,53 +162,62 @@ pub struct Wallet {
     pub opening: Option<std::sync::Arc<dyn Fn(Opening) + Send + Sync>>,
     key: SigningKey,
     path: PathBuf,
-    /// The hub, and its deployment as pinned.
+    /// The hub.
     pub hub: String,
-    pub deployment: Deployment,
+    /// The L2's state.
+    pub l2: L,
     pub contracts: Vec<Held>,
     pub deposits: Vec<Deposit>,
-    pub accounts: std::collections::BTreeMap<String, notes::Acct>,
 }
 
-impl Wallet {
+/// A key's x-only public key.
+pub fn xonly(k: &SigningKey) -> Hash {
+    k.verifying_key().to_bytes().into()
+}
+
+/// A keypair's x-only public key.
+pub fn kp_xonly(k: &bitcoin::key::Keypair) -> Hash {
+    k.x_only_public_key().0.serialize()
+}
+
+impl<L: WalletL2> Wallet<L> {
     /// Create a wallet at `path` with a fresh key, for the hub at `hub`
     /// (its deployment pinned from now on).
-    pub fn create(path: &Path, hub: &str) -> Result<Wallet> {
+    pub fn create(path: &Path, hub: &str) -> Result<Wallet<L>> {
         if path.exists() {
             bail!("{} already exists", path.display());
         }
         let key = SigningKey::from_bytes(&fresh_rho()).context("a key")?;
         let info = hub_info(hub)?;
-        let w = Wallet { pause_after: None, unchecked_claims: false, contest: false, progress: None, opening: None, key, path: path.to_path_buf(), hub: hub.trim_end_matches('/').to_string(), deployment: info.deployment, contracts: vec![], deposits: vec![], accounts: Default::default() };
+        let w = Wallet { pause_after: None, unchecked_claims: false, contest: false, progress: None, opening: None, key, path: path.to_path_buf(), hub: hub.trim_end_matches('/').to_string(), l2: L::create(&info)?, contracts: vec![], deposits: vec![] };
         w.save()?;
         Ok(w)
     }
     /// The wallet at `path`, talking to the hub at `hub` (the one it was
     /// made for: its deployment is checked at every call that matters).
-    pub fn open(path: &Path, hub: &str) -> Result<Wallet> {
-        let s: Stored = serde_json::from_slice(&std::fs::read(path).with_context(|| format!("no wallet at {}", path.display()))?)?;
+    pub fn open(path: &Path, hub: &str) -> Result<Wallet<L>> {
+        let s: Stored<L> = serde_json::from_slice(&std::fs::read(path).with_context(|| format!("no wallet at {}", path.display()))?)?;
         let key = SigningKey::from_bytes(&hex::decode(&s.secret)?).context("the wallet's key")?;
         let hub = if hub.is_empty() { s.hub } else { hub.trim_end_matches('/').to_string() };
-        Ok(Wallet { pause_after: None, unchecked_claims: false, contest: false, progress: None, opening: None, key, path: path.to_path_buf(), hub, deployment: s.deployment, contracts: s.contracts, deposits: s.deposits, accounts: s.accounts })
+        Ok(Wallet { pause_after: None, unchecked_claims: false, contest: false, progress: None, opening: None, key, path: path.to_path_buf(), hub, l2: s.l2, contracts: s.contracts, deposits: s.deposits })
     }
-    pub(crate) fn save(&self) -> Result<()> {
+    pub fn save(&self) -> Result<()> {
         let s = Stored {
             secret: hex::encode(self.key.to_bytes()),
             hub: self.hub.clone(),
-            deployment: self.deployment,
+            l2: self.l2.clone(),
             contracts: self.contracts.clone(),
             deposits: self.deposits.clone(),
-            accounts: self.accounts.clone(),
         };
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
         }
         // the only copy of the wallet's key: replaced atomically, the owner's alone
-        lichen_ledger::files::write_private(&self.path, &serde_json::to_vec_pretty(&s)?)?;
+        lichen_proto::files::write_private(&self.path, &serde_json::to_vec_pretty(&s)?)?;
         Ok(())
     }
     /// A line for whoever follows a long operation ([`Wallet::progress`]).
-    pub(crate) fn say(&self, m: String) {
+    pub fn say(&self, m: String) {
         if let Some(p) = &self.progress {
             p(m)
         }
@@ -233,7 +239,7 @@ impl Wallet {
     }
     /// The L2 key of the contract (or deposit) with `nonce`.
     pub fn owner_of(&self, nonce: &str) -> Hash {
-        lichen_notes::xonly(&self.secrets(nonce).l2())
+        kp_xonly(&self.secrets(nonce).l2())
     }
     /// Every L2 key of ours: the wallet's own, each contract's and each
     /// deposit's.
@@ -241,11 +247,11 @@ impl Wallet {
         std::iter::once(xonly(&self.key)).chain(self.contracts.iter().map(|h| h.nonce.as_str()).chain(self.deposits.iter().map(|d| d.nonce.as_str())).map(|n| self.owner_of(n))).collect()
     }
     /// The keypair of our L2 key `owner`.
-    pub(crate) fn kp_of(&self, owner: &Hash) -> Result<bitcoin::key::Keypair> {
+    pub fn kp_of(&self, owner: &Hash) -> Result<bitcoin::key::Keypair> {
         if *owner == xonly(&self.key) {
-            return lichen_notes::keypair(&self.key.to_bytes().into());
+            return bitcoin::key::Keypair::from_seckey_slice(bitcoin::secp256k1::SECP256K1, &self.key.to_bytes()).context("the wallet's key");
         }
-        self.contracts.iter().map(|h| h.nonce.as_str()).chain(self.deposits.iter().map(|d| d.nonce.as_str())).map(|n| self.secrets(n).l2()).find(|k| lichen_notes::xonly(k) == *owner).with_context(|| format!("no key of ours is {}", hex::encode(owner)))
+        self.contracts.iter().map(|h| h.nonce.as_str()).chain(self.deposits.iter().map(|d| d.nonce.as_str())).map(|n| self.secrets(n).l2()).find(|k| kp_xonly(k) == *owner).with_context(|| format!("no key of ours is {}", hex::encode(owner)))
     }
 }
 
@@ -288,22 +294,11 @@ pub fn hub_info(hub: &str) -> Result<Info> {
     hub_call(&format!("{hub}/info"), None, true)
 }
 
-/// The hub proves with this wallet's guests ([`lichen_proto::Guests`]): a
-/// contract's statement pins them, and the wallet can only prove with its
-/// own.
-pub fn check_guests(info: &Info) -> Result<()> {
-    let ours = lichen_proto::Guests::ours();
-    let hub = info.guests.as_ref().with_context(|| format!("the hub doesn't name its guests: it runs a lichen older than this wallet's {}", lichen_proto::VERSION))?;
-    let commit = info.commit.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
-    ensure!(*hub == ours, "the hub proves with other guests than this wallet's: it runs lichen {}{commit}, this wallet {}; use a wallet of the hub's version", if info.version.is_empty() { "?" } else { &info.version }, lichen_proto::VERSION);
-    Ok(())
-}
-
 /// A request to the hub, its error passed through: `quick` for one it
 /// answers at once (`/info`), else the agent with no read timeout (it works
-/// before answering: [`lichen_l2::http`]).
-fn hub_call<T: for<'de> Deserialize<'de>>(url: &str, body: Option<String>, quick: bool) -> Result<T> {
-    let agent = if quick { lichen_l2::http::quick() } else { lichen_l2::http::slow() };
+/// before answering: [`lichen_proto::http`]).
+pub fn hub_call<T: for<'de> Deserialize<'de>>(url: &str, body: Option<String>, quick: bool) -> Result<T> {
+    let agent = if quick { lichen_proto::http::quick() } else { lichen_proto::http::slow() };
     let r = match body {
         Some(b) => agent.post(url).set("Content-Type", "application/json").send_string(&b),
         None => agent.get(url).call(),
@@ -318,7 +313,7 @@ fn hub_call<T: for<'de> Deserialize<'de>>(url: &str, body: Option<String>, quick
     }
 }
 
-impl Wallet {
+impl<L: WalletL2> Wallet<L> {
     /// The secrets of the contract with `nonce`.
     pub fn secrets(&self, nonce: &str) -> ContractSecrets {
         ContractSecrets::new(&self.key.to_bytes()[..], nonce)
@@ -360,10 +355,8 @@ impl Wallet {
         let info: Info = hub_call(&format!("{hub}/info"), None, true)?;
         let net = chain.network;
         ensure!(info.network == net, "the hub is on {}, this wallet's coins on {net}", info.network);
-        let d = self.deployment;
-        ensure!(info.deployment == d, "the hub is in another deployment (issuer {}) than this wallet's (issuer {})", hex::encode(info.deployment.hub), hex::encode(d.hub));
+        self.l2.check_info(&info)?;
         ensure!(info.statement == statement.id(), "the hub runs {}, this wallet {}", info.statement, statement.id());
-        check_guests(&info)?;
         bitcoin::Address::from_script(&payout, net.bitcoin()).with_context(|| format!("the payout address isn't a {net} address"))?;
         let quote = ask.quote(&info)?;
 
@@ -379,7 +372,7 @@ impl Wallet {
         self.save()?;
         let dep_spk = deposit_tree(&dep_kp.x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();
         chain.watch(&dep_spk)?;
-        let amount = Wallet::deposit_amount(&ask, net);
+        let amount = Self::deposit_amount(&ask, net);
         let address = bitcoin::Address::from_script(&dep_spk, net.bitcoin())?;
         self.opened_step(Opening::Pay { address: address.to_string(), sats: amount.to_sat() });
         pay(&address, amount)?;
@@ -400,11 +393,11 @@ impl Wallet {
         }
         let info: Info = hub_call(&format!("{hub}/info"), None, true)?;
         ensure!(info.network == chain.network, "the hub is on {}, this wallet's coins on {}", info.network, chain.network);
-        check_guests(&info)?;
+        self.l2.check_info(&info)?;
         let quote = ask.quote(&info)?;
         let dep_spk = deposit_tree(&self.deposit_key(&dep.nonce).x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();
         chain.watch(&dep_spk)?;
-        let coin = self.wait_deposit(chain, &dep_spk, Wallet::deposit_amount(&ask, chain.network))?;
+        let coin = self.wait_deposit(chain, &dep_spk, Self::deposit_amount(&ask, chain.network))?;
         self.open_with(hub, chain, statement, ask, quote, dep, coin)
     }
 
@@ -415,7 +408,7 @@ impl Wallet {
     #[allow(clippy::too_many_arguments)]
     fn open_with(&mut self, hub: &str, chain: &Chain, statement: &Statement, ask: Ask, quote: Quote, dep: Deposit, coin: (bitcoin::OutPoint, bitcoin::TxOut)) -> Result<Held> {
         let Ask { deposit, liquidity, reserve } = ask;
-        let (net, d) = (chain.network, self.deployment);
+        let net = chain.network;
         let (nonce, payout) = (dep.nonce.clone(), dep.payout.clone());
         let dep_kp = self.deposit_key(&nonce);
         let dep_tree = deposit_tree(&dep_kp.x_only_public_key().0, &dep.hub, dep.timeout)?;
@@ -426,10 +419,10 @@ impl Wallet {
         // her keys for the dispute: the setup's instances she garbled,
         // those the hub keeps uploaded, the others opened
         let secrets = self.secrets(&nonce);
-        let hp_open = self.hp_opening(hub, statement, dep.cid, coin.0, quote.unit, quote.minted, &secrets, net)?;
+        let owner = self.owner_of(&nonce);
+        let hp_open = self.hp_opening(hub, statement, dep.cid, coin.0, &quote, &owner, &secrets, net)?;
         self.opened_step(Opening::HubChecking);
         let fees = self.fees(&nonce, net);
-        let owner = self.owner_of(&nonce);
         let req = OpenRequest { alice, l2_address: owner, deposit, liquidity, fee: quote.fee, reserve, dispute: hp_open.request.clone(), cid: dep.cid, deposit_coin: coin.clone(), fee_spk: fees.spk() };
         let offer: OpenOffer = hub_call(&format!("{hub}/open"), Some(serde_json::to_string(&req)?), false)?;
         // the contract as the offer makes it, checked before signing
@@ -441,16 +434,10 @@ impl Wallet {
         ensure!(offer.t_close >= least, "the hub's T_close, block {}, is too soon (at least block {least})", offer.t_close);
         // the contract's keys for the dispute: ours and the hub's (its
         // pre-signatures checked once the set is built, below)
-        lichen_proto::hp::check_offer_keys(&offer.dispute)?;
-        let dispute = Wallet::hp_keys(&secrets, &hp_open, &offer.dispute);
-        ensure!(offer.checkpoint.is_none(), "the grants L2's contracts have no checkpoint");
-        ensure!(dispute.issuer == d.hub && dispute.v0 == quote.minted, "the setup's issuer or mint isn't the deployment's or the quote's");
-        let d_word = lichen_proto::hp::contract(dep.cid, &d.hub, &owner, t.unit.to_sat(), quote.minted, &dispute.alice_keys).d();
+        let dispute = self.hp_keys(&hp_open, &offer.dispute, &quote)?;
         let mut record = Record {
             statement: statement.id().to_string(),
             network: net,
-            deployment: d_word,
-            checkpoint: None,
             terms: t,
             pubs: [req.alice.clone(), offer.hub.clone()],
             l2_address: owner,
@@ -460,7 +447,7 @@ impl Wallet {
             fee: quote.fee,
             dispute,
         };
-        let c = record.build(statement)?;
+        let c = record.build(statement, &self.l2)?;
         let fee_out = bitcoin::TxOut { value: fee_budget_of(coin.1.value, &t)?, script_pubkey: fees.spk() };
         check_deposit_funding(&offer.funding, &c, &coin.0, &fee_out)?;
         let set = c.presign(record.funding)?;
@@ -477,11 +464,11 @@ impl Wallet {
         let need = c.terminal_need(&set, net)?;
         ensure!(fee_out.value >= need, "the fee budget, {}, can't pay for the heaviest transaction a dispute may need of the user, {need}", fee_out.value);
         // the hub's adaptor pre-signatures on her challenge
-        Wallet::hp_check_offer(net, offer.t_close, &secrets, &hp_open, &offer.dispute, &set)?;
+        Self::hp_check_offer(net, &secrets, &hp_open, &offer.dispute, &set)?;
         record.alice_sigs = sign_all(&set, &keys.payment)?;
-        // the account opens at the mint, (owner, 0, D − fee), which the
-        // contract's journal binds
+        // the mint, D − fee, and the L2's part of the offer
         ensure!(record.minted() == quote.minted, "the contract mints {}, not the quote's {}", record.minted(), quote.minted);
+        L::check_offer(self, &record, &offer)?;
         self.opened_step(Opening::Minted);
         // our pre-signature on the funding's deposit input, locked to T
         // (taproot signs every input's prevout: ours and the hub's coins)
@@ -558,11 +545,8 @@ impl Wallet {
         let k = self.contracts.iter().position(|h| h.record.cid() == cid).context("the contract")?;
         let locked = self.contracts[k].mint.clone().context("no funding offered")?;
         ensure!(PublicKey::from_secret_key(SECP256K1, t) == locked.point, "not the adaptor point's secret");
-        let r = &self.contracts[k].record;
-        let (owner, v0) = (r.l2_address, r.minted());
-        if !self.accounts.contains_key(&hex::encode(owner)) {
-            self.accounts.insert(hex::encode(owner), notes::Acct { live: lichen_notes::Settled::first(owner, v0), pending: None, closed: false });
-        }
+        let held = self.contracts[k].clone();
+        L::minted(self, &held, t)?;
         self.contracts[k].mint.as_mut().expect("checked").claimed = true;
         self.save()
     }
@@ -614,7 +598,7 @@ impl Wallet {
         let (t_close, height) = (held.record.terms.t_close, chain.height()?);
         ensure!(height >= t_close, "contract {cid}'s default is valid from block {t_close} (now {height})");
         ensure!(chain.unspent(&held.record.funding)?, "contract {cid} is closed already: its output is spent (the hub's default, a fold or a dispute)");
-        let c = held.record.build(statement)?;
+        let c = held.record.build(statement, &self.l2)?;
         let set = held.record.presigned(&c)?;
         let p = set.iter().find(|p| p.name == "default").context("no default")?;
         let sig = |sigs: &std::collections::HashMap<String, Vec<u8>>, whose: &str| sigs.get("default").cloned().with_context(|| format!("no signature of the {whose}'s on the default"));
@@ -694,7 +678,8 @@ impl Wallet {
         let units = u32::try_from(b / unit).context("b fits in a u32")?;
         let plan = match (&held.exit, units) {
             (Some(p), _) => {
-                ensure!(p.b == units, "contract {cid} has a claim of {} units already, not folded: withdraw {} sats, or exit", p.b, u64::from(p.b) * unit);
+                let pb = L::plan_b(p)?;
+                ensure!(pb == units, "contract {cid} has a claim of {pb} units already, not folded: withdraw {} sats, or exit", u64::from(pb) * unit);
                 Some(p.clone())
             }
             (None, 0) => {
@@ -702,13 +687,13 @@ impl Wallet {
                 None
             }
             (None, _) => {
-                let p = self.claim_for(cid, units)?;
+                let p = L::withdrawal(self, _chain, cid, units)?;
                 self.contracts[k].exit = Some(p.clone());
                 self.save()?;
                 Some(p)
             }
         };
-        let c = held.record.build(statement)?;
+        let c = held.record.build(statement, &self.l2)?;
         let paid = bitcoin::Amount::from_sat(u64::from(units) * unit);
         let fold = c.fold(held.record.funding, paid, FOLD_FEE)?;
         // MuSig2 on the contract output's key path: the hub's nonce, then
@@ -718,18 +703,18 @@ impl Wallet {
         let (sec, alice_nonce) = fold.nonce(&kp, &cid.to_be_bytes())?;
         let nonces = [alice_nonce, lichen_btc::musig::PubNonce::from_slice(&hub_nonce.nonce)?];
         let alice_partial = fold.sign(&kp, sec, &nonces)?;
-        let rest_to = Some(xonly(&self.key));
-        let req = WithdrawRequest { cid, b: units, claim: plan.map(|p| p.claim).unwrap_or_default(), hub_nonce: hub_nonce.nonce, alice_nonce: alice_nonce.0.to_vec(), alice_partial, rest_to };
+        let rest_to = L::rest_to(self);
+        let claim = match &plan {
+            Some(p) => L::plan_claim(p)?,
+            None => String::new(),
+        };
+        let req = WithdrawRequest { cid, b: units, claim, hub_nonce: hub_nonce.nonce, alice_nonce: alice_nonce.0.to_vec(), alice_partial, rest_to };
         let done: Folded = hub_call(&format!("{hub}/withdraw"), Some(serde_json::to_string(&req)?), false)?;
         // the hub's txid must be the fold's
         ensure!(done.txid == fold.tx.compute_txid(), "the hub answered {} for the fold, not its txid {}", done.txid, fold.tx.compute_txid());
         self.contracts[k].closed = Some(done.txid);
         self.save()?;
-        if units > 0 {
-            self.close_account(cid)?;
-        }
-        // the rest of the account's note, as credit
-        let _ = self.sync();
+        L::folded(self, cid, units)?;
         Ok(done.txid)
     }
 

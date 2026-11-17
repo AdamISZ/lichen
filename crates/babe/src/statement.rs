@@ -1,5 +1,5 @@
 //! The statement BABE verifies, as both parties build it. With the hub
-//! proving (`crate::hp`), the hub's statement (`lichen_withdraw::hp`):
+//! proving ([`crate::graph`]), the hub's statement (an L2's guest):
 //! RISC Zero's (its guest's receipt wrapped in Groth16, [`crate::risc0`])
 //! or the mock (a Groth16 proof of a toy circuit, for tests of the
 //! protocol). Either way its public input is the contract's journal,
@@ -20,19 +20,17 @@ use sha2::{Digest, Sha256};
 
 use crate::field::BITS;
 
-/// The hub's statement guest's image id, hex (the build committed in
-/// `r0/guests/hp.id`; with the file's newline).
-pub const IMAGE_ID: &str = include_str!("../../../r0/guests/hp.id");
-
-pub fn image_id() -> [u8; 32] {
-    core::array::from_fn(|i| u8::from_str_radix(&IMAGE_ID.trim()[2 * i..2 * i + 2], 16).expect("hex"))
+/// An image id from its hex (64 digits, surrounding space ignored).
+pub fn image_id(hex: &str) -> [u8; 32] {
+    core::array::from_fn(|i| u8::from_str_radix(&hex.trim()[2 * i..2 * i + 2], 16).expect("hex"))
 }
 
 /// Which statement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// RISC Zero's receipt of the hub's statement guest, in Groth16.
-    Risc0,
+    /// RISC Zero's receipt of the hub's statement guest (its image id),
+    /// in Groth16.
+    Risc0([u8; 32]),
     /// A proof anyone can make: for tests of the protocol, not of the
     /// claim.
     Mock,
@@ -65,13 +63,13 @@ fn mock_input(journal: &[u8]) -> Fr {
 impl Kind {
     pub fn verifying_key(&self) -> VerifyingKey<Bn254> {
         match self {
-            Kind::Risc0 => crate::risc0::verifying_key(),
+            Kind::Risc0(_) => crate::risc0::verifying_key(),
             Kind::Mock => mock_keys().1.clone(),
         }
     }
     pub fn public_inputs(&self, journal: &[u8]) -> Vec<Fr> {
         match self {
-            Kind::Risc0 => crate::risc0::public_inputs(&image_id(), journal).to_vec(),
+            Kind::Risc0(id) => crate::risc0::public_inputs(id, journal).to_vec(),
             Kind::Mock => vec![mock_input(journal)],
         }
     }

@@ -13,17 +13,17 @@
 //! input secrets shared ([`vsss`]) so that one set revealed on chain
 //! opens every kept instance; the hub reveals it in `challenge_assert`
 //! by completing Alice's adaptor pre-signatures ([`reveal`]). Here the
-//! roles are swapped ([`hp`]): Alice garbles and the hub proves (the
+//! roles are swapped ([`graph`]): Alice garbles and the hub proves (the
 //! mock statement, [`statement`]; a RISC Zero receipt's Groth16 form,
-//! [`risc0`]); the transactions, on `lichen_contract`, are [`hp`]'s.
+//! [`risc0`]); the transactions, on `lichen_contract`, are [`graph`]'s:
+//! an L2's front, then BABE's tail.
 
 pub mod circuit;
-pub mod countersigned;
 pub mod field;
 pub mod gadget;
 pub mod garble;
 pub mod hexbytes;
-pub mod hp;
+pub mod graph;
 pub mod reveal;
 pub mod risc0;
 pub mod setup;

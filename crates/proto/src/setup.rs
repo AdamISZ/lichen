@@ -77,13 +77,6 @@ pub fn shares_from_hex(h: &str) -> Result<Vec<[Secret; VALUES]>> {
     Ok(b.chunks(VALUES * 32).map(|d| core::array::from_fn(|v| d[32 * v..32 * v + 32].try_into().expect("32"))).collect())
 }
 
-/// A Bitcoin outpoint as the statements read one (txid in internal byte
-/// order).
-pub fn statement_outpoint(o: &bitcoin::OutPoint) -> lichen_ledger::OutPoint {
-    use bitcoin::hashes::Hash as _;
-    lichen_ledger::OutPoint { txid: o.txid.to_byte_array(), vout: o.vout }
-}
-
 /// A link's witness arguments below both signatures, consumption order.
 pub fn link_args(tx: &bitcoin::Transaction) -> Vec<Vec<u8>> {
     lichen_btc::witness::witness_args_consumption_order(&tx.input[0].witness).into_iter().skip(2).collect()

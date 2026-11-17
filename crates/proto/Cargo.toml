@@ -14,15 +14,11 @@ serde_json.workspace = true
 lichen-contract.workspace = true
 lichen-btc.workspace = true
 lichen-wots.workspace = true
-lichen-ledger.workspace = true
-lichen-notes.workspace = true
 lichen-chain.workspace = true
 lichen-babe.workspace = true
-lichen-withdraw.workspace = true
 k256.workspace = true
+getrandom.workspace = true
+ureq.workspace = true
 ark-bn254 = "0.5"
 ark-groth16 = { version = "0.5", default-features = false, features = ["std"] }
 
-[dev-dependencies]
-# the fixed statement's digits checked (tests/fixed.rs)
-lichen-withdraw.workspace = true

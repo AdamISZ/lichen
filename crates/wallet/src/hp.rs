@@ -1,45 +1,48 @@
 //! The wallet's part of a contract's opening (`lichen_proto::hp`): she
-//! fixes her four one-time keys, so the statement's journal, garbles for
-//! the hub's statement, commits to her instances and uploads the ones the
-//! hub keeps.
+//! fixes her keys for the dispute (the L2's), so the statement's journal,
+//! garbles for the hub's statement, commits to her instances and uploads
+//! the ones the hub keeps.
 
 use anyhow::{ensure, Context, Result};
-use lichen_babe::countersigned::Countersigned;
+use lichen_babe::graph::Graph;
 use lichen_babe::setup::{instance, par, VALUES};
 use lichen_proto::setup::{dealing_to_hex, min_soundness, shares_to_hex, soundness, Opened};
 use lichen_proto::hp::{check_setup, HpCommit, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
-use lichen_proto::{Net, Statement};
+use lichen_proto::{Hash, Net, Statement};
 use lichen_contract::Presign;
 
-use crate::engine::hp::{dealing, instance_seed};
+use crate::engine::{dealing, instance_seed};
 use crate::engine::ContractSecrets;
-use crate::{hub_call, Wallet};
+use crate::{hub_call, Quote, Wallet, WalletL2};
 
 /// What her opening request carries, and what it rests on.
 pub(crate) struct HpOpening {
     pub request: HpRequest,
     pub setup: HpSetup,
+    /// Her keys for the dispute (the L2's).
+    pub keys: serde_json::Value,
     pub kept: Vec<u32>,
     /// The kept instances' hashlocks, in `kept`'s order.
     pub hmsg: Vec<[u8; 32]>,
 }
 
-impl Wallet {
+impl<L: WalletL2> Wallet<L> {
     /// The setup of contract `cid`, with the deposit coin `deposit`: the
     /// hub's statement and keys checked; her instances built for it, the
     /// input secrets dealt, committed to; the ones the hub keeps uploaded,
     /// the others opened in her request.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn hp_opening(&self, hub: &str, statement: &Statement, cid: u32, deposit: bitcoin::OutPoint, unit: u64, v0: u64, s: &ContractSecrets, net: Net) -> Result<HpOpening> {
-        let owner = lichen_notes::xonly(&s.l2());
-        let setup: HpSetup = hub_call(&format!("{hub}/hp/setup"), Some(serde_json::to_string(&HpSetupRequest { cid, deposit, unit, owner, v0 })?), false)?;
-        ensure!(setup.cid == cid && setup.unit == unit && setup.deposit == deposit && setup.owner == owner && setup.v0 == v0, "the setup is for another contract, unit, deposit, owner or mint");
-        ensure!(setup.issuer == self.deployment.hub, "the setup's issuer isn't the deployment's");
+    pub(crate) fn hp_opening(&self, hub: &str, statement: &Statement, cid: u32, deposit: bitcoin::OutPoint, quote: &Quote, owner: &Hash, s: &ContractSecrets, net: Net) -> Result<HpOpening> {
+        let unit = quote.unit;
+        let asked = L::setup_terms(self, cid, quote, owner)?;
+        let setup: HpSetup = hub_call(&format!("{hub}/hp/setup"), Some(serde_json::to_string(&HpSetupRequest { cid, deposit, unit, l2: asked.clone() })?), false)?;
+        ensure!(setup.cid == cid && setup.unit == unit && setup.deposit == deposit, "the setup is for another contract, unit or deposit");
+        L::check_setup(self, &setup, &asked)?;
         check_setup(&setup)?;
         let (n, m) = (setup.n, setup.m);
         ensure!(soundness(n, m) >= min_soundness(net), "keeping {m} of {n} instances: a cheating garbler escapes with odds of 1 in 2^{}, not 2^{}", soundness(n, m), min_soundness(net));
-        let keys = s.alice_keys();
-        let journal = lichen_proto::hp::contract(cid, &setup.issuer, &owner, unit, v0, &keys).journal();
+        let keys = L::alice_keys(s);
+        let journal = L::setup_journal(cid, &setup, &keys)?;
         let kind = statement.hp_kind()?;
         let (vk, public) = (kind.verifying_key(), kind.public_inputs(&journal));
         let (dealer, dealt) = dealing(s, n, m);
@@ -54,7 +57,7 @@ impl Wallet {
             c
         });
         self.say(format!("garbled in {:.1?}", start.elapsed()));
-        let commit = HpCommit { cid, keys, commitments, dealing: dealing_to_hex(&dealt) };
+        let commit = HpCommit { cid, keys: keys.clone(), commitments, dealing: dealing_to_hex(&dealt) };
         let kept: HpKept = hub_call(&format!("{hub}/hp/commit"), Some(serde_json::to_string(&commit)?), false)?;
         let mut k = kept.kept.clone();
         k.sort_unstable();
@@ -69,48 +72,46 @@ impl Wallet {
             let (len, total) = (bytes.len() as u64, bytes.len() as u64 * u64::from(m));
             let before = len * j as u64;
             let body = Counted { inner: std::io::Cursor::new(&bytes), sent: 0, told: 0, tell: &|sent| self.opened_step(crate::Opening::Uploading { sent: before + sent, total }) };
-            lichen_l2::http::slow().post(&format!("{hub}/hp/instance/{cid}/{i}")).set("Content-Length", &len.to_string()).send(body).with_context(|| format!("uploading kept instance {i}"))?;
+            lichen_proto::http::slow().post(&format!("{hub}/hp/instance/{cid}/{i}")).set("Content-Length", &len.to_string()).send(body).with_context(|| format!("uploading kept instance {i}"))?;
             self.opened_step(crate::Opening::Uploading { sent: before + len, total });
             hmsg.push(inst.hmsg);
         }
         let opened = (1..=n).filter(|i| !k.contains(i)).map(|i| Opened { i, seed: hex::encode(instance_seed(s, i)), shares: shares_to_hex(&dealer.shares(u64::from(i))) }).collect();
-        Ok(HpOpening { request: HpRequest { hp_opened: opened }, setup, kept: k, hmsg })
+        Ok(HpOpening { request: HpRequest { hp_opened: opened }, setup, keys, kept: k, hmsg })
     }
 
     /// The hub's offer checked against her opening: its windows the
     /// network's, its pre-signatures on `challenge_assert` (in `set`)
     /// under its adaptor keys, adapted to her dealing's points.
-    pub(crate) fn hp_check_offer(net: Net, _t_close: u32, s: &ContractSecrets, o: &HpOpening, offer: &HpOffer, set: &[Presign]) -> Result<()> {
+    /// The hub's offer's keys: the network's windows, and its adaptor
+    /// pre-signatures on `challenge_assert` (on `set`), against her
+    /// dealing's points.
+    pub(crate) fn hp_check_offer(net: Net, s: &ContractSecrets, o: &HpOpening, offer: &HpOffer, set: &[Presign]) -> Result<()> {
         ensure!(offer.hp_windows == lichen_proto::hp::windows(net), "the hub's windows {:?}, not the network's", offer.hp_windows);
         let (_, dealt) = dealing(s, o.setup.n, o.setup.m);
-        let msg = Countersigned::link_sighash(set, "challenge_assert")?;
+        let msg = Graph::link_sighash(set, "challenge_assert")?;
         let presigs: Vec<[lichen_btc::adaptor::AdaptorSig; VALUES]> = offer.hp_presigs.iter().map(|p| p.each_ref().map(lichen_btc::adaptor::AdaptorSig::from)).collect();
         ensure!(lichen_babe::reveal::check_presigs(&o.setup.adaptor, &msg, &lichen_babe::reveal::points(&dealt), &presigs), "the hub's adaptor pre-signatures on challenge_assert");
         Ok(())
     }
 
-    /// The record's keys, the pre-signatures as given.
-    pub(crate) fn hp_keys(s: &ContractSecrets, o: &HpOpening, offer: &HpOffer) -> HpKeys {
-        let (windows, presigs) = (offer.hp_windows, offer.hp_presigs.clone());
-        HpKeys {
-            alice_keys: s.alice_keys(),
-            corr_key: offer.corr_key.clone(),
-            u_key: offer.u_key.clone(),
+    /// The contract's keys: BABE's from the setup and the offer, the L2's
+    /// from the L2.
+    pub(crate) fn hp_keys(&self, o: &HpOpening, offer: &HpOffer, quote: &Quote) -> Result<HpKeys> {
+        Ok(HpKeys {
             hub_lamport: o.setup.lamport.clone(),
             hub_adaptor: o.setup.adaptor.clone(),
             n: o.setup.n,
             kept: o.kept.clone(),
             hmsg: o.hmsg.clone(),
-            hp_windows: windows,
+            hp_windows: offer.hp_windows,
             deposit: o.setup.deposit,
-            issuer: o.setup.issuer,
-            v0: o.setup.v0,
-            hub_presigs: presigs,
-        }
+            hub_presigs: offer.hp_presigs.clone(),
+            l2: L::record_keys(self, &o.setup, &o.keys, offer, quote)?,
+        })
     }
 }
 
-/// A body read through, its progress told every MB.
 struct Counted<'a, R> {
     inner: R,
     sent: u64,

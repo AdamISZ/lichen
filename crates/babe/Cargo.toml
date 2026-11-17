@@ -9,8 +9,6 @@ license.workspace = true
 anyhow.workspace = true
 # RISC Zero's verifying key and claim, checked natively
 lichen-risc0.workspace = true
-# the journal's key digest and length, as the guest's
-lichen-withdraw.workspace = true
 # the reveal on chain: adaptor signatures, scripts, keys
 lichen-btc.workspace = true
 # the graph, on lichen's contract

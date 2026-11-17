@@ -8,7 +8,7 @@
 //! 2. [`OpenOffer`]: the contract's number (its memo `c`), `T_close`, the
 //!    hub's reserve and keys, the funding transaction (unsigned), the
 //!    hub's signatures on the whole pre-signed set, and `D` already minted
-//!    on the L2 to the [`mint_owner`] of Alice's L2 key and an adaptor
+//!    on the L2 (the L2's way) for Alice's L2 key, behind an adaptor
 //!    point `T` that is the funding transaction's own;
 //! 3. [`Accept`]: having checked the offer, every signature in it and the
 //!    mint (sealed), Alice's signatures on the set and an adaptor
@@ -42,7 +42,8 @@ use lichen_btc::taptree::TapTree;
 use lichen_contract::{Presign, Signed};
 use lichen_contract::Terms;
 use lichen_contract::Core;
-pub use lichen_ledger::{Deployment, Hash};
+/// A 32-byte hash, key or word.
+pub type Hash = [u8; 32];
 use serde::{Deserialize, Serialize};
 
 /// Each party's share of the funding transaction's fee.
@@ -51,43 +52,21 @@ pub const FEE_SHARE: Amount = Amount::from_sat(1_000);
 /// output would be dust. A contract's unit is from this to about twice it
 /// ([`scale`]).
 pub const MIN_UNIT: u64 = 512;
-/// lichen's version: what a hub and a wallet report. On branch `grants`,
-/// the grants L2's release, `grants-<major>.<minor>.<patch>`, its major and
-/// minor the design's (papers/lichen-grants-v0.5.x), tagged
-/// `grants-v<version>`; the app built on it has the same number. Not the
-/// workspace's Cargo version, which stays at the fork point (v0.4.5):
-/// a guest's ELF, and so its image id, changes with its crates' versions.
-pub const VERSION: &str = "grants-0.5.3";
+/// The base's version (lichen's crates): an L2 reports its own in [`Info`].
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The guests a build proves and checks receipts with: each one's image
-/// id, hex (`r0/guests/<g>.id`). A wallet proves with its own, and a
-/// contract's statement pins them when it opens, so a hub's must be the
-/// same as the wallet's.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Guests {
-    pub spend: String,
-    pub chain: String,
-    /// The hub's statement's (none from a build before it).
-    #[serde(default)]
-    pub hp: String,
-}
-
-impl Guests {
-    /// This build's.
-    pub fn ours() -> Guests {
-        let id = |s: &str| s.trim().to_string();
-        Guests {
-            spend: id(lichen_ledger::SPEND_IMAGE_ID),
-            chain: id(lichen_ledger::CHAIN_IMAGE_ID),
-            hp: id(lichen_babe::statement::IMAGE_ID),
-        }
-    }
+/// 32 random bytes (the OS's).
+pub fn fresh_rho() -> Hash {
+    let mut r = [0u8; 32];
+    getrandom::getrandom(&mut r).expect("randomness");
+    r
 }
 
 pub use lichen_chain::{Net, Patience, Stall};
 
-pub mod exit;
+pub mod files;
 pub mod hp;
+pub mod http;
 pub mod setup;
 pub use hp::{HpKeys, HpOffer, HpRequest};
 
@@ -175,33 +154,32 @@ pub fn default_duration(net: Net) -> u32 {
     }
 }
 
-/// The statement the disputes run: the hub's (`lichen_withdraw::hp`),
-/// that a claim posted is false. `hub-proves` a proof of its guest (not
-/// built yet), `hub-proves-mock` a proof of a toy circuit anyone can make,
-/// for tests of the protocol (`lichen_babe::statement`). Both sides must
-/// run the same one.
+/// The statement the disputes run: the hub's (an L2's guest), that a
+/// claim posted is owed at most what the hub says. `hub-proves` a RISC
+/// Zero proof of the guest `image`, `hub-proves-mock` a proof of a toy
+/// circuit anyone can make, for tests of the protocol
+/// (`lichen_babe::statement`). Both sides must run the same one.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Statement {
-    HubProves { mock: bool },
-}
-
-impl std::str::FromStr for Statement {
-    type Err = anyhow::Error;
-    /// `hub-proves` or `hub-proves-mock`.
-    fn from_str(s: &str) -> Result<Statement> {
-        match s {
-            "hub-proves" => Ok(Statement::HubProves { mock: false }),
-            "hub-proves-mock" => Ok(Statement::HubProves { mock: true }),
-            _ => bail!("a statement is `hub-proves` or `hub-proves-mock`"),
-        }
-    }
+pub struct Statement {
+    pub mock: bool,
+    /// The L2's guest's image id.
+    pub image: [u8; 32],
 }
 
 impl Statement {
+    /// `hub-proves` or `hub-proves-mock`, for the guest `image`.
+    pub fn parse(s: &str, image: [u8; 32]) -> Result<Statement> {
+        match s {
+            "hub-proves" => Ok(Statement { mock: false, image }),
+            "hub-proves-mock" => Ok(Statement { mock: true, image }),
+            _ => bail!("a statement is `hub-proves` or `hub-proves-mock`"),
+        }
+    }
     pub fn id(&self) -> &'static str {
-        match self {
-            Statement::HubProves { mock: false } => "hub-proves",
-            Statement::HubProves { mock: true } => "hub-proves-mock",
+        if self.mock {
+            "hub-proves-mock"
+        } else {
+            "hub-proves"
         }
     }
 }
@@ -212,9 +190,6 @@ pub struct Info {
     /// The Bitcoin network; the wallet must be on the same.
     #[serde(default)]
     pub network: Net,
-    /// The L2 deployment the hub is in (its sequencer's key and its own);
-    /// the wallet must know the same.
-    pub deployment: Deployment,
     /// The statement's id ([`Statement::id`]); the wallet must run the same.
     pub statement: String,
     /// The hub's reserve for a contract of cap `V_max`: `V_max` times this,
@@ -227,16 +202,16 @@ pub struct Info {
     pub max_liquidity: u64,
     /// Blocks from opening to `T_close`.
     pub duration: u32,
-    /// lichen's version the hub runs ([`VERSION`]), and the commit it was
-    /// built from, when the build was told (`deploy/build.sh` does).
+    /// The L2's version the hub runs, and the commit it was built from,
+    /// when the build was told (`deploy/build.sh` does).
     #[serde(default)]
     pub version: String,
     #[serde(default)]
     pub commit: Option<String>,
-    /// The guests it proves and checks with ([`Guests::ours`]); none from
-    /// a hub older than the field.
+    /// The L2's: its deployment (keys a wallet must know), the guests it
+    /// proves with, ...
     #[serde(default)]
-    pub guests: Option<Guests>,
+    pub l2: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -315,9 +290,9 @@ pub struct OpenOffer {
     /// `T`, the adaptor point of this funding transaction (Alice's
     /// signature on her deposit's spend is locked to it).
     pub mint_point: PublicKey,
-    /// In an anchored deployment, the contract's checkpoint.
+    /// The L2's (a mint's place, ...).
     #[serde(default)]
-    pub checkpoint: Option<Checkpoint>,
+    pub l2: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -356,12 +331,6 @@ impl From<&Presig> for AdaptorSig {
     fn from(p: &Presig) -> AdaptorSig {
         AdaptorSig { r_final: p.r_final, r: p.r, s_prime: p.s_prime }
     }
-}
-
-/// Who a deposit's `D` is minted to before the funding: Alice's L2 key
-/// and the funding's adaptor point ([`lichen_ledger::mint_key`]).
-pub fn mint_owner(l2_address: &Hash, mint_point: &PublicKey) -> Result<Hash> {
-    lichen_ledger::mint_key(l2_address, &mint_point.serialize())
 }
 
 /// The message a signature on the funding's deposit input commits to
@@ -460,78 +429,6 @@ pub fn sign_anchor(kp: &bitcoin::key::Keypair, child: &Transaction, prevouts: &[
     Ok(lichen_btc::witness::tapscript_witness(&[sig.as_ref().to_vec()], &leaf.script, &tree.control_block("fee")?))
 }
 
-/// How many blocks' work, at the checkpoint's difficulty, a withdrawal
-/// shows on top of the anchor of its root (agent notes:
-/// docs/ANCHOR_PLAN.md).
-pub const ANCHOR_DEPTH: u128 = 10;
-
-/// The Bitcoin block a contract opened at, in an anchored deployment: its
-/// difficulty fixes the work `W` a withdrawal shows on top of its anchor.
-/// Each side checks it against its own view of the chain.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Checkpoint {
-    pub height: u32,
-    pub hash: bitcoin::BlockHash,
-    pub bits: u32,
-}
-
-impl Checkpoint {
-    /// The checkpoint at the chain's tip.
-    pub fn tip(chain: &lichen_chain::Chain) -> Result<Checkpoint> {
-        let height = chain.height()?;
-        let hash = chain.block_hash(height)?;
-        let header = chain.header(&hash)?;
-        Ok(Checkpoint { height, hash, bits: u32::from_le_bytes(header[72..76].try_into().unwrap()) })
-    }
-    /// `W`: [`ANCHOR_DEPTH`] blocks of its difficulty.
-    pub fn work(&self) -> u128 {
-        ANCHOR_DEPTH.saturating_mul(lichen_ledger::lichen_validity::btc::work(self.bits))
-    }
-    /// Check it against `chain`: its block on the best chain with these
-    /// bits, at most `stale` blocks below the tip.
-    pub fn check(&self, chain: &lichen_chain::Chain, stale: u32) -> Result<()> {
-        ensure!(chain.block_hash(self.height)? == self.hash, "the checkpoint {} isn't the best chain's block {}", self.hash, self.height);
-        let header = chain.header(&self.hash)?;
-        ensure!(u32::from_le_bytes(header[72..76].try_into().unwrap()) == self.bits, "the checkpoint's bits aren't its block's");
-        ensure!(chain.height()? <= self.height + stale, "the checkpoint, block {}, is stale", self.height);
-        Ok(())
-    }
-}
-
-/// Headers on top of block `from` (internal order), from the chain, until
-/// their work reaches `work`: what a withdrawal shows on top of its
-/// anchor. An error, saying how far it has got, if not there yet.
-pub fn headers_for(chain: &lichen_chain::Chain, from: &Hash, work: u128) -> Result<Vec<[u8; 80]>> {
-    use bitcoin::hashes::Hash as _;
-    let block = bitcoin::BlockHash::from_byte_array(*from);
-    let mut out = vec![];
-    let mut sum = 0u128;
-    for h in chain.headers_after(&block, 4 * ANCHOR_DEPTH as usize)? {
-        sum = sum.saturating_add(lichen_ledger::lichen_validity::btc::work(u32::from_le_bytes(h[72..76].try_into().unwrap())));
-        out.push(h);
-        if sum >= work && !out.is_empty() {
-            return Ok(out);
-        }
-    }
-    bail!("the anchor isn't deep enough yet: {} blocks on it, {sum} of the {work} work the contract asks", out.len())
-}
-
-/// The journal's `D` a contract pins: the deployment's id, or in an
-/// anchored deployment (a genesis seal) the contract's, of the genesis
-/// seal, the checkpoint's `W` and the contract's unit too; in the grants
-/// L2 (no seal, a checkpoint) the contract's, of the issuer and `owner`.
-pub fn contract_word(d: &Deployment, checkpoint: Option<&Checkpoint>, unit: Amount, owner: &Hash) -> Result<Hash> {
-    match (d.seal, checkpoint) {
-        (None, None) => Ok(d.id()),
-        (Some(seal), Some(c)) => Ok(lichen_ledger::lichen_withdraw_contract_id(&d.id(), &seal, c.work(), unit.to_sat())),
-        (Some(_), None) => bail!("an anchored deployment's contract needs a checkpoint"),
-        (None, Some(_)) => {
-            let _ = (unit, owner);
-            bail!("the grants L2's contracts have no checkpoint: their D is the journal's (hp::contract)")
-        }
-    }
-}
-
 /// A contract as each side keeps it: enough to rebuild every transaction
 /// and both parties' signatures on the pre-signed set.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -540,16 +437,9 @@ pub struct Record {
     /// The Bitcoin network, which fixes the contract's timing.
     #[serde(default)]
     pub network: Net,
-    /// The claim's journal must carry this: the L2 deployment's id, or in
-    /// an anchored deployment the contract's ([`contract_word`]).
-    #[serde(with = "lichen_babe::hexbytes::fixed")]
-    pub deployment: Hash,
-    /// In an anchored deployment, the Bitcoin block the contract opened at,
-    /// which fixes the work a withdrawal shows on top of its anchor.
-    #[serde(default)]
-    pub checkpoint: Option<Checkpoint>,
     pub terms: Terms,
     pub pubs: [PartyPubKeys; 2],
+    /// The user's key on the L2: what the contract credits her deposit to.
     #[serde(with = "lichen_babe::hexbytes::fixed")]
     pub l2_address: [u8; 32],
     pub funding: OutPoint,
@@ -581,15 +471,16 @@ impl Record {
     pub fn cid(&self) -> u32 {
         self.terms.id
     }
-    /// The contract's graph, under `statement`, the contract's.
-    pub fn build(&self, statement: &Statement) -> Result<Built> {
+    /// The contract's graph, under `statement`, the contract's, its front
+    /// the L2's (`layer`).
+    pub fn build(&self, statement: &Statement, layer: &dyn Layer) -> Result<Built> {
         ensure!(statement.id() == self.statement, "the contract runs {}, not {}", self.statement, statement.id());
-        Ok(Built(Box::new(self.hp_graph()?)))
+        Ok(Built(lichen_babe::graph::Graph::new(layer.front(self)?, self.dispute.tail())?))
     }
     pub fn signed(&self) -> Signed {
         Signed { hub: self.hub_sigs.clone(), alice: self.alice_sigs.clone() }
     }
-    /// The pre-signed set, both signatures checked (but on what Alice
+    /// The pre-signed set, both signatures checked (but on what the user
     /// keeps from the hub, [`Built::withheld`]).
     pub fn presigned(&self, c: &Built) -> Result<Vec<Presign>> {
         let set = c.presign(self.funding)?;
@@ -599,13 +490,21 @@ impl Record {
     }
 }
 
-/// A contract's graph ([`lichen_babe::countersigned::Countersigned`]):
-/// the contract output with its fold, default and dispute
-/// ([`Core`]), the dispute's links and terminals, the payout.
-pub struct Built(pub Box<lichen_babe::countersigned::Countersigned>);
+/// What an L2 adds to a contract: its dispute's front, from the record
+/// (its keys in `record.dispute.l2`), and the journal its statement's
+/// proof is of.
+pub trait Layer: Send + Sync {
+    fn front(&self, record: &Record) -> Result<Box<dyn lichen_babe::graph::Front>>;
+    fn journal(&self, record: &Record) -> Result<Vec<u8>>;
+}
+
+/// A contract's graph ([`lichen_babe::graph::Graph`]): the contract
+/// output with its fold, default and dispute ([`Core`]), the dispute's
+/// links and terminals, the payouts.
+pub struct Built(pub lichen_babe::graph::Graph);
 
 impl Built {
-    pub fn graph(&self) -> &lichen_babe::countersigned::Countersigned {
+    pub fn graph(&self) -> &lichen_babe::graph::Graph {
         &self.0
     }
     pub fn core(&self) -> Core<'_> {
@@ -631,17 +530,12 @@ impl Built {
     /// Whether a party keeps its signature on `name` from the other: the
     /// hub, on `wrongly_challenged`.
     pub fn withheld(&self, name: &str) -> bool {
-        lichen_babe::countersigned::Countersigned::withheld(name)
+        lichen_babe::graph::Graph::withheld(name)
     }
-    /// The key Alice signs `b` with in a dispute; the payout's bit outputs
-    /// read it.
-    pub fn b_key(&self) -> &lichen_wots::Wots256Public {
-        &self.0.spec.b_key
-    }
-    /// What the heaviest of Alice's terminal transactions (in the
+    /// What the heaviest of the user's terminal transactions (in the
     /// pre-signed `set`) needs from her fee budget on `net`.
     pub fn terminal_need(&self, set: &[Presign], net: Net) -> Result<Amount> {
-        hp::terminal_need(set, net)
+        hp::terminal_need(&self.0, set, net)
     }
 }
 
@@ -815,9 +709,9 @@ mod tests {
             assert_eq!(n.parse::<Net>().unwrap().to_string(), n);
         }
         for s in ["hub-proves", "hub-proves-mock"] {
-            assert_eq!(s.parse::<Statement>().unwrap().id(), s);
+            assert_eq!(Statement::parse(s, [0; 32]).unwrap().id(), s);
         }
-        assert!("babe".parse::<Statement>().is_err());
+        assert!(Statement::parse("babe", [0; 32]).is_err());
         // the windows are in blocks: wider where blocks come faster or in bursts
         assert!(params(Net::Mutinynet).delta > params(Net::Signet).delta);
         assert!(params(Net::Testnet4).delta > params(Net::Signet).delta);
