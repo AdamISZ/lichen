@@ -195,17 +195,31 @@ pub struct Requested {
     pub e: Hash,
 }
 
+/// A signature's digit as the verifying script reads its witness item: a
+/// number of at most 4 bytes, little-endian, its sign the last byte's top
+/// bit, minimal or not (consensus doesn't require it in tapscript), then
+/// `OP_MIN 15`. So `[0x10]` is 15, as are all positives above it, and
+/// `[0x80]`, negative zero, is 0. None where the script fails: a negative
+/// digit, or an item longer than a number.
+pub fn script_digit(item: &[u8]) -> Option<u8> {
+    let Some((&last, rest)) = item.split_last() else {
+        return Some(0);
+    };
+    if item.len() > 4 {
+        return None;
+    }
+    if last & 0x80 != 0 {
+        return (last == 0x80 && rest.iter().all(|b| *b == 0)).then_some(0);
+    }
+    let value = item.iter().rev().fold(0u32, |v, b| (v << 8) | u32::from(*b));
+    Some(value.min(15) as u8)
+}
+
 /// A Winternitz signature's message from its witness items, bottom first
 /// (`hash_0, digit_0, hash_1, digit_1, …`): its first `bytes` bytes'
-/// digits.
+/// digits, each as the script reads it ([`script_digit`]).
 fn signed_message(items: &[&[u8]], bytes: usize) -> Option<Vec<u8>> {
-    let digit = |i: usize| -> Option<u8> {
-        match items.get(2 * i + 1)? {
-            [] => Some(0),
-            [d] if *d <= 15 => Some(*d),
-            _ => None,
-        }
-    };
+    let digit = |i: usize| script_digit(items.get(2 * i + 1)?);
     (0..bytes).map(|k| Some((digit(2 * k)? << 4) | digit(2 * k + 1)?)).collect()
 }
 
@@ -707,6 +721,47 @@ mod tests {
         let mut c = x.contract;
         c.work += 1;
         assert_eq!(read(&c, &x.exit), Err(Reject::Depth));
+    }
+
+    #[test]
+    fn a_digit_reads_as_the_script_reads_it() {
+        for (item, digit) in [
+            (&[][..], Some(0)),
+            (&[0][..], Some(0)),
+            (&[0x80][..], Some(0)),
+            (&[0, 0, 0, 0x80][..], Some(0)),
+            (&[7][..], Some(7)),
+            (&[7, 0][..], Some(7)),
+            (&[15][..], Some(15)),
+            (&[16][..], Some(15)),
+            (&[0x7f][..], Some(15)),
+            (&[0, 1][..], Some(15)),
+            (&[0xff, 0xff, 0xff, 0x7f][..], Some(15)),
+            (&[0x81][..], None),
+            (&[0, 0x80, 0][..], Some(15)),
+            (&[1, 0x80][..], None),
+            (&[0, 0, 0, 0, 0][..], None),
+        ] {
+            assert_eq!(script_digit(item), digit, "{item:?}");
+        }
+        // A request whose 15s are written as 16, as Bitcoin accepts it:
+        // the same `b` and `E`.
+        let honest = request_witness(&[0xf7; 32], 0x0f0f_f0ff);
+        let mut loose = honest.clone();
+        for item in loose.iter_mut().filter(|i| i.as_slice() == [15]) {
+            *item = vec![16];
+        }
+        assert_ne!(loose, honest);
+        fn items(w: &[Vec<u8>]) -> Vec<&[u8]> {
+            w.iter().map(Vec::as_slice).collect()
+        }
+        assert_eq!(requested(&items(&loose)), requested(&items(&honest)));
+        assert_eq!(requested(&items(&loose)).map(|r| r.b), Some(0x0f0f_f0ff));
+        // A negative digit fails the script: no request.
+        let mut negative = honest;
+        let at = negative.iter().position(|i| i.as_slice() == [15]).unwrap();
+        negative[at] = vec![0x81];
+        assert_eq!(requested(&items(&negative)), None);
     }
 
     #[test]
