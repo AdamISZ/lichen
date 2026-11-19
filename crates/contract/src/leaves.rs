@@ -13,7 +13,7 @@
 use anyhow::{ensure, Result};
 use bitcoin::opcodes::all::*;
 use bitcoin::script::Builder;
-use bitcoin::{Amount, TxOut};
+use bitcoin::{Amount, ScriptBuf, TxOut};
 use lichen_btc::script::BuilderExt;
 use lichen_btc::taptree::{Leaf, TapTree};
 use lichen_btc::tx::Timelock;
@@ -250,13 +250,13 @@ pub fn payout_less_signed<H: Chain>(ctx: &ContractCtx, t: &Terms, b_key: &WotsPu
 }
 
 /// The outputs of the transaction that ends the contract by default after
-/// `T_close`: Alice's reserve back to her, the rest (less `fee`) to the
-/// hub.
-pub fn default_outputs(ctx: &ContractCtx, t: &Terms, available: Amount, fee: Amount) -> Result<Vec<TxOut>> {
+/// `T_close`: Alice's reserve back to `close_spk`, the rest (less `fee`) to
+/// the hub's payout script.
+pub fn default_outputs(ctx: &ContractCtx, t: &Terms, close_spk: &ScriptBuf, available: Amount, fee: Amount) -> Result<Vec<TxOut>> {
     let total = available.checked_sub(fee).ok_or_else(|| anyhow::anyhow!("the fee exceeds the output"))?;
     ensure!(total > t.reserve_alice, "{total} cannot return the reserve");
     Ok(vec![
-        TxOut { value: t.reserve_alice, script_pubkey: ctx.key(Role::User).payout_spk.clone() },
+        TxOut { value: t.reserve_alice, script_pubkey: close_spk.clone() },
         TxOut { value: total - t.reserve_alice, script_pubkey: ctx.key(Role::Hub).payout_spk.clone() },
     ])
 }

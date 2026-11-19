@@ -27,6 +27,8 @@ struct Fixture {
     terms: Terms,
     params: ContractParams,
     pubs: [PartyPubKeys; 2],
+    /// Where the default returns her reserve: not her payout script.
+    close: ScriptBuf,
     hub_b: WotsSecret,
 }
 
@@ -44,12 +46,13 @@ fn fixture() -> Fixture {
         reserve_hub: Amount::from_sat(100_000),
     };
     let pubs = [alice.public(), hub.public()];
-    Fixture { alice, hub, terms, params: ContractParams::regtest(Amount::ZERO), pubs, hub_b: WotsSecret::from_entropy(WotsParams::for_bytes(4), [5; 32]) }
+    let close = payout_tree(&xonly(&Keypair::from_seckey_slice(SECP256K1, &[9; 32]).unwrap())).script_pubkey();
+    Fixture { alice, hub, terms, params: ContractParams::regtest(Amount::ZERO), pubs, close, hub_b: WotsSecret::from_entropy(WotsParams::for_bytes(4), [5; 32]) }
 }
 
 impl Fixture {
     fn core(&self) -> Core<'_> {
-        Core { terms: &self.terms, params: &self.params, pubs: &self.pubs }
+        Core { terms: &self.terms, params: &self.params, pubs: &self.pubs, close_spk: &self.close }
     }
     fn sign(&self, value: u32) -> WotsSig {
         self.hub_b.sign(&value.to_be_bytes()).unwrap()
@@ -189,4 +192,24 @@ fn alice_signed_builders_are_unchanged() {
     assert_eq!(bit_leaf(&ctx, 0, &b_key, false).timelock, Timelock::NONE);
     assert_eq!(bit_leaf_signed(&ctx, 0, &b_key, Role::Hub, true).timelock, Timelock::NONE);
     assert_eq!(bit_leaf_signed(&ctx, 0, &b_key, Role::Hub, false).timelock, Timelock::csv(f.params.delta));
+}
+
+/// The default returns her reserve to the script of its own, the hub's
+/// share to its payout script; a dispute's payout still pays hers.
+#[test]
+fn the_default_returns_her_reserve_to_its_own_script() {
+    let f = fixture();
+    let core = f.core();
+    assert_ne!(f.close, f.pubs[0].payout_spk);
+    let escalate = Leaf::new("escalate".to_string(), Builder::new().push_int(1).into_script(), Timelock::NONE);
+    let tree = core.tree(escalate).unwrap();
+    let funding = OutPoint { txid: bitcoin::Txid::from_raw_hash(bitcoin::hashes::Hash::all_zeros()), vout: 0 };
+    let default = core.default_tx(&tree, funding).unwrap();
+    let outs = &default.tx.output;
+    assert_eq!(outs.len(), 2);
+    assert_eq!(outs[0], TxOut { value: f.terms.reserve_alice, script_pubkey: f.close.clone() });
+    assert_eq!(outs[1], TxOut { value: core.value() - f.terms.reserve_alice, script_pubkey: f.pubs[1].payout_spk.clone() });
+    let b_key = WotsSecret::from_entropy(WotsParams::for_bytes(4), [6; 32]).public();
+    let paid = core.pay_alice(&b_key, core.value()).unwrap();
+    assert!(paid.iter().all(|o| o.script_pubkey != f.close), "a dispute pays her payout script, never the default's");
 }

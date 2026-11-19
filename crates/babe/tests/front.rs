@@ -15,13 +15,14 @@ struct OneLink {
     terms: Terms,
     params: ContractParams,
     pubs: [PartyPubKeys; 2],
+    close: ScriptBuf,
     extra: Vec<TxOut>,
     wrongly: Option<Payout>,
 }
 
 impl Front for OneLink {
     fn core(&self) -> Core<'_> {
-        Core { terms: &self.terms, params: &self.params, pubs: &self.pubs }
+        Core { terms: &self.terms, params: &self.params, pubs: &self.pubs, close_spk: &self.close }
     }
     fn links(&self) -> anyhow::Result<Vec<FrontLink>> {
         let ctx = self.core().ctx();
@@ -47,7 +48,7 @@ fn graph(extra: Vec<TxOut>, wrongly: Option<Payout>) -> anyhow::Result<Graph> {
     let alice = PartyKeys::from_seed(Role::User, Seed::from_label("alice"));
     let hub = PartyKeys::from_seed(Role::Hub, Seed::from_label("hub"));
     let terms = Terms { id: 1, unit: Amount::from_sat(1_000), bits: 10, low_bits: 0, deposit: 400, t_close: 100_000, reserve_alice: Amount::from_sat(20_000), reserve_hub: Amount::from_sat(100_000) };
-    let front = OneLink { terms, params: ContractParams::regtest(Amount::ZERO), pubs: [alice.public(), hub.public()], extra, wrongly };
+    let front = OneLink { terms, params: ContractParams::regtest(Amount::ZERO), pubs: [alice.public(), hub.public()], close: ScriptBuf::from_bytes(vec![0x51, 0x20, 7]), extra, wrongly };
     let seed = Seed::from_label("hub/prover");
     let tail = Tail { lamport: LamportKey::new(&seed, DIGITS).public(), adaptor: AdaptorKeys::new(&seed, DIGITS).public(), hmsg: vec![[1; 32], [2; 32]], windows: Windows { delta2: 3, delta1: 3 } };
     Graph::new(Box::new(front), tail)

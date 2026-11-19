@@ -57,13 +57,19 @@ pub fn slack_vbytes(tree: &TapTree, leaf: &str) -> Result<u64> {
 }
 
 /// What every contract has: its terms, its parameters and both parties'
-/// keys (Alice's, then the hub's). A view, built from a dispute's own
-/// spec.
+/// keys (Alice's, then the hub's), and where the default returns Alice's
+/// reserve. A view, built from a dispute's own spec.
 #[derive(Clone, Copy)]
 pub struct Core<'a> {
     pub terms: &'a Terms,
     pub params: &'a ContractParams,
     pub pubs: &'a [PartyPubKeys; 2],
+    /// The script `default` pays Alice's reserve to: her payout script
+    /// (`pubs[0].payout_spk`) on the dispute's paths, but a script of its
+    /// own here, so that the contract's end by default need not pay a coin
+    /// of hers (a swap's HTLC, say). The hub's share goes to its payout
+    /// script.
+    pub close_spk: &'a ScriptBuf,
 }
 
 impl<'a> Core<'a> {
@@ -108,10 +114,11 @@ impl<'a> Core<'a> {
         Ok(Fold { tx, prevout: c_out, key })
     }
     /// The default, the contract output (`tree`) at `funding`: after
-    /// `T_close` the hub takes `V_max` and its reserve, Alice her reserve.
+    /// `T_close` the hub takes `V_max` and its reserve, Alice her reserve at
+    /// `close_spk`.
     pub fn default_tx(&self, tree: &TapTree, funding: OutPoint) -> Result<Presign> {
         let c_out = TxOut { value: self.value(), script_pubkey: tree.script_pubkey() };
-        let outs = default_outputs(&self.ctx(), self.terms, c_out.value, Amount::ZERO)?;
+        let outs = default_outputs(&self.ctx(), self.terms, self.close_spk, c_out.value, Amount::ZERO)?;
         Presign::new("default", tree, "default", funding, &c_out, outs, false)
     }
     /// The outputs paying `b` in bits (read from Alice's signature under
