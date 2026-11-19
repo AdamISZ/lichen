@@ -9,11 +9,12 @@
 //! its labels, evaluates, and decrypts `msg` if and only if she holds a
 //! valid proof for the statement.
 //!
-//! The setup is checked by cut-and-choose ([`setup`]), the instances'
-//! input secrets shared ([`vsss`]) so that one set revealed on chain
-//! opens every kept instance; the hub reveals it in `challenge_assert`
-//! by completing Alice's adaptor pre-signatures ([`reveal`]). Here the
-//! roles are swapped ([`graph`]): Alice garbles and the hub proves (the
+//! The setup is checked by cut-and-choose ([`setup`]; both sides of it,
+//! [`opening`]), the instances' input secrets shared ([`vsss`]) so that
+//! one set revealed on chain opens every kept instance; the garbler
+//! reveals it in `challenge_assert` by completing the prover's adaptor
+//! pre-signatures ([`reveal`]). Here the roles are swapped ([`graph`]):
+//! Alice garbles and the hub proves (the
 //! mock statement, [`statement`]; a RISC Zero receipt's Groth16 form,
 //! [`risc0`]); the transactions, on `lichen_contract`, are [`graph`]'s:
 //! an L2's front, then BABE's tail.
@@ -24,6 +25,7 @@ pub mod gadget;
 pub mod garble;
 pub mod hexbytes;
 pub mod graph;
+pub mod opening;
 pub mod reveal;
 pub mod risc0;
 pub mod setup;

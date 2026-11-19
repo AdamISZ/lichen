@@ -16,7 +16,13 @@ use lichen_chain::{Chain, KeyFees};
 use lichen_proto::{anchor_vout, sign_anchor, Patience, Record, Stall, Statement};
 use lichen_btc::keys::Seed;
 use lichen_contract::{PartyKeys, Role};
-use lichen_babe::vsss::{deal, Dealer, Dealing};
+use lichen_babe::opening::Garbler;
+use lichen_babe::reveal::{check_presigs, points};
+use lichen_babe::setup::{Secret, VALUES};
+use lichen_babe::statement::Kind;
+use lichen_babe::vsss::{deal, Dealer};
+use lichen_btc::adaptor::AdaptorSig;
+use lichen_btc::secp256k1::{Message, XOnlyPublicKey};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 
@@ -326,20 +332,75 @@ impl Engine<'_> {
     }
 }
 
-/// Her dealing of the input secrets for a contract's setup (`n`
-/// instances, `m` kept), from its seed: the same every time.
-pub fn dealing(s: &ContractSecrets, n: u32, m: u32) -> (Dealer, Dealing) {
-    deal(lichen_babe::setup::DIGITS, (n - m) as usize, &mut ChaCha20Rng::from_seed(s.hp_seed().derive_bytes("dealing")))
+/// Her garbler for a contract's setup (`n` instances, `m` kept) for the
+/// statement `kind` on `journal`, from the contract's seed: the same
+/// every time.
+pub fn garbler(s: &ContractSecrets, n: u32, m: u32, kind: &Kind, journal: &[u8]) -> Garbler {
+    Garbler::new(&s.hp_seed(), n, m, kind, journal)
 }
 
-/// The seed of her instance `i` (1-based), from the contract's seed.
-pub fn instance_seed(s: &ContractSecrets, i: u32) -> [u8; 32] {
-    s.hp_seed().derive_bytes(&format!("instance/{i}"))
+/// Her dealer of a contract opened before the dealing was bound to the
+/// contract's journal (from the contract's seed alone), for its dispute.
+fn unbound_dealer(s: &ContractSecrets, n: u32, m: u32) -> Dealer {
+    deal(lichen_babe::setup::DIGITS, (n - m) as usize, &mut ChaCha20Rng::from_seed(s.hp_seed().derive_bytes("dealing"))).0
+}
+
+/// The hub's adaptor keys, `challenge_assert`'s sighash and the hub's
+/// pre-signatures on it, of a contract's record.
+pub type HubPresigs<'a> = (&'a [[XOnlyPublicKey; VALUES]], &'a Message, &'a [[AdaptorSig; VALUES]]);
+
+/// The secrets of π1's `digits`, as her challenge reveals them in the
+/// contract of `journal` (`n` instances, `m` kept): of the dealing bound
+/// to the journal or, for a contract opened before it was, of the one
+/// from the contract's seed alone; whichever the hub's pre-signatures
+/// are adapted to.
+pub fn revealed(s: &ContractSecrets, n: u32, m: u32, kind: &Kind, journal: &[u8], (keys, msg, presigs): HubPresigs, digits: &[u8]) -> Vec<Secret> {
+    let g = garbler(s, n, m, kind, journal);
+    if check_presigs(keys, msg, &points(g.dealing()), presigs) {
+        return g.reveal(digits);
+    }
+    let dealer = unbound_dealer(s, n, m);
+    digits.iter().enumerate().map(|(j, v)| dealer.reveal(j, *v)).collect()
 }
 
 impl ContractSecrets {
     /// The seed of her setup (her dealing, her instances).
     pub fn hp_seed(&self) -> Seed {
         Seed::from_label(&format!("{}/hp", self.seed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lichen_babe::reveal::{complete, extract, reveal_args, AdaptorKeys, LamportKey};
+    use lichen_babe::setup::DIGITS;
+
+    /// Her challenge reveals the secrets of the dealing the hub's
+    /// pre-signatures are adapted to: bound to the journal, or, for a
+    /// contract opened before, from the contract's seed alone. The hub
+    /// extracts them from her completions either way.
+    #[test]
+    fn her_reveal_follows_the_dealing_the_hub_presigned() {
+        let s = ContractSecrets::new(&[1; 32], "n");
+        let (n, m, kind, journal) = (4, 2, Kind::Mock, [7u8; 68]);
+        let hub = Seed::from_label("hub");
+        let (lamport, adaptor) = (LamportKey::new(&hub, DIGITS), AdaptorKeys::new(&hub, DIGITS));
+        let msg = Message::from_digest([3; 32]);
+        let digits: Vec<u8> = (0..DIGITS).map(|j| (j % VALUES) as u8).collect();
+        let bound = points(garbler(&s, n, m, &kind, &journal).dealing());
+        let unbound = points(&deal(DIGITS, (n - m) as usize, &mut ChaCha20Rng::from_seed(s.hp_seed().derive_bytes("dealing"))).1);
+        assert_ne!(bound, unbound);
+        for pts in [bound, unbound] {
+            let presigs = adaptor.presign(&msg, &pts);
+            let secrets = revealed(&s, n, m, &kind, &journal, (&adaptor.public(), &msg, &presigs), &digits);
+            let sigs = complete(&presigs, &digits, &secrets);
+            // valid signatures under the keys her digits select: the chain
+            // takes her challenge
+            let keys = adaptor.public();
+            assert!(sigs.iter().zip(&digits).enumerate().all(|(j, (sig, v))| lichen_btc::secp256k1::SECP256K1.verify_schnorr(sig, &msg, &keys[j][*v as usize]).is_ok()));
+            let args = reveal_args(&lamport.sign(&digits), &sigs);
+            assert_eq!(extract(&lamport.public(), &presigs, &args).unwrap(), (digits.clone(), secrets));
+        }
     }
 }

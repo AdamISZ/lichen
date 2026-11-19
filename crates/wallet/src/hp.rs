@@ -5,13 +5,14 @@
 
 use anyhow::{ensure, Context, Result};
 use lichen_babe::graph::Graph;
-use lichen_babe::setup::{instance, par, VALUES};
-use lichen_proto::setup::{dealing_to_hex, min_soundness, shares_to_hex, soundness, Opened};
+use lichen_babe::opening::{soundness, Garbler};
+use lichen_babe::setup::VALUES;
+use lichen_proto::setup::{dealing_to_hex, min_soundness, Opened};
 use lichen_proto::hp::{check_setup, HpCommit, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
 use lichen_proto::{Hash, Net, Statement};
 use lichen_contract::Presign;
 
-use crate::engine::{dealing, instance_seed};
+use crate::engine::garbler;
 use crate::engine::ContractSecrets;
 use crate::{hub_call, Quote, Wallet, WalletL2};
 
@@ -24,6 +25,7 @@ pub(crate) struct HpOpening {
     pub kept: Vec<u32>,
     /// The kept instances' hashlocks, in `kept`'s order.
     pub hmsg: Vec<[u8; 32]>,
+    pub garbler: Garbler,
 }
 
 impl<L: WalletL2> Wallet<L> {
@@ -44,28 +46,20 @@ impl<L: WalletL2> Wallet<L> {
         let keys = L::alice_keys(s);
         let journal = L::setup_journal(cid, &setup, &keys)?;
         let kind = statement.hp_kind()?;
-        let (vk, public) = (kind.verifying_key(), kind.public_inputs(&journal));
-        let (dealer, dealt) = dealing(s, n, m);
+        let g = garbler(s, n, m, &kind, &journal);
         self.say(format!("garbling {n} instances of the hub's statement (the hub keeps {m})"));
         let start = std::time::Instant::now();
         let done = std::sync::atomic::AtomicU32::new(0);
         self.opened_step(crate::Opening::Garbling { done: 0, total: n });
-        let commitments: Vec<String> = par(n as usize, |k| {
-            let i = k as u32 + 1;
-            let c = hex::encode(instance(&instance_seed(s, i), &dealer.shares(u64::from(i)), &vk, &public).0.commitment());
-            self.opened_step(crate::Opening::Garbling { done: done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, total: n });
-            c
-        });
+        let commitments: Vec<String> = g.commitments(|| self.opened_step(crate::Opening::Garbling { done: done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, total: n })).iter().map(hex::encode).collect();
         self.say(format!("garbled in {:.1?}", start.elapsed()));
-        let commit = HpCommit { cid, keys: keys.clone(), commitments, dealing: dealing_to_hex(&dealt) };
+        let commit = HpCommit { cid, keys: keys.clone(), commitments, dealing: dealing_to_hex(g.dealing()) };
         let kept: HpKept = hub_call(&format!("{hub}/hp/commit"), Some(serde_json::to_string(&commit)?), false)?;
-        let mut k = kept.kept.clone();
-        k.sort_unstable();
-        k.dedup();
-        ensure!(k.len() == m as usize && k == kept.kept && k.iter().all(|i| (1..=n).contains(i)), "the hub keeps {:?}, not {m} distinct of {n}", kept.kept);
+        let k = kept.kept;
+        let opened = g.open(&k)?.iter().map(Opened::of).collect();
         let mut hmsg = vec![];
         for (j, i) in k.iter().enumerate() {
-            let (inst, _) = instance(&instance_seed(s, *i), &dealer.shares(u64::from(*i)), &vk, &public);
+            let inst = g.instance(*i);
             let bytes = inst.to_bytes();
             self.say(format!("uploading the instance the hub keeps, {} of {m} ({} MB)", j + 1, bytes.len() >> 20));
             // its progress told as it goes (the instances are the same size)
@@ -76,8 +70,7 @@ impl<L: WalletL2> Wallet<L> {
             self.opened_step(crate::Opening::Uploading { sent: before + len, total });
             hmsg.push(inst.hmsg);
         }
-        let opened = (1..=n).filter(|i| !k.contains(i)).map(|i| Opened { i, seed: hex::encode(instance_seed(s, i)), shares: shares_to_hex(&dealer.shares(u64::from(i))) }).collect();
-        Ok(HpOpening { request: HpRequest { hp_opened: opened }, setup, keys, kept: k, hmsg })
+        Ok(HpOpening { request: HpRequest { hp_opened: opened }, setup, keys, kept: k, hmsg, garbler: g })
     }
 
     /// The hub's offer checked against her opening: its windows the
@@ -86,12 +79,12 @@ impl<L: WalletL2> Wallet<L> {
     /// The hub's offer's keys: the network's windows, and its adaptor
     /// pre-signatures on `challenge_assert` (on `set`), against her
     /// dealing's points.
-    pub(crate) fn hp_check_offer(net: Net, s: &ContractSecrets, o: &HpOpening, offer: &HpOffer, set: &[Presign]) -> Result<()> {
+    pub(crate) fn hp_check_offer(net: Net, o: &HpOpening, offer: &HpOffer, set: &[Presign]) -> Result<()> {
         ensure!(offer.hp_windows == lichen_proto::hp::windows(net), "the hub's windows {:?}, not the network's", offer.hp_windows);
-        let (_, dealt) = dealing(s, o.setup.n, o.setup.m);
+        let dealt = o.garbler.dealing();
         let msg = Graph::link_sighash(set, "challenge_assert")?;
         let presigs: Vec<[lichen_btc::adaptor::AdaptorSig; VALUES]> = offer.hp_presigs.iter().map(|p| p.each_ref().map(lichen_btc::adaptor::AdaptorSig::from)).collect();
-        ensure!(lichen_babe::reveal::check_presigs(&o.setup.adaptor, &msg, &lichen_babe::reveal::points(&dealt), &presigs), "the hub's adaptor pre-signatures on challenge_assert");
+        ensure!(lichen_babe::reveal::check_presigs(&o.setup.adaptor, &msg, &lichen_babe::reveal::points(dealt), &presigs), "the hub's adaptor pre-signatures on challenge_assert");
         Ok(())
     }
 
