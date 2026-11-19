@@ -10,7 +10,8 @@
 //!     └─ assert (the hub: π1 under its Lamport key, π2 and π3)
 //!         ├─ success (after Δ2)            → the front's choice
 //!         └─ challenge_assert (the user: the reveal)
-//!             ├─ wrongly_challenged_k      → the hub (its proof was valid)
+//!             ├─ wrongly_challenged_k      → the front's choice, the hub by
+//!             │                              default (its proof was valid)
 //!             └─ failure (after Δ1)        → the user: her claim
 //! ```
 //!
@@ -80,13 +81,16 @@ pub enum Payout {
 
 /// A front link: its name and poster, the leaf (of the output before it)
 /// it spends, a witness of its shape (each element's size, for its floor),
-/// and its own output's terminal: its name, its window (relative) and
-/// what it pays.
+/// its fixed outputs after its anchor (`extra`: an L2's publication
+/// slots, say; none of them dust, they come out of the value the chain
+/// carries, [`Core::link_extra`]), and its own output's terminal: its
+/// name, its window (relative) and what it pays.
 pub struct FrontLink {
     pub name: &'static str,
     pub poster: Role,
     pub leaf: Leaf,
     pub shape: Vec<Vec<u8>>,
+    pub extra: Vec<TxOut>,
     pub terminal: &'static str,
     pub window: u16,
     pub pays: Payout,
@@ -105,6 +109,12 @@ pub trait Front: Send + Sync {
     fn pay(&self, which: Payout, available: Amount) -> Result<Vec<TxOut>>;
     /// What `success` pays (an assertion unchallenged).
     fn success(&self) -> Payout;
+    /// What `wrongly_challenged_k` pays (the user challenged a valid
+    /// proof): everything to the hub, by default, the cost of a challenge
+    /// she could have known was wrong by checking the proof first.
+    fn wrongly_challenged(&self) -> Payout {
+        Payout::Hub
+    }
 }
 
 /// `name`'s leaf: `b`, then `OP_1`.
@@ -233,7 +243,8 @@ impl Graph {
     /// Every link of the chain: the front's, then `assert` and
     /// `challenge_assert`, each with the tree of the output it makes and
     /// that output's terminal.
-    fn chain(&self) -> Result<Vec<(String, Role, Vec<Vec<u8>>, TapTree, String, Payout)>> {
+    #[allow(clippy::type_complexity)]
+    fn chain(&self) -> Result<Vec<(String, Role, Vec<Vec<u8>>, Vec<TxOut>, TapTree, String, Payout)>> {
         let links = self.front.links()?;
         let ctx = self.ctx();
         let mut out = vec![];
@@ -243,12 +254,12 @@ impl Graph {
                 None => self.assert_leaf(),
             };
             let tree = TapTree::new(vec![next, terminal_leaf(&ctx, l.terminal, l.window)])?;
-            out.push((l.name.to_string(), l.poster, l.shape.clone(), tree, l.terminal.to_string(), l.pays));
+            out.push((l.name.to_string(), l.poster, l.shape.clone(), l.extra.clone(), tree, l.terminal.to_string(), l.pays));
         }
         let assert_shape = vec![vec![0u8; 20]; DIGITS].into_iter().chain([vec![0u8; 64], vec![0u8; 32]]).collect();
-        out.push(("assert".into(), Role::Hub, assert_shape, self.asserted()?, "success".into(), self.front.success()));
+        out.push(("assert".into(), Role::Hub, assert_shape, vec![], self.asserted()?, "success".into(), self.front.success()));
         let challenge_shape = (0..DIGITS).flat_map(|_| [vec![0u8; 20], vec![0u8; 64]]).collect();
-        out.push(("challenge_assert".into(), Role::User, challenge_shape, self.challenged()?, "failure".into(), Payout::User));
+        out.push(("challenge_assert".into(), Role::User, challenge_shape, vec![], self.challenged()?, "failure".into(), Payout::User));
         Ok(out)
     }
 
@@ -266,19 +277,20 @@ impl Graph {
     }
     /// The terminal on link `name`'s output.
     pub fn terminal_of(&self, name: &str) -> Result<String> {
-        self.chain()?.into_iter().find(|c| c.0 == name).map(|c| c.4).with_context(|| format!("no link {name}"))
+        self.chain()?.into_iter().find(|c| c.0 == name).map(|c| c.5).with_context(|| format!("no link {name}"))
     }
 
     /// Every transaction the parties pre-sign, the contract output at
     /// `funding`: the default; the chain and each output's terminal; per
-    /// kept instance, `wrongly_challenged_k`.
+    /// kept instance, `wrongly_challenged_k`, paying the front's
+    /// [`Front::wrongly_challenged`].
     pub fn presign(&self, funding: OutPoint) -> Result<Vec<Presign>> {
         let tree = self.tree()?;
         let c_out = TxOut { value: self.value(), script_pubkey: tree.script_pubkey() };
         let mut out = vec![self.core().default_tx(&tree, funding)?];
         let (mut prev, mut op, mut prev_out) = (tree, funding, c_out);
-        for (name, poster, shape, next, terminal, pays) in self.chain()? {
-            let link = self.core().link(&name, poster, shape, &prev, &name, op, &prev_out, next.script_pubkey())?;
+        for (name, poster, shape, extra, next, terminal, pays) in self.chain()? {
+            let link = self.core().link_extra(&name, poster, shape, &prev, &name, op, &prev_out, next.script_pubkey(), extra)?;
             let n_out = link.tx.output[0].clone();
             op = OutPoint { txid: link.tx.compute_txid(), vout: 0 };
             out.push(link);
@@ -287,7 +299,11 @@ impl Graph {
         }
         for k in 0..self.tail.hmsg.len() {
             let name = format!("wrongly_challenged_{k}");
-            let mut w = Presign::new(&name, &prev, &name, op, &prev_out, self.core().pay_hub(prev_out.value), false)?;
+            let pays = match self.front.wrongly_challenged() {
+                Payout::Hub => self.core().pay_hub(prev_out.value),
+                which => self.front.pay(which, prev_out.value)?,
+            };
+            let mut w = Presign::new(&name, &prev, &name, op, &prev_out, pays, false)?;
             w.tx.version = Version::non_standard(3);
             out.push(w);
         }
