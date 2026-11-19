@@ -13,7 +13,7 @@ use bitcoin::script::Builder;
 use bitcoin::secp256k1::{schnorr, SECP256K1};
 use bitcoin::taproot::ControlBlock;
 use bitcoin::transaction::Version;
-use bitcoin::{Amount, OutPoint, ScriptBuf, Transaction, TxOut};
+use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxOut, Witness};
 use lichen_btc::sighash::{sign_tapscript, sign_tapscript_acp, tapscript_sighash};
 use lichen_btc::taptree::{Leaf, TapTree};
 use lichen_btc::tx::{build_spend, Timelock};
@@ -22,7 +22,7 @@ use lichen_btc::witness::tapscript_witness;
 use crate::keys::{ContractCtx, ContractParams, PartyPubKeys, Role};
 use lichen_wots::{Chain, WotsPublicOf};
 
-use crate::leaves::{default_leaf, default_outputs, payout_less, Terms};
+use crate::leaves::{bit_tree_signed, default_leaf, default_outputs, payout_less_signed, reserve_tree_signed, Terms};
 
 /// The fee a link pays of its own, sat/vB, out of the contract: enough to
 /// relay alone; its poster's child pays the rest.
@@ -120,8 +120,59 @@ impl<'a> Core<'a> {
     /// the floors and anchors of the links played, which come out of the
     /// hub's forfeited reserve (D-J2).
     pub fn pay_alice<H: Chain>(&self, b_key: &WotsPublicOf<H>, available: Amount) -> Result<Vec<TxOut>> {
+        self.pay_signed(b_key, Role::User, available)
+    }
+    /// The outputs paying `b′` in bits (read from the hub's signature
+    /// under `hub_b`: what it proved she is owed), Alice's reserve to her
+    /// payout address, and the hub's less the floors
+    /// ([`payout_less_signed`]), for an L2 where the hub proves.
+    ///
+    /// Alice must take her set bits, or post `equiv_b` with a second value
+    /// the hub signed, within `delta` of this payout confirming: after it,
+    /// a hub that signed two values can take her bits by its own leaves
+    /// (the duty the hub has on [`Core::pay_alice`]'s). The hub's reserve
+    /// less the floors goes to its payout address with the rest, outside
+    /// `equiv_b`, when it is dust.
+    pub fn pay_reduced<H: Chain>(&self, hub_b: &WotsPublicOf<H>, available: Amount) -> Result<Vec<TxOut>> {
+        self.pay_signed(hub_b, Role::Hub, available)
+    }
+    fn pay_signed<H: Chain>(&self, key: &WotsPublicOf<H>, signer: Role, available: Amount) -> Result<Vec<TxOut>> {
         let floors = self.value().checked_sub(available).context("an output carries more than the contract")?;
-        payout_less(&self.ctx(), self.terms, b_key, available, Amount::ZERO, floors)
+        payout_less_signed(&self.ctx(), self.terms, key, signer, available, Amount::ZERO, floors)
+    }
+    /// `party`'s outputs of `payout`, a terminal paying the value `value`
+    /// that `signer` signed under `key` ([`payout_less_signed`]): for each
+    /// bit of the value, the set ones Alice's and the clear ones the hub's;
+    /// and the signer's reserve output, if any. The signer's wait `delta`
+    /// (the other's window on a second signed value); the other's don't.
+    /// In output order; an output not of its script (none paid) is
+    /// skipped. Not the other party's outputs by `equiv_b`.
+    pub fn owned<H: Chain>(&self, payout: &Transaction, key: &WotsPublicOf<H>, signer: Role, value: u32, party: Role) -> Result<Vec<Owned>> {
+        let (t, ctx) = (self.terms, self.ctx());
+        let txid = payout.compute_txid();
+        let sequence = if party == signer { Sequence::from_height(self.params.delta) } else { Sequence::ENABLE_RBF_NO_LOCKTIME };
+        let mut outs: Vec<(u32, TapTree, String, bool)> = vec![];
+        for i in t.low_bits..t.bits {
+            let set = (value >> i) & 1 == 1;
+            if set == (party == Role::User) {
+                let name = if set { format!("alice_bit_{i}") } else { format!("hub_bit_{i}") };
+                outs.push((i - t.low_bits, bit_tree_signed(&ctx, i, key, signer)?, name, true));
+            }
+        }
+        if party == signer {
+            let (vout, name) = match signer {
+                Role::User => (t.bits - t.low_bits, "alice_reserve"),
+                Role::Hub => (t.bits - t.low_bits + 1, "hub_reserve"),
+            };
+            outs.push((vout, reserve_tree_signed(&ctx, t, key, signer)?, name.into(), false));
+        }
+        Ok(outs
+            .into_iter()
+            .filter_map(|(vout, tree, leaf, with_value)| {
+                let out = payout.output.get(vout as usize).filter(|o| o.script_pubkey == tree.script_pubkey())?.clone();
+                Some(Owned { op: OutPoint { txid, vout }, out, tree, leaf, with_value, sequence })
+            })
+            .collect())
     }
     /// Everything to the hub.
     pub fn pay_hub(&self, available: Amount) -> Vec<TxOut> {
@@ -141,6 +192,31 @@ impl<'a> Core<'a> {
         let carried = prev_out.value.checked_sub(floor + ANCHOR).context("the contract can't carry the floors")?;
         p.tx.output[0].value = carried;
         Ok(p)
+    }
+}
+
+/// An output of a payout that a party spends alone ([`Core::owned`]).
+#[derive(Clone, Debug)]
+pub struct Owned {
+    pub op: OutPoint,
+    pub out: TxOut,
+    pub tree: TapTree,
+    pub leaf: String,
+    /// Whether its leaf reads the signature on the value.
+    pub with_value: bool,
+    /// What its spend's input waits.
+    pub sequence: Sequence,
+}
+
+impl Owned {
+    /// Its witness as input `n` of `tx`, which spends `prevouts`: `wire`
+    /// (the signature on the value, as the payout's leaves take it) where
+    /// its leaf reads it, under `kp`'s signature.
+    pub fn witness(&self, tx: &Transaction, n: usize, prevouts: &[TxOut], kp: &Keypair, wire: &[Vec<u8>]) -> Result<Witness> {
+        let leaf = self.tree.leaf(&self.leaf).with_context(|| format!("no leaf {}", self.leaf))?;
+        let mut w = if self.with_value { wire.to_vec() } else { vec![] };
+        w.push(sign_tapscript(kp, tx, n, prevouts, &leaf.script)?.as_ref().to_vec());
+        Ok(tapscript_witness(&w, &leaf.script, &self.tree.control_block(&self.leaf)?))
     }
 }
 
