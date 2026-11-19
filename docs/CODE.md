@@ -19,7 +19,7 @@ fetches at the commit `Cargo.lock` pins. The design is
 
 | crate | what |
 |---|---|
-| `contract` | the contract on Bitcoin: the parties' keys (`keys`), the terms and leaves (`leaves`), the cooperative and pre-signed transactions: the fold, on the contract output's key path (both parties' MuSig2 key), the default, the payout (`graph`) |
+| `contract` | the contract on Bitcoin: the parties' keys (`keys`), the terms and leaves (`leaves`), the cooperative and pre-signed transactions: the fold, on the contract output's key path (both parties' MuSig2 key), the default, the payout of the value Alice signed or, where the hub proves, of the one it signed (`pay_reduced`), and each party's outputs of it (`owned`) (`graph`) |
 | `chain` | a party's view of Bitcoin: its own bitcoind over RPC, with a wallet (the hub's), or an Esplora server (a user's: no node, no wallet) |
 | `babe` | BABE: the witness encryption for Groth16 (`we`), the garbled circuit (`garble`, `gadget`, `circuit`, `field`), the cut-and-choose setup over verifiable secret sharing (`setup`, `vsss`; both sides of it for a contract, Alice's `Garbler` and the hub's `choose`, `check` and `answer`, in `opening`), the reveal by adaptor signatures (`reveal`); a contract's dispute graph, an L2's front then BABE's tail (`graph`); the statement (`statement`: a RISC Zero receipt's Groth16 form, or a mock for tests) |
 | `proto` | what the wallet and the hub exchange to open a contract, and the record each keeps of it; the dispute's setup exchange (`hp`, the cut-and-choose's shared parts in `setup`); the contract's graph (`Built`); the L2's hook into the contract (`Layer`) |
