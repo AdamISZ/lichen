@@ -177,5 +177,32 @@ mod tests {
             })
             .collect();
         assert_eq!(opens, kept.iter().map(|k| *k != 1).collect::<Vec<_>>(), "the true kept instance opens, the lie doesn't");
+
+        // The hub's answer tries every kept instance, whatever fails of
+        // those before: missing, not an instance, not of the circuit's
+        // shape, panicking, a lie; the true one, last, answers.
+        let true_k = *kept.iter().find(|k| **k != 1).unwrap();
+        let (good, _) = &made[true_k as usize - 1];
+        let mut short = good.clone();
+        short.gc.ands.pop();
+        let bytes = |k: u64| Ok(made[k as usize - 1].0.to_bytes());
+        let tries: Vec<(u64, anyhow::Result<Vec<u8>>)> = vec![
+            (true_k, Err(anyhow::anyhow!("no such file"))),
+            (true_k, Ok(good.to_bytes()[..100].to_vec())),
+            (true_k, Ok(short.to_bytes())),
+            (1, bytes(1)),
+            (true_k, bytes(true_k)),
+        ];
+        let mut failures = Vec::new();
+        let (k, msg) = crate::setup::answer(tries, &of_digits, &revealed, &pi, &proof, |i, e| failures.push((i, e.to_string()))).unwrap();
+        assert_eq!(k, 4);
+        assert!(good.is_msg(&msg));
+        assert_eq!(failures.len(), 4, "{failures:?}");
+        assert!(crate::setup::answer(vec![(1, bytes(1))], &of_digits, &revealed, &pi, &proof, |_, _| ()).is_none());
+        // an instance whose evaluation would panic fails as any other
+        let e = crate::setup::kept_msg(&short, true_k, &of_digits, &revealed, &pi, &proof).unwrap_err();
+        assert!(e.to_string().contains("shape"), "{e}");
+        let e = crate::setup::kept_msg(good, true_k, &of_digits, &revealed, &pi[..8], &proof).unwrap_err();
+        assert!(e.to_string().contains("panicked"), "{e}");
     }
 }

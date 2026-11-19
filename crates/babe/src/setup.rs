@@ -18,14 +18,16 @@
 
 use ark_bn254::{Bn254, Fq, Fr, G2Affine};
 use ark_ff::{BigInteger, PrimeField, UniformRand};
-use ark_groth16::VerifyingKey;
+use anyhow::Context as _;
+use ark_groth16::{Proof, VerifyingKey};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 
-use crate::garble::{garble, Garbled, Label};
-use crate::we::{encrypt, Msg, Setup};
+use crate::garble::{evaluate, garble, Garbled, Label};
+use crate::vsss::interpolate;
+use crate::we::{decrypt, encrypt, Msg, Setup};
 
 /// An input secret: a share's 32 bytes.
 pub type Secret = [u8; 32];
@@ -206,6 +208,42 @@ impl Instance {
 /// Whether an opened instance (its seed and secrets) is the one committed.
 pub fn check_opened(commitment: &Hash, seed: &[u8; 32], secrets: &[[Secret; VALUES]], vk: &VerifyingKey<Bn254>, public: &[Fr]) -> bool {
     instance(seed, secrets, vk, public).0.commitment() == *commitment
+}
+
+/// Kept instance `i`'s answer to a challenge on π1's `bits`: its secrets
+/// interpolated from those of the `opened` instances for π1's digits and
+/// the `revealed` ones, its circuit evaluated, and `msg` decrypted under
+/// `proof`, if it opens the hashlock. Any failure is an error, a panic of
+/// the evaluation among them.
+pub fn kept_msg(inst: &Instance, i: u64, opened: &[(u64, Vec<Secret>)], revealed: &[Secret], bits: &[bool], proof: &Proof<Bn254>) -> anyhow::Result<Msg> {
+    anyhow::ensure!(inst.has_shape(), "not of the circuit's shape");
+    let secrets = interpolate(i, opened, revealed).context("its secrets don't interpolate")?;
+    let msg = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let r_pi1 = evaluate(&inst.gc, bits, &inst.labels(bits, &secrets));
+        decrypt(&inst.ct, &r_pi1, proof)
+    }))
+    .map_err(|_| anyhow::anyhow!("its evaluation panicked"))?;
+    anyhow::ensure!(inst.is_msg(&msg), "its msg doesn't open the hashlock");
+    Ok(msg)
+}
+
+/// The hub's answer to a challenge from its kept instances, each `(i,
+/// bytes)` in order: the first `(k, msg)`, `k` its position among them,
+/// whose `msg` opens the hashlock ([`kept_msg`]). Every kept instance is
+/// tried until one opens: any failure of one (its bytes unread, not an
+/// instance, [`kept_msg`]'s) counts it false, `failed` hears why, and the
+/// next is tried. One true kept instance is what cut-and-choose's
+/// soundness promises, however the others are broken, so None only when
+/// all have failed.
+pub fn answer(kept: impl IntoIterator<Item = (u64, anyhow::Result<Vec<u8>>)>, opened: &[(u64, Vec<Secret>)], revealed: &[Secret], bits: &[bool], proof: &Proof<Bn254>, mut failed: impl FnMut(u64, &anyhow::Error)) -> Option<(usize, Msg)> {
+    for (k, (i, bytes)) in kept.into_iter().enumerate() {
+        let msg = bytes.and_then(|b| Instance::from_bytes(&b).context("not an instance")).and_then(|inst| kept_msg(&inst, i, opened, revealed, bits, proof));
+        match msg {
+            Ok(msg) => return Some((k, msg)),
+            Err(e) => failed(i, &e),
+        }
+    }
+    None
 }
 
 /// The M instances of N Alice keeps, chosen at random: indices, sorted.

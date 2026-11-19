@@ -12,12 +12,9 @@
 
 use anyhow::{ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
-use lichen_babe::garble::evaluate;
 use lichen_babe::graph::Graph;
 use lichen_babe::reveal::extract;
-use lichen_babe::setup::{digits, Instance, Secret};
-use lichen_babe::vsss::interpolate;
-use lichen_babe::we::decrypt;
+use lichen_babe::setup::{answer, digits, Secret};
 use lichen_btc::adaptor::AdaptorSig;
 use lichen_btc::sighash::sign_tapscript;
 use lichen_btc::taptree::TapTree;
@@ -320,16 +317,13 @@ impl<L: HubL2> Inner<L> {
         ensure!(posted == asserted.digits, "the challenge reveals other digits than asserted");
         let p = self.hp_prepared(cid)?;
         let of_digits: Vec<(u64, Vec<Secret>)> = p.opened.iter().map(|o| Ok((u64::from(o.i), shares_from_hex(&o.shares)?.iter().zip(&posted).map(|(s, v)| s[*v as usize]).collect()))).collect::<Result<_>>()?;
-        for (k, i) in keys.kept.iter().enumerate() {
-            let inst = Instance::from_bytes(&std::fs::read(self.hp_dir(cid).join(format!("instance-{i}.bin"))).with_context(|| format!("kept instance {i}"))?).with_context(|| format!("kept instance {i} is unreadable"))?;
-            let Some(secrets) = interpolate(u64::from(*i), &of_digits, &revealed) else { continue };
-            let r_pi1 = evaluate(&inst.gc, &asserted.bits, &inst.labels(&asserted.bits, &secrets));
-            let msg = decrypt(&inst.ct, &r_pi1, &proof);
-            if inst.is_msg(&msg) {
-                return self.hp_terminal(d, &format!("wrongly_challenged_{k}"), Graph::wrongly_wire(&msg)).map(Some);
-            }
+        let dir = self.hp_dir(cid);
+        let kept = keys.kept.iter().map(|i| (u64::from(*i), std::fs::read(dir.join(format!("instance-{i}.bin"))).map_err(anyhow::Error::from)));
+        let failed = |i: u64, e: &anyhow::Error| self.note(format!("contract {cid}: kept instance {i} doesn't answer: {e:#}"));
+        match answer(kept, &of_digits, &revealed, &asserted.bits, &proof, failed) {
+            Some((k, msg)) => self.hp_terminal(d, &format!("wrongly_challenged_{k}"), Graph::wrongly_wire(&msg)).map(Some),
+            None => Ok(None),
         }
-        Ok(None)
     }
 
     /// Sweep to the hub's wallet the outputs of `trees` on chain, each by
