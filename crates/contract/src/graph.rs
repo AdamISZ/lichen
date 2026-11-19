@@ -134,11 +134,25 @@ impl<'a> Core<'a> {
     /// link carries (each element's size), for its floor.
     #[allow(clippy::too_many_arguments)]
     pub fn link(&self, name: &str, poster: Role, shape: Vec<Vec<u8>>, prev_tree: &TapTree, prev_leaf: &str, op: OutPoint, prev_out: &TxOut, next: ScriptBuf) -> Result<Presign> {
+        self.link_extra(name, poster, shape, prev_tree, prev_leaf, op, prev_out, next, vec![])
+    }
+    /// [`Core::link`] with `extra`, fixed outputs after the anchor (an L2's
+    /// publication slots, say): they come out of the value the chain
+    /// carries, and the floor is of the link with them. None of them, nor
+    /// what the chain carries after them, may be dust.
+    #[allow(clippy::too_many_arguments)]
+    pub fn link_extra(&self, name: &str, poster: Role, shape: Vec<Vec<u8>>, prev_tree: &TapTree, prev_leaf: &str, op: OutPoint, prev_out: &TxOut, next: ScriptBuf, extra: Vec<TxOut>) -> Result<Presign> {
+        let dust = self.params.dust;
+        if let Some(o) = extra.iter().find(|o| o.value < dust) {
+            bail!("{name}'s extra output of {} is dust (below {dust})", o.value);
+        }
         let anchor = TxOut { value: ANCHOR, script_pubkey: anchor_tree(&self.ctx(), poster)?.script_pubkey() };
-        let mut p = Presign::new(name, prev_tree, prev_leaf, op, prev_out, vec![TxOut { value: prev_out.value, script_pubkey: next }, anchor], true)?;
+        let extra_value = extra.iter().try_fold(Amount::ZERO, |sum, o| sum.checked_add(o.value)).context("extra outputs overflow")?;
+        let outputs = [TxOut { value: prev_out.value, script_pubkey: next }, anchor].into_iter().chain(extra).collect();
+        let mut p = Presign::new(name, prev_tree, prev_leaf, op, prev_out, outputs, true)?;
         let vsize = p.finish(shape, &[0u8; 64], &[0u8; 64]).vsize() as u64 + slack_vbytes(prev_tree, prev_leaf)?;
         let floor = Amount::from_sat(vsize * FLOOR_RATE);
-        let carried = prev_out.value.checked_sub(floor + ANCHOR).context("the contract can't carry the floors")?;
+        let carried = prev_out.value.checked_sub(floor + ANCHOR + extra_value).filter(|c| *c >= dust).context("the contract can't carry the floors")?;
         p.tx.output[0].value = carried;
         Ok(p)
     }
