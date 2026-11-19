@@ -53,7 +53,8 @@ contract output (key path: the fold; leaves: default, and the front's
     └─ assert (the hub: π1 under its Lamport key, π2 and π3)
         ├─ success (after Δ2)            → the front's choice
         └─ challenge_assert (the user: the reveal)
-            ├─ wrongly_challenged_k      → the hub (its proof was valid)
+            ├─ wrongly_challenged_k      → the front's choice, the hub by
+            │                              default (its proof was valid)
             └─ failure (after Δ1)        → the user: her claim
 ```
 
@@ -70,7 +71,7 @@ start lichen's `Hub` and `Wallet` with it:
 
 | trait | where | what the L2 gives |
 |---|---|---|
-| `Front` | `lichen_babe::graph` | the dispute's front: its links from the contract output to `assert` (each with its leaf, its terminal and window), what a front terminal pays, what `success` pays |
+| `Front` | `lichen_babe::graph` | the dispute's front: its links from the contract output to `assert` (each with its leaf, any fixed outputs after its anchor, its terminal and window), what a front terminal pays, what `success` pays, and what `wrongly_challenged` pays (the hub, unless the front says otherwise) |
 | `Layer` | `lichen_proto` | a contract's front, from its record, and the journal its statement's proof is of: what both sides build the contract's graph from |
 | `HubL2` | `lichen_hub` (`l2`) | the hub's side: its info and HTTP routes (payments, ...), who may open a contract, the statement's terms at the setup, its keys at the opening, the mint, a withdrawal's claim taken into the ledger, the front's moves in a dispute up to the statement's input, and collecting its payout. `Ctx` is what the hub gives it: the chain, the configuration, the contracts, and the plumbing a front's moves need (posting a link, a terminal, a sweep) |
 | `WalletL2` | `lichen_wallet` (`l2`) | the wallet's side, its state kept in the wallet file: the terms it asks for and checks, her keys for the front, the mint, a withdrawal's claim and an exit's plan, the front's moves, and the sweep of a payout she won |
