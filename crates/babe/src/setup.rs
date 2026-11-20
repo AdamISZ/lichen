@@ -18,14 +18,16 @@
 
 use ark_bn254::{Bn254, Fq, Fr, G2Affine};
 use ark_ff::{BigInteger, PrimeField, UniformRand};
-use ark_groth16::VerifyingKey;
+use anyhow::Context as _;
+use ark_groth16::{Proof, VerifyingKey};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 
-use crate::garble::{garble, Garbled, Label};
-use crate::we::{encrypt, Msg, Setup};
+use crate::garble::{evaluate, garble, Garbled, Label};
+use crate::vsss::interpolate;
+use crate::we::{decrypt, encrypt, Msg, Setup};
 
 /// An input secret: a share's 32 bytes.
 pub type Secret = [u8; 32];
@@ -83,6 +85,12 @@ pub fn instance(seed: &[u8; 32], secrets: &[[Secret; VALUES]], vk: &VerifyingKey
 }
 
 impl Instance {
+    /// The fixed circuit's shape, independent of its random secrets or
+    /// statement. A committed kept instance must satisfy it before funding.
+    pub fn has_shape(&self) -> bool {
+        self.gc.has_shape() && self.table.len() == DIGITS
+    }
+
     /// The circuit's input labels for `bits`, from their digits' secrets.
     pub fn labels(&self, bits: &[bool], secrets: &[Secret]) -> Vec<Label> {
         let digits = digits(bits);
@@ -100,10 +108,16 @@ impl Instance {
         <Hash>::from(Sha256::digest(msg)) == self.hmsg
     }
 
-    /// The hub's commitment to it.
+    /// The commitment to it, its parts' lengths first: bytes split
+    /// otherwise into its parts (labels moved from the circuit to the
+    /// table, field elements from `dre` to the constants) commit
+    /// otherwise, so a kept instance as committed evaluates as built.
     pub fn commitment(&self) -> Hash {
         let mut h = blake3::Hasher::new();
         h.update(b"lichen/babe/instance");
+        for n in [self.gc.ands.len(), self.table.len(), self.gc.dre.len(), self.gc.constant.len()] {
+            h.update(&(n as u64).to_le_bytes());
+        }
         for l in self.gc.ands.iter().chain(self.table.iter().flatten().flatten()) {
             h.update(&l.to_le_bytes());
         }
@@ -144,7 +158,8 @@ impl Instance {
     }
 
     /// The instance of `b` ([`Instance::to_bytes`]), if it is one: every
-    /// length checked against what is left before anything is allocated.
+    /// length checked against what is left before anything is allocated,
+    /// and the fixed circuit's shape checked before it can be evaluated.
     pub fn from_bytes(b: &[u8]) -> Option<Instance> {
         struct Reader<'a>(&'a [u8]);
         impl<'a> Reader<'a> {
@@ -185,13 +200,50 @@ impl Instance {
         let r_delta = G2Affine::deserialize_compressed(r.take(64)?).ok()?;
         let masked = r.take(32)?.try_into().ok()?;
         let hmsg = r.take(32)?.try_into().ok()?;
-        r.0.is_empty().then_some(Instance { gc: Garbled { ands, dre, constant }, table, ct: Setup { r_delta, masked }, hmsg })
+        let inst = Instance { gc: Garbled { ands, dre, constant }, table, ct: Setup { r_delta, masked }, hmsg };
+        (r.0.is_empty() && inst.has_shape()).then_some(inst)
     }
 }
 
 /// Whether an opened instance (its seed and secrets) is the one committed.
 pub fn check_opened(commitment: &Hash, seed: &[u8; 32], secrets: &[[Secret; VALUES]], vk: &VerifyingKey<Bn254>, public: &[Fr]) -> bool {
     instance(seed, secrets, vk, public).0.commitment() == *commitment
+}
+
+/// Kept instance `i`'s answer to a challenge on π1's `bits`: its secrets
+/// interpolated from those of the `opened` instances for π1's digits and
+/// the `revealed` ones, its circuit evaluated, and `msg` decrypted under
+/// `proof`, if it opens the hashlock. Any failure is an error, a panic of
+/// the evaluation among them.
+pub fn kept_msg(inst: &Instance, i: u64, opened: &[(u64, Vec<Secret>)], revealed: &[Secret], bits: &[bool], proof: &Proof<Bn254>) -> anyhow::Result<Msg> {
+    anyhow::ensure!(inst.has_shape(), "not of the circuit's shape");
+    let secrets = interpolate(i, opened, revealed).context("its secrets don't interpolate")?;
+    let msg = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let r_pi1 = evaluate(&inst.gc, bits, &inst.labels(bits, &secrets));
+        decrypt(&inst.ct, &r_pi1, proof)
+    }))
+    .map_err(|_| anyhow::anyhow!("its evaluation panicked"))?;
+    anyhow::ensure!(inst.is_msg(&msg), "its msg doesn't open the hashlock");
+    Ok(msg)
+}
+
+/// The hub's answer to a challenge from its kept instances, each `(i,
+/// bytes)` in order: the first `(k, msg)`, `k` its position among them,
+/// whose `msg` opens the hashlock ([`kept_msg`]). Every kept instance is
+/// tried until one opens: any failure of one (its bytes unread, not an
+/// instance, [`kept_msg`]'s) counts it false, `failed` hears why, and the
+/// next is tried. One true kept instance is what cut-and-choose's
+/// soundness promises, however the others are broken, so None only when
+/// all have failed.
+pub fn answer(kept: impl IntoIterator<Item = (u64, anyhow::Result<Vec<u8>>)>, opened: &[(u64, Vec<Secret>)], revealed: &[Secret], bits: &[bool], proof: &Proof<Bn254>, mut failed: impl FnMut(u64, &anyhow::Error)) -> Option<(usize, Msg)> {
+    for (k, (i, bytes)) in kept.into_iter().enumerate() {
+        let msg = bytes.and_then(|b| Instance::from_bytes(&b).context("not an instance")).and_then(|inst| kept_msg(&inst, i, opened, revealed, bits, proof));
+        match msg {
+            Ok(msg) => return Some((k, msg)),
+            Err(e) => failed(i, &e),
+        }
+    }
+    None
 }
 
 /// The M instances of N Alice keeps, chosen at random: indices, sorted.
