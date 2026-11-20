@@ -292,12 +292,12 @@ pub struct Quote {
 }
 
 impl Ask {
-    /// The hub's terms for this ask: its fee at its rate, and the cap
+    /// The hub's terms for this ask: its fee ([`Info::fee`]), and the cap
     /// they make. Refused if the liquidity is above the hub's most, or the
     /// deposit doesn't cover the fee.
     pub fn quote(&self, info: &Info) -> Result<Quote> {
         ensure!(self.liquidity <= info.max_liquidity, "liquidity of {} sats, above the hub's most, {}", self.liquidity, info.max_liquidity);
-        let fee = lichen_proto::liquidity_fee(self.liquidity, info.fee_ppm);
+        let fee = info.fee(self.deposit, self.liquidity);
         ensure!(fee < self.deposit, "a deposit of {} sats doesn't cover the hub's fee of {fee}", self.deposit);
         let (bits, unit) = lichen_proto::scale(self.deposit - fee + self.liquidity)?;
         Ok(Quote { fee, minted: self.deposit - fee, cap: unit * ((1u64 << bits) - 1), unit })

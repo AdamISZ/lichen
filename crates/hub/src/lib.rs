@@ -429,7 +429,7 @@ impl<L: HubL2> Inner<L> {
     }
 
     fn info(&self) -> Info {
-        Info { network: self.cfg.network, statement: self.cfg.statement.id().to_string(), reserve_ppm: self.cfg.reserve_ppm, fee_ppm: self.cfg.fee_ppm, max_liquidity: self.cfg.max_liquidity, duration: self.cfg.duration, version: self.l2.version(), commit: option_env!("LICHEN_COMMIT").filter(|c| !c.is_empty()).map(str::to_string), l2: self.l2.info() }
+        Info { network: self.cfg.network, statement: self.cfg.statement.id().to_string(), reserve_ppm: self.cfg.reserve_ppm, fee_ppm: self.cfg.fee_ppm, max_liquidity: self.cfg.max_liquidity, duration: self.cfg.duration, version: self.l2.version(), commit: option_env!("LICHEN_COMMIT").filter(|c| !c.is_empty()).map(str::to_string), l2: self.l2.info(), pricing: self.l2.pricing() }
     }
 
     /// A deposit address for a contract to come: its number, and the hub's
@@ -446,7 +446,7 @@ impl<L: HubL2> Inner<L> {
         // opened hold nothing back, so two at once may both pass here
         if req.deposit > 0 {
             ensure!(req.liquidity <= self.cfg.max_liquidity, "liquidity of {} sats, above the hub's most, {}", req.liquidity, self.cfg.max_liquidity);
-            let fee = lichen_proto::liquidity_fee(req.liquidity, self.cfg.fee_ppm);
+            let fee = self.info().fee(req.deposit, req.liquidity);
             ensure!(fee < req.deposit, "a deposit of {} sats doesn't cover the hub's fee of {fee}", req.deposit);
             let (bits, unit) = lichen_proto::scale(req.deposit - fee + req.liquidity)?;
             let v_max = unit * ((1u64 << bits) - 1);
@@ -485,8 +485,8 @@ impl<L: HubL2> Inner<L> {
 
     fn open(&self, req: OpenRequest) -> Result<OpenOffer> {
         ensure!(req.liquidity <= self.cfg.max_liquidity, "liquidity of {} sats, above the hub's most, {}", req.liquidity, self.cfg.max_liquidity);
-        let fee = lichen_proto::liquidity_fee(req.liquidity, self.cfg.fee_ppm);
-        ensure!(req.fee >= fee, "a fee of {} sats for {} sats of liquidity: the hub asks {fee}", req.fee, req.liquidity);
+        let fee = self.info().fee(req.deposit, req.liquidity);
+        ensure!(req.fee >= fee, "a fee of {} sats for a deposit of {} and {} sats of liquidity: the hub asks {fee}", req.fee, req.deposit, req.liquidity);
         ensure!(*self.opening_fault.lock().unwrap() != OpeningFault::Refuse, "refusing contract {}'s opening (a test's fault)", req.cid);
         let cid = req.cid;
         ensure!(!self.open.lock().unwrap().contains_key(&cid), "contract {cid} is open already");

@@ -100,6 +100,12 @@ pub trait HubL2: Layer + Sized + Send + Sync + 'static {
 
     /// What `GET /info` says of the L2 (its deployment, its guests, ...).
     fn info(&self) -> serde_json::Value;
+    /// The hub's fee by [`lichen_proto::Pricing`], if the L2 prices so
+    /// (`GET /info` names it, and the hub asks it): none keeps
+    /// `Config::fee_ppm` of the liquidity.
+    fn pricing(&self) -> Option<lichen_proto::Pricing> {
+        None
+    }
     /// The L2's version (`GET /info`).
     fn version(&self) -> String;
     /// The L2's own HTTP routes (payments, ...): `None` if not one.

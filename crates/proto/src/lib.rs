@@ -212,6 +212,63 @@ pub struct Info {
     /// proves with, ...
     #[serde(default)]
     pub l2: serde_json::Value,
+    /// The hub's fee by [`Pricing`], if it prices so: then `fee_ppm` is
+    /// unused ([`Info::fee`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<Pricing>,
+}
+
+/// A hub's fee for a contract by the capital it commits and for how long:
+/// a yearly rate on each of its two legs, for the contract's term, and a
+/// flat part. The legs:
+///
+/// - the deposit `D`, what the hub pays out on the L2 at the opening (an
+///   L2 whose hub pays out an asset it holds, as L-BTC; nothing for one
+///   that mints its own, whose rate is then 0);
+/// - the liquidity `L`, the BTC the hub locks in the contract beyond `D`.
+///
+/// Rates are parts per million a year. The fee is kept out of what the
+/// hub pays her at the opening (`D - fee`), as `fee_ppm`'s is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pricing {
+    pub deposit_ppm_year: u64,
+    pub liquidity_ppm_year: u64,
+    #[serde(default)]
+    pub flat: u64,
+}
+
+/// Seconds in a year (365.25 days).
+pub const YEAR_SECS: u128 = 31_557_600;
+
+impl Pricing {
+    /// The fee for a contract of deposit `deposit` and liquidity
+    /// `liquidity` lasting `secs` seconds: rounded up.
+    pub fn fee(&self, deposit: u64, liquidity: u64, secs: u64) -> u64 {
+        let capital = u128::from(deposit) * u128::from(self.deposit_ppm_year) + u128::from(liquidity) * u128::from(self.liquidity_ppm_year);
+        let timed = (capital * u128::from(secs)).div_ceil(YEAR_SECS * 1_000_000);
+        u64::try_from(timed).unwrap_or(u64::MAX).saturating_add(self.flat)
+    }
+}
+
+/// The seconds a network's blocks take, on average (regtest's counted as
+/// Bitcoin's).
+pub fn block_secs(net: Net) -> u64 {
+    match net {
+        Net::Mutinynet => 30,
+        Net::Regtest | Net::Signet | Net::Testnet4 => 600,
+    }
+}
+
+impl Info {
+    /// The hub's fee for a contract of deposit `deposit` and liquidity
+    /// `liquidity`: by its [`Pricing`] over its duration, if it names
+    /// one, else `fee_ppm` of the liquidity.
+    pub fn fee(&self, deposit: u64, liquidity: u64) -> u64 {
+        match &self.pricing {
+            Some(p) => p.fee(deposit, liquidity, u64::from(self.duration) * block_secs(self.network)),
+            None => liquidity_fee(liquidity, self.fee_ppm),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -715,5 +772,33 @@ mod tests {
         // the windows are in blocks: wider where blocks come faster or in bursts
         assert!(params(Net::Mutinynet).delta > params(Net::Signet).delta);
         assert!(params(Net::Testnet4).delta > params(Net::Signet).delta);
+    }
+}
+
+#[cfg(test)]
+mod pricing_tests {
+    use super::*;
+
+    #[test]
+    fn pricing_charges_both_legs_for_the_term_and_fee_ppm_stays_without_it() {
+        // 5% a year on D (L-BTC paid out), 2% on L (BTC locked), for half a
+        // year: 0.025 D + 0.01 L, rounded up, plus the flat part
+        let p = Pricing { deposit_ppm_year: 50_000, liquidity_ppm_year: 20_000, flat: 7 };
+        let half = (YEAR_SECS / 2) as u64;
+        assert_eq!(p.fee(1_000_000, 2_000_000, half), 25_000 + 20_000 + 7);
+        assert_eq!(p.fee(1, 0, 1), 1 + 7, "rounded up");
+        assert_eq!(Pricing::default().fee(u64::MAX, u64::MAX, u64::MAX), 0);
+        let mut info: Info = serde_json::from_value(serde_json::json!({ "statement": "s", "reserve_ppm": 0, "fee_ppm": 10_000, "max_liquidity": 0, "duration": 1008 })).unwrap();
+        assert_eq!(info.pricing, None, "an Info without pricing reads as before");
+        assert_eq!(info.fee(1_000_000, 500_000), 5_000);
+        // a week of 10-minute blocks
+        info.pricing = Some(Pricing { deposit_ppm_year: 52_000, liquidity_ppm_year: 0, flat: 0 });
+        assert_eq!(info.fee(1_000_000, 500_000), p_week(1_000_000, 52_000));
+        let back: Info = serde_json::from_str(&serde_json::to_string(&info).unwrap()).unwrap();
+        assert_eq!(back.pricing, info.pricing);
+    }
+
+    fn p_week(d: u128, ppm: u128) -> u64 {
+        (d * ppm * 1008 * 600).div_ceil(YEAR_SECS * 1_000_000) as u64
     }
 }
