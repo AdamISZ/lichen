@@ -151,4 +151,12 @@ pub trait HubL2: Layer + Sized + Send + Sync + 'static {
     fn collect(&self, ctx: &dyn Ctx, d: &Disputed, link: Txid, terminal: &str) -> Result<Bits>;
     /// A front's state, in words.
     fn describe(&self, s: &Self::Front) -> String;
+
+    /// The L2's own chores (refunds, sweeps, ...), run every
+    /// [`L2_TICK`](crate::L2_TICK) on a thread of their own, so that a slow
+    /// or failing one never delays the hub's moves: nothing by default. An
+    /// error is logged, and the next tick comes as usual.
+    fn tick(&self, _ctx: &dyn Ctx) -> Result<()> {
+        Ok(())
+    }
 }

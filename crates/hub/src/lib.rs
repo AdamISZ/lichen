@@ -265,7 +265,21 @@ impl<L: HubL2> Hub<L> {
                 std::thread::sleep(std::time::Duration::from_millis(300));
             }
         });
-        Ok(Hub { url: format!("http://127.0.0.1:{port}"), inner, server, threads: vec![http, watcher] })
+        // the L2's chores, apart from the hub's moves
+        let i3 = inner.clone();
+        let ticker = std::thread::spawn(move || {
+            let mut last: Option<std::time::Instant> = None;
+            while !i3.stop.load(Ordering::Relaxed) {
+                if last.is_none_or(|t| t.elapsed() >= L2_TICK) {
+                    if let Err(e) = i3.l2.tick(&*i3) {
+                        eprintln!("hub: the L2's tick: {e:#}");
+                    }
+                    last = Some(std::time::Instant::now());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        });
+        Ok(Hub { url: format!("http://127.0.0.1:{port}"), inner, server, threads: vec![http, watcher, ticker] })
     }
     /// The contracts so far, and how each ended if it has.
     pub fn contracts(&self) -> Vec<(Record, Option<bitcoin::Txid>)> {
@@ -797,3 +811,6 @@ impl<L: HubL2> Inner<L> {
         Ok(self.chain.height()? + 1 - n)
     }
 }
+/// How often the hub runs its L2's chores ([`HubL2::tick`]).
+pub const L2_TICK: std::time::Duration = std::time::Duration::from_secs(2);
+
