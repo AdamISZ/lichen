@@ -11,10 +11,11 @@ use lichen_proto::setup::{dealing_to_hex, min_soundness, Opened};
 use lichen_proto::hp::{check_setup, HpCommit, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
 use lichen_proto::{Hash, Net, Statement};
 use lichen_contract::Presign;
+use sha2::Digest;
 
 use crate::engine::garbler;
 use crate::engine::ContractSecrets;
-use crate::{hub_call, Quote, Wallet, WalletL2};
+use crate::{hub_call, Quote, SentOpening, Wallet, WalletL2};
 
 /// What her opening request carries, and what it rests on.
 pub(crate) struct HpOpening {
@@ -22,6 +23,8 @@ pub(crate) struct HpOpening {
     pub setup: HpSetup,
     /// Her keys for the dispute (the L2's).
     pub keys: serde_json::Value,
+    /// The journal's hash: her instances are garbled for it.
+    pub journal: Hash,
     pub kept: Vec<u32>,
     /// The kept instances' hashlocks, in `kept`'s order.
     pub hmsg: Vec<[u8; 32]>,
@@ -32,9 +35,11 @@ impl<L: WalletL2> Wallet<L> {
     /// The setup of contract `cid`, with the deposit coin `deposit`: the
     /// hub's statement and keys checked; her instances built for it, the
     /// input secrets dealt, committed to; the ones the hub keeps uploaded,
-    /// the others opened in her request.
+    /// the others opened in her request. `sent`, the openings sent before
+    /// for this deposit: the hub must keep the same instances again for
+    /// the same journal ([`check_kept`]).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn hp_opening(&self, hub: &str, chain: &lichen_chain::Chain, statement: &Statement, cid: u32, deposit: bitcoin::OutPoint, quote: &Quote, owner: &Hash, s: &ContractSecrets, net: Net) -> Result<HpOpening> {
+    pub(crate) fn hp_opening(&self, hub: &str, chain: &lichen_chain::Chain, statement: &Statement, cid: u32, deposit: bitcoin::OutPoint, quote: &Quote, owner: &Hash, s: &ContractSecrets, sent: &[SentOpening], net: Net) -> Result<HpOpening> {
         let unit = quote.unit;
         let asked = L::setup_terms(self, cid, quote, owner)?;
         let setup: HpSetup = hub_call(&format!("{hub}/hp/setup"), Some(serde_json::to_string(&HpSetupRequest { cid, deposit, unit, l2: asked.clone() })?), false)?;
@@ -45,6 +50,7 @@ impl<L: WalletL2> Wallet<L> {
         ensure!(soundness(n, m) >= min_soundness(net), "keeping {m} of {n} instances: a cheating garbler escapes with odds of 1 in 2^{}, not 2^{}", soundness(n, m), min_soundness(net));
         let keys = L::alice_keys(s);
         let journal = L::setup_journal(cid, &setup, &keys)?;
+        let journal_hash: Hash = sha2::Sha256::digest(&journal).into();
         let kind = statement.hp_kind()?;
         let g = garbler(s, n, m, &kind, &journal);
         self.say(format!("garbling {n} instances of the hub's statement (the hub keeps {m})"));
@@ -56,6 +62,7 @@ impl<L: WalletL2> Wallet<L> {
         let commit = HpCommit { cid, keys: keys.clone(), commitments, dealing: dealing_to_hex(g.dealing()) };
         let kept: HpKept = hub_call(&format!("{hub}/hp/commit"), Some(serde_json::to_string(&commit)?), false)?;
         let k = kept.kept;
+        check_kept(sent, &journal_hash, &k)?;
         let opened = g.open(&k)?.iter().map(Opened::of).collect();
         let mut hmsg = vec![];
         for (j, i) in k.iter().enumerate() {
@@ -70,7 +77,7 @@ impl<L: WalletL2> Wallet<L> {
             self.opened_step(crate::Opening::Uploading { sent: before + len, total });
             hmsg.push(inst.hmsg);
         }
-        Ok(HpOpening { request: HpRequest { hp_opened: opened }, setup, keys, kept: k, hmsg, garbler: g })
+        Ok(HpOpening { request: HpRequest { hp_opened: opened }, setup, keys, journal: journal_hash, kept: k, hmsg, garbler: g })
     }
 
     /// The hub's offer checked against her opening: its windows the
@@ -121,5 +128,48 @@ impl<R: std::io::Read> std::io::Read for Counted<'_, R> {
             (self.tell)(self.sent);
         }
         Ok(k)
+    }
+}
+
+/// The kept set the hub chose, against the openings sent before for this
+/// deposit. For the same journal her instances are the same ones (from the
+/// contract's seed and the journal), so the hub must keep the same set
+/// again: opening any other would hand it the seeds of instances it keeps,
+/// and so their `msg`s, an answer to her challenge without a valid proof.
+/// For another journal they are other instances, and any set will do.
+pub(crate) fn check_kept(sent: &[SentOpening], journal: &Hash, kept: &[u32]) -> Result<()> {
+    if let Some(s) = sent.iter().find(|s| s.journal == *journal) {
+        ensure!(s.kept == kept, "the hub keeps instances {kept:?}, but it was sent the opening of all but {:?} already: opening others would give it the seeds of instances it keeps. This contract can't be opened again; refund its deposit after its timeout", s.kept);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resumed_opening_opens_the_same_instances_or_none() {
+        let (j, other) = ([1u8; 32], [2u8; 32]);
+        let sent = vec![SentOpening { journal: j, kept: vec![2, 5] }];
+        // nothing sent yet: any set
+        assert!(check_kept(&[], &j, &[1, 3]).is_ok());
+        // the same journal: the same set only
+        assert!(check_kept(&sent, &j, &[2, 5]).is_ok());
+        assert!(check_kept(&sent, &j, &[2, 6]).is_err());
+        assert!(check_kept(&sent, &j, &[2]).is_err());
+        // another journal: other instances, any set
+        assert!(check_kept(&sent, &other, &[1, 3]).is_ok());
+    }
+
+    #[test]
+    fn a_deposit_recorded_before_the_field_still_loads() {
+        let key = bitcoin::secp256k1::Keypair::from_seckey_slice(bitcoin::secp256k1::SECP256K1, &[7; 32]).unwrap().x_only_public_key().0;
+        let old = serde_json::json!({ "nonce": "ab", "cid": 3, "hub": key, "timeout": 144, "payout": "0014" });
+        let d: crate::Deposit = serde_json::from_value(old).unwrap();
+        assert!(d.sent.is_empty() && d.offered.is_none() && d.earlier.is_empty());
+        let sent = SentOpening { journal: [9; 32], kept: vec![4, 8] };
+        let back: SentOpening = serde_json::from_str(&serde_json::to_string(&sent).unwrap()).unwrap();
+        assert_eq!(back, sent);
     }
 }

@@ -93,6 +93,21 @@ pub struct Deposit {
     /// funding, so each is kept until one is out or the deposit refunded.
     #[serde(default)]
     pub earlier: Vec<(Record, Locked)>,
+    /// The openings sent to the hub (`POST /open`, which carries the
+    /// seeds of the instances it doesn't keep), each kept before it is
+    /// sent: an opening resumed on the same journal garbles the same
+    /// instances, so it may only open the same ones again.
+    #[serde(default)]
+    pub sent: Vec<SentOpening>,
+}
+
+/// An opening sent: the journal its instances were garbled for (its
+/// hash), and the instances the hub kept, all others opened.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SentOpening {
+    #[serde(with = "lichen_babe::hexbytes::fixed")]
+    pub journal: Hash,
+    pub kept: Vec<u32>,
 }
 
 impl Deposit {
@@ -382,7 +397,7 @@ impl<L: WalletL2> Wallet<L> {
         // the refund's timeout is the network's: a hub naming a longer one
         // could lock the deposit up for as long
         ensure!(offer.timeout == lichen_proto::deposit_timeout(net), "the hub's deposit refund waits {} blocks, not the network's {}", offer.timeout, lichen_proto::deposit_timeout(net));
-        let dep = Deposit { nonce: nonce.clone(), cid: offer.cid, hub: offer.hub, timeout: offer.timeout, payout: payout.clone(), offered: None, earlier: vec![] };
+        let dep = Deposit { nonce: nonce.clone(), cid: offer.cid, hub: offer.hub, timeout: offer.timeout, payout: payout.clone(), offered: None, earlier: vec![], sent: vec![] };
         self.deposits.push(dep.clone());
         self.save()?;
         let dep_spk = deposit_tree(&dep_kp.x_only_public_key().0, &dep.hub, dep.timeout)?.script_pubkey();
@@ -435,10 +450,18 @@ impl<L: WalletL2> Wallet<L> {
         // those the hub keeps uploaded, the others opened
         let secrets = self.secrets(&nonce);
         let owner = self.owner_of(&nonce);
-        let hp_open = self.hp_opening(hub, chain, statement, dep.cid, coin.0, &quote, &owner, &secrets, net)?;
+        let hp_open = self.hp_opening(hub, chain, statement, dep.cid, coin.0, &quote, &owner, &secrets, &dep.sent, net)?;
         self.opened_step(Opening::HubChecking);
         let fees = self.fees(&nonce, net);
         let req = OpenRequest { alice, l2_address: owner, deposit, liquidity, fee: quote.fee, reserve, dispute: hp_open.request.clone(), cid: dep.cid, deposit_coin: coin.clone(), fee_spk: fees.spk() };
+        // the request opens the instances not kept: kept first, so that a
+        // resumed opening can only open these again
+        let sent = SentOpening { journal: hp_open.journal, kept: hp_open.kept.clone() };
+        let d = self.deposits.iter_mut().find(|d| d.cid == dep.cid).context("the deposit's record")?;
+        if !d.sent.contains(&sent) {
+            d.sent.push(sent);
+            self.save()?;
+        }
         let offer: OpenOffer = hub_call(&format!("{hub}/open"), Some(serde_json::to_string(&req)?), false)?;
         // the contract as the offer makes it, checked before signing
         ensure!(offer.cid == dep.cid, "the offer is for contract {}, the deposit for {}", offer.cid, dep.cid);
