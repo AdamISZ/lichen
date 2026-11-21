@@ -14,7 +14,8 @@ use anyhow::{ensure, Context, Result};
 use bitcoin::{Amount, OutPoint, Sequence, Transaction, TxOut, Txid};
 use lichen_babe::graph::Graph;
 use lichen_babe::reveal::extract;
-use lichen_babe::setup::{answer, digits, Secret};
+use lichen_babe::opening::answer;
+use lichen_babe::setup::digits;
 use lichen_btc::adaptor::AdaptorSig;
 use lichen_btc::sighash::sign_tapscript;
 use lichen_btc::taptree::TapTree;
@@ -22,7 +23,7 @@ use lichen_btc::witness::tapscript_witness;
 use lichen_chain::{Chain, NodeWallet};
 use lichen_contract::PartyKeys;
 use lichen_proto::hp::Disputed;
-use lichen_proto::setup::{link_args, shares_from_hex};
+use lichen_proto::setup::{link_args, Opened};
 use lichen_proto::{anchor_vout, sign_anchor, Built, Record};
 
 use crate::l2::{Bits, Ctx, FrontStep, ProverInput};
@@ -315,12 +316,11 @@ impl<L: HubL2> Inner<L> {
         let presigs: Vec<[AdaptorSig; lichen_babe::setup::VALUES]> = keys.hub_presigs.iter().map(|s| s.each_ref().map(AdaptorSig::from)).collect();
         let (posted, revealed) = extract(&keys.hub_lamport, &presigs, &link_args(&tx)).context("the challenge's secrets")?;
         ensure!(posted == asserted.digits, "the challenge reveals other digits than asserted");
-        let p = self.hp_prepared(cid)?;
-        let of_digits: Vec<(u64, Vec<Secret>)> = p.opened.iter().map(|o| Ok((u64::from(o.i), shares_from_hex(&o.shares)?.iter().zip(&posted).map(|(s, v)| s[*v as usize]).collect()))).collect::<Result<_>>()?;
+        let opened: Vec<_> = self.hp_prepared(cid)?.opened.iter().map(Opened::read).collect::<Result<_>>()?;
         let dir = self.hp_dir(cid);
-        let kept = keys.kept.iter().map(|i| (u64::from(*i), std::fs::read(dir.join(format!("instance-{i}.bin"))).map_err(anyhow::Error::from)));
+        let kept = keys.kept.iter().map(|i| (*i, std::fs::read(dir.join(format!("instance-{i}.bin"))).map_err(anyhow::Error::from)));
         let failed = |i: u64, e: &anyhow::Error| self.note(format!("contract {cid}: kept instance {i} doesn't answer: {e:#}"));
-        match answer(kept, &of_digits, &revealed, &asserted.bits, &proof, failed) {
+        match answer(kept, &opened, &asserted.bits, &revealed, &proof, failed) {
             Some((k, msg)) => self.hp_terminal(d, &format!("wrongly_challenged_{k}"), Graph::wrongly_wire(&msg)).map(Some),
             None => Ok(None),
         }

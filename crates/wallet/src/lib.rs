@@ -479,7 +479,7 @@ impl<L: WalletL2> Wallet<L> {
         let need = c.terminal_need(&set, net)?;
         ensure!(fee_out.value >= need, "the fee budget, {}, can't pay for the heaviest transaction a dispute may need of the user, {need}", fee_out.value);
         // the hub's adaptor pre-signatures on her challenge
-        Self::hp_check_offer(net, &secrets, &hp_open, &offer.dispute, &set)?;
+        Self::hp_check_offer(net, &hp_open, &offer.dispute, &set)?;
         record.alice_sigs = sign_all(&set, &keys.payment)?;
         // the mint, D − fee, and the L2's part of the offer
         ensure!(record.minted() == quote.minted, "the contract mints {}, not the quote's {}", record.minted(), quote.minted);

@@ -10,10 +10,11 @@
 
 use anyhow::{ensure, Context, Result};
 use lichen_babe::reveal::{AdaptorKeys, LamportKey};
-use lichen_babe::setup::{check_opened, choose, par, Hash, Instance, Secret, DIGITS, VALUES};
+use lichen_babe::opening::{check, choose};
+use lichen_babe::setup::{Hash, Instance, DIGITS, VALUES};
 use lichen_btc::keys::Seed;
 use lichen_proto::hp::{check_commit, HpCommit, HpKept, HpKeys, HpOffer, HpSetup, HpSetupRequest};
-use lichen_proto::setup::{dealing_from_hex, shares_from_hex, Opened};
+use lichen_proto::setup::{dealing_from_hex, Opened};
 use lichen_proto::{OpenRequest, Presig, Record};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -108,7 +109,7 @@ impl<L: HubL2> Inner<L> {
             return Ok(HpKept { cid, kept: p.kept });
         }
         let rng = &mut ChaCha20Rng::from_seed(lichen_proto::fresh_rho());
-        p.kept = choose(p.setup.n as usize, p.setup.m as usize, rng).into_iter().map(|k| k as u32 + 1).collect();
+        p.kept = choose(p.setup.n, p.setup.m, rng);
         p.commit = Some(c);
         self.hp_save(cid, &p)?;
         Ok(HpKept { cid, kept: p.kept })
@@ -143,24 +144,15 @@ impl<L: HubL2> Inner<L> {
         let commit = p.commit.clone().context("no instances committed")?;
         let (l2_keys, l2_offer) = self.l2.open_keys(self, &s, &commit.keys, req, t_close)?;
         ensure!(p.kept.iter().all(|i| p.uploaded.contains_key(i)), "not every kept instance uploaded");
-        let opened = &req.dispute.hp_opened;
-        let want: Vec<u32> = (1..=s.n).filter(|i| !p.kept.contains(i)).collect();
-        ensure!(opened.iter().map(|o| o.i).collect::<Vec<_>>() == want, "other instances opened than those not kept");
+        let opened: Vec<_> = req.dispute.hp_opened.iter().map(Opened::read).collect::<Result<_>>()?;
         let dealing = dealing_from_hex(&commit.dealing, (s.n - s.m) as usize)?;
-        let shares: Vec<(u64, Vec<[Secret; VALUES]>)> = opened.iter().map(|o| Ok((u64::from(o.i), shares_from_hex(&o.shares)?))).collect::<Result<_>>()?;
-        ensure!(dealing.verify(&shares, &mut ChaCha20Rng::from_seed(lichen_proto::fresh_rho())), "an opened instance's shares are off the dealing's polynomials");
+        let commitments: Vec<Hash> = commit.commitments.iter().map(|c| hex::decode(c)?.try_into().map_err(|_| anyhow::anyhow!("a commitment of other than 32 bytes"))).collect::<Result<_>>()?;
         let kind = self.cfg.statement.hp_kind()?;
         let journal = self.l2.setup_journal(cid, &s, &commit.keys)?;
-        let (vk, public) = (kind.verifying_key(), kind.public_inputs(&journal));
-        let seeds: Vec<[u8; 32]> = opened.iter().map(|o| hex::decode(&o.seed)?.try_into().map_err(|_| anyhow::anyhow!("a seed of other than 32 bytes"))).collect::<Result<_>>()?;
-        let commits: Vec<[u8; 32]> = opened.iter().map(|o| hex::decode(&commit.commitments[o.i as usize - 1])?.try_into().map_err(|_| anyhow::anyhow!("a commitment of other than 32 bytes"))).collect::<Result<_>>()?;
         let start = std::time::Instant::now();
-        let ok = par(seeds.len(), |k| check_opened(&commits[k], &seeds[k], &shares[k].1, &vk, &public));
-        if let Some(k) = ok.iter().position(|o| !o) {
-            anyhow::bail!("opened instance {} is not the one committed", opened[k].i);
-        }
-        self.note(format!("contract {cid}: the user's {} opened instances checked in {:.1?}", seeds.len(), start.elapsed()));
-        p.opened = opened.clone();
+        check(&commitments, &p.kept, &dealing, &opened, &kind, &journal, &mut ChaCha20Rng::from_seed(lichen_proto::fresh_rho()))?;
+        self.note(format!("contract {cid}: the user's {} opened instances checked in {:.1?}", opened.len(), start.elapsed()));
+        p.opened = req.dispute.hp_opened.clone();
         self.hp_save(cid, &p)?;
         let windows = lichen_proto::hp::windows(self.cfg.network);
         let keys = HpKeys {

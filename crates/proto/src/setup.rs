@@ -5,18 +5,31 @@
 //! chain: a link's arguments, `assert`'s proof.
 
 use anyhow::{ensure, Context, Result};
+use lichen_babe::opening;
+pub use lichen_babe::opening::soundness;
 use lichen_babe::setup::{Secret, DIGITS, VALUES};
 use lichen_babe::vsss::Dealing;
 use serde::{Deserialize, Serialize};
 
 use crate::Net;
 
-/// An opened instance: its index, seed and secrets (hex).
+/// An opened instance: its index, seed and secrets (hex), on the wire
+/// ([`lichen_babe::opening::Opened`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Opened {
     pub i: u32,
     pub seed: String,
     pub shares: String,
+}
+
+impl Opened {
+    pub fn of(o: &opening::Opened) -> Opened {
+        Opened { i: o.i, seed: hex::encode(o.seed), shares: shares_to_hex(&o.shares) }
+    }
+    pub fn read(&self) -> Result<opening::Opened> {
+        let seed = hex::decode(&self.seed)?.try_into().map_err(|_| anyhow::anyhow!("a seed of other than 32 bytes"))?;
+        Ok(opening::Opened { i: self.i, seed, shares: shares_from_hex(&self.shares)? })
+    }
 }
 
 /// The least soundness a wallet accepts of the cut-and-choose, as bits:
@@ -26,12 +39,6 @@ pub fn min_soundness(net: Net) -> u32 {
         Net::Regtest => 2,
         _ => 40,
     }
-}
-
-/// `log2 C(n, m)`, rounded down.
-pub fn soundness(n: u32, m: u32) -> u32 {
-    let ln: f64 = (0..m).map(|k| ((n - k) as f64 / (m - k) as f64).log2()).sum();
-    ln.floor() as u32
 }
 
 pub fn dealing_to_hex(d: &Dealing) -> String {

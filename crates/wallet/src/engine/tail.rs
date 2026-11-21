@@ -17,7 +17,7 @@ use lichen_chain::{Chain, Stall};
 use lichen_proto::hp::Disputed;
 use lichen_proto::Statement;
 
-use super::{confirmed_at, dealing, wait_link, Engine, Next, Outcome};
+use super::{confirmed_at, revealed, wait_link, Engine, Next, Outcome};
 
 impl Engine<'_> {
     /// The tail, the front's last link confirmed at `at`: if the hub's
@@ -57,9 +57,9 @@ impl Engine<'_> {
         self.step(format!("{}: challenging", if valid { "the hub's proof is valid, challenging anyway" } else { "the hub's proof is false" }));
         ensure!(chain.height()? < asserted_at + u32::from(w.delta2) || chain.get_tx(&d.txid("challenge_assert")).is_some(), "the challenge's window has passed");
         let keys = d.record.hp();
-        let (dealer, _) = dealing(self.signer.contract(), keys.n, keys.kept.len() as u32);
-        let revealed: Vec<_> = asserted.digits.iter().enumerate().map(|(j, v)| dealer.reveal(j, *v)).collect();
         let presigs: Vec<[AdaptorSig; 4]> = keys.hub_presigs.iter().map(|s| s.each_ref().map(AdaptorSig::from)).collect();
+        let msg = Graph::link_sighash(std::slice::from_ref(&d.set["challenge_assert"]), "challenge_assert")?;
+        let revealed = revealed(self.signer.contract(), keys.n, keys.kept.len() as u32, &kind, journal, (&keys.hub_adaptor, &msg, &presigs), &asserted.digits);
         let sigs = complete(&presigs, &asserted.digits, &revealed);
         let wire = Graph::challenge_wire(reveal_args(&asserted.preimages, &sigs));
         let tx = d.finish("challenge_assert", wire)?;
@@ -110,5 +110,4 @@ impl Engine<'_> {
             ensure!(!stall.stalled(h), "the chain stalled");
             std::thread::sleep(Duration::from_millis(200));
         }
-    }
-}
+    }}

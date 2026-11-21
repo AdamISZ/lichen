@@ -1,17 +1,19 @@
-//! The reveal on chain (papers/lichen-babe v0.1.5 §8.5): Alice signs π1
-//! in 2-bit digits under a one-time Lamport key, and `challenge_assert`
-//! makes the hub reveal, for each digit, the secret of the value she
-//! signed, by completing her adaptor pre-signature.
+//! The reveal on chain (papers/lichen-babe v0.1.5 §8.5, with the roles
+//! swapped, [`crate::graph`]): the hub, the prover, signs π1 in 2-bit
+//! digits under a one-time Lamport key in `assert`, and Alice's
+//! `challenge_assert` reveals, for each digit, the secret of the value it
+//! signed, by completing the hub's adaptor pre-signature.
 //!
-//! At setup Alice gives the hub, for each digit `d` and value `v`, a
+//! At setup the hub gives Alice, for each digit `d` and value `v`, a
 //! pre-signature on `challenge_assert` under a one-time key `A_{d,v}` of
-//! hers, adapted to the dealing's point `f_{d,v}(0)·G`
-//! ([`crate::vsss::Dealing::point`]). The leaf ([`reveal_verify`]) reads
-//! each digit from her Lamport preimage, which the hub copies from
-//! `assert`, and checks a signature under the key that value selects. The
-//! hub has none but her pre-signature's completion, which hands her
-//! `f_{d,v}(0)` ([`extract`]). Each secret adapts exactly one
-//! pre-signature, under a key used for nothing else.
+//! its own ([`AdaptorKeys`]), adapted to her dealing's point
+//! `f_{d,v}(0)·G` ([`crate::vsss::Dealing::point`]). The leaf
+//! ([`reveal_verify`]) reads each digit from the hub's Lamport preimage,
+//! which she copies from `assert`, and checks a signature under the key
+//! that value selects. She has none but her completion of the hub's
+//! pre-signature ([`complete`]), which hands the hub `f_{d,v}(0)`
+//! ([`extract`]). Each secret adapts exactly one pre-signature, under a
+//! key used for nothing else.
 //!
 //! Two bits a step, so that the leaf's witness fits tapscript's initial
 //! stack (1,000 elements, BIP 342): a preimage and a signature a digit,
@@ -33,7 +35,7 @@ use crate::vsss::Dealing;
 /// A Lamport preimage (`OP_HASH160`).
 pub type Preimage = [u8; 20];
 
-/// Alice's one-time Lamport key for π1: four preimages a digit.
+/// The prover's (the hub's) one-time Lamport key for π1: four preimages a digit.
 pub struct LamportKey(Vec<[Preimage; VALUES]>);
 
 /// Its public half: the preimages' hashes.
@@ -74,7 +76,7 @@ impl LamportPub {
     }
 }
 
-/// Alice's one-time adaptor keys: one a digit and value.
+/// The prover's (the hub's) one-time adaptor keys: one a digit and value.
 pub struct AdaptorKeys(Vec<[Keypair; VALUES]>);
 
 impl AdaptorKeys {
@@ -105,14 +107,14 @@ pub fn points(dealing: &Dealing) -> Vec<[PublicKey; VALUES]> {
         .collect()
 }
 
-/// The hub's check of Alice's pre-signatures, at setup.
+/// Alice's check of the hub's pre-signatures, at setup.
 pub fn check_presigs(keys: &[[XOnlyPublicKey; VALUES]], msg: &Message, points: &[[PublicKey; VALUES]], presigs: &[[AdaptorSig; VALUES]]) -> bool {
     keys.len() == presigs.len()
         && points.len() == presigs.len()
         && keys.iter().zip(points).zip(presigs).all(|((k, t), s)| (0..VALUES).all(|v| adaptor_verify(&k[v], msg, &t[v], &s[v])))
 }
 
-/// `challenge_assert`'s reveal, digit after digit: consuming Alice's
+/// `challenge_assert`'s reveal, digit after digit: consuming the hub's
 /// preimage then a signature, the preimage selects the key, which the
 /// signature must satisfy.
 pub fn reveal_verify(b: Builder, lamport: &LamportPub, keys: &[[XOnlyPublicKey; VALUES]]) -> Builder {
@@ -129,7 +131,7 @@ pub fn reveal_verify(b: Builder, lamport: &LamportPub, keys: &[[XOnlyPublicKey; 
     })
 }
 
-/// The hub's completions of the pre-signatures for `digits`, with their
+/// Alice's completions of the hub's pre-signatures for `digits`, with their
 /// secrets (`Dealer::reveal`).
 pub fn complete(presigs: &[[AdaptorSig; VALUES]], digits: &[u8], secrets: &[Secret]) -> Vec<schnorr::Signature> {
     presigs
@@ -145,7 +147,7 @@ pub fn reveal_args(preimages: &[Preimage], sigs: &[schnorr::Signature]) -> Vec<V
     preimages.iter().zip(sigs).flat_map(|(p, s)| [p.to_vec(), s.as_ref().to_vec()]).collect()
 }
 
-/// Alice's reading of a posted `challenge_assert`: the reveal's elements,
+/// The hub's reading of a posted `challenge_assert`: the reveal's elements,
 /// in consumption order, give each digit's value and its secret.
 pub fn extract(lamport: &LamportPub, presigs: &[[AdaptorSig; VALUES]], args: &[Vec<u8>]) -> Option<(Vec<u8>, Vec<Secret>)> {
     if args.len() != 2 * presigs.len() {
